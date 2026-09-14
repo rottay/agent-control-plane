@@ -2,13 +2,12 @@ import { createHash } from "node:crypto";
 import { lstatSync } from "node:fs";
 
 import { CONTRACT_VERSION, Initiative, WorkerIdentityString, buildInitiativeIdempotencyKey } from "@acp/contracts";
-import type { InitiativeEvent, InitiativeStatus } from "@acp/contracts";
+import type { InitiativeEvent } from "@acp/contracts";
 
 import type { ArtifactBlobLeaseStore } from "../artifact-lease-store/index.js";
 import { artifactPlaneRootFor, openArtifactPlane } from "../artifact-plane/index.js";
 import type {
   ArtifactEventIdentity,
-  ArtifactPlane,
   ArtifactPublicationRequest,
 } from "../artifact-plane/index.js";
 import { LedgerError, LedgerIntegrityError, LedgerQueryError } from "../errors/index.js";
@@ -16,6 +15,37 @@ import type { Ledger } from "../ledger/index.js";
 import { initiativeRegistrationPayloadOf } from "../projection/index.js";
 import { ARTIFACT_ACCESS_POLICY_IDS } from "../types/index.js";
 import type { ArtifactEventRecord, InitiativeEventRecord } from "../types/index.js";
+
+import type {
+  InitiativeRegistrationDecision,
+  InitiativeRegistrationDecisionRequest,
+  InitiativeRegistrationInput,
+  InitiativeRegistrationOutcome,
+  InitiativeRegistrationRefusal,
+  InitiativeRegistrationWriteRefusal,
+  RecordedInitiativeRegistration,
+  RegisteredInitiative,
+} from "./types/index.js";
+
+/**
+ * The value types of this concept live in their own leaf,
+ * `./types/index.ts`, and are re-exported here unchanged so every importer
+ * keeps reading them from this module (owner law §7, ADR 0088 errata,
+ * decision 90; `outbox-store`'s and `projection`'s precedent).
+ */
+export type {
+  InitiativeRegistrationRefusal,
+  InitiativeRegistrationWriteRefusal,
+  RecordedInitiativeRegistration,
+  InitiativeRegistrationDecisionRequest,
+  InitiativeRegistrationDecision,
+  InitiativeRegistrationFields,
+  InitiativeRegistrationIdentities,
+  InitiativeRegistrationTestFaults,
+  InitiativeRegistrationInput,
+  RegisteredInitiative,
+  InitiativeRegistrationOutcome,
+} from "./types/index.js";
 
 /**
  * The initiative registration — P-14 escalón B, ADR 0086.
@@ -92,7 +122,6 @@ import type { ArtifactEventRecord, InitiativeEventRecord } from "../types/index.
  *   included, or names a producer that is not a worker identity.
  */
 export const INITIATIVE_REGISTRATION_REFUSALS = ["CONFLICT", "REQUEST_INVALID"] as const;
-export type InitiativeRegistrationRefusal = (typeof INITIATIVE_REGISTRATION_REFUSALS)[number];
 
 /**
  * Every refusal the registration can answer with: the decision's two, the
@@ -102,7 +131,6 @@ export type InitiativeRegistrationRefusal = (typeof INITIATIVE_REGISTRATION_REFU
 export const INITIATIVE_REGISTRATION_WRITE_REFUSALS = Object.freeze(
   [...INITIATIVE_REGISTRATION_REFUSALS, "CONTENT_REJECTED" as const, "WRITE_CONFLICT" as const].sort(),
 );
-export type InitiativeRegistrationWriteRefusal = (typeof INITIATIVE_REGISTRATION_WRITE_REFUSALS)[number];
 
 /** The one transition a registration records. There is no attempt to count. */
 export const INITIATIVE_REGISTRATION_TRANSITION_ID = "register";
@@ -138,23 +166,6 @@ export function initiativeObjectiveIdempotencyKeys(
 // The decision
 // ---------------------------------------------------------------------------
 
-/**
- * The registration the stream holds for an initiative, folded from its
- * `INITIATIVE_REGISTERED`.
- *
- * A registration written before the closed payload carries none of these facts,
- * and reads as nulls: a request compared against it differs on the slug, which
- * is the truth — the door cannot say the two are the same registration.
- */
-export interface RecordedInitiativeRegistration {
-  readonly initiativeId: string;
-  readonly sequence: number;
-  readonly slug: string | null;
-  readonly title: string | null;
-  readonly objectiveSha256: string | null;
-  readonly objectiveArtifactReferenceId: string | null;
-}
-
 /** The recorded registration one initiative-stream record carries, if it is one. */
 export function recordedInitiativeRegistrationOf(record: InitiativeEventRecord): RecordedInitiativeRegistration | null {
   if (record.event.type !== "INITIATIVE_REGISTERED") return null;
@@ -168,30 +179,6 @@ export function recordedInitiativeRegistrationOf(record: InitiativeEventRecord):
     objectiveArtifactReferenceId: payload?.objectiveArtifactReferenceId ?? null,
   };
 }
-
-export interface InitiativeRegistrationDecisionRequest {
-  /** The candidate initiative, composed by the caller. Parsed here, never trusted. */
-  readonly candidate: unknown;
-  /** The registration the stream holds under the candidate's id, or null. */
-  readonly existing: RecordedInitiativeRegistration | null;
-}
-
-export type InitiativeRegistrationDecision =
-  | {
-      readonly ok: true;
-      readonly replay: false;
-      readonly initiative: Initiative;
-      /** The SHA-256 of the objective's UTF-8 bytes. */
-      readonly objectiveSha256: string;
-      readonly objectiveBytes: Uint8Array;
-    }
-  | { readonly ok: true; readonly replay: true; readonly existing: RecordedInitiativeRegistration }
-  | {
-      readonly ok: false;
-      readonly reason: InitiativeRegistrationRefusal;
-      /** The field that failed. Never its value. */
-      readonly at: string;
-    };
 
 /**
  * Decide whether one candidate initiative may be registered.
@@ -272,75 +259,6 @@ export function initiativeRegistrationEvent(input: {
 // ---------------------------------------------------------------------------
 // The orchestration
 // ---------------------------------------------------------------------------
-
-/** What a door hands over. Structural: the doors parse their own request schema first. */
-export interface InitiativeRegistrationFields {
-  readonly initiativeId: string;
-  readonly slug: string;
-  readonly title: string;
-  readonly objective: string;
-  readonly recordedBy: string;
-}
-
-/** The identifiers a door mints for one attempt. A retry's are ignored once an intention stands. */
-export interface InitiativeRegistrationIdentities {
-  /** The `INITIATIVE_REGISTERED` event's id. */
-  readonly eventId: string;
-  readonly commandId: string;
-  readonly artifactPinId: string;
-  readonly artifactReferenceId: string;
-  readonly intentionEventId: string;
-  readonly terminalEventId: string;
-}
-
-/** Test-only fault points. Production callers never set this. */
-export interface InitiativeRegistrationTestFaults {
-  /** The objective is published and referenced; the registration is not appended yet. */
-  readonly afterObjectivePublished?: (() => void) | undefined;
-}
-
-export interface InitiativeRegistrationInput {
-  /** A writable ledger. The registration and the plane append through it. */
-  readonly ledger: Ledger;
-  /** The private plane of the same ledger. */
-  readonly plane: ArtifactPlane;
-  readonly request: InitiativeRegistrationFields;
-  /** Injected: the recording instant, ISO-8601 in UTC with milliseconds. */
-  readonly recordedAt: string;
-  /** Injected: the pid the objective's holding records. */
-  readonly holderPid: number;
-  readonly identities: InitiativeRegistrationIdentities;
-  /** Test-only. */
-  readonly __testFaults?: InitiativeRegistrationTestFaults;
-}
-
-/** The registration a response is built from: the row that exists, and its slug. */
-export interface RegisteredInitiative {
-  readonly initiativeId: string;
-  readonly slug: string;
-  readonly title: string;
-  readonly objectiveSha256: string;
-  readonly status: InitiativeStatus;
-  readonly eventCount: number;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}
-
-export type InitiativeRegistrationOutcome =
-  | {
-      readonly ok: true;
-      /** true when the stream already held this registration and nothing was written. */
-      readonly replayed: boolean;
-      /** The initiative-stream position of the registration. */
-      readonly sequence: number;
-      readonly registration: RegisteredInitiative;
-    }
-  | {
-      readonly ok: false;
-      readonly reason: InitiativeRegistrationWriteRefusal;
-      /** A field path or the plane's own word. Never a value. */
-      readonly at: string;
-    };
 
 /**
  * The ledger codes that mean another writer got there first. Matched by name,

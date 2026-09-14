@@ -942,13 +942,25 @@ describe("N-P36B-12 and H-1 -- what this module does not do", () => {
     expect(/\bsweep\b/i.test(source)).toBe(false);
   });
 
-  it("neither imports nor reads the ledger: the blob's state is step 2's, inside the ledger's append", () => {
-    const source = readModuleSource();
+  it("neither imports nor reads the ledger, across the whole concept: the blob's state is step 2's, inside the ledger's append", () => {
+    // Read over the concept — the module and its type leaf — not over one file.
+    const source = readConceptSource();
     // The pattern is assembled rather than written as a literal, so the fence's
     // import scanner does not read it as an import of this suite.
     const specifier = new RegExp("\\bfro" + 'm "([^"]+)";', "g");
     const imports = [...source.matchAll(specifier)].map((match) => String(match[1])).sort();
-    expect(imports).toEqual(["../canonical-json/index.js", "../errors/index.js", "better-sqlite3", "node:path"]);
+    // The allowlist this law always carried, plus the sibling leaf — the one
+    // addition a type seam can make. A specifier is spelled relative to the file
+    // that carries it, so the leaf's own `../index.js` is this same concept.
+    expect(imports).toEqual([
+      "../canonical-json/index.js",
+      "../errors/index.js",
+      "../index.js",
+      "./types/index.js",
+      "./types/index.js",
+      "better-sqlite3",
+      "node:path",
+    ]);
     for (const foreign of ["registry_events", "artifact_blob_read_model", "artifact_pin_read_model", "openLedger"]) {
       expect({ foreign, present: source.includes(foreign) }).toEqual({ foreign, present: false });
     }
@@ -1150,4 +1162,19 @@ describe("N-P36B-11 -- cross-process exclusion, with two arms", () => {
 function readModuleSource(): string {
   const source = readFileSync(join(PACKAGE_ROOT, "src", "artifact-lease-store", "index.ts"), "utf8");
   return source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
+}
+
+/**
+ * The same, over the whole **concept**: the module and its type leaf.
+ *
+ * The isolation law below is a fact about the concept, not about one of its
+ * files, so it is read off both (owner law §7.1: a concept's declarations live
+ * in its `types/` leaf, and §7.2: the mirror respects the same division;
+ * C-3 / P-37 seam 1, adjudication v2). Since the type separation the seam
+ * performed moved declarations *within* the concept, a pin that reads only
+ * `index.ts` measures the wrong container.
+ */
+function readConceptSource(): string {
+  const leaf = readFileSync(join(PACKAGE_ROOT, "src", "artifact-lease-store", "types", "index.ts"), "utf8");
+  return readModuleSource() + "\n" + leaf.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*$/gm, "$1");
 }

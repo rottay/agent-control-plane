@@ -10,7 +10,7 @@ import {
   WorkerIdentityString,
   buildV2IdempotencyKey,
 } from "@acp/contracts";
-import type { TaskState, TransportKind, WorkerRole } from "@acp/contracts";
+import type { TransportKind, WorkerRole } from "@acp/contracts";
 import {
   ARTIFACT_ACCESS_POLICY_IDS,
   LedgerCanonicalizationError,
@@ -25,14 +25,44 @@ import {
 import type {
   ArtifactEventIdentity,
   ArtifactEventRecord,
-  ArtifactPlane,
   ArtifactPublicationRequest,
   GlobalRoutingAssignmentReading,
   Ledger,
-  TaskIntakePayload,
   TaskIntakeResolution,
-  TaskSubmissionReadModel,
 } from "@acp/ledger";
+
+import type {
+  ParsedTaskIntake,
+  RecordedTaskIntake,
+  TaskIntakeCode,
+  TaskIntakeFields,
+  TaskIntakeInput,
+  TaskIntakeOutcome,
+  TaskIntakeRefusal,
+  TaskIntakeRefused,
+  TaskIntakeWriteRefusal,
+} from "./types/index.js";
+
+/**
+ * The value types of this concept live in their own leaf,
+ * `./types/index.ts`, and are re-exported here unchanged so every importer
+ * keeps reading them from this module (owner law §7, ADR 0088 errata,
+ * decision 90; `outbox-store`'s and `projection`'s precedent).
+ */
+export type {
+  TaskIntakeRefusal,
+  TaskIntakeWriteRefusal,
+  TaskIntakeCode,
+  TaskIntakeFields,
+  ParsedTaskIntake,
+  TaskIntakeRefused,
+  RecordedTaskIntake,
+  TaskIntakeIdentities,
+  TaskIntakeTestFaults,
+  TaskIntakeInput,
+  IntakeTask,
+  TaskIntakeOutcome,
+} from "./types/index.js";
 
 /**
  * The task intake — P-14 escalón C, ADR 0087.
@@ -114,7 +144,6 @@ import type {
  * - `REQUEST_INVALID` — the request is malformed, or names what does not exist.
  */
 export const TASK_INTAKE_REFUSALS = ["AUTHORITY_REFUSED", "CONFLICT", "REQUEST_INVALID"] as const;
-export type TaskIntakeRefusal = (typeof TASK_INTAKE_REFUSALS)[number];
 
 /**
  * Every class the intake can refuse with: the decision's three, the plane's
@@ -124,7 +153,6 @@ export type TaskIntakeRefusal = (typeof TASK_INTAKE_REFUSALS)[number];
 export const TASK_INTAKE_WRITE_REFUSALS = Object.freeze(
   [...TASK_INTAKE_REFUSALS, "CONTENT_REJECTED" as const, "WRITE_CONFLICT" as const].sort(),
 );
-export type TaskIntakeWriteRefusal = (typeof TASK_INTAKE_WRITE_REFUSALS)[number];
 
 /**
  * The intake's own refusal codes. A refusal of the role's resolution carries
@@ -141,7 +169,6 @@ export const TASK_INTAKE_CODES = [
   "TASK_ALREADY_RECORDED",
   "WRITE_RACE_LOST",
 ] as const;
-export type TaskIntakeCode = (typeof TASK_INTAKE_CODES)[number];
 
 /** How the envelope's bytes are described to the plane. */
 export const TASK_ENVELOPE_MEDIA_TYPE = "application/json; charset=utf-8";
@@ -176,48 +203,6 @@ export function taskEnvelopeIdempotencyKeys(
 // ---------------------------------------------------------------------------
 // The request, and its form
 // ---------------------------------------------------------------------------
-
-/** What a door hands over. Structural: the doors parse `TaskIntakeRequest` first. */
-export interface TaskIntakeFields {
-  readonly envelope: unknown;
-  readonly clientScope: string;
-  readonly clientRequestKey: string;
-  readonly roadmapVersionId: string | null;
-  readonly stepId: string | null;
-  readonly role: string;
-  readonly slot: number;
-  readonly transportKind: string;
-  readonly recordedBy: string;
-}
-
-/** A request whose form holds, with the envelope parsed and its two digests computed. */
-export interface ParsedTaskIntake {
-  readonly envelope: TaskEnvelope;
-  /** The envelope's identity digest: `envelopeSha256(envelope)`. */
-  readonly envelopeSha256: string;
-  /** The bytes the plane publishes, and their own digest. */
-  readonly envelopeBytes: Uint8Array;
-  readonly contentSha256: string;
-  readonly clientScope: string;
-  readonly clientRequestKey: string;
-  readonly roadmapVersionId: string | null;
-  readonly stepId: string | null;
-  readonly role: WorkerRole;
-  readonly slot: number;
-  readonly transportKind: TransportKind;
-  readonly recordedBy: string;
-}
-
-export interface TaskIntakeRefused {
-  readonly ok: false;
-  readonly reason: TaskIntakeWriteRefusal;
-  /** The intake's own code, `@acp/accounts`' word, or the plane's. */
-  readonly code: string;
-  /** A field path, or the resolver's own path. Never a value. */
-  readonly at: string;
-  /** Set when the resolver proposes one: a retired version's migration. */
-  readonly proposal: AssignmentProposal | null;
-}
 
 function refuse(
   reason: TaskIntakeWriteRefusal,
@@ -305,12 +290,6 @@ export function parseTaskIntake(
 // ---------------------------------------------------------------------------
 // The decision against what is recorded
 // ---------------------------------------------------------------------------
-
-/** What a client key recorded: its row, and the intake payload of the event that folded it. */
-export interface RecordedTaskIntake {
-  readonly submission: TaskSubmissionReadModel;
-  readonly payload: TaskIntakePayload;
-}
 
 /**
  * Compare a request against what its key already recorded (contracts §15).
@@ -461,61 +440,6 @@ export function taskIntakeEvent(input: {
 // ---------------------------------------------------------------------------
 // The orchestration
 // ---------------------------------------------------------------------------
-
-/** The identifiers a door mints for one attempt. A retry's are ignored where a record stands. */
-export interface TaskIntakeIdentities {
-  /** The `TASK_DISCOVERED` event's id. */
-  readonly eventId: string;
-  readonly revisionId: string;
-  readonly commandId: string;
-  readonly artifactPinId: string;
-  readonly artifactReferenceId: string;
-  readonly intentionEventId: string;
-  readonly terminalEventId: string;
-}
-
-/** Test-only fault points. Production callers never set this. */
-export interface TaskIntakeTestFaults {
-  /** The envelope is published and referenced; the intake is not appended yet. */
-  readonly afterEnvelopePublished?: (() => void) | undefined;
-}
-
-export interface TaskIntakeInput {
-  /** A writable ledger. The intake and the plane append through it. */
-  readonly ledger: Ledger;
-  /** The private plane of the same ledger. */
-  readonly plane: ArtifactPlane;
-  readonly request: TaskIntakeFields;
-  /** Injected: the recording instant, ISO-8601 in UTC with milliseconds. */
-  readonly recordedAt: string;
-  /** Injected: the pid the envelope's holding records. */
-  readonly holderPid: number;
-  readonly identities: TaskIntakeIdentities;
-  /** Test-only. */
-  readonly __testFaults?: TaskIntakeTestFaults;
-}
-
-/** The task a response is built from: what the key names, as the stream holds it. */
-export interface IntakeTask {
-  readonly taskId: string;
-  readonly revisionNumber: number;
-  readonly revisionId: string;
-  readonly envelopeSha256: string;
-  readonly envelopeArtifactReferenceId: string;
-  readonly state: TaskState;
-  readonly resolution: TaskIntakeResolution;
-}
-
-export type TaskIntakeOutcome =
-  | {
-      readonly ok: true;
-      /** true when the key already named this request and nothing was written. */
-      readonly replayed: boolean;
-      /** The task-stream position of the intake. */
-      readonly sequence: number;
-      readonly task: IntakeTask;
-    }
-  | TaskIntakeRefused;
 
 /**
  * The ledger codes that mean another writer got there first. Matched by name: a

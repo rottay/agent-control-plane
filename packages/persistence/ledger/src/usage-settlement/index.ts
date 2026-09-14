@@ -1,6 +1,52 @@
 import { GENESIS_SHA256, canonicalJsonStringify, sha256Hex } from "../canonical-json/index.js";
 import { LedgerValidationError } from "../errors/index.js";
 
+import type {
+  Counts,
+  Coverage,
+  Indexed,
+  Lineage,
+  ObservationFault,
+  ObservedStream,
+  UsageMeasurementStreamCoordinate,
+  UsageObservationInput,
+  UsageSettlementOutcome,
+  UsageSettlementRefusal,
+  UsageSettlementRefused,
+  UsageSettlementRequest,
+  UsageSettlementSegment,
+  UsageSettlementStatus,
+  UsageSourceClass,
+} from "./types/index.js";
+
+/**
+ * The value types of this concept live in their own leaf,
+ * `./types/index.ts`, and are re-exported here unchanged so every importer
+ * keeps reading them from this module (owner law §7, ADR 0088 errata,
+ * decision 90; `outbox-store`'s and `projection`'s precedent).
+ */
+export type {
+  UsageSourceClass,
+  UsageReportKind,
+  UsageSettlementStatus,
+  UsageSettlementRefusal,
+  UsageMeasurementStreamCoordinate,
+  UsageMeasurementStreamInput,
+  UsageObservationInput,
+  UsageSettlementCut,
+  UsageSettlementTrigger,
+  UsageSettlementPrevious,
+  UsageSettlementRequest,
+  UsageSettlementHeader,
+  UsageSettlementSourceHead,
+  UsageSettlementSegment,
+  UsageSettlement,
+  UsageSettlementGranted,
+  UsageSettlementRefused,
+  UsageSettlementOutcome,
+} from "./types/index.js";
+
+
 /**
  * The usage settlement fold and the measurement stream identity (P-32/captura A).
  *
@@ -64,17 +110,17 @@ export const USAGE_MEASUREMENT_STREAM_PREIMAGE_PREFIX_V1 = "acp/usage-measuremen
 /** Source classes, highest precedence first (economy §1.1, §1.3.3). */
 export const USAGE_SOURCE_CLASSES = ["PROVIDER_AUTHORITATIVE", "WRAPPER_MEASURED", "ESTIMATE"] as const;
 
-export type UsageSourceClass = (typeof USAGE_SOURCE_CLASSES)[number];
+
 
 /** Report kinds (economy §1.2). */
 export const USAGE_REPORT_KINDS = ["DELTA", "CUMULATIVE", "CORRECTION"] as const;
 
-export type UsageReportKind = (typeof USAGE_REPORT_KINDS)[number];
+
 
 /** Settlement statuses (economy §2.1). */
 export const USAGE_SETTLEMENT_STATUSES = ["FINAL", "PARTIAL", "UNKNOWN", "DISPUTED"] as const;
 
-export type UsageSettlementStatus = (typeof USAGE_SETTLEMENT_STATUSES)[number];
+
 
 /**
  * The precedence and coverage policy this fold implements, as a literal
@@ -141,141 +187,35 @@ export const USAGE_SETTLEMENT_REFUSALS = [
   "TOTAL_MISMATCH",
 ] as const;
 
-export type UsageSettlementRefusal = (typeof USAGE_SETTLEMENT_REFUSALS)[number];
 
-/** The four fields a stream identity is taken over, in economy §1.1's order. */
-export interface UsageMeasurementStreamCoordinate {
-  readonly source: string;
-  readonly accountId: string;
-  readonly routeSegmentId: string;
-  readonly sourceEpoch: number;
-}
 
-/** A declared stream, as the fold receives it. */
-export interface UsageMeasurementStreamInput extends UsageMeasurementStreamCoordinate {
-  readonly measurementStreamId: string;
-  readonly sourceClass: UsageSourceClass;
-}
 
-/** One observation, in economy §1.2's shape. It carries no source class. */
-export interface UsageObservationInput {
-  readonly observationId: string;
-  readonly measurementStreamId: string;
-  readonly ordinal: number;
-  readonly sourceObservationId: string;
-  readonly reportKind: UsageReportKind;
-  readonly rangeFromCounter: number | null;
-  readonly rangeToCounter: number | null;
-  readonly correctsObservationId: string | null;
-  readonly effectId: string;
-  readonly isFinal: 0 | 1;
-  readonly inputTokens: number;
-  readonly outputTokens: number;
-  readonly cacheWriteTokens: number;
-  readonly cacheReadTokens: number;
-  readonly totalTokens: number;
-  readonly occurredAt: string;
-  readonly recordedAt: string;
-  readonly sequence: number;
-}
 
-/** The cut: one effect, at one control head. */
-export interface UsageSettlementCut {
-  readonly effectId: string;
-  readonly controlHead: { readonly sequence: number; readonly sha256: string };
-}
 
-/** The event that produces the revision: an observation, a finalization or the effect's exposure. */
-export interface UsageSettlementTrigger {
-  readonly sequence: number;
-  readonly recordedAt: string;
-}
 
-/** The revision in force before this one. */
-export interface UsageSettlementPrevious {
-  readonly settlementRevision: number;
-  readonly status: UsageSettlementStatus;
-  readonly sequence: number;
-}
 
-export interface UsageSettlementRequest {
-  readonly cut: UsageSettlementCut;
-  readonly trigger: UsageSettlementTrigger;
-  /** The effect's streams. A stream no observation names is ignored. */
-  readonly streams: readonly UsageMeasurementStreamInput[];
-  /** Every observation of the effect registered up to the cut's head. */
-  readonly observations: readonly UsageObservationInput[];
-  readonly previous: UsageSettlementPrevious | null;
-  /** The trigger sequence of the latest FINAL revision before this one, or null. */
-  readonly lastFinalSequence: number | null;
-  /** Must be `USAGE_SOURCE_POLICY_V1`, compared by digest. */
-  readonly policy: unknown;
-  /** Must be `USAGE_FOLD_VERSION_V1`. */
-  readonly foldVersion: number;
-}
 
-/** Economy §2.1, field for field. Counts are `bigint`, NULL iff UNKNOWN or DISPUTED. */
-export interface UsageSettlementHeader {
-  readonly effectId: string;
-  readonly settlementRevision: number;
-  readonly settlementStatus: UsageSettlementStatus;
-  readonly inputTokens: bigint | null;
-  readonly outputTokens: bigint | null;
-  readonly cacheWriteTokens: bigint | null;
-  readonly cacheReadTokens: bigint | null;
-  readonly totalTokens: bigint | null;
-  readonly sourcePolicySha256: string;
-  readonly foldVersion: number;
-  readonly lastObservationId: string | null;
-  readonly hadLateArrival: 0 | 1;
-  readonly computedAt: string;
-  readonly sequence: number;
-}
 
-/** Economy §2.2. Only the control row: the policy is a constant here, not a registry document (Q4). */
-export interface UsageSettlementSourceHead {
-  readonly sourceStream: "control_plane_events";
-  readonly sourceSequence: number;
-  readonly sourceSha256: string;
-}
 
-/** One segment's election. Not persisted by B; the segment-level settlement P-33 reads. */
-export interface UsageSettlementSegment {
-  readonly routeSegmentId: string;
-  readonly settlementStatus: "FINAL" | "PARTIAL" | "DISPUTED";
-  /** The winning class. */
-  readonly sourceClass: UsageSourceClass;
-  /** The elected lineage's streams, sorted; null when the segment is disputed. */
-  readonly measurementStreamIds: readonly string[] | null;
-  readonly inputTokens: bigint | null;
-  readonly outputTokens: bigint | null;
-  readonly cacheWriteTokens: bigint | null;
-  readonly cacheReadTokens: bigint | null;
-  readonly totalTokens: bigint | null;
-}
 
-export interface UsageSettlement {
-  readonly header: UsageSettlementHeader;
-  readonly sourceHeads: readonly UsageSettlementSourceHead[];
-  /** Every considered observation, winners, losers and corrected alike, by sequence. */
-  readonly observationIds: readonly string[];
-  /** By `routeSegmentId`, code-point order. Empty when nothing was observed. */
-  readonly segments: readonly UsageSettlementSegment[];
-}
 
-export interface UsageSettlementGranted {
-  readonly ok: true;
-  readonly settlement: UsageSettlement;
-}
 
-export interface UsageSettlementRefused {
-  readonly ok: false;
-  readonly reason: UsageSettlementRefusal;
-  /** The field that failed, for a diagnostic. Never a count. */
-  readonly at: string;
-}
 
-export type UsageSettlementOutcome = UsageSettlementGranted | UsageSettlementRefused;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -413,10 +353,7 @@ function requestFault(request: UsageSettlementRequest): string | null {
   return null;
 }
 
-interface ObservationFault {
-  readonly reason: UsageSettlementRefusal;
-  readonly field: string;
-}
+
 
 /** Economy §1.2's shape for one observation, or the first thing wrong with it. */
 function observationFault(observation: unknown): ObservationFault | null {
@@ -464,12 +401,7 @@ function observationFault(observation: unknown): ObservationFault | null {
   return null;
 }
 
-interface Counts {
-  input: bigint;
-  output: bigint;
-  cacheWrite: bigint;
-  cacheRead: bigint;
-}
+
 
 function zeroCounts(): Counts {
   return { input: 0n, output: 0n, cacheWrite: 0n, cacheRead: 0n };
@@ -500,33 +432,13 @@ function sameCounts(left: Counts, right: Counts): boolean {
   );
 }
 
-/** One effective report of a stream: its root's coverage, its chain's last values. */
-interface Coverage {
-  readonly from: number;
-  readonly to: number;
-  readonly counts: Counts;
-  readonly isFinal: 0 | 1;
-}
 
-interface Indexed {
-  readonly observation: UsageObservationInput;
-  readonly index: number;
-}
 
-interface ObservedStream {
-  readonly stream: UsageMeasurementStreamInput;
-  readonly index: number;
-  readonly entries: Indexed[];
-}
 
-interface Lineage {
-  readonly sourceClass: UsageSourceClass;
-  /** Code-point order: the first is the lineage's least stream id. */
-  readonly streamIds: string[];
-  readonly counts: Counts;
-  /** Every stream gapless and final so far. */
-  settled: boolean;
-}
+
+
+
+
 
 function totalOf(counts: Counts): bigint {
   return counts.input + counts.output + counts.cacheWrite + counts.cacheRead;

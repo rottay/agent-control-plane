@@ -210,15 +210,31 @@ describe("a role resolves from the registry alone, or not at all", () => {
 });
 
 describe("the resolver is pure and reads the registry alone (N-P14A-14)", () => {
-  const SOURCE = readFileSync(
-    resolve(fileURLToPath(new URL(".", import.meta.url)), "../../src/assignment/index.ts"),
-    "utf8",
-  );
-  const CODE = SOURCE.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  const HERE = fileURLToPath(new URL(".", import.meta.url));
+  const read = (relativePath: string): string =>
+    readFileSync(resolve(HERE, relativePath), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/.*$/gm, "");
 
-  it("imports the kernel's vocabularies and nothing else: no ledger, no policy, no filesystem", () => {
-    const specifiers = [...CODE.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
-    expect(new Set(specifiers)).toEqual(new Set(["@acp/contracts"]));
+  const SOURCE = readFileSync(resolve(HERE, "../../src/assignment/index.ts"), "utf8");
+  const CODE = SOURCE.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  /**
+   * The whole **concept**: the module and its type leaf.
+   *
+   * The isolation law below is a fact about the concept, not about one of its
+   * files, so it is read off both (owner law §7.1: a concept's declarations live
+   * in its `types/` leaf, and §7.2: the mirror respects the same division;
+   * C-3 / P-37 seam 1, adjudication v2). The type separation moved declarations
+   * *within* the concept, so a pin that reads only `index.ts` measures the wrong
+   * container.
+   */
+  const CONCEPT = CODE + "\n" + read("../../src/assignment/types/index.ts");
+
+  it("imports the kernel's vocabularies and nothing else, across the whole concept: no ledger, no policy, no filesystem", () => {
+    const specifiers = [...CONCEPT.matchAll(/from\s+"([^"]+)"/g)].map((match) => match[1]);
+    // The allowlist this law always carried, plus the sibling leaf — the one
+    // addition a type seam can make. Nothing foreign is newly permitted.
+    expect(new Set(specifiers)).toEqual(new Set(["@acp/contracts", "./types/index.js"]));
   });
 
   it("reads no clock and no environment", () => {

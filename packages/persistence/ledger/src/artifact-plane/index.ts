@@ -17,7 +17,6 @@ import {
 import { dirname, join } from "node:path";
 
 import { ArtifactRegistryEvent, CONTRACT_VERSION, REFERENCE_SCOPE_KINDS } from "@acp/contracts";
-import type { ReferenceScopeKind } from "@acp/contracts";
 
 import type {
   ArtifactBlobLeaseGrant,
@@ -25,7 +24,6 @@ import type {
   ArtifactBlobLeaseQuiescence,
   ArtifactBlobLeaseRefusal,
   ArtifactBlobLeaseRow,
-  ArtifactBlobLeaseStore,
   ArtifactBlobLeaseToken,
 } from "../artifact-lease-store/index.js";
 import { canonicalJsonStringify, sha256Hex } from "../canonical-json/index.js";
@@ -38,12 +36,51 @@ import {
   LedgerValidationError,
   type LedgerValidationIssue,
 } from "../errors/index.js";
-import type { Ledger } from "../ledger/index.js";
 import {
   ARTIFACT_ACCESS_POLICY_IDS,
   type ArtifactEventRecord,
-  type ArtifactReferenceReadModel,
 } from "../types/index.js";
+
+import type {
+  ArtifactEventIdentity,
+  ArtifactPlane,
+  ArtifactPlaneHolding,
+  ArtifactPlaneOutcome,
+  ArtifactPlaneRefusal,
+  ArtifactPublicationRequest,
+  ArtifactReadOutcome,
+  ArtifactReadRequest,
+  ArtifactReconciliationRequest,
+  ArtifactReferenceIntent,
+  CheckedPublication,
+  Entry,
+  Inspection,
+  IntendedEvent,
+  OpenArtifactPlaneOptions,
+  Placement,
+  Work,
+} from "./types/index.js";
+
+/**
+ * The value types of this concept live in their own leaf,
+ * `./types/index.ts`, and are re-exported here unchanged so every importer
+ * keeps reading them from this module (owner law §7, ADR 0088 errata,
+ * decision 90; `outbox-store`'s and `projection`'s precedent).
+ */
+export type {
+  ArtifactPlaneRefusal,
+  ArtifactReferenceIntent,
+  ArtifactEventIdentity,
+  ArtifactPlaneHolding,
+  ArtifactPublicationRequest,
+  ArtifactReconciliationRequest,
+  ArtifactReadRequest,
+  ArtifactPlaneOutcome,
+  ArtifactReadOutcome,
+  ArtifactPlaneTestFaults,
+  OpenArtifactPlaneOptions,
+  ArtifactPlane,
+} from "./types/index.js";
 
 /**
  * The private artifact plane — P-36/local escalón C.
@@ -188,173 +225,6 @@ export const ARTIFACT_PLANE_REFUSALS = [
   "BLOB_NOT_PUBLISHED",
   "ENCRYPTED_AT_REST_NOT_DELIVERED",
 ] as const;
-export type ArtifactPlaneRefusal = (typeof ARTIFACT_PLANE_REFUSALS)[number];
-
-/** The reference a publication records, exactly as the contract shapes it. */
-export type ArtifactReferenceIntent = Extract<
-  ArtifactRegistryEvent,
-  { readonly artifactEventKind: "PUBLICATION_SUCCEEDED" }
->["payload"]["reference"];
-
-/** The identity and instants of one event, all of them the caller's. */
-export interface ArtifactEventIdentity {
-  readonly eventId: string;
-  readonly idempotencyKey: string;
-  readonly occurredAt: string;
-  readonly recordedAt: string;
-}
-
-/** The holding a call asks for; the operation id is always the command's. */
-export interface ArtifactPlaneHolding {
-  readonly holder: string;
-  readonly holderPid: number;
-  readonly acquiredAt: string;
-  readonly expiresAt: string;
-}
-
-export interface ArtifactPublicationRequest {
-  /** The bytes. Their digest and size are computed here, never taken on trust. */
-  readonly content: Uint8Array;
-  /** A digest the caller expects; refused before the lease if the bytes disagree. */
-  readonly declaredContentSha256?: string;
-  /** A size the caller expects; refused before the lease if the bytes disagree. */
-  readonly declaredSizeBytes?: number;
-  readonly mediaType: string;
-  /** `PLAINTEXT` only in this escalón; `ENCRYPTED_AT_REST` is refused by name. */
-  readonly encryptionStatus: "PLAINTEXT" | "ENCRYPTED_AT_REST";
-  readonly encryptionProfile: string;
-  readonly commandId: string;
-  readonly artifactPinId: string;
-  /** Recorded in the intention, and recorded again, unchanged, by the success. */
-  readonly reference: ArtifactReferenceIntent;
-  readonly recordedBy: string;
-  readonly intention: ArtifactEventIdentity;
-  /** The identity of the success, or of the abandonment if the bytes cannot be placed or the success is refused. */
-  readonly terminal: ArtifactEventIdentity;
-  readonly holding: ArtifactPlaneHolding;
-  /**
-   * Required only to resume a command whose holding a dead process left: the
-   * caller's attestation that the recorded holder is quiescent.
-   */
-  readonly quiescence?: ArtifactBlobLeaseQuiescence;
-}
-
-export interface ArtifactReconciliationRequest {
-  /** Checked for form before any path is derived from it. */
-  readonly contentSha256: string;
-  /** The reconciler's own holding, under the displaced command's operation id. */
-  readonly holding: ArtifactPlaneHolding;
-  /** Required whenever a holding stands; without it nothing moves. */
-  readonly quiescence?: ArtifactBlobLeaseQuiescence;
-  /** The identity of the success or abandonment the reconciler records. */
-  readonly terminal: ArtifactEventIdentity;
-  readonly recordedBy: string;
-}
-
-/**
- * Who is reading. `SCOPE_EQUALITY_V1`, the one policy: the reader's scope is the
- * reference's, kind and id. A `SYSTEM` reader carries no id and reads only what
- * a `SYSTEM` scope owns.
- */
-export interface ArtifactReadRequest {
-  readonly artifactReferenceId: string;
-  readonly scopeKind: ReferenceScopeKind;
-  readonly scopeId: string | null;
-}
-
-/** What `publish` and `reconcile` did. */
-export type ArtifactPlaneOutcome =
-  | {
-      readonly verb: "PUBLISHED";
-      readonly contentSha256: string;
-      readonly blobGeneration: number;
-      readonly reference: ArtifactReferenceReadModel;
-      /** false when the digest's path already held these exact bytes. */
-      readonly bytesWritten: boolean;
-      /** true when the success was already recorded and nothing was appended. */
-      readonly replayed: boolean;
-      /** The lease's own answer. A refusal here leaves the publication standing. */
-      readonly release: ArtifactBlobLeaseOutcome;
-    }
-  | {
-      readonly verb: "ABANDONED";
-      readonly refusal: ArtifactPlaneRefusal;
-      readonly contentSha256: string;
-      readonly blobGeneration: number;
-      readonly release: ArtifactBlobLeaseOutcome;
-    }
-  | {
-      readonly verb: "HOLDING_REVOKED";
-      readonly lease: ArtifactBlobLeaseRow | null;
-    }
-  | {
-      readonly verb: "NOTHING_TO_RECONCILE";
-      readonly lease: ArtifactBlobLeaseRow | null;
-    }
-  | {
-      readonly verb: "REFUSE";
-      readonly refusal: ArtifactPlaneRefusal;
-      /** The lease store's own word, when it was the store that declined. */
-      readonly leaseRefusal: ArtifactBlobLeaseRefusal | null;
-      readonly lease: ArtifactBlobLeaseRow | null;
-    };
-
-export type ArtifactReadOutcome =
-  | {
-      readonly verb: "READ";
-      readonly content: Buffer;
-      readonly reference: ArtifactReferenceReadModel;
-    }
-  | { readonly verb: "REFUSE"; readonly refusal: ArtifactPlaneRefusal };
-
-/**
- * Test-only fault points, one between each two steps of §8 (ADR 0083).
- *
- * The honest drill for a crash between two steps is to stop there: a hook that
- * throws ends the call exactly where it stands, with no cleanup, and the suite
- * then reconciles from a new plane over the same files. A hook that does not
- * throw lets the suite act on the world mid-operation — take the lease over,
- * corrupt a staged file — and watch this module refuse. Production callers never
- * set this.
- */
-export interface ArtifactPlaneTestFaults {
-  /** Step 1 done: the holding stands, no intention yet. */
-  readonly afterLeaseAcquired?: (() => void) | undefined;
-  /** Step 2 done: intention and pin recorded, no byte written. */
-  readonly afterIntentionRecorded?: (() => void) | undefined;
-  /** Bytes written to staging, not yet verified. */
-  readonly afterStagingWritten?: (() => void) | undefined;
-  /** Staging verified, not yet synchronized. */
-  readonly afterStagingVerified?: (() => void) | undefined;
-  /** Staging synchronized and closed; the destination is still absent. */
-  readonly afterStagingSynced?: (() => void) | undefined;
-  /** Renamed onto the digest's path; the directory not yet synchronized. */
-  readonly afterRename?: (() => void) | undefined;
-  /** Step 3 done: the bytes are durable and nothing names them. */
-  readonly afterDirectorySynced?: (() => void) | undefined;
-  /** Step 4 done: the outcome is recorded and the lease still held. */
-  readonly afterOutcomeRecorded?: (() => void) | undefined;
-}
-
-export interface OpenArtifactPlaneOptions {
-  /** A writable ledger; the plane appends through its artifact door. */
-  readonly ledger: Ledger;
-  /** The blob lease store of the same ledger. */
-  readonly leaseStore: ArtifactBlobLeaseStore;
-  /** The ledger's own path, from which the subroot is derived. */
-  readonly ledgerPath: string;
-  /** Test-only. See {@link ArtifactPlaneTestFaults}. */
-  readonly __testFaults?: ArtifactPlaneTestFaults;
-}
-
-export interface ArtifactPlane {
-  /** Publish some bytes under a reference, in §8's order. */
-  readonly publish: (request: ArtifactPublicationRequest) => ArtifactPlaneOutcome;
-  /** Read the bytes a reference authorizes this scope to read, verified on the way out. */
-  readonly read: (request: ArtifactReadRequest) => ArtifactReadOutcome;
-  /** Drive the publication one digest's crash left behind to an end, or end its holding. */
-  readonly reconcile: (request: ArtifactReconciliationRequest) => ArtifactPlaneOutcome;
-}
 
 /**
  * The private subroot that belongs to one ledger. **One producer, no second
@@ -374,8 +244,6 @@ export function artifactPlaneRootFor(ledgerPath: string): string {
 // ---------------------------------------------------------------------------
 // Arguments
 // ---------------------------------------------------------------------------
-
-type IntendedEvent = Extract<ArtifactRegistryEvent, { readonly artifactEventKind: "PUBLICATION_INTENDED" }>;
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -451,15 +319,6 @@ function envelope(identity: ArtifactEventIdentity, recordedBy: string, ordinal: 
     occurredAt: identity.occurredAt,
     recordedAt: identity.recordedAt,
   };
-}
-
-interface CheckedPublication {
-  readonly request: ArtifactPublicationRequest;
-  readonly content: Uint8Array;
-  readonly contentSha256: string;
-  readonly sizeBytes: number;
-  readonly holding: ArtifactPlaneHolding;
-  readonly quiescence: ArtifactBlobLeaseQuiescence | null;
 }
 
 function intentionBody(checked: CheckedPublication, ordinal: number, blobGeneration: number): Record<string, unknown> {
@@ -560,8 +419,6 @@ function checkPublication(request: ArtifactPublicationRequest): CheckedPublicati
 // The filesystem, without following a link
 // ---------------------------------------------------------------------------
 
-type Entry = "ABSENT" | "FILE" | "DIRECTORY" | "SYMLINK" | "OTHER";
-
 function errorCode(error: unknown): string | undefined {
   return error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
 }
@@ -627,10 +484,6 @@ function removeOwnStaging(staging: string): void {
   unlinkSync(staging);
 }
 
-type Inspection =
-  | { readonly state: "VERIFIED"; readonly bytes: Buffer }
-  | { readonly state: "ABSENT" | "SYMLINK" | "DOES_NOT_VERIFY" };
-
 /**
  * Open a file without following it and verify that it is the digest's content:
  * a regular file, of the expected size, whose SHA-256 is the digest.
@@ -669,17 +522,6 @@ function inspect(path: string, contentSha256: string, sizeBytes: number): Inspec
 // ---------------------------------------------------------------------------
 // The plane
 // ---------------------------------------------------------------------------
-
-type Placement = "WRITTEN" | "PRESENT" | "ABSENT" | "DOES_NOT_VERIFY" | "SYMLINK" | "SUPERSEDED";
-
-interface Work {
-  readonly token: ArtifactBlobLeaseToken;
-  readonly intention: ArtifactEventRecord & { readonly event: IntendedEvent };
-  /** The bytes, for a publisher; null for a reconciler, which has none to write. */
-  readonly content: Uint8Array | null;
-  readonly terminal: ArtifactEventIdentity;
-  readonly recordedBy: string;
-}
 
 function isIntention(record: ArtifactEventRecord): record is ArtifactEventRecord & { readonly event: IntendedEvent } {
   return record.event.artifactEventKind === "PUBLICATION_INTENDED";

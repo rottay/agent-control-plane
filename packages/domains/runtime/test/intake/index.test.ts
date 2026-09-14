@@ -61,6 +61,7 @@ const DEAD_PID = 4242;
 const OBJECTIVE = "Enter one task by command and by API, and keep its envelope off the stream.";
 const SENTINEL = "sk-ant-api03-SENTINELSENTINELSENTINEL";
 const INTAKE_SOURCE = resolve(dirname(fileURLToPath(import.meta.url)), "../../src/intake/index.ts");
+const INTAKE_TYPE_LEAF = resolve(dirname(fileURLToPath(import.meta.url)), "../../src/intake/types/index.ts");
 
 const temporaryDirectories: string[] = [];
 const closers: (() => void)[] = [];
@@ -727,9 +728,36 @@ describe("entering is not acquiring (E8)", () => {
     const files = readdirSync(dirname(on.ledgerPath)).filter((name) => name.endsWith(".sqlite"));
     expect(files.sort()).toEqual(["artifact-blob-leases.sqlite", "control-plane.sqlite"]);
 
-    const source = withoutComments(readFileSync(INTAKE_SOURCE, "utf8"));
+    // Read over the concept — the module and its type leaf — not over one file:
+    // the isolation law is a fact about the concept, not about one of its files
+    // (owner law §7.1 and §7.2; C-3 / P-37 seam 1, adjudication v2). The type
+    // separation moved declarations *within* the concept, so a pin that reads only
+    // `index.ts` measures the wrong container. Module first, then leaf.
+    const source =
+      withoutComments(readFileSync(INTAKE_SOURCE, "utf8")) +
+      "\n" +
+      withoutComments(readFileSync(INTAKE_TYPE_LEAF, "utf8"));
     const imports = [...source.matchAll(/^import[^;]*?from\s+"([^"]+)"/gms)].map((match) => match[1]);
-    expect(imports).toEqual(["node:crypto", "@acp/accounts", "@acp/accounts", "@acp/contracts", "@acp/contracts", "@acp/ledger", "@acp/ledger"]);
+    // The allowlist this law always carried, plus the sibling leaf — the one
+    // addition a type seam can make. Nothing foreign is newly permitted.
+    expect(imports).toEqual([
+      "node:crypto",
+      "@acp/accounts",
+      "@acp/accounts",
+      "@acp/contracts",
+      "@acp/contracts",
+      "@acp/ledger",
+      "@acp/ledger",
+      // the module's type-only import of its own leaf; this law's regex is anchored
+      // at `^import`, so the matching `export type { … } from` re-export is not a
+      // second entry here
+      "./types/index.js",
+      // and the leaf's own four, which are the same four packages plus this concept
+      "@acp/accounts",
+      "@acp/contracts",
+      "@acp/ledger",
+      "../index.js",
+    ]);
     expect(source).not.toMatch(/conflict-graph|lease-store\/|openLeaseStore|scheduler|buildConflictGraph|acquireLease/);
   });
 });

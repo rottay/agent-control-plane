@@ -1236,12 +1236,30 @@ describe("a crash at each seam is reconciled from a new plane over the same subs
 
 describe("what the plane may not do, read off its own source (N-P36C-11, N-P36C-12, N-P36C-14)", () => {
   const SOURCE = fileURLToPath(new URL("../../src/artifact-plane/index.ts", import.meta.url));
+  const TYPE_LEAF = fileURLToPath(new URL("../../src/artifact-plane/types/index.ts", import.meta.url));
+
+  const stripped = (path: string): string =>
+    readFileSync(path, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
 
   /** The code without its comments, which name what the code must not do. */
   function code(): string {
-    return readFileSync(SOURCE, "utf8")
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/^\s*\/\/.*$/gm, "");
+    return stripped(SOURCE);
+  }
+
+  /**
+   * The same, over the whole **concept**: the module and its type leaf.
+   *
+   * The isolation law below is a fact about the concept, not about one of its
+   * files, so it is read off both (owner law §7.1: a concept's declarations live
+   * in its `types/` leaf, and §7.2: the mirror respects the same division;
+   * C-3 / P-37 seam 1, adjudication v2). The type separation moved declarations
+   * *within* the concept — and with them the ledger type they name — so a pin
+   * that reads only `index.ts` would stop covering a dependency that never left.
+   */
+  function conceptCode(): string {
+    return code() + "\n" + stripped(TYPE_LEAF);
   }
 
   it("reads no clock, no process and no environment, and mints no identity", () => {
@@ -1273,23 +1291,38 @@ describe("what the plane may not do, read off its own source (N-P36C-11, N-P36C-
     }
   });
 
-  it("imports neither the legacy digest store nor its root rule", () => {
-    const source = code();
+  it("imports neither the legacy digest store nor its root rule, across the whole concept", () => {
+    // Read over the concept — the module and its type leaf — not over one file.
+    const source = conceptCode();
     // Assembled, so the fence's import scanner does not read this pattern as an import of the suite.
     const specifier = new RegExp("\\bfro" + 'm "([^"]+)";', "g");
     const imports = [...source.matchAll(specifier)].map((match) => String(match[1])).sort();
+    // The allowlist this law always carried, plus the sibling leaf — the one
+    // addition a type seam can make. A specifier is spelled relative to the file
+    // that carries it, so one target can appear under two spellings: the leaf sits
+    // one level deeper, which is why the ledger and the package-wide type leaf are
+    // named as `../../` from it and `../` from the module. Nothing foreign is
+    // newly permitted.
     expect(imports).toEqual([
+      "../../artifact-lease-store/index.js",
+      "../../ledger/index.js",
+      "../../types/index.js",
       "../artifact-lease-store/index.js",
       "../canonical-json/index.js",
       "../errors/index.js",
-      "../ledger/index.js",
+      "../index.js",
       "../types/index.js",
+      "./types/index.js",
+      "./types/index.js",
       "@acp/contracts",
       "@acp/contracts",
       "node:crypto",
       "node:fs",
       "node:path",
     ]);
+    // The ledger is still named inside the concept, exactly once, and type-only:
+    // the seam moved it to the leaf, it did not remove or duplicate it.
+    expect(imports.filter((each) => each.endsWith("ledger/index.js"))).toEqual(["../../ledger/index.js"]);
     for (const legacy of ["artifact-store", "publishArtifact", "readArtifact", "hasArtifact", "artifactRootFor"]) {
       expect({ legacy, present: source.includes(legacy) }).toEqual({ legacy, present: false });
     }

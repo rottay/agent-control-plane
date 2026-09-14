@@ -10414,6 +10414,76 @@ const P33A_WRITE_SET = [
   "docs/architecture/0088-a-settlement-fold-never-invents-a-number.md",
 ];
 
+/**
+ * C-3 / P-37 seam 1 — type declarations live in each concept's semantic leaf
+ * (adjudication `C3_TYPES_SEAM1_ADJUDICATED`, 2026-09-14; decision 91).
+ *
+ * **What lands.** The debt the ADR 0088 errata named and decision 90 deferred, paid
+ * for six concepts and no more: every `interface` and `type` of
+ * `usage-settlement` (24), `artifact-plane` (18), `artifact-lease-store` (15),
+ * `initiative-registration` (11), `intake` (12) and `assignment` (10) — 90
+ * declarations, exported and private alike — moves to that concept's own
+ * `types/index.ts` leaf, on `outbox-store/types/` and `projection/types/`'
+ * precedent (the `a6ed7c3` correction). Each module imports what it uses with
+ * `import type` and re-exports every previously exported name from the leaf, so the
+ * surface is stable name for name; the 15 previously private declarations are
+ * exported from their leaf only, and deliberately absent from that re-export, so
+ * they stay unexported from the package (owner law
+ * `docs/audit/architecture/index.md` §7.2).
+ *
+ * **What does NOT land, declared.** Purely mechanical: nothing renamed, no signature
+ * changed, no value or vocabulary moved — the closed sets stay beside the
+ * implementation and the leaves read them type-only, which is §7.1's one-way
+ * derivation. No behaviour, no test, no ADR: there is no design decision here, which
+ * is why the register gains a row and the architecture corpus does not. The mass
+ * reorganization the owner excluded is still excluded; concepts outside these six are
+ * reported, not touched.
+ *
+ * **Pins that do NOT move.** Nothing: no migration, no projection, no contract, no
+ * vocabulary, no count. `CONTRACT_VERSION` (`"2.6.0"`), `API_CONTRACT_VERSION`
+ * (`"0.17.0"`), `MIGRATIONS` (21), `PATH_SCOPED_LAWS` (143) and every schema and
+ * projection pin are untouched, because a type is erased at emit and this lote moves
+ * only types. The register 90 -> 91.
+ *
+ * **Where the isolation laws are enforced** (adjudication v2, on the writer's
+ * `C3_TYPES_SEAM1_NEEDS_DECISION`). Four suites pin a concept's isolation as an exact
+ * allowlist of `from "…"` specifiers read off its source. Moving declarations into the
+ * leaf moved nothing out of the concept, but it did move a type-only dependency out of
+ * the file those pins read: `artifact-plane`'s `../ledger/index.js` now lives in its
+ * leaf. So the law is enforced over the **concept** — the module and its type leaf —
+ * and not over one file: the pin was measuring the wrong container. Each allowlist is
+ * what it always carried plus the sibling leaf, and nothing foreign is newly
+ * permitted; re-pinning the module list alone was refused as a silent weakening,
+ * because no fence law pins that module's imports (its path-scoped laws are
+ * filesystem, clock and identity). This is the **mould for the remaining P-37 seams**,
+ * which will hit the same collision.
+ *
+ * **Eighteen paths; six are new to the fence** — the six leaves (`grep -Fc` over this
+ * file, 0 each before this block). The other twelve are admitted by historical blocks.
+ */
+const P37S1_WRITE_SET = [
+  "packages/persistence/ledger/src/usage-settlement/index.ts",
+  "packages/persistence/ledger/src/usage-settlement/types/index.ts",
+  "packages/persistence/ledger/src/artifact-plane/index.ts",
+  "packages/persistence/ledger/src/artifact-plane/types/index.ts",
+  "packages/persistence/ledger/src/artifact-lease-store/index.ts",
+  "packages/persistence/ledger/src/artifact-lease-store/types/index.ts",
+  "packages/persistence/ledger/src/initiative-registration/index.ts",
+  "packages/persistence/ledger/src/initiative-registration/types/index.ts",
+  "packages/domains/runtime/src/intake/index.ts",
+  "packages/domains/runtime/src/intake/types/index.ts",
+  "packages/domains/accounts/src/assignment/index.ts",
+  "packages/domains/accounts/src/assignment/types/index.ts",
+  "scripts/check-architecture.mjs",
+  "docs/audit/decisions/index.md",
+  // Adjudication v2's four paths: the isolation laws these suites pin now read the
+  // concept — the module AND its type leaf — rather than the module file alone.
+  "packages/persistence/ledger/test/artifact-lease-store/index.test.ts",
+  "packages/persistence/ledger/test/artifact-plane/index.test.ts",
+  "packages/domains/accounts/test/assignment/index.test.ts",
+  "packages/domains/runtime/test/intake/index.test.ts",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -10635,6 +10705,7 @@ const WRITE_SET = [
   ...P32B_WRITE_SET,
   ...P32C_WRITE_SET,
   ...P33A_WRITE_SET,
+  ...P37S1_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
