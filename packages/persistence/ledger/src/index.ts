@@ -421,6 +421,9 @@ export type {
   ModelVersionStatus,
   OutboxCommandReadModel,
   OutboxFailureCode,
+  PriceIntervalQuery,
+  PriceIntervalReadModel,
+  PriceTokenClass,
   PromptOccurrenceReadModel,
   RedactionVerdict,
   ResponseOccurrenceReadModel,
@@ -480,6 +483,16 @@ export { DOCUMENT_KINDS } from "./types/index.js";
  * restated either list would be a second authority on the payload's shape.
  */
 export { MODEL_VERSION_PAYLOAD_KEYS, MODEL_VERSION_STATUSES } from "./types/index.js";
+
+/**
+ * The price interval catalog's three closed sets (P-33/catálogo A, ADR 0091).
+ *
+ * The payload's one key, the eight keys of an interval and the four token
+ * classes a `PRICE_TABLE` is held to at the door. Exported beside the model
+ * version's, for their reason: a producer that restated them would be a second
+ * authority on the catalog's shape.
+ */
+export { PRICE_INTERVAL_KEYS, PRICE_TABLE_PAYLOAD_KEYS, PRICE_TOKEN_CLASSES } from "./types/index.js";
 
 /**
  * P-14 escalón C: the task intake's closed payload, its transition and the

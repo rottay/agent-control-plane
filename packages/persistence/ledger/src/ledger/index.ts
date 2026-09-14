@@ -44,8 +44,10 @@ import {
 import {
   ACCOUNT_INTEGRITY_MIGRATION,
   MODEL_VERSION_PROJECTION,
+  PRICE_INTERVAL_PROJECTION,
   INITIATIVE_REGISTRATION_MIGRATION,
   MODEL_VERSION_REGISTRY_MIGRATION,
+  PRICE_INTERVAL_CATALOG_MIGRATION,
   TASK_REVISION_MIGRATION,
   TASK_SUBMISSION_MIGRATION,
   USAGE_CAPTURE_MIGRATION,
@@ -125,6 +127,11 @@ import {
   globalAssignmentIssues,
   modelVersionPayloadIssues,
   nextModelVersionProjection,
+  applyRegistryPriceIntervalToSnapshot,
+  createPriceIntervalProjectionSnapshot,
+  nextPriceIntervalProjection,
+  priceIntervalKey,
+  priceTableIssues,
   executionRouteKey,
   nextExecutionRouteProjection,
   nextTaskAttemptProjection,
@@ -208,6 +215,11 @@ import {
   type ModelVersionReadModel,
   type ModelVersionReading,
   type ModelVersionTransportRow,
+  type PriceIntervalProjection,
+  type PriceIntervalProjectionSnapshot,
+  type PriceIntervalQuery,
+  type PriceIntervalReadModel,
+  type PriceIntervalRow,
   type RegistryWatermarkReading,
   type IntegrityProblem,
   type IntegrityReport,
@@ -1150,6 +1162,66 @@ function writeModelVersionProjection(
   );
   for (const transport of projected.transports) {
     insertTransport.run(transport.modelVersionId, transport.ordinal, transport.transportKind);
+  }
+}
+
+function priceIntervalRowToModel(row: PriceIntervalRow): PriceIntervalReadModel {
+  return {
+    catalogDocumentId: row.catalog_document_id,
+    catalogVersion: row.catalog_version,
+    provider: row.provider,
+    modelVersionId: row.model_version_id,
+    transportKind: row.transport_kind,
+    tokenClass: row.token_class as PriceIntervalReadModel["tokenClass"],
+    currency: row.currency,
+    effectiveFrom: row.effective_from,
+    effectiveTo: row.effective_to,
+    pricePerMillionNanos: row.price_per_million_nanos,
+    recordedBy: row.recorded_by,
+    sequence: row.sequence,
+  };
+}
+
+/**
+ * Write one catalog version's price intervals through whichever statement
+ * source the caller holds (P-33/catálogo A).
+ *
+ * One writer for the three places that fill this table — the door, the rebuild
+ * and migration 21's retroactive fold — for `writeModelVersionProjection`'s
+ * reason; the fourth site of the fold, the integrity replay, writes nothing and
+ * compares against what these wrote. Insert-only
+ * and never `ON CONFLICT`: a version's rows are keyed by the version, the
+ * stream holds a `(document, version)` once, and the fold refuses a primary key
+ * twice within a version, so a conflict here is a fault to surface, not a row to
+ * overwrite.
+ */
+function writePriceIntervalProjection(
+  prepare: (sql: string) => Database.Statement,
+  projected: PriceIntervalProjection,
+): void {
+  if (projected.rows.length === 0) return;
+  const insert = prepare(
+    "INSERT INTO price_interval_read_model (" +
+      "catalog_document_id, catalog_version, provider, model_version_id, transport_kind, " +
+      "token_class, currency, effective_from, effective_to, price_per_million_nanos, " +
+      "recorded_by, sequence" +
+      ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  );
+  for (const row of projected.rows) {
+    insert.run(
+      row.catalogDocumentId,
+      row.catalogVersion,
+      row.provider,
+      row.modelVersionId,
+      row.transportKind,
+      row.tokenClass,
+      row.currency,
+      row.effectiveFrom,
+      row.effectiveTo,
+      row.pricePerMillionNanos,
+      row.recordedBy,
+      row.sequence,
+    );
   }
 }
 
@@ -2170,6 +2242,40 @@ function foldModelVersionsAtMigration(db: Database.Database): void {
 }
 
 /**
+ * Fold the price catalogs a ledger already holds, once, as migration 21 lands
+ * (P-33/catálogo A, N-P33-12).
+ *
+ * `foldModelVersionsAtMigration`'s form and reasons: the migration seeds its
+ * watermark at the registry head, SQL cannot run the fold, and this runs it inside
+ * the transaction that applies the migration, through the projection function and
+ * the writer the door and the rebuild use. A version whose payload the fold cannot
+ * read — only history from before this migration can hold one — writes no row of
+ * that version and refuses nothing. A registered model version is not asked for:
+ * the fold reads the shape, and existence was the door's to decide.
+ */
+function foldPriceIntervalsAtMigration(db: Database.Database): void {
+  const rows = db
+    .prepare(
+      "SELECT sequence, event_json FROM registry_events " +
+        "WHERE subject_kind = 'DOCUMENT' AND document_kind = 'PRICE_TABLE' ORDER BY sequence ASC",
+    )
+    .all() as { readonly sequence: number; readonly event_json: string }[];
+  const prepare = (sql: string): Database.Statement => db.prepare(sql);
+  for (const row of rows) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.event_json);
+    } catch {
+      continue;
+    }
+    const document = tryNormalizeRegistryDocument(parsed);
+    if (document === null) continue;
+    const projected = nextPriceIntervalProjection(document, row.sequence);
+    if (projected !== null) writePriceIntervalProjection(prepare, projected);
+  }
+}
+
+/**
  * Fold the initiative stream a ledger already holds, once, as migration 18 lands
  * (P-14 B, ADR 0086).
  *
@@ -2856,6 +2962,11 @@ export class Ledger {
               // the exposure of every effect already delivered, level with it.
               if (migration.version === USAGE_CAPTURE_MIGRATION) {
                 foldUsageCaptureAtMigration(db);
+              }
+              // Migration 21 seeded its watermark at the registry head; this
+              // writes every price catalog version already published, level with it.
+              if (migration.version === PRICE_INTERVAL_CATALOG_MIGRATION) {
+                foldPriceIntervalsAtMigration(db);
               }
             },
           });
@@ -6384,6 +6495,10 @@ export class Ledger {
    * registered, not `ACTIVE`, or not eligible for the role. Both run after the
    * replay and lineage checks and before the insert, so an exact replay of a
    * document admitted earlier is still a replay, whatever has been retired since.
+   *
+   * And, since P-33/catálogo A (ADR 0091), a third: a `PRICE_TABLE` outside its
+   * closed payload, with two intervals of one quintuple that meet, or naming a
+   * model version that is not registered or is registered under another provider.
    */
   appendRegistryEvent(
     candidate: unknown,
@@ -6630,24 +6745,40 @@ export class Ledger {
    * refusal is `LedgerValidationError` with the path as `at` and a closed word at
    * the head of each message; no value is echoed. Transport is not in the
    * assignment and is not checked here: that half is the resolver's.
+   *
+   * A third branch since P-33/catálogo A (ADR 0091): a `PRICE_TABLE` is held to
+   * its closed payload and against the same registry — existence in any status,
+   * and the provider it was registered under.
    */
   #assertRegistryDocumentAdmissible(document: RegistryDocument): void {
-    const issues =
-      document.documentKind === "MODEL_VERSION"
-        ? modelVersionPayloadIssues(document.payload)
-        : globalAssignmentIssues(document, (modelVersionId) => {
-            const row = this.#stmt(
-              "SELECT status FROM model_version_read_model WHERE model_version_id = ?",
-            ).get(modelVersionId) as { readonly status: string } | undefined;
-            if (row === undefined) return null;
-            const roles = this.#stmt(
-              "SELECT role FROM model_version_eligible_role WHERE model_version_id = ? ORDER BY ordinal",
-            ).all(modelVersionId) as { readonly role: string }[];
-            return {
-              status: row.status as ModelVersionReadModel["status"],
-              eligibleRoles: roles.map((entry) => entry.role),
-            };
-          });
+    let issues: LedgerValidationIssue[];
+    if (document.documentKind === "MODEL_VERSION") {
+      issues = modelVersionPayloadIssues(document.payload);
+    } else if (document.documentKind === "PRICE_TABLE") {
+      // P-33/catálogo A (ADR 0091): its own branch, never the assignment gate's
+      // `else`, which admits every kind it does not know. The shape, then each
+      // model version registered in any status and under the interval's provider.
+      issues = priceTableIssues(document, (modelVersionId) => {
+        const row = this.#stmt(
+          "SELECT provider FROM model_version_read_model WHERE model_version_id = ?",
+        ).get(modelVersionId) as { readonly provider: string } | undefined;
+        return row === undefined ? null : { provider: row.provider };
+      });
+    } else {
+      issues = globalAssignmentIssues(document, (modelVersionId) => {
+        const row = this.#stmt(
+          "SELECT status FROM model_version_read_model WHERE model_version_id = ?",
+        ).get(modelVersionId) as { readonly status: string } | undefined;
+        if (row === undefined) return null;
+        const roles = this.#stmt(
+          "SELECT role FROM model_version_eligible_role WHERE model_version_id = ? ORDER BY ordinal",
+        ).all(modelVersionId) as { readonly role: string }[];
+        return {
+          status: row.status as ModelVersionReadModel["status"],
+          eligibleRoles: roles.map((entry) => entry.role),
+        };
+      });
+    }
     if (issues.length > 0) throw new LedgerValidationError(issues);
   }
 
@@ -6657,6 +6788,10 @@ export class Ledger {
     if (projected !== null) this.#applyRoutingAssignment(projected);
     const modelVersion = nextModelVersionProjection(document, sequence);
     if (modelVersion !== null) writeModelVersionProjection((sql) => this.#stmt(sql), modelVersion);
+    // The whole catalog version, in the transaction of its event and before the
+    // head moves: a throw anywhere after the insert leaves no row of it.
+    const prices = nextPriceIntervalProjection(document, sequence);
+    if (prices !== null) writePriceIntervalProjection((sql) => this.#stmt(sql), prices);
   }
 
   /**
@@ -7257,6 +7392,36 @@ export class Ledger {
         modelVersion: this.#readModelVersionEntry(id),
         watermarks: this.#readRegistryWatermarks([[MODEL_VERSION_PROJECTION, REGISTRY_STREAM]]),
       }),
+    );
+    return run();
+  }
+
+  /**
+   * Every price interval of one catalog version, exactly (P-33/catálogo A, ADR 0091).
+   *
+   * By document AND version, never by document alone: a lookup inside a pinned
+   * version never reads another's rows, and a later version — retroactive or not
+   * — is not a row of this one. In primary-key order, from one read transaction,
+   * with no clock and no write. A version that holds no row — a document or a
+   * version never published, or a version the fold could not read — is an empty
+   * list and not an error: whether no price means `PRICE_MISSING` is the
+   * resolver's to say, and it says it fail-closed, never as a zero.
+   *
+   * No watermark travels with the answer, unlike `getModelVersion`: a published
+   * version's rows are written once in the transaction of its event and never
+   * change, so the pin is the whole of what the answer was read at.
+   */
+  readPriceIntervals(query: PriceIntervalQuery): readonly PriceIntervalReadModel[] {
+    this.#assertOpen("readPriceIntervals");
+    const catalogDocumentId = requireArtifactIdentifier(query.catalogDocumentId, "catalogDocumentId");
+    const catalogVersion = requireArtifactCount(query.catalogVersion, "catalogVersion");
+    const run = this.#db.transaction((): readonly PriceIntervalReadModel[] =>
+      (
+        this.#stmt(
+          "SELECT * FROM price_interval_read_model WHERE catalog_document_id = ? AND catalog_version = ? " +
+            "ORDER BY provider, model_version_id, transport_kind, token_class, currency, effective_from",
+        ).all(catalogDocumentId, catalogVersion) as PriceIntervalRow[]
+      ).map(priceIntervalRowToModel),
     );
     return run();
   }
@@ -7994,12 +8159,15 @@ export class Ledger {
       const artifactSnapshot = createArtifactProjectionSnapshot();
       // And the model version registry (P-14 A), from the same documents.
       const modelVersionSnapshot = createModelVersionProjectionSnapshot();
+      // And the price catalog (P-33/catálogo A), from the same documents.
+      const priceIntervalSnapshot = createPriceIntervalProjectionSnapshot();
       let lastRegistryRecordedAt = EPOCH_TIMESTAMP;
 
       const registryReplay = this.#replayRegistry(
         (document, row) => {
           applyRegistryEventToSnapshot(registrySnapshot, document, row.sequence);
           applyRegistryModelVersionToSnapshot(modelVersionSnapshot, document, row.sequence);
+          applyRegistryPriceIntervalToSnapshot(priceIntervalSnapshot, document, row.sequence);
           lastRegistryRecordedAt = document.recordedAt;
         },
         (event, row) => {
@@ -8213,6 +8381,17 @@ export class Ledger {
         });
       }
 
+      // The price catalog, through the door's own writer, one row at a time in
+      // the snapshot's order. Cleared above; no model version is looked up on the
+      // way, for the reason just given: a rebuild folds what the door admitted.
+      for (const row of priceIntervalSnapshot.intervals.values()) {
+        writePriceIntervalProjection((sql) => this.#stmt(sql), {
+          catalogDocumentId: row.catalogDocumentId,
+          catalogVersion: row.catalogVersion,
+          rows: [row],
+        });
+      }
+
       // The watermark rows are deleted and written back, not updated in place.
       // A rebuild regenerates the derived tables from the log, so there is no
       // partial watermark worth keeping, and a row belonging to a projection
@@ -8268,6 +8447,7 @@ export class Ledger {
           (total, transports) => total + transports.length,
           0,
         ),
+        priceIntervalRows: priceIntervalSnapshot.intervals.size,
       };
     });
 
@@ -8355,10 +8535,12 @@ export class Ledger {
     const registrySnapshot = createRegistryProjectionSnapshot();
     const artifactSnapshot = createArtifactProjectionSnapshot();
     const modelVersionSnapshot = createModelVersionProjectionSnapshot();
+    const priceIntervalSnapshot = createPriceIntervalProjectionSnapshot();
     const registryReplay = this.#replayRegistry(
       (document, row) => {
         applyRegistryEventToSnapshot(registrySnapshot, document, row.sequence);
         applyRegistryModelVersionToSnapshot(modelVersionSnapshot, document, row.sequence);
+        applyRegistryPriceIntervalToSnapshot(priceIntervalSnapshot, document, row.sequence);
       },
       (event, row) => {
         applyArtifactEventToSnapshot(artifactSnapshot, event, row.sequence);
@@ -8695,6 +8877,7 @@ export class Ledger {
     problems.push(...this.#compareRoutingProjection(registrySnapshot, initiativeSnapshot));
     problems.push(...this.#compareArtifactProjections(artifactSnapshot));
     problems.push(...this.#compareModelVersionProjection(modelVersionSnapshot));
+    problems.push(...this.#comparePriceIntervalProjection(priceIntervalSnapshot));
 
     return {
       ok: problems.length === 0,
@@ -9383,6 +9566,53 @@ export class Ledger {
       ),
     );
 
+    return problems;
+  }
+
+  /**
+   * Compare the price interval catalog against a fresh replay (P-33/catálogo A).
+   *
+   * Row for row, in canonical form, both directions, for the model version
+   * registry's reason: a price rewritten in place, an interval deleted, or one
+   * planted leaves every count but one unchanged while the catalog quotes a price
+   * nobody published. The key is the primary key; what is printed is the
+   * document and its version, which `safeRowIdentifier` can hold, never a price.
+   */
+  #comparePriceIntervalProjection(snapshot: PriceIntervalProjectionSnapshot): IntegrityProblem[] {
+    const problems: IntegrityProblem[] = [];
+    const label = (row: PriceIntervalReadModel): string =>
+      "an interval of " + safeRowIdentifier(row.catalogDocumentId) + " version " + String(row.catalogVersion);
+    const stored = new Map(
+      (this.#stmt("SELECT * FROM price_interval_read_model").all() as PriceIntervalRow[]).map((row) => {
+        const model = priceIntervalRowToModel(row);
+        return [priceIntervalKey(model), model] as const;
+      }),
+    );
+    for (const [key, expected] of snapshot.intervals) {
+      const found = stored.get(key);
+      if (found === undefined) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: PRICE_INTERVAL_PROJECTION + " is missing the row for " + label(expected),
+          sequence: null,
+        });
+      } else if (canonicalJsonStringify(found) !== canonicalJsonStringify(expected)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: PRICE_INTERVAL_PROJECTION + " row for " + label(expected) + " disagrees with a replay",
+          sequence: null,
+        });
+      }
+    }
+    for (const [key, row] of stored) {
+      if (!snapshot.intervals.has(key)) {
+        problems.push({
+          kind: "PROJECTION",
+          detail: PRICE_INTERVAL_PROJECTION + " holds the row for " + label(row) + " which no event accounts for",
+          sequence: null,
+        });
+      }
+    }
     return problems;
   }
 

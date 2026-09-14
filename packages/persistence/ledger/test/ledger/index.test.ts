@@ -65,6 +65,7 @@ import {
   INITIATIVE_REGISTRATION_MIGRATION,
   TASK_SUBMISSION_MIGRATION,
   USAGE_CAPTURE_MIGRATION,
+  PRICE_INTERVAL_CATALOG_MIGRATION,
   MIGRATIONS,
   MODEL_VERSION_REGISTRY_MIGRATION,
   TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
@@ -337,7 +338,7 @@ describe("open", () => {
     // coordinate, P-08's sidecar and the registry stream, typed causal triple and
     // watermark table of P-09.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1332,6 +1333,9 @@ function dropTaskAttemptIdentity(raw: Database.Database): void {
  * usage the stream holds, back into the same rows.
  */
 function dropUsageCapture(raw: Database.Database): void {
+  // Twenty-one first (P-33/catálogo A): rewinding past 20 means rewinding past
+  // everything applied after it, and a re-applied 21 over its own table aborts.
+  dropPriceIntervalCatalog(raw);
   raw.exec(
     "DROP TABLE usage_settlement_observation_read_model; " +
       "DROP TABLE usage_settlement_source_head_read_model; " +
@@ -1347,6 +1351,20 @@ function dropUsageCapture(raw: Database.Database): void {
   );
   const forget = raw.prepare("DELETE FROM projection_watermark WHERE projection_name = ?");
   for (const name of USAGE_CAPTURE_PROJECTIONS) forget.run(name);
+}
+
+/**
+ * Migration 21 undone: the price interval catalog and its one watermark row
+ * (P-33/catálogo A).
+ *
+ * The table carries no index or trigger of its own name, so it goes alone; the
+ * watermark row goes with it, or the reopen would find a row for a projection
+ * whose table it is about to create. Nothing in `registry_events` moves: the
+ * re-applied 21 folds every `PRICE_TABLE` the stream holds back into the same rows.
+ */
+function dropPriceIntervalCatalog(raw: Database.Database): void {
+  raw.exec("DROP TABLE price_interval_read_model;");
+  raw.prepare("DELETE FROM projection_watermark WHERE projection_name = ?").run("price_interval_read_model");
 }
 
 /** The five projections migration 20 adds, in the order it seeds their watermarks. */
@@ -2068,17 +2086,18 @@ describe("projection watermark verification", () => {
     // route fold, the revision fold, the attempt fold, the segment, effect and
     // delivery folds, the prompt and response occurrence folds, the client key
     // fold, B's five usage folds, the two initiative-stream folds, the four
-    // artifact folds and the model version fold of the registry stream, and the
-    // two-source routing fold. Twenty-five heads, because the last one has two —
-    // every one of them at zero on a ledger that has never been appended to.
-    expect(ledger.status().projections).toHaveLength(24);
+    // artifact folds, the model version fold and P-33/catálogo A's price fold of
+    // the registry stream, and the two-source routing fold. Twenty-six heads,
+    // because the last one has two — every one of them at zero on a ledger that
+    // has never been appended to.
+    expect(ledger.status().projections).toHaveLength(25);
     expect(
       ledger
         .status()
         .projections.flatMap((projection) =>
           projection.watermarks.map((watermark) => watermark.appliedThroughSequence),
         ),
-    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it("keeps every projection level with the head of its own stream", () => {
@@ -3073,7 +3092,7 @@ describe("the recorded execution route", () => {
     // The upgrade: the pending tail applies on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3285,7 +3304,7 @@ describe("appendBatch lands a whole batch or none of it", () => {
     expect(ledger.getTask(taskId)).toBeNull();
     expect(ledger.listWorkers().workers).toHaveLength(0);
     expect([...appliedByName(ledger).values()]).toEqual([
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ]);
     expect(ledger.verifyIntegrity().ok).toBe(true);
 
@@ -3310,7 +3329,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const rows = readWatermarks(ledger.path);
-    expect(rows).toHaveLength(25);
+    expect(rows).toHaveLength(26);
     const taskRows = rows.filter((row) => row.source_stream === "control_plane_events");
     expect(taskRows.map((row) => row.projection_name)).toEqual([
       "dispatch_attempt_read_model",
@@ -3394,7 +3413,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const before = readWatermarks(path);
-    expect(before).toHaveLength(25);
+    expect(before).toHaveLength(26);
 
     tamper(path, (raw) => {
       raw
@@ -3509,7 +3528,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3558,7 +3577,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     open(path).close();
 
     const rows = readWatermarks(path);
-    expect(rows).toHaveLength(25);
+    expect(rows).toHaveLength(26);
     expect(rows.every((row) => row.applied_sequence === 0)).toBe(true);
     expect(rows.every((row) => row.event_count === 0)).toBe(true);
     expect(rows.every((row) => row.source_head_sha256 === GENESIS_SHA256)).toBe(true);
@@ -4573,9 +4592,9 @@ describe("two heads under one projection name advance independently (negative 2)
     ledger.appendRegistryEvent(makeRegistryDocument());
 
     const status = ledger.status();
-    // Twenty-four projections, not twenty-five entries: the vector lives INSIDE
+    // Twenty-five projections, not twenty-six entries: the vector lives INSIDE
     // the projection, so a projection with two heads is still one projection.
-    expect(status.projections).toHaveLength(24);
+    expect(status.projections).toHaveLength(25);
     expect(status.projections.map((projection) => projection.name)).toEqual([
       "artifact_blob_read_model",
       "artifact_pin_read_model",
@@ -4587,6 +4606,7 @@ describe("two heads under one projection name advance independently (negative 2)
       "execution_route_segment_read_model",
       "initiative_read_model",
       "model_version_read_model",
+      "price_interval_read_model",
       "prompt_occurrence_read_model",
       "response_occurrence_read_model",
       "roadmap_version_read_model",
@@ -4624,12 +4644,12 @@ describe("two heads under one projection name advance independently (negative 2)
     }
     ledger.close();
 
-    // Twenty-five rows in the table, twenty-five entries across twenty-four
+    // Twenty-six rows in the table, twenty-six entries across twenty-five
     // projections. Nothing in the table is omitted from the DTO any more.
-    expect(readWatermarks(path)).toHaveLength(25);
+    expect(readWatermarks(path)).toHaveLength(26);
     expect(
       status.projections.flatMap((projection) => projection.watermarks),
-    ).toHaveLength(25);
+    ).toHaveLength(26);
   });
 
   it("publishes the latest instant of a projection's rows as its updatedAt", () => {
@@ -4824,7 +4844,7 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
       modelVersions: readModelVersionTables(path),
       watermarks: readWatermarks(path),
     };
-    expect(live.watermarks).toHaveLength(25);
+    expect(live.watermarks).toHaveLength(26);
     expect(live.routing).toHaveLength(3);
 
     const first = open(path);
@@ -5709,7 +5729,7 @@ describe("the account sidecar is activated once, over everything, atomically", (
     // The upgrade: migration 10 applies on open and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((m) => m.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
@@ -7696,7 +7716,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7755,7 +7775,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7806,7 +7826,7 @@ describe("a version this build does not read is refused, by name", () => {
 
       const migrated = open(path);
       expect(migrated.status().migrations.map((migration) => migration.version), version).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
       ]);
       expect(
         migrated.listEvents().events.map((record) => record.event.contractVersion),
@@ -7956,7 +7976,7 @@ describe("migration 11 applies whole, over a ledger that already has a history",
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
     ]);
 
     // Reads still answer, with the same rows and the same head.
@@ -13145,7 +13165,7 @@ describe("migration 15 rebuilds the registry stream and changes no row (N-P36A-1
     const migrated = open(path);
     // Fifteen applies over the history at fourteen, and sixteen through nineteen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(ARTIFACT_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(USAGE_CAPTURE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
     const report = migrated.verifyIntegrity();
     expect(report.problems).toEqual([]);
     expect(report.coverage.find((entry) => entry.sourceStream === "registry_events")?.checkedThroughSequence).toBe(3);
@@ -13358,7 +13378,7 @@ describe("an artifact event is a registry row with a subject, an ordinal and a k
       expect(issue.path).toBe("subjectOrdinal");
       expect(issue.message).toContain("the next one is ordinal 2; this event proposes " + String(ordinal));
     }
-    expect(ledger.status().projections.length).toBe(24);
+    expect(ledger.status().projections.length).toBe(25);
     expect(ledger.appendArtifactEvent(publicationSucceeded({ ordinal: 2 })).inserted).toBe(true);
   });
 
@@ -13419,6 +13439,8 @@ describe("an artifact event is a registry row with a subject, an ordinal and a k
       ["artifact_reference_read_model", 2, 2],
       ["artifact_tombstone_read_model", 2, 2],
       ["model_version_read_model", 2, 2],
+      // N-P33A-10: the price catalog is level with an artifact event it folds nothing from.
+      ["price_interval_read_model", 2, 2],
       ["routing_assignment_read_model", 2, 2],
     ]);
   });
@@ -14326,7 +14348,7 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
       expect(migrated.status().migrations.map((migration) => migration.version), version).toContain(
         TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
       );
-      expect(migrated.status().migrations.at(-1)?.version, version).toBe(USAGE_CAPTURE_MIGRATION);
+      expect(migrated.status().migrations.at(-1)?.version, version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
       expect(readRevisions(path).map((row) => [row.contract_version, row.envelope_artifact_reference_id]), version).toEqual([
         [version, null],
         [version, null],
@@ -14778,7 +14800,7 @@ describe("migration 17 lands whole over a registry that already holds model vers
     const migrated = open(path);
     // Seventeen re-applies, and eighteen and nineteen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(MODEL_VERSION_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(USAGE_CAPTURE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
 
@@ -14916,7 +14938,7 @@ describe("migration 18 gives the initiative projection its registration columns 
 
     const migrated = open(path);
     // Nineteen re-applied after it (P-14 C): the rewind undid both.
-    expect(migrated.status().migrations.at(-1)?.version).toBe(USAGE_CAPTURE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     expect(readInitiativeColumns(path)).toEqual(before.rows);
@@ -15161,7 +15183,7 @@ describe("a task's client key has one home, folded from its intake (P-14 C)", ()
     });
 
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(USAGE_CAPTURE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
     expect(readSubmissionRows(path)).toEqual(rows);
     expect(migrated.getTask(taskId)).toEqual(task);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
@@ -16060,7 +16082,7 @@ describe("usage is a declared stream and a measured observation, and the door se
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(USAGE_CAPTURE_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(USAGE_CAPTURE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
     expect(usageDump(path)).toBe(live);
     expect(settlementsOf(path, secondEffect)).toEqual([
       expect.objectContaining({ revision: 1, status: "UNKNOWN", sequence: dispatch.sequence, computedAt: dispatch.event.recordedAt }),
@@ -16203,5 +16225,628 @@ describe("usage is a declared stream and a measured observation, and the door se
       "payload.revisionNumber",
     );
     expect(usageRows(ledger.path, "SELECT COUNT(*) AS n FROM usage_observation_read_model")).toEqual([{ n: 0n }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-33/catálogo escalón A — the price interval catalog (economy §3, ADR 0091)
+//
+// The door holds a PRICE_TABLE to its closed payload and to the registry, the
+// fold writes the whole version in the transaction of its event or no row of it,
+// and the four sites of that fold — the door, migration 21's `afterSql`, the
+// rebuild and the integrity replay — agree. No price is resolved here: that is
+// escalón B.
+// ---------------------------------------------------------------------------
+
+const CATALOG = "catalog-claude";
+const PRICE_JAN = "2026-01-01T00:00:00.000Z";
+const PRICE_FEB = "2026-02-01T00:00:00.000Z";
+const PRICE_MAR = "2026-03-01T00:00:00.000Z";
+const PRICE_ORDER =
+  "ORDER BY catalog_document_id, catalog_version, provider, model_version_id, transport_kind, token_class, currency, effective_from";
+
+/** One interval in the closed shape the door holds a PRICE_TABLE to (H-7). */
+function priceInterval(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    provider: "claude",
+    modelVersionId: MODEL_ONE,
+    transportKind: "API_KEY",
+    tokenClass: "input",
+    currency: "USD",
+    effectiveFrom: PRICE_JAN,
+    effectiveTo: null,
+    pricePerMillionNanos: 15_000_000_000,
+    ...overrides,
+  };
+}
+
+function makePriceTableDocument(
+  intervals: readonly unknown[],
+  input: RegistryInput = {},
+): Record<string, unknown> {
+  return makeRegistryDocument({
+    documentKind: "PRICE_TABLE",
+    documentId: CATALOG,
+    contentDigest: "3".repeat(64),
+    payload: { intervals },
+    ...input,
+  });
+}
+
+/** Version 2 of the catalog, superseding version 1. */
+function secondCatalogVersion(intervals: readonly unknown[]): Record<string, unknown> {
+  return makePriceTableDocument(intervals, { documentVersion: 2, parentDocumentVersion: 1, contentDigest: "4".repeat(64) });
+}
+
+/** The catalog table of a closed ledger, every column, in primary-key order. */
+function readPriceTable(path: string): readonly Record<string, unknown>[] {
+  return readRows(path, "SELECT * FROM price_interval_read_model " + PRICE_ORDER);
+}
+
+/** Every durable effect of a registry append, price rows included, so "nothing appended" is one comparison. */
+function priceFootprint(path: string): unknown {
+  return {
+    meta: [...readRegistryMeta(path).entries()].sort(),
+    rows: readRows(path, "SELECT sequence FROM registry_events ORDER BY sequence"),
+    prices: readPriceTable(path),
+    modelVersions: readModelVersionTables(path),
+    watermarks: readWatermarks(path).filter((row) => row.source_stream === "registry_events"),
+  };
+}
+
+/** Each issue of a `LedgerValidationError` as its path and the closed word at the head of its message, if any. */
+function priceRefusals(error: unknown): string[] {
+  expect(error).toBeInstanceOf(LedgerValidationError);
+  return (error as LedgerValidationError).issues.map(
+    (issue) => issue.path + " " + (/^([A-Z_]+):/.exec(issue.message)?.[1] ?? ""),
+  );
+}
+
+/** A registered model version, then version 1 of the catalog: two intervals in USD and one in EUR. */
+function seedCatalog(ledger: Ledger): void {
+  seedModelVersions(ledger);
+  ledger.appendRegistryEvent(
+    makePriceTableDocument([
+      priceInterval(),
+      priceInterval({ tokenClass: "output", pricePerMillionNanos: 75_000_000_000 }),
+      priceInterval({ currency: "EUR", pricePerMillionNanos: 14_000_000_000 }),
+    ]),
+  );
+}
+
+describe("a price interval is published whole by document and version, or not at all (P-33/catálogo A)", () => {
+  it("E1, E6: publishes a version whole in the transaction of its event, level with the registry head, and verifies", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedCatalog(ledger);
+
+    const rows = ledger.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 1 });
+    expect(rows.map((row) => [row.tokenClass, row.currency, row.pricePerMillionNanos])).toEqual([
+      ["input", "EUR", 14_000_000_000],
+      ["input", "USD", 15_000_000_000],
+      ["output", "USD", 75_000_000_000],
+    ]);
+    expect(rows[0]).toEqual({
+      catalogDocumentId: CATALOG,
+      catalogVersion: 1,
+      provider: "claude",
+      modelVersionId: MODEL_ONE,
+      transportKind: "API_KEY",
+      tokenClass: "input",
+      currency: "EUR",
+      effectiveFrom: PRICE_JAN,
+      effectiveTo: null,
+      pricePerMillionNanos: 14_000_000_000,
+      recordedBy: KIMI,
+      sequence: 3,
+    });
+    // Q3: the version admits only CLI_SUBSCRIPTION, and an API_KEY price is published: no transport cross at the door.
+    expect(ledger.getModelVersion(MODEL_ONE).modelVersion?.transports).toEqual(["CLI_SUBSCRIPTION"]);
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    ledger.close();
+
+    const watermark = readWatermarks(path).find((row) => row.projection_name === "price_interval_read_model");
+    expect([watermark?.source_stream, watermark?.applied_sequence, watermark?.event_count, watermark?.source_head_sha256]).toEqual([
+      "registry_events",
+      3,
+      3,
+      readRegistryMeta(path).get("registry_head_event_sha256"),
+    ]);
+  });
+
+  it("N-P33-1, N-P33-3..6, N-P33-8, N-P33A-4: the door refuses every shape by name, echoes no value and appends nothing", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    const before = priceFootprint(path);
+
+    const cases: readonly [string, readonly unknown[] | Record<string, unknown>, readonly string[]][] = [
+      ["N-P33-1", [priceInterval({ effectiveTo: PRICE_MAR }), priceInterval({ effectiveFrom: PRICE_FEB })], ["payload.intervals[1] PRICE_INTERVAL_OVERLAP"]],
+      ["N-P33-3 equal", [priceInterval({ effectiveTo: PRICE_JAN })], ["payload.intervals[0].effectiveTo "]],
+      ["N-P33-3 earlier", [priceInterval({ effectiveFrom: PRICE_FEB, effectiveTo: PRICE_JAN })], ["payload.intervals[0].effectiveTo "]],
+      ["N-P33-4 negative", [priceInterval({ pricePerMillionNanos: -1 })], ["payload.intervals[0].pricePerMillionNanos "]],
+      ["N-P33-4 fractional", [priceInterval({ pricePerMillionNanos: 0.5 })], ["payload.intervals[0].pricePerMillionNanos "]],
+      ["N-P33-4 unsafe", [priceInterval({ pricePerMillionNanos: 2 ** 53 })], ["payload.intervals[0].pricePerMillionNanos "]],
+      ["N-P33-5 token class", [priceInterval({ tokenClass: "reasoning" })], ["payload.intervals[0].tokenClass "]],
+      ["N-P33-5 transport", [priceInterval({ transportKind: "CARRIER_PIGEON" })], ["payload.intervals[0].transportKind "]],
+      ["N-P33-6 lower", [priceInterval({ currency: "usd" })], ["payload.intervals[0].currency "]],
+      ["N-P33-6 short", [priceInterval({ currency: "US" })], ["payload.intervals[0].currency "]],
+      ["N-P33-6 long", [priceInterval({ currency: "USDX" })], ["payload.intervals[0].currency "]],
+      ["N-P33-8 empty", [], ["payload.intervals "]],
+      ["N-P33-8 interval key", [priceInterval({ discountBasisPoints: 10 })], ["payload.intervals[0].discountBasisPoints "]],
+      ["N-P33-8 duplicate key", [priceInterval(), priceInterval({ pricePerMillionNanos: 1 })], ["payload.intervals[1] PRICE_INTERVAL_DUPLICATE"]],
+      ["N-P33A-4 offset", [priceInterval({ effectiveFrom: "2026-01-01T00:00:00+00:00" })], ["payload.intervals[0].effectiveFrom "]],
+      ["N-P33A-4 no millis", [priceInterval({ effectiveTo: "2026-02-01T00:00:00Z" })], ["payload.intervals[0].effectiveTo "]],
+      ["N-P33A-4 no such day", [priceInterval({ effectiveFrom: "2026-02-30T00:00:00.000Z" })], ["payload.intervals[0].effectiveFrom "]],
+    ];
+    for (const [label, intervals, refusal] of cases) {
+      const error = caught(() => ledger.appendRegistryEvent(makePriceTableDocument(intervals as readonly unknown[])));
+      expect(priceRefusals(error), label).toEqual(refusal);
+      expect(JSON.stringify((error as LedgerValidationError).issues), label).not.toMatch(/CARRIER_PIGEON|reasoning|USDX|discountBasisPoints"?:/);
+      expect(priceFootprint(path), label).toEqual(before);
+    }
+    // An undeclared key of the payload itself.
+    expect(
+      priceRefusals(caught(() => ledger.appendRegistryEvent(makeRegistryDocument({ documentKind: "PRICE_TABLE", documentId: CATALOG, payload: { intervals: [priceInterval()], currency: "USD" } })))),
+    ).toEqual(["payload.currency "]);
+    expect(priceFootprint(path)).toEqual(before);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-P33-2, N-P33A-5: the same window under another transport or currency is published, and so are adjacent intervals", () => {
+    const ledger = open(temporaryDatabase());
+    seedModelVersions(ledger);
+    ledger.appendRegistryEvent(
+      makePriceTableDocument([
+        priceInterval({ effectiveTo: PRICE_FEB }),
+        priceInterval({ effectiveFrom: PRICE_FEB, effectiveTo: PRICE_MAR, pricePerMillionNanos: 0 }),
+        priceInterval({ effectiveTo: PRICE_FEB, transportKind: "CLI_SUBSCRIPTION" }),
+        priceInterval({ effectiveTo: PRICE_FEB, currency: "EUR" }),
+      ]),
+    );
+    expect(ledger.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 1 })).toHaveLength(4);
+    // Two open ends of one quintuple meet, and the later start is named.
+    expect(
+      priceRefusals(
+        caught(() =>
+          ledger.appendRegistryEvent(secondCatalogVersion([priceInterval(), priceInterval({ effectiveFrom: PRICE_MAR })])),
+        ),
+      ),
+    ).toEqual(["payload.intervals[1] PRICE_INTERVAL_OVERLAP"]);
+  });
+
+  it("N-P33-10, E3: the boundary instant is stored once on each side, so exactly one interval covers it", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    ledger.appendRegistryEvent(
+      makePriceTableDocument([
+        priceInterval({ effectiveTo: PRICE_FEB, pricePerMillionNanos: 15_000_000_000 }),
+        priceInterval({ effectiveFrom: PRICE_FEB, effectiveTo: PRICE_MAR, pricePerMillionNanos: 16_000_000_000 }),
+      ]),
+    );
+
+    // The instants round-trip verbatim: PRICE_FEB is the first interval's end and
+    // the second's start, one boundary written on both sides and altered by neither.
+    expect(
+      ledger
+        .readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 1 })
+        .map((row) => [row.effectiveFrom, row.effectiveTo, row.pricePerMillionNanos]),
+    ).toEqual([
+      [PRICE_JAN, PRICE_FEB, 15_000_000_000],
+      [PRICE_FEB, PRICE_MAR, 16_000_000_000],
+    ]);
+
+    // Read from A: what escalón B will ask of this data, asked of the rows alone.
+    // `[from, to)` is half-open, so the start is covered and the end is not — at the
+    // boundary exactly one interval answers, and it is the later one. A row that
+    // stored an inclusive end, or a fold that shifted an instant, answers two here.
+    const covering = (instant: string): readonly Record<string, unknown>[] =>
+      readRows(
+        path,
+        "SELECT price_per_million_nanos FROM price_interval_read_model " +
+          "WHERE effective_from <= '" +
+          instant +
+          "' AND (effective_to IS NULL OR effective_to > '" +
+          instant +
+          "') " +
+          PRICE_ORDER,
+      );
+    expect(covering(PRICE_JAN)).toEqual([{ price_per_million_nanos: 15_000_000_000 }]);
+    expect(covering(PRICE_FEB)).toEqual([{ price_per_million_nanos: 16_000_000_000 }]);
+    // And past the last end nothing covers the instant: no row stands in as a zero.
+    expect(covering(PRICE_MAR)).toEqual([]);
+  });
+
+  it("N-P33-7: one invalid interval among valid ones leaves no row and no event", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    const before = priceFootprint(path);
+    const error = caught(() =>
+      ledger.appendRegistryEvent(
+        makePriceTableDocument([priceInterval(), priceInterval({ tokenClass: "output" }), priceInterval({ tokenClass: "cache_read", currency: "usd" }), priceInterval({ tokenClass: "cache_write" })]),
+      ),
+    );
+    expect(priceRefusals(error)).toEqual(["payload.intervals[2].currency "]);
+    expect(priceFootprint(path)).toEqual(before);
+    expect(readRows(path, "SELECT COUNT(*) AS n FROM registry_events WHERE document_kind = 'PRICE_TABLE'")).toEqual([{ n: 0 }]);
+  });
+
+  it("N-P33-14, H-11, Q3: an unregistered model version and a provider mismatch are refused, and a RETIRED version keeps its price", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    ledger.appendRegistryEvent(
+      makeModelVersionDocument(MODEL_ONE, {
+        documentVersion: 2,
+        parentDocumentVersion: 1,
+        payload: modelVersionPayload({ status: "RETIRED", deprecatedAt: REGISTRY_AT }),
+      }),
+    );
+    const before = priceFootprint(path);
+
+    expect(priceRefusals(caught(() => ledger.appendRegistryEvent(makePriceTableDocument([priceInterval({ modelVersionId: "ghost" })]))))).toEqual([
+      "payload.intervals[0].modelVersionId MODEL_VERSION_UNKNOWN",
+    ]);
+    const mismatch = caught(() =>
+      ledger.appendRegistryEvent(makePriceTableDocument([priceInterval({ modelVersionId: MODEL_TWO, provider: "openai" })])),
+    );
+    expect(priceRefusals(mismatch)).toEqual(["payload.intervals[0].provider MODEL_VERSION_PROVIDER_MISMATCH"]);
+    expect((mismatch as Error).message).not.toContain("openai");
+    expect(priceFootprint(path)).toEqual(before);
+
+    expect(ledger.appendRegistryEvent(makePriceTableDocument([priceInterval()])).inserted).toBe(true);
+    expect(ledger.getModelVersion(MODEL_ONE).modelVersion?.row.status).toBe("RETIRED");
+    expect(ledger.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 1 })).toHaveLength(1);
+  });
+
+  it("N-P33-15, E10: a MODEL_VERSION carrying a price key is still refused, and no price row appears", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const error = caught(() =>
+      ledger.appendRegistryEvent(makeModelVersionDocument(MODEL_ONE, { payload: modelVersionPayload({ pricePerMillionNanos: 15_000_000_000 }) })),
+    );
+    expect(priceRefusals(error)).toEqual(["payload.pricePerMillionNanos "]);
+    expect(readPriceTable(path)).toEqual([]);
+  });
+
+  it("N-P33A-11, H-3: the three-way dispatch leaves both gates refusing as before, gates PRICE_TABLE on its own branch, and lets an ungated kind in", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    expect(priceRefusals(caught(() => ledger.appendRegistryEvent(makeModelVersionDocument(MODEL_ONE, { payload: {} }))))[0]).toBe(
+      "payload.provider ",
+    );
+    expect(priceRefusals(caught(() => ledger.appendRegistryEvent(makeRegistryDocument())))).toEqual([
+      "payload.modelVersionId MODEL_VERSION_UNKNOWN",
+      "payload.fallbacks[0] MODEL_VERSION_UNKNOWN",
+    ]);
+    expect(priceRefusals(caught(() => ledger.appendRegistryEvent(makePriceTableDocument([]))))).toEqual(["payload.intervals "]);
+    expect(
+      priceRefusals(
+        caught(() => ledger.appendRegistryEvent(makeRegistryDocument({ documentKind: "PRICE_TABLE", documentId: CATALOG, payload: {} }))),
+      ),
+    ).toEqual(["payload.intervals "]);
+    expect(
+      ledger.appendRegistryEvent(makeRegistryDocument({ documentKind: "CAPABILITY_POLICY", documentId: "capability-policy", payload: {} })).inserted,
+    ).toBe(true);
+    expect(readPriceTable(path)).toEqual([]);
+  });
+
+  it("N-P33A-6, Q2: a catalog past the registry's 64 KiB bound is refused with no event and no row, and one inside it is published", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    const currencyOf = (index: number): string =>
+      String.fromCharCode(65 + (Math.floor(index / 676) % 26), 65 + (Math.floor(index / 26) % 26), 65 + (index % 26));
+    const catalogOf = (count: number): Record<string, unknown> =>
+      makePriceTableDocument(Array.from({ length: count }, (_, index) => priceInterval({ currency: currencyOf(index) })));
+    const before = priceFootprint(path);
+
+    const oversized = catalogOf(400);
+    expect(Buffer.byteLength(canonicalJsonStringify(oversized), "utf8")).toBeGreaterThan(64 * 1024);
+    const refused = caught(() => ledger.appendRegistryEvent(oversized));
+    expect(priceRefusals(refused)).toEqual(["payload "]);
+    expect((refused as Error).message).toContain("65536 bytes");
+    expect(priceFootprint(path)).toEqual(before);
+
+    const bounded = catalogOf(200);
+    expect(Buffer.byteLength(canonicalJsonStringify(bounded), "utf8")).toBeLessThan(64 * 1024);
+    expect(ledger.appendRegistryEvent(bounded).inserted).toBe(true);
+    expect(ledger.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 1 })).toHaveLength(200);
+  });
+
+  it("N-P33A-3, E6: a failure before the projection or before the commit leaves no event, no row, no head and no watermark", () => {
+    for (const fault of ["beforeProjection", "beforeAppendCommit"] as const) {
+      const path = temporaryDatabase();
+      const seeded = open(path);
+      seedModelVersions(seeded);
+      seeded.close();
+      const before = priceFootprint(path);
+
+      const faulty = open(path, {
+        __testFaults: {
+          [fault]: () => {
+            throw new Error("injected " + fault);
+          },
+        },
+      });
+      expect(caught(() => faulty.appendRegistryEvent(makePriceTableDocument([priceInterval(), priceInterval({ tokenClass: "output" })]))), fault).toBeInstanceOf(Error);
+      faulty.close();
+      expect(priceFootprint(path), fault).toEqual(before);
+    }
+  });
+
+  it("N-P33-13, E11, E8, N-P33A-8, H-9: a retroactive version 2 adds rows beside version 1's; each version reads only its own; a pin with none reads empty", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedCatalog(ledger);
+    const versionOne = ledger.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 1 });
+    const storedOne = readRows(path, "SELECT * FROM price_interval_read_model WHERE catalog_version = 1 " + PRICE_ORDER);
+
+    // Version 2 reprices January retroactively and splits the input price at February.
+    ledger.appendRegistryEvent(
+      secondCatalogVersion([
+        priceInterval({ effectiveTo: PRICE_FEB, pricePerMillionNanos: 12_000_000_000 }),
+        priceInterval({ effectiveFrom: PRICE_FEB, pricePerMillionNanos: 13_000_000_000 }),
+      ]),
+    );
+    expect(readRows(path, "SELECT * FROM price_interval_read_model WHERE catalog_version = 1 " + PRICE_ORDER)).toEqual(storedOne);
+    expect(ledger.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 1 })).toEqual(versionOne);
+
+    // N-P33-9, read from A: at January 15th version 2 has an input price in force,
+    // and the reading of version 1 carries none of version 2's rows.
+    const versionTwo = ledger.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 2 });
+    expect(versionTwo.map((row) => [row.effectiveFrom, row.effectiveTo, row.pricePerMillionNanos, row.sequence])).toEqual([
+      [PRICE_JAN, PRICE_FEB, 12_000_000_000, 4],
+      [PRICE_FEB, null, 13_000_000_000, 4],
+    ]);
+    expect(versionOne.every((row) => row.catalogVersion === 1)).toBe(true);
+    expect(versionOne.map((row) => row.pricePerMillionNanos)).not.toContain(12_000_000_000);
+
+    // N-P33-11, read from A: a pin with no interval reads empty, and no zero row stands in for it.
+    for (const pin of [
+      { catalogDocumentId: CATALOG, catalogVersion: 3 },
+      { catalogDocumentId: "catalog-ghost", catalogVersion: 1 },
+    ]) {
+      expect(ledger.readPriceIntervals(pin), JSON.stringify(pin)).toEqual([]);
+    }
+    expect(readRows(path, "SELECT COUNT(*) AS n FROM price_interval_read_model WHERE price_per_million_nanos = 0")).toEqual([{ n: 0 }]);
+    expect(readRows(path, "SELECT COUNT(*) AS n FROM price_interval_read_model")).toEqual([{ n: 5 }]);
+
+    for (const bad of [
+      { catalogDocumentId: "", catalogVersion: 1 },
+      { catalogDocumentId: CATALOG, catalogVersion: 0 },
+      { catalogDocumentId: CATALOG, catalogVersion: 1.5 },
+    ]) {
+      expect(caught(() => ledger.readPriceIntervals(bad)), JSON.stringify(bad)).toBeInstanceOf(LedgerQueryError);
+    }
+    ledger.close();
+    expect(caught(() => ledger.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 1 }))).toBeInstanceOf(Error);
+  });
+
+  it("N-P33A-10: the price watermark advances with a MODEL_VERSION it folds nothing from, and status names the projection", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    const price = ledger.status().projections.find((projection) => projection.name === "price_interval_read_model");
+    expect(price?.watermarks.map((watermark) => [watermark.sourceStream, watermark.appliedThroughSequence])).toEqual([
+      ["registry_events", 2],
+    ]);
+    ledger.close();
+    expect(readPriceTable(path)).toEqual([]);
+  });
+
+  it("N-P33A-1, N-P33-12, H-2: a rebuild reproduces the catalog row for row, twice identically, through the door's writer, and verifies", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedCatalog(ledger);
+    ledger.appendRegistryEvent(secondCatalogVersion([priceInterval({ effectiveTo: PRICE_FEB, pricePerMillionNanos: 12_000_000_000 })]));
+    ledger.close();
+    const live = { prices: readPriceTable(path), watermarks: readWatermarks(path) };
+    expect(live.prices).toHaveLength(4);
+
+    const first = open(path);
+    const firstResult = first.rebuildReadModel();
+    first.close();
+    const afterFirst = readPriceTable(path);
+    const second = open(path);
+    const secondResult = second.rebuildReadModel();
+    expect(second.verifyIntegrity().problems).toEqual([]);
+    second.close();
+
+    expect(afterFirst).toEqual(live.prices);
+    expect(readPriceTable(path)).toEqual(afterFirst);
+    expect(secondResult).toEqual(firstResult);
+    expect([firstResult.replayedRegistryEvents, firstResult.priceIntervalRows]).toEqual([4, 4]);
+    expect(readWatermarks(path).filter((row) => row.projection_name === "price_interval_read_model").map((row) => row.applied_sequence)).toEqual([4]);
+  });
+
+  it("N-P33A-2, H-2: verifyIntegrity names a rewritten price, a deleted row and a planted row, and a rebuild repairs them", () => {
+    const path = temporaryDatabase();
+    const seeded = open(path);
+    seedCatalog(seeded);
+    seeded.close();
+    const live = readPriceTable(path);
+    withRawDatabase(path, (raw) => {
+      raw.prepare("UPDATE price_interval_read_model SET price_per_million_nanos = 1 WHERE token_class = 'output'").run();
+      raw.prepare("DELETE FROM price_interval_read_model WHERE currency = 'EUR'").run();
+      raw
+        .prepare(
+          "INSERT INTO price_interval_read_model (catalog_document_id, catalog_version, provider, model_version_id, transport_kind, " +
+            "token_class, currency, effective_from, effective_to, price_per_million_nanos, recorded_by, sequence) " +
+            "VALUES (?, 7, 'claude', ?, 'API_KEY', 'input', 'USD', ?, NULL, 0, ?, 3)",
+        )
+        .run(CATALOG, MODEL_ONE, PRICE_JAN, KIMI);
+    });
+
+    const ledger = open(path);
+    const report = ledger.verifyIntegrity();
+    expect(report.ok).toBe(false);
+    const details = report.problems.map((problem) => problem.detail);
+    expect(details).toContain("price_interval_read_model row for an interval of catalog-claude version 1 disagrees with a replay");
+    expect(details).toContain("price_interval_read_model is missing the row for an interval of catalog-claude version 1");
+    expect(details).toContain("price_interval_read_model holds the row for an interval of catalog-claude version 7 which no event accounts for");
+    expect(details.filter((detail) => detail.startsWith("price_interval_read_model"))).toHaveLength(3);
+    expect(JSON.stringify(report.problems)).not.toMatch(/15000000000|75000000000/);
+
+    expect(ledger.rebuildReadModel().priceIntervalRows).toBe(3);
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    ledger.close();
+    expect(readPriceTable(path)).toEqual(live);
+  });
+
+  it("N-P33A-9, E2-E4, Q4: the base refuses each CHECK by name, and a REAL price, with the door bypassed", () => {
+    const path = temporaryDatabase();
+    open(path).close();
+    withRawDatabase(path, (raw) => {
+      const insert = raw.prepare(
+        "INSERT INTO price_interval_read_model (catalog_document_id, catalog_version, provider, model_version_id, transport_kind, " +
+          "token_class, currency, effective_from, effective_to, price_per_million_nanos, recorded_by, sequence) " +
+          "VALUES (@catalog_document_id, @catalog_version, @provider, @model_version_id, @transport_kind, @token_class, " +
+          "@currency, @effective_from, @effective_to, @price_per_million_nanos, @recorded_by, @sequence)",
+      );
+      const good = {
+        catalog_document_id: CATALOG,
+        catalog_version: 1,
+        provider: "claude",
+        model_version_id: MODEL_ONE,
+        transport_kind: "API_KEY",
+        token_class: "input",
+        currency: "USD",
+        effective_from: PRICE_JAN,
+        effective_to: PRICE_FEB,
+        price_per_million_nanos: 15_000_000_000,
+        recorded_by: KIMI,
+        sequence: 1,
+      };
+      const cases: readonly [Record<string, unknown>, RegExp][] = [
+        [{ token_class: "reasoning" }, /CHECK constraint failed: ck_price_interval_read_model__token_class/],
+        [{ price_per_million_nanos: -1 }, /CHECK constraint failed: ck_price_interval_read_model__price_per_million_nanos/],
+        [{ currency: "usd" }, /CHECK constraint failed: ck_price_interval_read_model__currency/],
+        [{ currency: "USDX" }, /CHECK constraint failed: ck_price_interval_read_model__currency/],
+        [{ catalog_version: 0 }, /CHECK constraint failed: ck_price_interval_read_model__catalog_version/],
+        [{ sequence: 0 }, /CHECK constraint failed: ck_price_interval_read_model__sequence/],
+        [{ effective_to: PRICE_JAN }, /CHECK constraint failed: ck_price_interval_read_model__interval_order/],
+        [{ effective_to: "2025-12-31T00:00:00.000Z" }, /CHECK constraint failed: ck_price_interval_read_model__interval_order/],
+        [{ price_per_million_nanos: 1.5 }, /cannot store REAL value in INTEGER column/],
+      ];
+      for (const [overrides, refusal] of cases) {
+        expect(() => insert.run({ ...good, ...overrides }), JSON.stringify(overrides)).toThrow(refusal);
+      }
+      expect(insert.run({ ...good, effective_to: null }).changes).toBe(1);
+      expect(() => insert.run({ ...good, effective_to: null, price_per_million_nanos: 1 })).toThrow(/UNIQUE constraint failed/);
+    });
+  });
+});
+
+describe("migration 21 lands whole over a registry that already holds price catalogs (P-33/catálogo A, N-P33-12)", () => {
+  it("N-P33-12: re-applied over existing versions, it folds them into the rows the door wrote, seeds its watermark at the head and verifies", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedCatalog(ledger);
+    ledger.appendRegistryEvent(secondCatalogVersion([priceInterval({ effectiveTo: PRICE_FEB, pricePerMillionNanos: 12_000_000_000 })]));
+    ledger.close();
+    const before = { prices: readPriceTable(path), watermarks: readWatermarks(path) };
+    expect(before.prices).toHaveLength(4);
+
+    withRawDatabase(path, (raw) => {
+      dropPriceIntervalCatalog(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(PRICE_INTERVAL_CATALOG_MIGRATION);
+    });
+    const migrated = open(path);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+    migrated.close();
+
+    expect(readPriceTable(path)).toEqual(before.prices);
+    const level = (rows: readonly WatermarkRow[]): unknown =>
+      rows
+        .filter((row) => row.projection_name === "price_interval_read_model")
+        .map((row) => [row.source_stream, row.applied_sequence, row.event_count, row.source_head_sha256]);
+    expect(level(readWatermarks(path))).toEqual(level(before.watermarks));
+    expect(level(readWatermarks(path))).toEqual([["registry_events", 4, 4, readRegistryMeta(path).get("registry_head_event_sha256")]]);
+  });
+
+  it("applies nothing when it fails part way through, and the next open applies it whole", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedCatalog(ledger);
+    ledger.close();
+    const before = readPriceTable(path);
+    withRawDatabase(path, (raw) => {
+      dropPriceIntervalCatalog(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(PRICE_INTERVAL_CATALOG_MIGRATION);
+      const twentyFirst = MIGRATIONS.filter((migration) => migration.version === PRICE_INTERVAL_CATALOG_MIGRATION);
+      const run = raw.transaction((): void => {
+        applyMigrations(raw, twentyFirst, REGISTRY_AT, {
+          afterSql: () => {
+            throw new Error("induced failure after the SQL and before the row");
+          },
+        });
+      });
+      expect(() => {
+        run.immediate();
+      }).toThrow("induced failure");
+      expect(raw.prepare("SELECT name FROM sqlite_master WHERE name LIKE '%price_interval%'").all()).toEqual([]);
+      expect(raw.prepare("SELECT projection_name FROM projection_watermark WHERE projection_name = 'price_interval_read_model'").all()).toEqual([]);
+    });
+    const reopened = open(path);
+    expect(reopened.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 1 })).toHaveLength(3);
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+    reopened.close();
+    expect(readPriceTable(path)).toEqual(before);
+  });
+
+  it("N-P33A-7, H-2: a version planted past the door with an unreadable payload folds to no row of it, never a part and never a throw", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedCatalog(ledger);
+    ledger.close();
+    const versionOne = readPriceTable(path);
+
+    // Version 2 names a valid interval beside two that meet: the door would refuse it whole.
+    const planted = secondCatalogVersion([
+      priceInterval({ tokenClass: "cache_read", pricePerMillionNanos: 1_500_000_000 }),
+      priceInterval({ effectiveTo: PRICE_MAR, pricePerMillionNanos: 12_000_000_000 }),
+      priceInterval({ effectiveFrom: PRICE_FEB, pricePerMillionNanos: 13_000_000_000 }),
+    ]);
+    plantRegistryRow(
+      path,
+      {
+        subjectKind: "DOCUMENT",
+        documentKind: "PRICE_TABLE",
+        artifactEventKind: null,
+        documentId: CATALOG,
+        documentVersion: 2,
+        parentDocumentVersion: 1,
+        contentDigest: "4".repeat(64),
+      },
+      planted,
+    );
+    withRawDatabase(path, (raw) => {
+      // The planted row is the head now; every registry watermark but the one being
+      // re-created is moved level with it, so the only question left is the fold's.
+      const meta = new Map(
+        (raw.prepare("SELECT key, value FROM ledger_meta WHERE key LIKE 'registry_%'").all() as { key: string; value: string }[]).map(
+          (row) => [row.key, row.value],
+        ),
+      );
+      raw
+        .prepare("UPDATE projection_watermark SET applied_sequence = ?, event_count = ?, source_head_sha256 = ? WHERE source_stream = 'registry_events'")
+        .run(Number(meta.get("registry_head_sequence")), Number(meta.get("registry_event_count")), meta.get("registry_head_event_sha256"));
+      dropPriceIntervalCatalog(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(PRICE_INTERVAL_CATALOG_MIGRATION);
+    });
+
+    const migrated = open(path);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
+    expect(migrated.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 2 })).toEqual([]);
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+    expect(migrated.rebuildReadModel().priceIntervalRows).toBe(3);
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+    migrated.close();
+    expect(readPriceTable(path)).toEqual(versionOne);
+    expect(readWatermarks(path).find((row) => row.projection_name === "price_interval_read_model")?.applied_sequence).toBe(4);
   });
 });

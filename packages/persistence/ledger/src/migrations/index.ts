@@ -2753,6 +2753,76 @@ FROM (
 );
 `,
   },
+  {
+    version: 21,
+    name: "price_interval_catalog",
+    sql: `
+-- A price interval is published whole by document and version, or not at all
+-- (P-33/catálogo escalón A, ADR 0091).
+--
+-- Economy §3, one table: a row per interval of one \`PRICE_TABLE\` document's
+-- version, the document AND the version in the key, so a lookup inside a pinned
+-- version never reads another. The stream has carried the document kind since
+-- migration 9; nothing folded it. From this migration the append door holds a
+-- \`PRICE_TABLE\` to a closed payload and to the model versions the registry
+-- holds, and the fold writes its rows in the transaction of its event.
+--
+-- **No \`ix_price_interval_read_model__lookup\`.** The dictionary's index names
+-- the primary key's eight columns in the primary key's order, and the automatic
+-- index behind the key already is that index; a second copy would be written on
+-- every insert and read by nothing (adjudication Q5, ADR 0091).
+--
+-- **No foreign key and no trigger.** Not into \`registry_events\`, not into
+-- \`model_version_read_model\`: the check a catalog needs is a typed lookup at
+-- the door, not a constraint a rebuild would have to satisfy in fold order. The
+-- rule that spans rows — no two intervals of one quintuple meet — is the door's
+-- and the fold's; no CHECK can state it.
+CREATE TABLE price_interval_read_model (
+  catalog_document_id     TEXT    NOT NULL,
+  catalog_version         INTEGER NOT NULL,
+  provider                TEXT    NOT NULL,
+  model_version_id        TEXT    NOT NULL,
+  transport_kind          TEXT    NOT NULL,
+  token_class             TEXT    NOT NULL,
+  currency                TEXT    NOT NULL,
+  effective_from          TEXT    NOT NULL,
+  effective_to            TEXT,
+  price_per_million_nanos INTEGER NOT NULL,
+  recorded_by             TEXT    NOT NULL,
+  sequence                INTEGER NOT NULL,
+  CONSTRAINT pk_price_interval_read_model PRIMARY KEY (catalog_document_id, catalog_version, provider, model_version_id, transport_kind, token_class, currency, effective_from),
+  CONSTRAINT ck_price_interval_read_model__token_class
+    CHECK (token_class IN ('input','output','cache_write','cache_read')),
+  CONSTRAINT ck_price_interval_read_model__interval_order
+    CHECK (effective_to IS NULL OR effective_to > effective_from),
+  CONSTRAINT ck_price_interval_read_model__price_per_million_nanos
+    CHECK (price_per_million_nanos >= 0),
+  CONSTRAINT ck_price_interval_read_model__currency
+    CHECK (length(currency) = 3 AND currency NOT GLOB '*[^A-Z]*'),
+  CONSTRAINT ck_price_interval_read_model__catalog_version
+    CHECK (catalog_version >= 1),
+  CONSTRAINT ck_price_interval_read_model__sequence
+    CHECK (sequence >= 1)
+) STRICT;
+
+-- One watermark, seeded from the head of the REGISTRY stream in migration 17's
+-- form. The fold over an existing stream is not empty by construction: a ledger
+-- may already hold \`PRICE_TABLE\` documents. SQL cannot run the fold, so the code
+-- runs it after this text and inside the same transaction (\`afterSql\`, migration
+-- 17's precedent), with the function the door and the rebuild use.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  'price_interval_read_model',
+  'registry_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'registry_head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'registry_event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'registry_head_event_sha256'),
+  '1970-01-01T00:00:00.000Z';
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -2773,6 +2843,9 @@ export const MIGRATIONS: readonly Migration[] = SOURCES.map((source) => ({
  * reason: `fk_task_attempt_read_model__task_revision_read_model` points at it.
  */
 export const DERIVED_TABLES: readonly string[] = [
+  // P-33/catálogo A. No foreign key names it and it names none, so its place is
+  // free; it sits beside the registry it is folded with.
+  "price_interval_read_model",
   // The P-14 A registry, children first: each child names its model version by
   // an immediate foreign key, so a wrong order aborts the DELETE that caused it.
   "model_version_transport",
@@ -2889,6 +2962,8 @@ export const REGISTRY_PROJECTION_NAMES: readonly string[] = [
   // P-14 A. One name for three tables: the children are folded with their
   // parent, in the same transaction, and no watermark describes a child alone.
   "model_version_read_model",
+  // P-33/catálogo A, named `PRICE_INTERVAL_PROJECTION` below.
+  "price_interval_read_model",
 ];
 
 /** The task stream's table name, as `projection_watermark.source_stream` spells it. */
@@ -3063,6 +3138,18 @@ export const USAGE_SETTLEMENT_OBSERVATION_PROJECTION = "usage_settlement_observa
  */
 export const USAGE_CAPTURE_MIGRATION = 20;
 
+/** One interval of one price catalog version (P-33/catálogo A, economy §3). */
+export const PRICE_INTERVAL_PROJECTION = "price_interval_read_model";
+
+/**
+ * The migration that creates the price interval catalog (P-33/catálogo A, ADR 0091).
+ *
+ * Named for `USAGE_CAPTURE_MIGRATION`'s reasons: the suite and the rewind fixtures
+ * hold the number against where the SQL sits, and the ledger hangs the
+ * retroactive fold of the registry's `PRICE_TABLE` documents off this exact version.
+ */
+export const PRICE_INTERVAL_CATALOG_MIGRATION = 21;
+
 /**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
@@ -3151,6 +3238,7 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: ARTIFACT_PIN_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ARTIFACT_TOMBSTONE_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: MODEL_VERSION_PROJECTION, sourceStream: REGISTRY_STREAM },
+  { projectionName: PRICE_INTERVAL_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ROUTING_ASSIGNMENT_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ROUTING_ASSIGNMENT_PROJECTION, sourceStream: INITIATIVE_STREAM },
 ];
@@ -3376,6 +3464,11 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "index", name: "ix_usage_settlement__latest" },
   { type: "table", name: "usage_settlement_source_head_read_model" },
   { type: "table", name: "usage_settlement_observation_read_model" },
+  // P-33/catálogo A. One table and nothing else: the dictionary's lookup index
+  // is the primary key's own, whose automatic index carries the reserved prefix
+  // this inventory excludes (adjudication Q5), and the rule spanning rows is the
+  // door's and the fold's.
+  { type: "table", name: "price_interval_read_model" },
 ];
 
 export interface MigrationConformance {

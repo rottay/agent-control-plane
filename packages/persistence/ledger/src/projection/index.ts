@@ -44,6 +44,9 @@ import {
   MODEL_RESOLUTION_STATUSES,
   MODEL_VERSION_PAYLOAD_KEYS,
   MODEL_VERSION_STATUSES,
+  PRICE_INTERVAL_KEYS,
+  PRICE_TABLE_PAYLOAD_KEYS,
+  PRICE_TOKEN_CLASSES,
   REDACTION_VERDICTS,
   TASK_CLIENT_KEY_PATTERN,
   TASK_INTAKE_PAYLOAD_KEYS,
@@ -73,6 +76,11 @@ import type {
   ModelVersionTransportRow,
   OutboxCommandReadModel,
   OutboxFailureCode,
+  PriceIntervalProjection,
+  PriceIntervalProjectionSnapshot,
+  PriceIntervalReadModel,
+  PriceTableModelVersion,
+  PriceTokenClass,
   PromptOccurrenceReadModel,
   RegistryDocument,
   RegistryProjectionSnapshot,
@@ -5276,6 +5284,325 @@ export function globalAssignmentIssues(
     if (issue !== null) issues.push(issue);
   });
   return issues;
+}
+
+// ---------------------------------------------------------------------------
+// The price interval catalog, and the gate a PRICE_TABLE passes (P-33/catálogo A)
+// ---------------------------------------------------------------------------
+
+/** The one document kind that carries a price catalog (economy §3). */
+const PRICE_TABLE = "PRICE_TABLE";
+
+/** `ck_price_interval_read_model__currency`, said before the row exists (the execution dictionary's `:682` form). */
+const PRICE_CURRENCY_PATTERN = /^[A-Z]{3}$/;
+
+/** The overlap key of one interval: its primary key without the document, the version and `effective_from`. */
+function priceQuintupleKey(row: Record<string, unknown>): string {
+  return canonicalJsonStringify([
+    row["provider"],
+    row["modelVersionId"],
+    row["transportKind"],
+    row["tokenClass"],
+    row["currency"],
+  ]);
+}
+
+/** Every way one interval of a `PRICE_TABLE` payload fails its fixed shape, at `path`. */
+function priceIntervalIssues(entry: unknown, path: string): LedgerValidationIssue[] {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+    return [{ path, message: "is an object with the keys of a price interval" }];
+  }
+  const row = entry as Record<string, unknown>;
+  const issues: LedgerValidationIssue[] = [];
+
+  const undeclared = undeclaredKey(row, PRICE_INTERVAL_KEYS as readonly string[]);
+  if (undeclared !== null) {
+    issues.push({
+      path: path + "." + safePayloadKey(undeclared),
+      message: "is not a key of a price interval; the interval is closed",
+    });
+  }
+
+  for (const key of ["provider", "modelVersionId"]) {
+    if (!isBoundedText(row[key])) {
+      issues.push({
+        path: path + "." + key,
+        message: "is a string of 1 to " + String(MODEL_VERSION_TEXT_MAX) + " characters",
+      });
+    }
+  }
+
+  const transportKind = row["transportKind"];
+  if (typeof transportKind !== "string" || !(TRANSPORT_KINDS as readonly string[]).includes(transportKind)) {
+    issues.push({ path: path + ".transportKind", message: "names one of " + TRANSPORT_KINDS.join(", ") });
+  }
+
+  const tokenClass = row["tokenClass"];
+  if (typeof tokenClass !== "string" || !(PRICE_TOKEN_CLASSES as readonly string[]).includes(tokenClass)) {
+    issues.push({ path: path + ".tokenClass", message: "names one of " + PRICE_TOKEN_CLASSES.join(", ") });
+  }
+
+  const currency = row["currency"];
+  if (typeof currency !== "string" || !PRICE_CURRENCY_PATTERN.test(currency)) {
+    issues.push({ path: path + ".currency", message: "is three upper-case letters" });
+  }
+
+  const effectiveFrom = row["effectiveFrom"];
+  const fromReadable = isModelVersionInstant(effectiveFrom);
+  if (!fromReadable) {
+    issues.push({
+      path: path + ".effectiveFrom",
+      message: "is an ISO-8601 instant in UTC with milliseconds, in its canonical form",
+    });
+  }
+
+  const effectiveTo = row["effectiveTo"];
+  if (!("effectiveTo" in row)) {
+    issues.push({ path: path + ".effectiveTo", message: "is present, as null or as an instant" });
+  } else if (effectiveTo !== null && !isModelVersionInstant(effectiveTo)) {
+    issues.push({
+      path: path + ".effectiveTo",
+      message: "is null or an ISO-8601 instant in UTC with milliseconds, in its canonical form",
+    });
+  } else if (effectiveTo !== null && fromReadable && effectiveTo <= effectiveFrom) {
+    // Text order is time order for the canonical form: fixed width, UTC and
+    // zero-padded throughout, which is what `ck_…__interval_order` compares.
+    issues.push({
+      path: path + ".effectiveTo",
+      message: "is null or later than effectiveFrom; an interval is half-open, [effectiveFrom, effectiveTo)",
+    });
+  }
+
+  const price = row["pricePerMillionNanos"];
+  if (!Number.isSafeInteger(price) || (price as number) < 0) {
+    issues.push({ path: path + ".pricePerMillionNanos", message: "is an integer of zero or greater" });
+  }
+
+  return issues;
+}
+
+/**
+ * Every way a `PRICE_TABLE` payload fails its fixed shape, by name (ADR 0091).
+ *
+ * The door's check, and the fold's reading of what the door would admit. The
+ * payload is `{ intervals }` and nothing else; the list is not empty; each
+ * interval is closed (`PRICE_INTERVAL_KEYS`), its instants canonical, its end
+ * null or later than its start, its price a safe integer of zero or greater, its
+ * transport a word of the contract, its token class one of four and its currency
+ * three upper-case letters. Across the list: no primary key twice
+ * (`PRICE_INTERVAL_DUPLICATE`), and no two intervals of one
+ * `(provider, modelVersionId, transportKind, tokenClass, currency)` that meet
+ * (`PRICE_INTERVAL_OVERLAP`) — economy §3's rule, which no CHECK can state.
+ * Adjacent intervals, `[a, b)` then `[b, c)`, do not meet. No value is echoed.
+ *
+ * Pure: whether each model version is registered is the door's lookup, in
+ * `priceTableIssues`, and never the fold's.
+ */
+export function priceTablePayloadIssues(payload: Record<string, unknown>): LedgerValidationIssue[] {
+  const issues: LedgerValidationIssue[] = [];
+
+  const undeclared = undeclaredKey(payload, PRICE_TABLE_PAYLOAD_KEYS as readonly string[]);
+  if (undeclared !== null) {
+    issues.push({
+      path: "payload." + safePayloadKey(undeclared),
+      message: "is not a key of a PRICE_TABLE payload; the payload is closed",
+    });
+  }
+
+  const intervals = payload["intervals"];
+  if (!Array.isArray(intervals) || intervals.length === 0) {
+    issues.push({ path: "payload.intervals", message: "is a list of one or more price intervals" });
+    return issues;
+  }
+
+  const readable: { readonly index: number; readonly row: Record<string, unknown> }[] = [];
+  intervals.forEach((entry: unknown, index) => {
+    const own = priceIntervalIssues(entry, "payload.intervals[" + String(index) + "]");
+    if (own.length === 0) readable.push({ index, row: entry as Record<string, unknown> });
+    issues.push(...own);
+  });
+
+  // Grouped by the overlap key and ordered by start, so if any two intervals of
+  // one group meet, some two neighbours meet: when interval j starts before an
+  // earlier interval i ends, i's successor starts no later than j and so before
+  // i ends too. Neighbours are enough to refuse the version; they need not name
+  // every pair.
+  const groups = new Map<string, { readonly index: number; readonly row: Record<string, unknown> }[]>();
+  for (const entry of readable) {
+    const key = priceQuintupleKey(entry.row);
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, [entry]);
+    else group.push(entry);
+  }
+  const clashes: { readonly index: number; readonly issue: LedgerValidationIssue }[] = [];
+  for (const group of groups.values()) {
+    const ordered = [...group].sort((left, right) => {
+      const leftFrom = left.row["effectiveFrom"] as string;
+      const rightFrom = right.row["effectiveFrom"] as string;
+      return leftFrom < rightFrom ? -1 : leftFrom > rightFrom ? 1 : left.index - right.index;
+    });
+    for (let position = 1; position < ordered.length; position += 1) {
+      const previous = ordered[position - 1];
+      const current = ordered[position];
+      if (previous === undefined || current === undefined) continue;
+      const at = "payload.intervals[" + String(current.index) + "]";
+      const previousTo = previous.row["effectiveTo"] as string | null;
+      const currentFrom = current.row["effectiveFrom"] as string;
+      if ((previous.row["effectiveFrom"] as string) === currentFrom) {
+        clashes.push({
+          index: current.index,
+          issue: {
+            path: at,
+            message:
+              "PRICE_INTERVAL_DUPLICATE: interval " +
+              String(previous.index) +
+              " already prices this provider, model version, transport, token class and currency from the same instant",
+          },
+        });
+      } else if (previousTo === null || previousTo > currentFrom) {
+        clashes.push({
+          index: current.index,
+          issue: {
+            path: at,
+            message:
+              "PRICE_INTERVAL_OVERLAP: interval " +
+              String(previous.index) +
+              " prices this provider, model version, transport, token class and currency over part of the same time",
+          },
+        });
+      }
+    }
+  }
+  clashes.sort((left, right) => left.index - right.index);
+  issues.push(...clashes.map((clash) => clash.issue));
+
+  return issues;
+}
+
+/**
+ * Every reason the append door refuses one `PRICE_TABLE` (ADR 0091).
+ *
+ * The door's half, in `globalAssignmentIssues`' form: a pure decision over an
+ * injected lookup of `model_version_read_model`. A payload the fold could not
+ * read is refused by its shape before any lookup. Then each interval's
+ * `modelVersionId` must be registered — in any status: a retired version keeps
+ * its historical price (`MODEL_VERSION_UNKNOWN`) — and registered under the
+ * interval's own provider (`MODEL_VERSION_PROVIDER_MISMATCH`). Transport is not
+ * held against the version's admitted transports: that is the resolver's.
+ */
+export function priceTableIssues(
+  document: RegistryDocument,
+  lookup: (modelVersionId: string) => PriceTableModelVersion | null,
+): LedgerValidationIssue[] {
+  if (document.documentKind !== PRICE_TABLE) return [];
+
+  const shape = priceTablePayloadIssues(document.payload);
+  if (shape.length > 0) return shape;
+
+  const issues: LedgerValidationIssue[] = [];
+  const intervals = document.payload["intervals"] as readonly Record<string, unknown>[];
+  intervals.forEach((row, index) => {
+    const at = "payload.intervals[" + String(index) + "]";
+    const registered = lookup(row["modelVersionId"] as string);
+    if (registered === null) {
+      issues.push({
+        path: at + ".modelVersionId",
+        message: "MODEL_VERSION_UNKNOWN: no model version with this id is registered",
+      });
+    } else if (registered.provider !== row["provider"]) {
+      issues.push({
+        path: at + ".provider",
+        message: "MODEL_VERSION_PROVIDER_MISMATCH: the model version is registered under another provider",
+      });
+    }
+  });
+  return issues;
+}
+
+/** The snapshot key of one interval: its primary key, as canonical JSON. */
+export function priceIntervalKey(row: PriceIntervalReadModel): string {
+  return canonicalJsonStringify([
+    row.catalogDocumentId,
+    row.catalogVersion,
+    row.provider,
+    row.modelVersionId,
+    row.transportKind,
+    row.tokenClass,
+    row.currency,
+    row.effectiveFrom,
+  ]);
+}
+
+/**
+ * The price intervals one registry document publishes, if it is a `PRICE_TABLE`.
+ *
+ * Total, and whole per version (ADR 0091). A payload `priceTablePayloadIssues`
+ * refuses yields the version with no rows — never a part of them, and never a
+ * throw: the stream has no delete path, so a fold that refused a stored document
+ * would be disowning history, and one that kept its readable half would publish
+ * what the door refuses. The door refuses such a payload, so only history written
+ * before migration 21, or planted past the door, reaches that branch.
+ *
+ * No lookup: the fold does not ask whether a model version is registered. A
+ * rebuild folds what the door admitted (N-P14A-7), and a version retired or
+ * re-registered since does not unpublish a price.
+ *
+ * Insert-only: a version's rows are its own, keyed by the version, so a later
+ * version — retroactive or not — adds rows beside them and changes none.
+ */
+export function nextPriceIntervalProjection(
+  document: RegistryDocument,
+  sequence: number,
+): PriceIntervalProjection | null {
+  if (document.documentKind !== PRICE_TABLE) return null;
+
+  const catalogDocumentId = document.documentId;
+  const catalogVersion = document.documentVersion;
+  const payload: unknown = document.payload;
+  const readable =
+    payload !== null &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    priceTablePayloadIssues(payload as Record<string, unknown>).length === 0;
+  if (!readable) return { catalogDocumentId, catalogVersion, rows: [] };
+
+  const intervals = (payload as Record<string, unknown>)["intervals"] as readonly Record<string, unknown>[];
+  return {
+    catalogDocumentId,
+    catalogVersion,
+    rows: intervals.map(
+      (row): PriceIntervalReadModel => ({
+        catalogDocumentId,
+        catalogVersion,
+        provider: row["provider"] as string,
+        modelVersionId: row["modelVersionId"] as string,
+        transportKind: row["transportKind"] as string,
+        tokenClass: row["tokenClass"] as PriceTokenClass,
+        currency: row["currency"] as string,
+        effectiveFrom: row["effectiveFrom"] as string,
+        effectiveTo: row["effectiveTo"] as string | null,
+        pricePerMillionNanos: row["pricePerMillionNanos"] as number,
+        recordedBy: document.recordedBy,
+        sequence,
+      }),
+    ),
+  };
+}
+
+/** In-memory projection of the price interval catalog. */
+export function createPriceIntervalProjectionSnapshot(): PriceIntervalProjectionSnapshot {
+  return { intervals: new Map<string, PriceIntervalReadModel>() };
+}
+
+/** Fold one registry document into the price snapshot, if it is a `PRICE_TABLE`. Insert-only. */
+export function applyRegistryPriceIntervalToSnapshot(
+  snapshot: PriceIntervalProjectionSnapshot,
+  document: RegistryDocument,
+  sequence: number,
+): void {
+  const projected = nextPriceIntervalProjection(document, sequence);
+  if (projected === null) return;
+  for (const row of projected.rows) snapshot.intervals.set(priceIntervalKey(row), row);
 }
 
 // ---------------------------------------------------------------------------

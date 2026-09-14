@@ -1305,6 +1305,8 @@ export interface RebuildResult {
   readonly modelVersionRows: number;
   readonly modelVersionEligibleRoleRows: number;
   readonly modelVersionTransportRows: number;
+  /** The price interval catalog, from the registry stream alone (P-33/catálogo A). */
+  readonly priceIntervalRows: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1666,6 +1668,144 @@ export interface ModelVersionEntry {
   readonly row: ModelVersionReadModel;
   readonly eligibleRoles: readonly WorkerRole[];
   readonly transports: readonly string[];
+}
+
+// ---------------------------------------------------------------------------
+// The price interval catalog (P-33/catálogo escalón A, ADR 0091)
+//
+// Economy §3: one row per interval of one `PRICE_TABLE` document's version,
+// keyed by the document AND the version, so a lookup never crosses versions. The
+// payload is fixed by name — one closed list of intervals, each the camelCase
+// mirror of the dictionary's price columns — and the append door holds it to
+// that shape, and to the model versions the registry already holds, before it
+// writes. The ledger stores the catalog; resolving a price is escalón B's.
+// ---------------------------------------------------------------------------
+
+/** The four token classes a price is quoted for (`ck_price_interval_read_model__token_class`). */
+export const PRICE_TOKEN_CLASSES = ["input", "output", "cache_write", "cache_read"] as const;
+
+export type PriceTokenClass = (typeof PRICE_TOKEN_CLASSES)[number];
+
+/**
+ * The payload of one `PRICE_TABLE` document, by name: one list, and nothing else.
+ *
+ * Closed, for `MODEL_VERSION_PAYLOAD_KEYS`' reason: a key outside it is refused
+ * at the door, so nothing is parked in a catalog under a name nobody reads.
+ */
+export const PRICE_TABLE_PAYLOAD_KEYS = ["intervals"] as const;
+
+/**
+ * One interval of a `PRICE_TABLE` payload, by name.
+ *
+ * The camelCase mirror of economy §3's columns a catalog states. Every key is
+ * required — `effectiveTo` too, as null or as an instant — and no other is
+ * admitted. `catalogDocumentId` and `catalogVersion` are the document's own
+ * coordinate, and `recordedBy` and `sequence` the event's: none of the four is
+ * written in the payload.
+ */
+export const PRICE_INTERVAL_KEYS = [
+  "provider",
+  "modelVersionId",
+  "transportKind",
+  "tokenClass",
+  "currency",
+  "effectiveFrom",
+  "effectiveTo",
+  "pricePerMillionNanos",
+] as const;
+
+/** One row of `price_interval_read_model`. */
+export interface PriceIntervalReadModel {
+  /** The `PRICE_TABLE` document id. */
+  readonly catalogDocumentId: string;
+  /** The document version this interval was published in. */
+  readonly catalogVersion: number;
+  readonly provider: string;
+  /** Exact, never an alias; registered when the version was admitted. */
+  readonly modelVersionId: string;
+  readonly transportKind: string;
+  readonly tokenClass: PriceTokenClass;
+  /** Three upper-case letters. Part of the identity: no conversion happens here. */
+  readonly currency: string;
+  /** Inclusive. ISO-8601 instant in UTC with milliseconds. */
+  readonly effectiveFrom: string;
+  /** Exclusive, or null for no declared end. */
+  readonly effectiveTo: string | null;
+  /** Nanounits of `currency` per million tokens. An integer, never a float. */
+  readonly pricePerMillionNanos: number;
+  readonly recordedBy: string;
+  readonly sequence: number;
+}
+
+/**
+ * One `PRICE_TABLE` version's worth of price projection.
+ *
+ * Whole or empty: `rows` is every interval of the version, or none of them when
+ * the version cannot be read. Never a part — economy §3 publishes a catalog
+ * version with all its rows or with none, and a fold that kept the readable half
+ * of an unreadable version would publish exactly the part the door refuses.
+ */
+export interface PriceIntervalProjection {
+  readonly catalogDocumentId: string;
+  readonly catalogVersion: number;
+  readonly rows: readonly PriceIntervalReadModel[];
+}
+
+/** The price partition of an in-memory snapshot of the registry stream, keyed by the primary key. */
+export interface PriceIntervalProjectionSnapshot {
+  readonly intervals: Map<string, PriceIntervalReadModel>;
+}
+
+/** The exact catalog version `readPriceIntervals` reads: a document and one of its versions. */
+export interface PriceIntervalQuery {
+  readonly catalogDocumentId: string;
+  readonly catalogVersion: number;
+}
+
+/**
+ * The reasons a `PRICE_TABLE` is refused at the door beyond its field shapes
+ * (ADR 0091).
+ *
+ * Words carried at the head of each issue's message, for
+ * `GLOBAL_ASSIGNMENT_REFUSALS`' reason. Two span rows of one version — the same
+ * primary key twice, and two intervals of one quintuple that meet — and two read
+ * the registry: a model version nobody registered, and one registered under
+ * another provider.
+ */
+export const PRICE_TABLE_REFUSALS = [
+  "PRICE_INTERVAL_DUPLICATE",
+  "PRICE_INTERVAL_OVERLAP",
+  "MODEL_VERSION_UNKNOWN",
+  "MODEL_VERSION_PROVIDER_MISMATCH",
+] as const;
+
+export type PriceTableRefusal = (typeof PRICE_TABLE_REFUSALS)[number];
+
+/** What the price gate needs to know about one registered model version, and nothing else. */
+export interface PriceTableModelVersion {
+  readonly provider: string;
+}
+
+/**
+ * One row of `price_interval_read_model`, as the base spells its columns.
+ *
+ * The store's row type, beside the read model it is mapped to: `token_class` is
+ * read back as text and narrowed on the way out, because the column's vocabulary
+ * is a CHECK and not a type.
+ */
+export interface PriceIntervalRow {
+  readonly catalog_document_id: string;
+  readonly catalog_version: number;
+  readonly provider: string;
+  readonly model_version_id: string;
+  readonly transport_kind: string;
+  readonly token_class: string;
+  readonly currency: string;
+  readonly effective_from: string;
+  readonly effective_to: string | null;
+  readonly price_per_million_nanos: number;
+  readonly recorded_by: string;
+  readonly sequence: number;
 }
 
 /**

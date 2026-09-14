@@ -46,6 +46,8 @@ import {
   USAGE_SETTLEMENT_OBSERVATION_PROJECTION,
   USAGE_SETTLEMENT_PROJECTION,
   USAGE_SETTLEMENT_SOURCE_HEAD_PROJECTION,
+  PRICE_INTERVAL_CATALOG_MIGRATION,
+  PRICE_INTERVAL_PROJECTION,
   TASK_STREAM,
   checkMigrationConformance,
 } from "../../src/migrations/index.js";
@@ -189,7 +191,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -212,11 +214,12 @@ describe("migration 7 appends the watermark table without touching the applied s
       "initiative_registration_detail",
       "task_submission",
       "usage_capture",
+      "price_interval_catalog",
     ]);
   });
 
   it("is the only migration that creates the watermark table", () => {
-    // Migrations 9, 11, 12, 13, 14, 15, 17, 19 and 20 seed rows into it, which is what a
+    // Migrations 9, 11, 12, 13, 14, 15, 17, 19, 20 and 21 seed rows into it, which is what a
     // migration that adds a projection does; none of them creates, alters or
     // drops the table.
     const creating = MIGRATIONS.filter((migration) =>
@@ -226,7 +229,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     const naming = MIGRATIONS.filter((migration) =>
       migration.sql.includes("projection_watermark"),
     );
-    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15, 17, 19, 20]);
+    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21]);
   });
 
   it("declares the table STRICT and names its constraints by the §3.2 convention", () => {
@@ -315,6 +318,7 @@ describe("the closed set of watermark rows is exactly the streams under discipli
       "artifact_pin_read_model@registry_events",
       "artifact_tombstone_read_model@registry_events",
       "model_version_read_model@registry_events",
+      "price_interval_read_model@registry_events",
       "routing_assignment_read_model@registry_events",
       "routing_assignment_read_model@initiative_events",
     ]);
@@ -530,7 +534,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
     ]);
   });
 
@@ -756,7 +760,8 @@ describe("the two-source projection is the only name with two watermark rows", (
     expect([...counts.entries()].filter(([, count]) => count > 1)).toEqual([
       ["routing_assignment_read_model", 2],
     ]);
-    expect(PROJECTION_SOURCES).toHaveLength(25);
+    // Twenty-five before P-33/catálogo A's catalog took the twenty-sixth row.
+    expect(PROJECTION_SOURCES).toHaveLength(26);
   });
 
   it("still does not claim the account stream (D3)", () => {
@@ -1506,8 +1511,9 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
       "task_revision_envelope_reference",
     );
     // Sixteen when this migration landed; the seventeenth is P-14 A's, the
-    // eighteenth P-14 B's, the nineteenth P-14 C's and the twentieth P-32/captura B's.
-    expect(MIGRATIONS).toHaveLength(20);
+    // eighteenth P-14 B's, the nineteenth P-14 C's, the twentieth P-32/captura B's
+    // and the twenty-first P-33/catálogo A's.
+    expect(MIGRATIONS).toHaveLength(21);
     expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION]?.name).toBe("model_version_registry");
   });
 
@@ -1603,8 +1609,9 @@ describe("migration 17 folds the model version registry from the registry stream
     expect(MODEL_VERSION_REGISTRY_MIGRATION).toBe(17);
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION - 1]?.name).toBe("model_version_registry");
     // Seventeen when this migration landed; the eighteenth is P-14 B's, the
-    // nineteenth P-14 C's and the twentieth P-32/captura B's.
-    expect(MIGRATIONS).toHaveLength(20);
+    // nineteenth P-14 C's, the twentieth P-32/captura B's and the twenty-first
+    // P-33/catálogo A's.
+    expect(MIGRATIONS).toHaveLength(21);
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION]?.name).toBe("initiative_registration_detail");
   });
 
@@ -1673,6 +1680,8 @@ describe("migration 17 folds the model version registry from the registry stream
       ARTIFACT_PIN_PROJECTION,
       ARTIFACT_TOMBSTONE_PROJECTION,
       MODEL_VERSION_PROJECTION,
+      // P-33/catálogo A's catalog, after it.
+      PRICE_INTERVAL_PROJECTION,
     ]);
     expect(PROJECTION_NAMES).not.toContain(MODEL_VERSION_PROJECTION);
     expect(PROJECTION_SOURCES.filter((source) => source.projectionName === MODEL_VERSION_PROJECTION)).toEqual([
@@ -1724,9 +1733,9 @@ describe("migration 18 adds the initiative projection's three columns and nothin
     expect(EIGHTEENTH?.name).toBe("initiative_registration_detail");
     expect(INITIATIVE_REGISTRATION_MIGRATION).toBe(18);
     expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION - 1]?.name).toBe("initiative_registration_detail");
-    // Eighteen when this migration landed; the nineteenth is P-14 C's and the
-    // twentieth P-32/captura B's.
-    expect(MIGRATIONS).toHaveLength(20);
+    // Eighteen when this migration landed; the nineteenth is P-14 C's, the
+    // twentieth P-32/captura B's and the twenty-first P-33/catálogo A's.
+    expect(MIGRATIONS).toHaveLength(21);
     expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION]?.name).toBe("task_submission");
   });
 
@@ -1774,8 +1783,9 @@ describe("migration 19 gives a task's client key its one home", () => {
     expect(NINETEENTH?.name).toBe("task_submission");
     expect(TASK_SUBMISSION_MIGRATION).toBe(19);
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION - 1]?.name).toBe("task_submission");
-    // Nineteen when this migration landed; the twentieth is P-32/captura B's.
-    expect(MIGRATIONS).toHaveLength(20);
+    // Nineteen when this migration landed; the twentieth is P-32/captura B's and
+    // the twenty-first P-33/catálogo A's.
+    expect(MIGRATIONS).toHaveLength(21);
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION]?.name).toBe("usage_capture");
   });
 
@@ -1845,12 +1855,14 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
     USAGE_SETTLEMENT_OBSERVATION_PROJECTION,
   ];
 
-  it("sits at the tail of a set whose order is fixed", () => {
+  it("sits at the position a set whose order is fixed gave it", () => {
     expect(TWENTIETH?.version).toBe(20);
     expect(TWENTIETH?.name).toBe("usage_capture");
     expect(USAGE_CAPTURE_MIGRATION).toBe(20);
     expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION - 1]?.name).toBe("usage_capture");
-    expect(MIGRATIONS).toHaveLength(20);
+    // Twenty when this migration landed; the twenty-first is P-33/catálogo A's.
+    expect(MIGRATIONS).toHaveLength(21);
+    expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION]?.name).toBe("price_interval_catalog");
   });
 
   it("creates economy's five tables STRICT, and nothing else is created, altered or dropped", () => {
@@ -1963,7 +1975,8 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
     expect(at(USAGE_MEASUREMENT_STREAM_PROJECTION)).toBeLessThan(at("effect_read_model"));
     expect(at(USAGE_OBSERVATION_PROJECTION)).toBeLessThan(at(DISPATCH_ATTEMPT_PROJECTION));
     expect(PROJECTION_NAMES).toHaveLength(16);
-    expect(PROJECTION_SOURCES).toHaveLength(25);
+    // Twenty-five when this cohort landed; P-33/catálogo A's registry row is the twenty-sixth.
+    expect(PROJECTION_SOURCES).toHaveLength(26);
     expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("usage_"))).toEqual([
       { type: "table", name: "usage_measurement_stream_read_model" },
       { type: "index", name: "ux_usage_measurement_stream__identity" },
@@ -1978,5 +1991,112 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
       { type: "table", name: "usage_settlement_observation_read_model" },
     ]);
     expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
+  });
+});
+
+/**
+ * Migration 21, the price interval catalog (P-33/catálogo A, economy §3, ADR 0091).
+ *
+ * The text: one STRICT table under economy's name with its eight-column primary
+ * key and the checks, no lookup index of its own (Q5), no foreign key, no trigger,
+ * and one watermark seeded at the registry head. `test/ledger` asserts what the
+ * door, the fold, the rebuild, the integrity replay and the retroactive fold do
+ * with it, and each CHECK against a real base.
+ */
+describe("migration 21 gives a price catalog version its one table", () => {
+  const TWENTY_FIRST = MIGRATIONS[20];
+
+  const statements = (TWENTY_FIRST?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+
+  it("sits at the tail of a set whose order is fixed", () => {
+    expect(TWENTY_FIRST?.version).toBe(21);
+    expect(TWENTY_FIRST?.name).toBe("price_interval_catalog");
+    expect(PRICE_INTERVAL_CATALOG_MIGRATION).toBe(21);
+    expect(MIGRATIONS[PRICE_INTERVAL_CATALOG_MIGRATION - 1]?.name).toBe("price_interval_catalog");
+    expect(MIGRATIONS).toHaveLength(21);
+  });
+
+  it("H-1: creates economy's table under economy's name, STRICT, and nothing else is created, altered or dropped", () => {
+    expect([...statements.matchAll(/CREATE TABLE (\w+) \(/g)].map((match) => match[1])).toEqual([
+      "price_interval_read_model",
+    ]);
+    expect(PRICE_INTERVAL_PROJECTION).toBe("price_interval_read_model");
+    expect(statements).not.toContain("price_interval_catalog");
+    expect(statements.match(/\) STRICT;/g)).toHaveLength(1);
+    expect(statements).not.toMatch(/ALTER TABLE|DROP |CREATE TRIGGER|RENAME|UPDATE |ON CONFLICT/);
+    for (const column of [
+      "catalog_document_id     TEXT    NOT NULL",
+      "catalog_version         INTEGER NOT NULL",
+      "provider                TEXT    NOT NULL",
+      "model_version_id        TEXT    NOT NULL",
+      "transport_kind          TEXT    NOT NULL",
+      "token_class             TEXT    NOT NULL",
+      "currency                TEXT    NOT NULL",
+      "effective_from          TEXT    NOT NULL",
+      "effective_to            TEXT,",
+      "price_per_million_nanos INTEGER NOT NULL",
+      "recorded_by             TEXT    NOT NULL",
+      "sequence                INTEGER NOT NULL",
+    ]) {
+      expect(statements, column).toContain(column);
+    }
+    // Twelve columns: the dictionary's, and not one parked beside them.
+    const body = /CREATE TABLE price_interval_read_model \(([^;]*)\) STRICT;/.exec(statements)?.[1] ?? "";
+    expect(body.split("\n").filter((line) => /^\s{2}[a-z_]+\s+(TEXT|INTEGER)/.test(line))).toHaveLength(12);
+  });
+
+  it("E2-E4, Q4: carries the eight-column key and the checks under the §3.2 names, no REAL anywhere", () => {
+    for (const rule of [
+      "CONSTRAINT pk_price_interval_read_model PRIMARY KEY (catalog_document_id, catalog_version, provider, model_version_id, transport_kind, token_class, currency, effective_from)",
+      "CONSTRAINT ck_price_interval_read_model__token_class\n    CHECK (token_class IN ('input','output','cache_write','cache_read'))",
+      "CONSTRAINT ck_price_interval_read_model__interval_order\n    CHECK (effective_to IS NULL OR effective_to > effective_from)",
+      "CONSTRAINT ck_price_interval_read_model__price_per_million_nanos\n    CHECK (price_per_million_nanos >= 0)",
+      "CONSTRAINT ck_price_interval_read_model__currency\n    CHECK (length(currency) = 3 AND currency NOT GLOB '*[^A-Z]*')",
+      "CONSTRAINT ck_price_interval_read_model__catalog_version\n    CHECK (catalog_version >= 1)",
+      "CONSTRAINT ck_price_interval_read_model__sequence\n    CHECK (sequence >= 1)",
+    ]) {
+      expect(statements, rule).toContain(rule);
+    }
+    expect(statements.match(/CONSTRAINT /g)).toHaveLength(7);
+    expect(statements).not.toMatch(/\bREAL\b|\bNUMERIC\b|\bFLOAT\b/);
+  });
+
+  it("Q5: creates no lookup index, because the primary key's own index is that index", () => {
+    expect(statements).not.toMatch(/CREATE (UNIQUE )?INDEX/);
+    expect(statements).not.toContain("ix_price_interval_read_model__lookup");
+    expect(statements).not.toMatch(/REFERENCES|FOREIGN KEY/);
+  });
+
+  it("seeds its one watermark from the registry head, never from a literal zero", () => {
+    expect(statements.match(/INSERT INTO projection_watermark/g)).toHaveLength(1);
+    expect(statements).toContain(
+      "  'price_interval_read_model',\n  'registry_events',\n  1,\n" +
+        "  CAST((SELECT value FROM ledger_meta WHERE key = 'registry_head_sequence') AS INTEGER),",
+    );
+    for (const key of ["registry_head_sequence", "registry_event_count", "registry_head_event_sha256"]) {
+      expect(statements, key).toContain("WHERE key = '" + key + "'");
+    }
+    expect(statements).not.toContain("'registry_events',\n  1,\n  0,\n  0,");
+  });
+
+  it("H-5, N-P33A-10: declares the projection in all four places that have to agree, and inventories one table", () => {
+    expect(DERIVED_TABLES).toContain(PRICE_INTERVAL_PROJECTION);
+    expect(REGISTRY_PROJECTION_NAMES).toContain(PRICE_INTERVAL_PROJECTION);
+    expect(PROJECTION_NAMES).not.toContain(PRICE_INTERVAL_PROJECTION);
+    expect(INITIATIVE_PROJECTION_NAMES).not.toContain(PRICE_INTERVAL_PROJECTION);
+    expect(PROJECTION_SOURCES.filter((source) => source.projectionName === PRICE_INTERVAL_PROJECTION)).toEqual([
+      { projectionName: PRICE_INTERVAL_PROJECTION, sourceStream: REGISTRY_STREAM },
+    ]);
+    expect(PROJECTION_SOURCES.filter((source) => source.sourceStream === REGISTRY_STREAM)).toHaveLength(7);
+    expect(PROJECTION_SOURCES).toHaveLength(26);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("price_"))).toEqual([
+      { type: "table", name: PRICE_INTERVAL_PROJECTION },
+    ]);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
+    // No kind is added: the stream has carried PRICE_TABLE since migration 9.
+    expect(DOCUMENT_KINDS).toContain("PRICE_TABLE");
   });
 });

@@ -52,6 +52,7 @@ ledger.close();
 | `listArtifactEvents(subjectId)` | The events of one artifact subject in ordinal order, each re-parsed: the next ordinal, and an intention's exact recorded body. |
 | `getGlobalRoutingAssignment({ role, slot })` | The GLOBAL assignment in force for one role and slot, its fallbacks, the model version it names with its roles and transports, and the three watermark rows it was read at — all from one read transaction. `assignment: null` when none is in force; two in force is a `LedgerQueryError`. |
 | `getModelVersion(modelVersionId)` | One model version with its roles and transports, or null, and the registry watermark it was read at, from one read transaction. |
+| `readPriceIntervals({ catalogDocumentId, catalogVersion })` | Every price interval of exactly that catalog version, in primary-key order, from one read transaction. Never another version's rows; `[]` when the version holds none, never a zero row. |
 | `getInitiative(id)` | Derived initiative read model, or null. |
 | `listRoadmapVersions(id)` | An initiative's recorded roadmap versions, in version order. |
 | `listInitiativeEvents(query?)` | Sequence-ordered page of the initiative stream. |
@@ -200,6 +201,7 @@ fifteenth class cannot arrive without appearing here.
 | `model_version_read_model` | derived | the one registry of model versions, one row per `MODEL_VERSION` document at the version applied last: provider, model, release, lifecycle status, context, policy version, `deprecated_at` null if and only if `ACTIVE`. `latest_performance_window` stays `NULL`: economy's |
 | `model_version_eligible_role` | derived | one row per role a model version declares eligible, in declared order, each role once |
 | `model_version_transport` | derived | one row per transport a model version admits, in declared order, each transport once |
+| `price_interval_read_model` | derived | one row per interval of one `PRICE_TABLE` version, since migration 21: the document and the version in the key, provider, model version, transport, token class, currency, a half-open `[effective_from, effective_to)` and an integer price in nanounits per million tokens. Insert-only: a later version adds rows and changes none |
 | `artifact_blob_read_model` | derived | one row per generation of some bytes, keyed `(content_sha256, blob_generation)`: size, media type, lifecycle state, encryption, and the event that first published it. No owner and no scope |
 | `artifact_reference_read_model` | derived | one row per authorized access to one generation: class, classification, scope, producer, policy, retention. Here lives the permission |
 | `artifact_pin_read_model` | derived | one row per protection of one generation from collection, with the sequences that took and released it |
@@ -1093,6 +1095,59 @@ No product door publishes a model version or an assignment, and no task intake
 records a resolution: escalones B and C of P-14. No `INITIATIVE`/`STEP` partition.
 No lifecycle rule between versions and no check that a provider is stable across
 them. The policy file and `resolveRoute` in `@acp/accounts` are untouched.
+
+## The price interval catalog, and the gate a PRICE_TABLE passes
+
+Economy §3's catalog is folded here from the registry stream's `PRICE_TABLE`
+documents (P-33/catálogo A, migration 21, ADR 0091; decisions 87-89): one row per
+interval of one document's version, the document **and** the version in every
+key, so a lookup inside a pinned version never reads another. The ledger stores and
+publishes the catalog; resolving a price at an instant is escalón B's.
+
+### A closed payload, held at the door
+
+A `PRICE_TABLE` payload is `{ intervals }` (`PRICE_TABLE_PAYLOAD_KEYS`), a non-empty
+list. Each interval has exactly `provider`, `modelVersionId`, `transportKind`,
+`tokenClass`, `currency`, `effectiveFrom`, `effectiveTo` and `pricePerMillionNanos`
+(`PRICE_INTERVAL_KEYS`): `effectiveTo` present as null or as an instant later than
+`effectiveFrom`, both instants in the canonical millisecond UTC form, a price that is
+a safe integer of zero or greater, a transport of the contract's `TRANSPORT_KINDS`, a
+token class of `PRICE_TOKEN_CLASSES` and a currency of three upper-case letters. The
+document's id and version, and the event's author and sequence, complete the row.
+The body stays under the registry's 64 KiB bound.
+
+### What the door refuses, by name
+
+After the replay, event-id and lineage checks and before the insert, on its own
+branch of the registry gate:
+
+| Word at the head of the message | Path | When |
+| --- | --- | --- |
+| `PRICE_INTERVAL_DUPLICATE` | `payload.intervals[i]` | the same primary key twice in the version |
+| `PRICE_INTERVAL_OVERLAP` | `payload.intervals[i]` | two intervals of one `(provider, modelVersionId, transportKind, tokenClass, currency)` meet |
+| `MODEL_VERSION_UNKNOWN` | `payload.intervals[i].modelVersionId` | no model version with that id is registered, in any status |
+| `MODEL_VERSION_PROVIDER_MISMATCH` | `payload.intervals[i].provider` | the model version is registered under another provider |
+
+A field outside its shape is refused at its own path first, before any lookup, and
+one bad interval refuses the whole version: no event, no row. Adjacent intervals,
+`[a, b)` then `[b, c)`, do not meet. A RETIRED model version keeps its price. The
+transport is not held against the version's admitted transports.
+
+### One fold, whole per version, in four places
+
+`nextPriceIntervalProjection` writes every interval of a version or none of them: a
+version whose payload it cannot read — only history from before migration 21 can
+hold one — publishes no row, and nothing is refused. It asks for no model version:
+existence was the door's. It runs at the door in the append's transaction, in
+migration 21's retroactive fold over the stream a ledger already holds, in the
+rebuild, and in `verifyIntegrity`, which names a rewritten, missing or unaccounted
+row by its document and version. There is no lookup index beside the primary key:
+the dictionary's index is the primary key's own.
+
+### What this escalón does not do
+
+No price resolution and no `PRICE_MISSING` (escalón B). No pin on a segment or a
+dispatch (P-15). No catalog on the artifact plane, no cost snapshot, no valuation.
 
 ## An initiative's registration, by command and by API
 

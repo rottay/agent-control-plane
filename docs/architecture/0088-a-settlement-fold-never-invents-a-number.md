@@ -8,6 +8,28 @@
   of §1.3.3–§1.3.4 the Fable preaudit fixed (H-3) and the DT adjudicated, and it is
   recorded here rather than folded back into the dictionary.
 
+## Errata, 2026-09-14
+
+One line of **Eleven** below — "Types live inline in the module (H-11)" — is
+**SUPERSEDED** for every new declaration by the owner's law in
+`docs/audit/architecture/index.md` §7: all of a concept's `interface`, `type` and
+alias declarations live in its semantic leaf, private ones included, and named
+declarations are never interleaved with implementation. A brief's acceptance and an
+auditor's `ACCEPT` do not amend an owner law, so that line never carried the
+authority to admit the exception, and this record withdraws it rather than defend it.
+
+What this errata does **not** do: it does not touch the sentence that follows it —
+escalón B still types its five row interfaces in `src/types/index.ts` from these
+shapes, never restated — and it does not rewrite any other line of this ADR. The
+declarations already inline in `usage-settlement`, `artifact-plane`,
+`artifact-lease-store`, `initiative-registration`, `assignment` (accounts) and
+`intake` (runtime) are pre-existing debt, named and bounded: correcting them is its
+own adjudicated packet with its own write-set (C-3 of the P-33/catálogo A writer
+brief v3), not a clause of this errata and not a repository-wide reorganization.
+
+Reconciled by P-33/catálogo escalón A (ADR 0091, decision 90), which separated its
+own new declarations into the ledger's `src/types/index.ts` leaf.
+
 ## Context
 
 Economy §1 records spend as observations on **measurement streams** — one per

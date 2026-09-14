@@ -1159,6 +1159,47 @@ describe("integrity", () => {
         transports: ["CLI_SUBSCRIPTION"],
       },
     });
+    // And one price catalog version naming that model version, so migration 21
+    // has intervals to fold back when it is re-applied (N-P33A-12). Its payload is
+    // the closed shape the door holds a PRICE_TABLE to since P-33/catálogo A.
+    ledger.appendRegistryEvent({
+      contractVersion: LEDGER_CONTRACT_VERSION,
+      eventId: randomUUID(),
+      idempotencyKey: "catalog-rewind/1",
+      documentKind: "PRICE_TABLE",
+      documentId: "catalog-rewind",
+      documentVersion: 1,
+      parentDocumentVersion: null,
+      contentDigest: "3".repeat(64),
+      recordedBy: B1E_ACTOR,
+      effectiveFrom: "2026-08-27T00:00:00.000Z",
+      occurredAt: "2026-08-27T00:00:00.000Z",
+      recordedAt: "2026-08-27T00:00:00.000Z",
+      payload: {
+        intervals: [
+          {
+            provider: "claude",
+            modelVersionId: "mv-rewind",
+            transportKind: "CLI_SUBSCRIPTION",
+            tokenClass: "input",
+            currency: "USD",
+            effectiveFrom: "2026-08-01T00:00:00.000Z",
+            effectiveTo: null,
+            pricePerMillionNanos: 15000000000,
+          },
+          {
+            provider: "claude",
+            modelVersionId: "mv-rewind",
+            transportKind: "CLI_SUBSCRIPTION",
+            tokenClass: "output",
+            currency: "USD",
+            effectiveFrom: "2026-08-01T00:00:00.000Z",
+            effectiveTo: null,
+            pricePerMillionNanos: 75000000000,
+          },
+        ],
+      },
+    });
     // And one registration in the closed payload the initiative door records, so
     // migration 18 has title and digest to fold back when it is re-applied
     // (N-P14B-8). The reference is not resolved at append: the stream records
@@ -1238,13 +1279,20 @@ describe("integrity", () => {
     // that already exists. This fixture delivers no effect, so the re-applied 20
     // folds no exposure; the retroactive fold over a real delivery is the ledger
     // suite's.
+    //
+    // Migration 21 goes before 20 (P-33/catálogo A): its one table and its one
+    // watermark row, or the re-applied 21 aborts on a table that already exists.
+    // Nothing in `registry_events` moves; the re-applied 21 folds the catalog
+    // version above back into the same rows.
     const beforeRewind = registryEvidence(path);
     const beforeModelVersions = modelVersionEvidence(path);
+    const beforePriceIntervals = priceIntervalEvidence(path);
     const beforeInitiatives = initiativeColumnEvidence(path);
     expect(beforeInitiatives).toEqual([
       { title: "The rewind initiative", objective_sha256: "2".repeat(64), repository_sha256: null },
     ]);
     const rewind = new DatabaseSync(path);
+    rewindPriceIntervalCatalog(rewind);
     rewindUsageCapture(rewind);
     rewindTaskSubmission(rewind);
     rewindInitiativeRegistrationDetail(rewind);
@@ -1318,7 +1366,7 @@ describe("integrity", () => {
     ).toHaveLength(1);
     expect(
       (reapplied.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v,
-    ).toBe(20);
+    ).toBe(21);
     // P-14 C: and it re-applied 19 without aborting — the client key table is back.
     expect(
       reapplied.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").all("task_submission_read_model"),
@@ -1352,6 +1400,11 @@ describe("integrity", () => {
     // N-P14A-15: and it re-applied 17 over the document already in the stream,
     // folding it back into the same rows at a watermark level with the head.
     expect(modelVersionEvidence(path)).toEqual(beforeModelVersions);
+    // N-P33A-12: and it re-applied 21 over the catalog version already in the
+    // stream, folding its two intervals back into the same rows at a watermark
+    // level with the head.
+    expect((beforePriceIntervals as { readonly intervals: readonly unknown[] }).intervals).toHaveLength(2);
+    expect(priceIntervalEvidence(path)).toEqual(beforePriceIntervals);
     // N-P14B-8: and it re-applied 18 over the registration already in the stream,
     // folding its title and digest back into the columns it added.
     expect(initiativeColumnEvidence(path)).toEqual(beforeInitiatives);
@@ -3159,6 +3212,40 @@ describe("old-V2 R1b: the decider answers the closed vocabulary by name", () => 
 
 /** The initiative the rewind fixtures register in the closed payload (P-14 B). */
 const REWIND_INITIATIVE = "77777777-7777-4777-8777-777777777777";
+
+/**
+ * Migration 21 undone on a raw handle (P-33/catálogo A): the price interval table
+ * and its one watermark row. No index or trigger of its own name stands beside it.
+ */
+function rewindPriceIntervalCatalog(raw: DatabaseSync): void {
+  raw.exec(
+    "DROP TABLE price_interval_read_model;" +
+      "DELETE FROM projection_watermark WHERE projection_name = 'price_interval_read_model';",
+  );
+}
+
+/** The price interval catalog and its watermark, as a raw handle sees them (P-33/catálogo A). */
+function priceIntervalEvidence(path: string): unknown {
+  const raw = new DatabaseSync(path);
+  try {
+    return {
+      intervals: raw
+        .prepare(
+          "SELECT * FROM price_interval_read_model ORDER BY catalog_document_id, catalog_version, provider, " +
+            "model_version_id, transport_kind, token_class, currency, effective_from",
+        )
+        .all(),
+      watermark: raw
+        .prepare(
+          "SELECT applied_sequence, event_count, source_head_sha256 FROM projection_watermark " +
+            "WHERE projection_name = 'price_interval_read_model'",
+        )
+        .all(),
+    };
+  } finally {
+    raw.close();
+  }
+}
 
 /**
  * Migration 20 undone on a raw handle (P-32/captura B): the five usage tables,

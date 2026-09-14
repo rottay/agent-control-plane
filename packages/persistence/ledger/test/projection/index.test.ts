@@ -55,6 +55,12 @@ import {
   modelVersionPayloadIssues,
   nextModelVersionProjection,
   type ModelVersionEligibility,
+  applyRegistryPriceIntervalToSnapshot,
+  createPriceIntervalProjectionSnapshot,
+  nextPriceIntervalProjection,
+  priceIntervalKey,
+  priceTableIssues,
+  priceTablePayloadIssues,
   nextTaskAttemptProjection,
   nextTaskProjection,
   nextTaskRevisionProjection,
@@ -99,10 +105,11 @@ import {
   DELIVERED_ARTIFACT_EVENT_KINDS,
   DISPATCH_STATES,
   INITIATIVE_REGISTRATION_PAYLOAD_KEYS,
+  PRICE_TABLE_REFUSALS,
   TASK_INTAKE_PAYLOAD_KEYS,
   TASK_INTAKE_TRANSITION_ID,
 } from "../../src/types/index.js";
-import type { RegistryDocument, TaskReadModel } from "../../src/types/index.js";
+import type { PriceTableModelVersion, RegistryDocument, TaskReadModel } from "../../src/types/index.js";
 import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
 
 /**
@@ -773,6 +780,297 @@ describe("the model version fold and the GLOBAL assignment gate", () => {
       "payload.fallbacks",
     ]);
     expect(looked).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The price interval catalog and the PRICE_TABLE gate (P-33/catálogo A)
+// ---------------------------------------------------------------------------
+
+/**
+ * `priceTablePayloadIssues`, `priceTableIssues` and `nextPriceIntervalProjection`,
+ * asserted directly (ADR 0091).
+ *
+ * The payload is closed and its intervals do not meet; the gate adds a lookup of
+ * the registry the suite injects; the fold is total and whole per version, and
+ * never looks anything up.
+ */
+describe("the price interval fold and the PRICE_TABLE gate", () => {
+  const MODEL_ONE = "claude-opus-5@2026-06-01";
+  const MODEL_TWO = "claude-sonnet-5@2026-06-01";
+  const AT = "2026-09-14T12:00:00.000Z";
+  const JAN = "2026-01-01T00:00:00.000Z";
+  const FEB = "2026-02-01T00:00:00.000Z";
+  const MAR = "2026-03-01T00:00:00.000Z";
+
+  function interval(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      provider: "claude",
+      modelVersionId: MODEL_ONE,
+      transportKind: "API_KEY",
+      tokenClass: "input",
+      currency: "USD",
+      effectiveFrom: JAN,
+      effectiveTo: null,
+      pricePerMillionNanos: 15_000_000_000,
+      ...overrides,
+    };
+  }
+
+  function priceTable(intervals: readonly unknown[], overrides: Record<string, unknown> = {}): RegistryDocument {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: "0000dddd-0000-4000-8000-000000000001",
+      idempotencyKey: "catalog-claude/1",
+      documentKind: "PRICE_TABLE",
+      documentId: "catalog-claude",
+      documentVersion: 1,
+      parentDocumentVersion: null,
+      contentDigest: "3".repeat(64),
+      recordedBy: EMITTED_BY,
+      effectiveFrom: AT,
+      occurredAt: AT,
+      recordedAt: AT,
+      payload: { intervals },
+      ...overrides,
+    } as RegistryDocument;
+  }
+
+  function without(record: Record<string, unknown>, key: string): Record<string, unknown> {
+    return Object.fromEntries(Object.entries(record).filter(([name]) => name !== key));
+  }
+
+  /** Each issue as its path and the closed word at the head of its message, or no word. */
+  function paths(payload: Record<string, unknown>): string[] {
+    return priceTablePayloadIssues(payload).map(
+      (issue) => issue.path + " " + (/^([A-Z_]+):/.exec(issue.message)?.[1] ?? ""),
+    );
+  }
+
+  const REGISTERED: (id: string) => PriceTableModelVersion | null = (id) =>
+    id === MODEL_ONE || id === MODEL_TWO ? { provider: "claude" } : null;
+
+  it("admits the closed payload, and names its words in a closed order", () => {
+    expect(priceTablePayloadIssues({ intervals: [interval()] })).toEqual([]);
+    expect(priceTableIssues(priceTable([interval()]), REGISTERED)).toEqual([]);
+    expect(PRICE_TABLE_REFUSALS).toEqual([
+      "PRICE_INTERVAL_DUPLICATE",
+      "PRICE_INTERVAL_OVERLAP",
+      "MODEL_VERSION_UNKNOWN",
+      "MODEL_VERSION_PROVIDER_MISMATCH",
+    ]);
+  });
+
+  it("N-P33-1: two intervals of one quintuple that meet are refused by name", () => {
+    expect(
+      paths({ intervals: [interval({ effectiveTo: MAR }), interval({ effectiveFrom: FEB, effectiveTo: null })] }),
+    ).toEqual(["payload.intervals[1] PRICE_INTERVAL_OVERLAP"]);
+    // Named at the later start whatever the list order, and one interval inside another is a meeting too.
+    expect(
+      paths({ intervals: [interval({ effectiveFrom: FEB, effectiveTo: MAR }), interval({ effectiveTo: null })] }),
+    ).toEqual(["payload.intervals[0] PRICE_INTERVAL_OVERLAP"]);
+  });
+
+  it("N-P33-2: the same window under another transport, currency, token class or model version is admitted", () => {
+    const base = interval({ effectiveTo: MAR });
+    for (const [label, other] of [
+      ["transport", interval({ effectiveTo: MAR, transportKind: "CLI_SUBSCRIPTION" })],
+      ["currency", interval({ effectiveTo: MAR, currency: "EUR" })],
+      ["token class", interval({ effectiveTo: MAR, tokenClass: "output" })],
+      ["model version", interval({ effectiveTo: MAR, modelVersionId: MODEL_TWO })],
+    ] as const) {
+      expect(priceTablePayloadIssues({ intervals: [base, other] }), label).toEqual([]);
+    }
+  });
+
+  it("N-P33-3: an end equal to or before the start is refused", () => {
+    expect(paths({ intervals: [interval({ effectiveTo: JAN })] })).toEqual(["payload.intervals[0].effectiveTo "]);
+    expect(paths({ intervals: [interval({ effectiveFrom: FEB, effectiveTo: JAN })] })).toEqual([
+      "payload.intervals[0].effectiveTo ",
+    ]);
+  });
+
+  it("N-P33-4: a negative, fractional or unsafe price is refused, and zero and the largest safe integer are admitted", () => {
+    for (const price of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "15", null]) {
+      expect(paths({ intervals: [interval({ pricePerMillionNanos: price })] }), String(price)).toEqual([
+        "payload.intervals[0].pricePerMillionNanos ",
+      ]);
+    }
+    for (const price of [0, Number.MAX_SAFE_INTEGER]) {
+      expect(priceTablePayloadIssues({ intervals: [interval({ pricePerMillionNanos: price })] }), String(price)).toEqual([]);
+    }
+  });
+
+  it("N-P33-5: a token class outside the four and a transport outside the contract are refused, without echo", () => {
+    expect(paths({ intervals: [interval({ tokenClass: "reasoning" })] })).toEqual(["payload.intervals[0].tokenClass "]);
+    expect(paths({ intervals: [interval({ transportKind: "CARRIER_PIGEON" })] })).toEqual([
+      "payload.intervals[0].transportKind ",
+    ]);
+    for (const tokenClass of ["input", "output", "cache_write", "cache_read"]) {
+      expect(priceTablePayloadIssues({ intervals: [interval({ tokenClass })] }), tokenClass).toEqual([]);
+    }
+    expect(JSON.stringify(priceTablePayloadIssues({ intervals: [interval({ transportKind: "CARRIER_PIGEON", tokenClass: "reasoning" })] }))).not.toMatch(
+      /CARRIER_PIGEON|reasoning/,
+    );
+  });
+
+  it("N-P33-6, Q4: a currency outside three upper-case letters is refused, and two currencies of one version coexist unsummed", () => {
+    for (const currency of ["usd", "US", "USDX", "U5D", ""]) {
+      expect(paths({ intervals: [interval({ currency })] }), currency).toEqual(["payload.intervals[0].currency "]);
+    }
+    const projected = nextPriceIntervalProjection(
+      priceTable([interval(), interval({ currency: "EUR", pricePerMillionNanos: 14_000_000_000 })]),
+      3,
+    );
+    expect(projected?.rows.map((row) => [row.currency, row.pricePerMillionNanos])).toEqual([
+      ["USD", 15_000_000_000],
+      ["EUR", 14_000_000_000],
+    ]);
+  });
+
+  it("N-P33-8: an undeclared key of the payload or of an interval, an empty list and a primary key twice are refused", () => {
+    expect(paths({ intervals: [interval()], currency: "USD" })).toEqual(["payload.currency "]);
+    expect(paths({ intervals: [interval({ discount: 0.1 })] })).toEqual(["payload.intervals[0].discount "]);
+    expect(paths({ intervals: [] })).toEqual(["payload.intervals "]);
+    expect(paths({})).toEqual(["payload.intervals "]);
+    expect(paths({ intervals: interval() })).toEqual(["payload.intervals "]);
+    expect(paths({ intervals: [null, [], "row"] })).toEqual([
+      "payload.intervals[0] ",
+      "payload.intervals[1] ",
+      "payload.intervals[2] ",
+    ]);
+    expect(paths({ intervals: [without(interval(), "effectiveTo")] })).toEqual(["payload.intervals[0].effectiveTo "]);
+    // The same primary key with another price is a duplicate, never a later word.
+    expect(
+      paths({ intervals: [interval(), interval({ pricePerMillionNanos: 1, effectiveTo: MAR })] }),
+    ).toEqual(["payload.intervals[1] PRICE_INTERVAL_DUPLICATE"]);
+  });
+
+  it("N-P33A-4: an instant outside the canonical round-trip form is refused at either end", () => {
+    for (const instant of ["2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00Z", "2026-02-30T00:00:00.000Z", "2026-01-01"]) {
+      expect(paths({ intervals: [interval({ effectiveFrom: instant })] }), instant).toEqual([
+        "payload.intervals[0].effectiveFrom ",
+      ]);
+      expect(paths({ intervals: [interval({ effectiveTo: instant })] }), instant).toEqual([
+        "payload.intervals[0].effectiveTo ",
+      ]);
+    }
+  });
+
+  it("N-P33A-5: adjacent intervals are admitted; an open end meets every later start; two open ends meet", () => {
+    expect(
+      priceTablePayloadIssues({
+        intervals: [interval({ effectiveTo: FEB }), interval({ effectiveFrom: FEB, effectiveTo: MAR }), interval({ effectiveFrom: MAR })],
+      }),
+    ).toEqual([]);
+    expect(paths({ intervals: [interval({ effectiveTo: null }), interval({ effectiveFrom: MAR, effectiveTo: null })] })).toEqual([
+      "payload.intervals[1] PRICE_INTERVAL_OVERLAP",
+    ]);
+    expect(paths({ intervals: [interval({ effectiveFrom: FEB, effectiveTo: MAR }), interval({ effectiveTo: null })] })).toEqual([
+      "payload.intervals[0] PRICE_INTERVAL_OVERLAP",
+    ]);
+    expect(paths({ intervals: [interval({ effectiveFrom: MAR }), interval({ effectiveFrom: FEB })] })).toEqual([
+      "payload.intervals[0] PRICE_INTERVAL_OVERLAP",
+    ]);
+  });
+
+  it("N-P33-14, H-11: the gate refuses a model version nobody registered and one registered under another provider", () => {
+    const retired: (id: string) => PriceTableModelVersion | null = (id) => (id === MODEL_ONE ? { provider: "claude" } : null);
+    expect(priceTableIssues(priceTable([interval()]), retired)).toEqual([]);
+    const refused = priceTableIssues(
+      priceTable([interval(), interval({ modelVersionId: "ghost" }), interval({ modelVersionId: MODEL_TWO, provider: "openai" })]),
+      (id) => (id === MODEL_ONE ? { provider: "claude" } : id === MODEL_TWO ? { provider: "claude" } : null),
+    );
+    expect(refused.map((issue) => issue.path + " " + (issue.message.split(":")[0] ?? ""))).toEqual([
+      "payload.intervals[1].modelVersionId MODEL_VERSION_UNKNOWN",
+      "payload.intervals[2].provider MODEL_VERSION_PROVIDER_MISMATCH",
+    ]);
+    expect(JSON.stringify(refused)).not.toMatch(/ghost|openai/);
+  });
+
+  it("H-3: the gate reads the shape before any lookup, and gates no other kind", () => {
+    let looked = 0;
+    const counting = (): PriceTableModelVersion | null => {
+      looked += 1;
+      return { provider: "claude" };
+    };
+    expect(priceTableIssues(priceTable([interval({ currency: "usd" })]), counting).map((issue) => issue.path)).toEqual([
+      "payload.intervals[0].currency",
+    ]);
+    expect(looked).toBe(0);
+    expect(priceTableIssues({ ...priceTable([]), documentKind: "MODEL_VERSION" } as RegistryDocument, counting)).toEqual([]);
+    expect(looked).toBe(0);
+  });
+
+  it("projects every interval of the version with the document's coordinate and the event's author and sequence", () => {
+    const projected = nextPriceIntervalProjection(priceTable([interval({ effectiveTo: FEB }), interval({ tokenClass: "output" })]), 9);
+    expect(projected).toEqual({
+      catalogDocumentId: "catalog-claude",
+      catalogVersion: 1,
+      rows: [
+        {
+          catalogDocumentId: "catalog-claude",
+          catalogVersion: 1,
+          provider: "claude",
+          modelVersionId: MODEL_ONE,
+          transportKind: "API_KEY",
+          tokenClass: "input",
+          currency: "USD",
+          effectiveFrom: JAN,
+          effectiveTo: FEB,
+          pricePerMillionNanos: 15_000_000_000,
+          recordedBy: EMITTED_BY,
+          sequence: 9,
+        },
+        {
+          catalogDocumentId: "catalog-claude",
+          catalogVersion: 1,
+          provider: "claude",
+          modelVersionId: MODEL_ONE,
+          transportKind: "API_KEY",
+          tokenClass: "output",
+          currency: "USD",
+          effectiveFrom: JAN,
+          effectiveTo: null,
+          pricePerMillionNanos: 15_000_000_000,
+          recordedBy: EMITTED_BY,
+          sequence: 9,
+        },
+      ],
+    });
+    expect(nextPriceIntervalProjection({ ...priceTable([interval()]), documentKind: "MODEL_VERSION" } as RegistryDocument, 9)).toBeNull();
+  });
+
+  it("N-P33-7, H-2: a version with one bad interval among good ones folds to no row at all, and never throws", () => {
+    for (const intervals of [
+      [interval(), interval({ tokenClass: "output" }), interval({ currency: "usd" })],
+      [interval({ effectiveTo: MAR }), interval({ effectiveFrom: FEB })],
+      [],
+    ]) {
+      expect(nextPriceIntervalProjection(priceTable(intervals), 4)).toEqual({
+        catalogDocumentId: "catalog-claude",
+        catalogVersion: 1,
+        rows: [],
+      });
+    }
+    // A payload the registry door would not even let reach the fold.
+    expect(nextPriceIntervalProjection({ ...priceTable([]), payload: null } as unknown as RegistryDocument, 4)?.rows).toEqual([]);
+  });
+
+  it("N-P33-13, E11: a retroactive later version adds its rows beside the earlier version's and changes none of them", () => {
+    const snapshot = createPriceIntervalProjectionSnapshot();
+    applyRegistryPriceIntervalToSnapshot(snapshot, priceTable([interval()]), 1);
+    const first = [...snapshot.intervals.entries()];
+    applyRegistryPriceIntervalToSnapshot(
+      snapshot,
+      priceTable([interval({ pricePerMillionNanos: 12_000_000_000 })], { documentVersion: 2, parentDocumentVersion: 1, idempotencyKey: "catalog-claude/2" }),
+      2,
+    );
+    expect(snapshot.intervals.size).toBe(2);
+    for (const [key, row] of first) expect(snapshot.intervals.get(key)).toEqual(row);
+    const second = [...snapshot.intervals.values()].find((row) => row.catalogVersion === 2);
+    expect(second?.pricePerMillionNanos).toBe(12_000_000_000);
+    expect(second === undefined ? "" : priceIntervalKey(second)).not.toBe(first[0]?.[0]);
   });
 });
 

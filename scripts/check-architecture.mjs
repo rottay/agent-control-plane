@@ -10339,6 +10339,81 @@ const P32C_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-33/catálogo escalón A — a price interval is published whole by document and
+ * version, or not at all (ADR 0091; writer brief v2: v1 + Fable preaudit H-1..H-11,
+ * the DT adjudicating H-1, H-2, H-3, H-4 and H-11 option (a)).
+ *
+ * **What lands.** Migration 21 `price_interval_catalog`: economy §3's
+ * `price_interval_read_model`, STRICT, the eight-column primary key, the checks
+ * under the §3.2 names (token class, interval order, price, currency, catalog
+ * version, sequence), no lookup index (Q5: it is the primary key's own), no foreign
+ * key, no trigger, and one watermark seeded at the registry head with the fold in
+ * `afterSql`. The door's third branch, `priceTableIssues`: a closed `{ intervals }`
+ * payload, eight closed keys per interval, canonical instants, a safe integer price,
+ * no primary key twice and no two intervals of one quintuple that meet, each model
+ * version registered in any status (Q3) and under the interval's provider (H-11).
+ * `nextPriceIntervalProjection`, total and whole per version, insert-only, at the
+ * door, in migration 21, in the rebuild and in `verifyIntegrity` (H-2).
+ * `Ledger.readPriceIntervals` exactly by document and version.
+ *
+ * **What does NOT land, declared.** No price resolution and no `PRICE_MISSING` (B).
+ * No pin on a segment or a dispatch (P-15, Q1). No catalog on the artifact plane
+ * (Q2). No contract or protocol change: `PRICE_TABLE` is in both CHECKs since
+ * migration 9.
+ *
+ * **Pins that move.** `MIGRATIONS` 20 -> 21; `DERIVED_TABLES` +1;
+ * `REGISTRY_PROJECTION_NAMES` 5 -> 6 (`PROJECTION_NAMES`, the task stream's roster,
+ * stays 16); `PROJECTION_SOURCES` 25 -> 26, status projections 24 -> 25 and watermark
+ * rows 25 -> 26; `EXPECTED_SCHEMA_OBJECTS` +1; `RebuildResult` gains one count; the
+ * ledger barrel gains three closed sets and three types. The ADR corpus 90 -> 91;
+ * the decision register 86 -> 90.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` (`"2.6.0"`), `API_CONTRACT_VERSION`
+ * (`"0.17.0"`), `PROJECTOR_VERSION` (1), `DOCUMENT_KINDS` (14), the `tr_` inventory
+ * (nine), `PATH_SCOPED_LAWS` (143).
+ *
+ * **The DT's two adjudicated corrections** (writer brief v3, on the restart audit's
+ * H1). **C-1**: every declaration this packet introduces lives in the ledger's
+ * semantic leaf, `src/types/index.ts` — the owner's law in
+ * `docs/audit/architecture/index.md` §7 — so `PriceTableRefusal`,
+ * `PriceTableModelVersion` and `PriceIntervalRow` moved there with the vocabulary
+ * their unions derive from, and no new `type` or `interface` of this packet stands in
+ * `src/projection/index.ts` or `src/ledger/index.ts`. **C-2**: ADR 0088's line "Types
+ * live inline in the module (H-11)" is superseded for every new declaration by a dated
+ * errata in that record, which is why this write-set carries that ADR and why the
+ * decision register gains a fourth row. **C-3**, named and NOT executed here: the
+ * bounded correction of the declarations already inline in `usage-settlement`,
+ * `artifact-plane`, `artifact-lease-store`, `initiative-registration`, `assignment`
+ * (accounts) and `intake` (runtime) is a separate packet with its own write-set.
+ *
+ * **Sixteen paths; exactly one is new to the fence** — ADR 0091 (`grep -Fc` over this
+ * file, 0 before this block). Fourteen are admitted by historical blocks, and so is
+ * C-2's ADR 0088, which `P32A_WRITE_SET` already carries: it is listed here because
+ * this packet's write-set is what it declares, not because the union needed it.
+ * `WRITE_SET_DISTINCT` collapses the repeat, as it does for every path two packets
+ * share.
+ */
+const P33A_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0091-a-price-interval-is-published-whole-by-document-and-version.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  // C-2's one path, for the errata alone (see the block above).
+  "docs/architecture/0088-a-settlement-fold-never-invents-a-number.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -10559,6 +10634,7 @@ const WRITE_SET = [
   ...P32A_WRITE_SET,
   ...P32B_WRITE_SET,
   ...P32C_WRITE_SET,
+  ...P33A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
