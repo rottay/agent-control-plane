@@ -230,12 +230,43 @@ event states. With it:
 
 What does not speak V2 yet is declared, not hidden. The daemon, durability, the
 CLI and the gateway derive V1 invocations until the adoption binds a revision.
-The exceptional producers (settlement, cancellation, usage, tool receipts,
-pressure, switches) build their payloads without the coordinate, so a
-revision-bearing invocation that reaches one is refused by the contract rather
-than recorded as legacy, and `restateInvocation` refuses a task whose first
-event is an opening. No producer of effects, deliveries or occurrences ships
-here: those are adoption and recovery.
+The exceptional producers (settlement, cancellation, `recordTokenObservation`,
+tool receipts, pressure, switches) build their payloads without the coordinate,
+so a revision-bearing invocation that reaches one is refused by the contract
+rather than recorded as legacy, and `restateInvocation` refuses a task whose
+first event is an opening. No producer of effects, deliveries or occurrences
+ships here: those are adoption and recovery.
+
+The two usage recorders of P-32/captura C (ADR 0090) are the exception to that
+exception, and speak **only** V2. `recordUsageStreamDeclaration` and
+`recordUsageObservation` require `invocation.revision` and refuse by name an
+invocation without one, before building anything: a usage record names a route
+segment or an effect, and a V1 invocation has neither. The payload's
+`revisionNumber` and `attemptNumber` are read off the revision, never off the
+flat `attempt`. What they record is what a normalizing adapter already
+normalized:
+
+- the stream id is `measurementStreamIdV1`, imported from `@acp/ledger` and never
+  restated; a declaration is keyed `usage-stream.<id>`, an observation
+  `usage-observation.<id>.<ordinal>` — no clock, and no landing generation,
+  because the account and the segment are already inside the id;
+- the recorders refuse by name only an invocation without a revision, a task the
+  ledger has never seen, and a word outside `USAGE_SOURCE_CLASSES` or
+  `USAGE_REPORT_KINDS`. The classes, the total, the range, the correction and
+  the source's `occurredAt` pass verbatim; the ledger's door decides the rest in
+  the append's transaction — a stream never declared (`STREAM_UNKNOWN`), an
+  effect not yet delivered, a total that is not the sum (`TOTAL_MISMATCH`);
+- a restart never reinvents a generation. `readUsageStreamLineage` reads the
+  latest declared epoch of `(source, accountId, routeSegmentId)` back off the
+  event stream through `UsageEventSource`, exhaustively or as a refusal
+  (`LINEAGE_SCAN_INCOMPLETE`, `LINEAGE_DECLARATION_UNREADABLE`), and answers
+  `latest: null`, never `0`, when nothing is declared. The caller restates that
+  epoch, or declares it plus one after a counter reset, and chooses `0` only on
+  `null`.
+
+Neither recorder is wired: the walk reports one total and emits no effect, so a
+caller today would invent classes or effects. The fence holds it (L-P32C-1) until
+P-15 binds a normalizing adapter.
 
 ### Loopback and data roots
 

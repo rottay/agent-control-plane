@@ -10296,6 +10296,49 @@ const P32B_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-32/captura escalón C — a usage recorder reports what the adapter already
+ * normalized, and restarts never reinvent an epoch (ADR 0090; writer brief v2: v1 +
+ * Fable preaudit H-1..H-8, the DT adjudicating H-1, H-2 (a) and H-3).
+ *
+ * **What lands.** In `@acp/runtime`'s usage module: `recordUsageStreamDeclaration`
+ * and `recordUsageObservation`, which take what the adapter normalized, refuse by
+ * name only an invocation without a revision, a task the ledger never saw and a
+ * word outside `USAGE_SOURCE_CLASSES` or `USAGE_REPORT_KINDS`, and append through
+ * the door on the V2 coordinate read off `invocation.revision`; the stream id is
+ * `measurementStreamIdV1`, imported. Their durable names, `usage-stream.<id>` and
+ * `usage-observation.<id>.<ordinal>`, carry no clock and no generation.
+ * `readUsageStreamLineage` reads a lineage's latest declared epoch back off the
+ * event stream through `UsageEventSource`, exhaustive or a refusal (H-2 (a)).
+ *
+ * **What does NOT land, declared.** No wiring into the walk, the daemon or a
+ * driver (Q5): L-P32C-1 holds it. No read verb in the ledger. No change to
+ * `recordTokenObservation`, its key, the rollups or quota; L-V2B1D-1 is quiet. No
+ * contract change and no bump.
+ *
+ * **Pins that move.** `RUNTIME_PUBLIC_EXPORTS` gains eleven names. L-P32B-1 is
+ * amended in its row (the identity admits the runtime recorder, the fold does
+ * not) and L-P32C-1 is added: `PATH_SCOPED_LAWS` 142 -> **143**. The ADR corpus 89
+ * -> 90; the decision register 85 -> 86.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` (`"2.6.0"`),
+ * `CONTROL_PLANE_EVENT_TYPES` (35), `MIGRATIONS` (20), the ledger barrel,
+ * `API_CONTRACT_VERSION` (`"0.17.0"`), `USAGE_TOKENS_MAX`, `ROLLUP_TOKENS_MAX`.
+ *
+ * **Eight paths; one is new to the fence** — ADR 0090 (`grep -Fc` over this file,
+ * 0 before this block). The other seven are admitted by historical blocks.
+ */
+const P32C_WRITE_SET = [
+  "packages/domains/runtime/src/usage/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/test/usage/index.test.ts",
+  "packages/domains/runtime/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0090-a-usage-recorder-reports-what-the-adapter-normalized.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -10515,6 +10558,7 @@ const WRITE_SET = [
   ...P14C_WRITE_SET,
   ...P32A_WRITE_SET,
   ...P32B_WRITE_SET,
+  ...P32C_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -11896,6 +11940,14 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the settlement fold reads no clock, no environment and no randomness, and hashes through the one canonicalizer",
     scope: "packages/persistence/ledger/src/usage-settlement/index.ts",
+  },
+  // P-32/captura C. L-P32B-1 is amended in its own row (the identity admits the
+  // runtime's usage recorder; the fold does not), and one new path-shaped surface
+  // adds one row: the register and the `requireScope` call sites both move
+  // 142 -> 143 for L-P32C-1.
+  {
+    law: "the usage recorders stay unwired until a normalizing adapter binds them",
+    scope: "packages/*/*/src/**",
   },
 ];
 
@@ -18997,6 +19049,19 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "readAccountUsage",
   "UsageEventSource",
   "usageTransitionId",
+  // P-32/captura C: the two recorders of economy §1, their durable names, the
+  // exhaustive lineage reader and the six types they take and answer.
+  "readUsageStreamLineage",
+  "recordUsageObservation",
+  "recordUsageStreamDeclaration",
+  "usageObservationTransitionId",
+  "usageStreamTransitionId",
+  "UsageObservationReport",
+  "UsageRecordResult",
+  "UsageStreamDeclaration",
+  "UsageStreamLineage",
+  "UsageStreamLineageHead",
+  "UsageStreamLineageOutcome",
   // V2-B1e: the operator-action reader, sibling to the usage reader above and
   // here for the same reason -- `@acp/accounts` owns the fold and may not name
   // a ledger. The outcome union stays module-scoped: a caller reads it
@@ -26233,7 +26298,13 @@ const TASK_INTAKE_SITE = "packages/domains/runtime/src/intake/index.ts";
 // below takes its place and its register row, and `PATH_SCOPED_LAWS` stays 142.
 //
 // L-P32B-1 -- the settlement fold is reached by the ledger's append door and its
-// projection, and by nothing else (P-32/captura B, H-2, ADR 0089).
+// projection, and by nothing else (P-32/captura B, H-2, ADR 0089). AMENDED by
+// P-32/captura C (H-1, ADR 0090): the law now has two reaches. The FOLD keeps its
+// four sites. The IDENTITY (`measurementStreamIdV1`, `measurementStreamPreimageV1`)
+// admits one more, the runtime's usage recorder (`USAGE_IDENTITY_CALLERS`), which
+// declares a stream under the one id the door recomputes; recomputing it there
+// would be a second encoder. Same row, same `requireScope`: `PATH_SCOPED_LAWS`
+// does not move for the amendment.
 //
 // Economy §1.2 `:81` writes a stream, an observation and the settlement with the
 // append and the head in one transaction. A second caller of the fold anywhere
@@ -26249,6 +26320,8 @@ const USAGE_SETTLEMENT_CALLERS = [
   "packages/persistence/ledger/src/ledger/index.ts",
   "packages/persistence/ledger/src/projection/index.ts",
 ];
+// One site, and only for the identity: the fold stays out of its reach.
+const USAGE_IDENTITY_CALLERS = ["packages/domains/runtime/src/usage/index.ts"];
 {
   let settlementScanned = 0;
   if (tracked.status === 0) {
@@ -26262,14 +26335,21 @@ const USAGE_SETTLEMENT_CALLERS = [
       if (content === null) continue;
       settlementScanned += 1;
       const code = stripComments(content);
-      if (
-        code.includes("usage-settlement/index.js") ||
-        /\b(?:foldUsageSettlement|measurementStreamIdV1|measurementStreamPreimageV1)\b/.test(code)
-      ) {
+      if (code.includes("usage-settlement/index.js") || /\bfoldUsageSettlement\b/.test(code)) {
         fail(
           relativePath +
             " reaches the settlement fold; only the ledger's append door and its projection call it, inside the" +
             " trigger's transaction, and a caller anywhere else would record a settlement no door verified",
+        );
+      } else if (
+        !USAGE_IDENTITY_CALLERS.includes(relativePath) &&
+        /\b(?:measurementStreamIdV1|measurementStreamPreimageV1)\b/.test(code)
+      ) {
+        fail(
+          relativePath +
+            " names the stream identity; only the ledger's door and projection and the runtime's usage recorder (" +
+            USAGE_IDENTITY_CALLERS.join(", ") +
+            ") compute it, and a caller anywhere else is one step from a stream the door never declared",
         );
       }
     }
@@ -26278,7 +26358,46 @@ const USAGE_SETTLEMENT_CALLERS = [
     "the settlement fold is reached by the ledger's door and projection, and by nothing else",
     settlementScanned,
   );
-  notes.push("no production source outside the module, the ledger barrel, the door and the projection names the settlement fold");
+  notes.push(
+    "no production source outside the module, the ledger barrel, the door and the projection names the settlement fold," +
+      " and only the runtime's usage recorder joins them for the stream identity",
+  );
+}
+
+// L-P32C-1 -- the usage recorders stay unwired until P-15 (P-32/captura C, Q5,
+// H-6, ADR 0090).
+//
+// The walk reports one total and emits no effect, so wiring either recorder today
+// would invent classes or effects (the DT's Q5). L-P32A-1 held A's fold inert
+// until B called it; this holds C's recorders the same way: no tracked
+// `packages/*/*/src/` file other than the usage module and the runtime barrel
+// names `recordUsageStreamDeclaration` or `recordUsageObservation` after comments
+// are stripped. P-15 retires it in the packet that binds a normalizing adapter,
+// and names the retirement. The suites are outside `src/` and outside the law.
+const USAGE_RECORDER_SITE = "packages/domains/runtime/src/usage/index.ts";
+const USAGE_RECORDER_BARREL = "packages/domains/runtime/src/index.ts";
+{
+  let recorderScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      if (relativePath === USAGE_RECORDER_SITE || relativePath === USAGE_RECORDER_BARREL) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      recorderScanned += 1;
+      if (/\b(?:recordUsageStreamDeclaration|recordUsageObservation)\b/.test(stripComments(content))) {
+        fail(
+          relativePath +
+            " names a usage recorder; they stay unwired until P-15 binds a normalizing adapter, and a caller" +
+            " today would invent the classes or the effect a report needs",
+        );
+      }
+    }
+  }
+  requireScope("the usage recorders stay unwired until a normalizing adapter binds them", recorderScanned);
+  notes.push("no production source outside the usage module and the runtime barrel names a usage recorder");
 }
 
 // L-P32A-2 -- the settlement fold reads no clock, no environment and no

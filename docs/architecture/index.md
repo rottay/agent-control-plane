@@ -105,6 +105,7 @@ new records from `_template.md`, which carries the required fields.
 | 0087 | [A task enters once by its client's key, with its revision and its envelope by reference](0087-a-task-enters-once-by-its-clients-key.md) | accepted |
 | 0088 | [A settlement fold never invents a number, and a late report revises, never rewrites](0088-a-settlement-fold-never-invents-a-number.md) | accepted |
 | 0089 | [Usage is a declared stream and a measured observation, and the door settles them in the same transaction](0089-usage-is-a-declared-stream-and-a-measured-observation.md) | accepted |
+| 0090 | [A usage recorder reports what the adapter already normalized, and restarts never reinvent an epoch](0090-a-usage-recorder-reports-what-the-adapter-normalized.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

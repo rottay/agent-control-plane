@@ -371,6 +371,27 @@ export type {
 export { USAGE_TOKENS_MAX, readAccountUsage, usageTransitionId } from "./usage/index.js";
 export type { UsageEventSource } from "./usage/index.js";
 
+// P-32/captura C: the producers of economy §1 — a stream declared before its
+// reports, and a report the adapter already normalized — with the exhaustive
+// lineage reader a restart reads its generation back through. Unwired: no
+// source outside the module and this barrel names the two recorders until P-15
+// binds a normalizing adapter (L-P32C-1, ADR 0090).
+export {
+  readUsageStreamLineage,
+  recordUsageObservation,
+  recordUsageStreamDeclaration,
+  usageObservationTransitionId,
+  usageStreamTransitionId,
+} from "./usage/index.js";
+export type {
+  UsageObservationReport,
+  UsageRecordResult,
+  UsageStreamDeclaration,
+  UsageStreamLineage,
+  UsageStreamLineageHead,
+  UsageStreamLineageOutcome,
+} from "./usage/index.js";
+
 // V2-B1e: the acquisition half of the operator-state fold, sibling to
 // `readAccountUsage` above and here for the same reason -- `@acp/accounts` owns
 // the fold and may not import a ledger, so the read lives on the side of the

@@ -5,8 +5,10 @@ import type {
   ControlPlaneEvent as ControlPlaneEventType,
   ControlPlaneEventType as ControlPlaneEventTypeName,
 } from "@acp/contracts";
+import { USAGE_REPORT_KINDS, USAGE_SOURCE_CLASSES, measurementStreamIdV1 } from "@acp/ledger";
+import type { UsageReportKind, UsageSourceClass } from "@acp/ledger";
 
-import type { DurableInvocation } from "../contracts/index.js";
+import type { DurableInvocation, InvocationRevision } from "../contracts/index.js";
 import { deriveEventCoordinate } from "../core/coordinates/index.js";
 import type { LedgerPort } from "../core/step-executor/index.js";
 import { SupervisorError } from "../errors/index.js";
@@ -33,6 +35,11 @@ import { SupervisorError } from "../errors/index.js";
  * could repair the attribution. The ledger's own contiguity guard would refuse
  * a `fromState` for a task it does not know, but relying on that would put the
  * error one layer from the cause; this module refuses at the door and says why.
+ *
+ * **Two producers speak economy §1 rather than a total** (P-32/captura C, ADR
+ * 0090): `recordUsageStreamDeclaration` and `recordUsageObservation`, with
+ * `readUsageStreamLineage` beside them. They are unwired until P-15 binds a
+ * normalizing adapter; `recordTokenObservation` and its key are untouched.
  */
 
 /**
@@ -299,4 +306,433 @@ export function readAccountUsage(
   }
 
   return { ok: true, observations: kept };
+}
+
+// ---------------------------------------------------------------------------
+// P-32/captura C — a stream and its observations, as the adapter normalized them
+// ---------------------------------------------------------------------------
+
+/**
+ * The record keys the ledger's door reads, restated (H-8).
+ *
+ * `USAGE_STREAM_KEY` and `USAGE_OBSERVATION_KEY` live in the ledger's projection
+ * and are not on its barrel, exactly as `{accountId, tokens}` is restated by the
+ * legacy recorder. Widening the ledger's surface to export two words would move
+ * a pin for nothing; a drift is caught by the door, which refuses a payload whose
+ * record is not under its key, and by this module's suite, which appends through
+ * it.
+ */
+const STREAM_RECORD_KEY = "usageStream";
+const OBSERVATION_RECORD_KEY = "usageObservation";
+
+/**
+ * The durable name a stream declaration is recorded under.
+ *
+ * The stream id alone. It is the digest of `(source, accountId, routeSegmentId,
+ * sourceEpoch)`, so one coordinate is one name, a restated declaration is an
+ * exact replay under the same key, and a new epoch is a new name.
+ *
+ * **Why no landing generation, unlike `usageTransitionId` (V2-B1f/F5).** That
+ * name needed the generation because the legacy payload names an account the key
+ * did not: a destination re-executing the same step under the same key with
+ * another account was a conflict. Here the account and the segment are inside
+ * the id, so the destination of a switch declares another stream under another
+ * name by construction. Adding the generation would give one stream two names.
+ *
+ * `usage-stream.` and 64 hex digits: 77 characters, inside the contract's
+ * transition-id grammar (`/^[A-Za-z0-9][A-Za-z0-9._:-]*$/`, at most 120).
+ */
+export function usageStreamTransitionId(measurementStreamId: string): string {
+  return "usage-stream." + measurementStreamId;
+}
+
+/**
+ * The durable name one observation is recorded under: its stream and its
+ * ordinal.
+ *
+ * The ordinal is the source report's (economy §1.2, unique per stream), never a
+ * counter this module keeps: a resumed adapter restating report `n` rebuilds
+ * exactly this name, so the second append is a replay. A CORRECTION carries its
+ * own ordinal, so it has its own name. At most 18 + 64 + 1 + 16 = 99 characters.
+ */
+export function usageObservationTransitionId(measurementStreamId: string, ordinal: number): string {
+  return "usage-observation." + measurementStreamId + "." + String(ordinal);
+}
+
+/** What a stream or observation recorder answers. */
+export interface UsageRecordResult {
+  /** false means this exact event was already recorded. */
+  readonly inserted: boolean;
+  readonly event: ControlPlaneEventType;
+  /** The stream the event declares or reports on, computed once by the ledger's identity. */
+  readonly measurementStreamId: string;
+}
+
+/**
+ * A stream an adapter registered, as it hands it over.
+ *
+ * Nothing here is normalized by this module. `sourceClass` is the adapter's
+ * registered classification, not inferred from a number; `normalizationPolicySha256`
+ * is the adapter's own policy digest; `sourceEpoch` is the generation the caller
+ * decided after reading the lineage back (`readUsageStreamLineage`).
+ */
+export interface UsageStreamDeclaration {
+  readonly invocation: DurableInvocation;
+  readonly source: string;
+  readonly accountId: string;
+  readonly routeSegmentId: string;
+  /**
+   * The counter generation, decided by the caller from what the ledger holds.
+   *
+   * The same generation after a restart is the latest declared epoch of the
+   * lineage, restated; a restarted counter is that epoch plus one; `0` only when
+   * the lineage read found no declaration at all. The recorder never picks one:
+   * a generation chosen here, after a restart, would be a generation reinvented.
+   */
+  readonly sourceEpoch: number;
+  readonly sourceClass: UsageSourceClass;
+  readonly normalizationPolicySha256: string;
+  readonly emittedBy: string;
+  /** The event that prompted the declaration, when one genuinely did. */
+  readonly causedBy?: string | null;
+}
+
+/**
+ * One report an adapter normalized, as it hands it over.
+ *
+ * The four classes and the total are the adapter's, passed verbatim: the door
+ * holds the total to their `BigInt` sum, the report's shape, the exposure and
+ * the duplicates, inside the append's transaction. `occurredAt` is the source's
+ * instant; the event's own instants are the invocation's.
+ */
+export interface UsageObservationReport {
+  readonly invocation: DurableInvocation;
+  /** The stream this report belongs to, as its declaration or the lineage read named it. */
+  readonly measurementStreamId: string;
+  readonly observationId: string;
+  readonly ordinal: number;
+  readonly sourceObservationId: string;
+  readonly reportKind: UsageReportKind;
+  readonly rangeFromCounter: number | null;
+  readonly rangeToCounter: number | null;
+  readonly correctsObservationId: string | null;
+  readonly effectId: string;
+  /** The source's explicit close of the measurement, never inferred from a process ending. */
+  readonly isFinal: 0 | 1;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheWriteTokens: number;
+  readonly cacheReadTokens: number;
+  readonly totalTokens: number;
+  readonly occurredAt: string;
+  readonly emittedBy: string;
+  readonly causedBy?: string | null;
+}
+
+/**
+ * The revision a usage record must be recorded under, or a refusal by name (H-3).
+ *
+ * Both payloads carry the full V2 coordinate, and it is read off the revision —
+ * never off `invocation.attempt`, the flat plan attempt, which the door does not
+ * compare with anything. A V1 invocation names no segment and no effect, so the
+ * door would refuse it one step after the cause; this refuses at the cause.
+ */
+function revisionOf(invocation: DurableInvocation, what: string): InvocationRevision {
+  const revision = invocation.revision;
+  if (revision === undefined) {
+    throw new SupervisorError(
+      "refusing to record a " +
+        what +
+        " for an invocation without a revision; a usage record carries the V2 coordinate," +
+        " and a V1 invocation names no segment or effect to attribute it to",
+    );
+  }
+  return revision;
+}
+
+/** The task's current state, or a refusal: the recorders never open a task (N1). */
+function currentStateOf(ledger: LedgerPort, invocation: DurableInvocation, what: string): ControlPlaneEventType["fromState"] {
+  const task = ledger.getTask(invocation.taskId);
+  if (task === null) {
+    throw new SupervisorError(
+      "refusing to record a " +
+        what +
+        " for a task the ledger has never seen; a usage record may never open a task",
+    );
+  }
+  return task.currentState;
+}
+
+/** Build, parse and append one usage event on the invocation's own coordinate. */
+function appendUsageEvent(
+  ledger: LedgerPort,
+  input: {
+    readonly invocation: DurableInvocation;
+    readonly revision: InvocationRevision;
+    readonly state: ControlPlaneEventType["fromState"];
+    readonly type: "USAGE_STREAM_DECLARED" | "USAGE_OBSERVATION_RECORDED";
+    readonly transitionId: string;
+    readonly recordKey: string;
+    readonly record: Readonly<Record<string, unknown>>;
+    readonly emittedBy: string;
+    readonly causedBy: string | null;
+  },
+): { readonly inserted: boolean; readonly event: ControlPlaneEventType } {
+  const { invocation, revision, transitionId } = input;
+  const coordinate = deriveEventCoordinate(invocation, transitionId, 0);
+  const event = ControlPlaneEvent.parse({
+    contractVersion: CONTRACT_VERSION,
+    eventId: coordinate.eventId,
+    taskId: invocation.taskId,
+    attempt: invocation.attempt,
+    transitionId,
+    idempotencyKey: coordinate.idempotencyKey,
+    type: input.type,
+    // A same-state passthrough, read from the ledger: the door refuses a usage
+    // event that moves a task.
+    fromState: input.state,
+    toState: input.state,
+    emittedBy: input.emittedBy,
+    occurredAt: coordinate.occurredAt,
+    recordedAt: coordinate.recordedAt,
+    correlationId: invocation.invocationId,
+    causationId: input.causedBy,
+    payload: {
+      revisionNumber: revision.revisionNumber,
+      attemptNumber: revision.attemptNumber,
+      [input.recordKey]: input.record,
+    },
+  });
+  const result = ledger.append(event);
+  return { inserted: result.inserted, event: result.record.event };
+}
+
+/**
+ * Declare one measurement stream, before any report of it (economy §1.1).
+ *
+ * The id is `measurementStreamIdV1`, imported from the ledger — the one encoder
+ * the door recomputes — and never restated here. The recorder refuses by name
+ * only what the door cannot see or would see a step late (H-7): an invocation
+ * without a revision, a task the ledger has never seen, and a class outside
+ * `USAGE_SOURCE_CLASSES`. Everything else is passed verbatim, and the door
+ * decides the segment, its attempt and a stream already declared with another
+ * class or policy, in the append's transaction.
+ */
+export function recordUsageStreamDeclaration(
+  ledger: LedgerPort,
+  declaration: UsageStreamDeclaration,
+): UsageRecordResult {
+  const { invocation } = declaration;
+  const revision = revisionOf(invocation, "usage stream declaration");
+  if (!(USAGE_SOURCE_CLASSES as readonly string[]).includes(declaration.sourceClass)) {
+    throw new SupervisorError(
+      "refusing to declare a usage stream whose source class is not registered; it is one of " +
+        USAGE_SOURCE_CLASSES.join(", ") +
+        ", as the adapter classified it, and never inferred here",
+    );
+  }
+  const state = currentStateOf(ledger, invocation, "usage stream declaration");
+
+  const measurementStreamId = measurementStreamIdV1({
+    source: declaration.source,
+    accountId: declaration.accountId,
+    routeSegmentId: declaration.routeSegmentId,
+    sourceEpoch: declaration.sourceEpoch,
+  });
+  const appended = appendUsageEvent(ledger, {
+    invocation,
+    revision,
+    state,
+    type: "USAGE_STREAM_DECLARED",
+    transitionId: usageStreamTransitionId(measurementStreamId),
+    recordKey: STREAM_RECORD_KEY,
+    record: {
+      measurementStreamId,
+      source: declaration.source,
+      accountId: declaration.accountId,
+      routeSegmentId: declaration.routeSegmentId,
+      sourceEpoch: declaration.sourceEpoch,
+      sourceClass: declaration.sourceClass,
+      normalizationPolicySha256: declaration.normalizationPolicySha256,
+    },
+    emittedBy: declaration.emittedBy,
+    causedBy: declaration.causedBy ?? null,
+  });
+  return { ...appended, measurementStreamId };
+}
+
+/**
+ * Record one normalized report of a declared stream (economy §1.2).
+ *
+ * It cannot stand without its declaration: the door refuses a report of a stream
+ * it has not recorded (`STREAM_UNKNOWN`), and an effect that has not been
+ * delivered. The recorder refuses by name an invocation without a revision, a
+ * task the ledger has never seen and a report kind outside `USAGE_REPORT_KINDS`;
+ * the classes, the total, the range and the correction are the adapter's and
+ * pass verbatim.
+ */
+export function recordUsageObservation(
+  ledger: LedgerPort,
+  report: UsageObservationReport,
+): UsageRecordResult {
+  const { invocation, measurementStreamId } = report;
+  const revision = revisionOf(invocation, "usage observation");
+  if (!(USAGE_REPORT_KINDS as readonly string[]).includes(report.reportKind)) {
+    throw new SupervisorError(
+      "refusing to record a usage observation whose report kind is not one of " + USAGE_REPORT_KINDS.join(", "),
+    );
+  }
+  const state = currentStateOf(ledger, invocation, "usage observation");
+
+  const appended = appendUsageEvent(ledger, {
+    invocation,
+    revision,
+    state,
+    type: "USAGE_OBSERVATION_RECORDED",
+    transitionId: usageObservationTransitionId(measurementStreamId, report.ordinal),
+    recordKey: OBSERVATION_RECORD_KEY,
+    record: {
+      observationId: report.observationId,
+      measurementStreamId,
+      ordinal: report.ordinal,
+      sourceObservationId: report.sourceObservationId,
+      reportKind: report.reportKind,
+      rangeFromCounter: report.rangeFromCounter,
+      rangeToCounter: report.rangeToCounter,
+      correctsObservationId: report.correctsObservationId,
+      effectId: report.effectId,
+      isFinal: report.isFinal,
+      inputTokens: report.inputTokens,
+      outputTokens: report.outputTokens,
+      cacheWriteTokens: report.cacheWriteTokens,
+      cacheReadTokens: report.cacheReadTokens,
+      totalTokens: report.totalTokens,
+      occurredAt: report.occurredAt,
+    },
+    emittedBy: report.emittedBy,
+    causedBy: report.causedBy ?? null,
+  });
+  return { ...appended, measurementStreamId };
+}
+
+/** The lineage a generation belongs to: the stream coordinate without its epoch. */
+export interface UsageStreamLineage {
+  readonly source: string;
+  readonly accountId: string;
+  readonly routeSegmentId: string;
+}
+
+/** The latest declaration of a lineage, as the ledger recorded it. */
+export interface UsageStreamLineageHead {
+  readonly measurementStreamId: string;
+  readonly sourceEpoch: number;
+  readonly sourceClass: string;
+  readonly normalizationPolicySha256: string;
+}
+
+export type UsageStreamLineageOutcome =
+  | { readonly ok: true; readonly latest: UsageStreamLineageHead | null }
+  | {
+      readonly ok: false;
+      readonly reason: "LINEAGE_SCAN_INCOMPLETE" | "LINEAGE_DECLARATION_UNREADABLE";
+      readonly at: string;
+    };
+
+/** A text field of a record, or null. */
+function lineageText(record: Readonly<Record<string, unknown>>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * Read back the latest declared generation of one lineage, exhaustively (H-2).
+ *
+ * The recorder's other half. A caller that restarts reads the lineage before it
+ * declares: the same counter restates `latest.sourceEpoch`, a restarted counter
+ * declares `latest.sourceEpoch + 1`, and only `latest: null` licenses epoch `0`.
+ * The reader never answers `0` itself; "no declaration" is the answer `null`.
+ *
+ * It reads the event stream, not a table: a declaration the door refused never
+ * lands, so the recorded `USAGE_STREAM_DECLARED` events answer exactly what the
+ * stream table would. No read verb is added to the ledger.
+ *
+ * **Exhaustive, or a refusal. There is no truncated success** — the law of
+ * `readAccountUsage`, and here the stakes are the generation itself: a scan that
+ * stopped early and answered `null` would license epoch `0` over a lineage that
+ * already declared it, reinventing a generation. So a page that claims more
+ * without a cursor past the last one is `LINEAGE_SCAN_INCOMPLETE`, and a
+ * declaration whose coordinate cannot be read is `LINEAGE_DECLARATION_UNREADABLE`
+ * rather than skipped: skipping it could hide this lineage's latest epoch. A page
+ * read that throws propagates.
+ */
+export function readUsageStreamLineage(
+  source: UsageEventSource,
+  lineage: UsageStreamLineage,
+): UsageStreamLineageOutcome {
+  for (const field of ["source", "accountId", "routeSegmentId"] as const) {
+    if (lineage[field].length === 0) {
+      throw new SupervisorError("refusing to read a usage stream lineage with no " + field);
+    }
+  }
+
+  let latest: UsageStreamLineageHead | null = null;
+  let afterSequence = 0;
+  let pageIndex = 0;
+
+  for (;;) {
+    const page = source.listEvents({
+      type: "USAGE_STREAM_DECLARED",
+      afterSequence,
+      limit: USAGE_PAGE_LIMIT,
+    });
+
+    for (const [rowIndex, row] of page.events.entries()) {
+      const at = "pages[" + String(pageIndex) + "].events[" + String(rowIndex) + "]";
+      const payload: Readonly<Record<string, unknown>> = row.event.payload;
+      const recorded: unknown = payload[STREAM_RECORD_KEY];
+      if (typeof recorded !== "object" || recorded === null || Array.isArray(recorded)) {
+        return { ok: false, reason: "LINEAGE_DECLARATION_UNREADABLE", at: at + ".payload." + STREAM_RECORD_KEY };
+      }
+      const record = recorded as Readonly<Record<string, unknown>>;
+      const recordedSource = lineageText(record, "source");
+      const accountId = lineageText(record, "accountId");
+      const routeSegmentId = lineageText(record, "routeSegmentId");
+      const measurementStreamId = lineageText(record, "measurementStreamId");
+      const sourceClass = lineageText(record, "sourceClass");
+      const normalizationPolicySha256 = lineageText(record, "normalizationPolicySha256");
+      const sourceEpoch = record["sourceEpoch"];
+      if (
+        recordedSource === null ||
+        accountId === null ||
+        routeSegmentId === null ||
+        measurementStreamId === null ||
+        sourceClass === null ||
+        normalizationPolicySha256 === null ||
+        typeof sourceEpoch !== "number" ||
+        !Number.isSafeInteger(sourceEpoch) ||
+        sourceEpoch < 0
+      ) {
+        return { ok: false, reason: "LINEAGE_DECLARATION_UNREADABLE", at: at + ".payload." + STREAM_RECORD_KEY };
+      }
+      if (
+        recordedSource !== lineage.source ||
+        accountId !== lineage.accountId ||
+        routeSegmentId !== lineage.routeSegmentId
+      ) {
+        continue;
+      }
+      if (latest === null || sourceEpoch > latest.sourceEpoch) {
+        latest = { measurementStreamId, sourceEpoch, sourceClass, normalizationPolicySha256 };
+      }
+    }
+
+    if (!page.hasMore) break;
+    if (page.nextCursor === null || page.nextCursor <= afterSequence) {
+      return { ok: false, reason: "LINEAGE_SCAN_INCOMPLETE", at: "pages[" + String(pageIndex) + "].nextCursor" };
+    }
+    afterSequence = page.nextCursor;
+    pageIndex += 1;
+  }
+
+  return { ok: true, latest };
 }
