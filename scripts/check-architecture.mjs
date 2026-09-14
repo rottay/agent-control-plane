@@ -10484,6 +10484,54 @@ const P37S1_WRITE_SET = [
   "packages/domains/runtime/test/intake/index.test.ts",
 ];
 
+/**
+ * P-33/catálogo escalón B — a price is found inside its pinned catalog version, or
+ * named missing, never zero (ADR 0092).
+ *
+ * **What lands.** The `price-catalog` concept, born conforming to owner law §7 and
+ * to the ADR 0088 errata: `types/index.ts` declares `PricePin`, `PriceKey`, the two
+ * verdicts and their union plus the status union derived from the vocabulary, and
+ * `index.ts` holds `PRICE_RESOLUTION_STATUSES` and `resolvePrice` — a pure function
+ * over rows, a pin, a key and an instant. Economy §3's semantics exactly: the
+ * quintuple matched in full, a null `modelVersionId` answered missing and never
+ * aliased, the window half-open so the start is covered and the end is not, rows of
+ * another document or version ignored however current, and no applicable interval
+ * answered `PRICE_MISSING` with the pin intact — never a zero rate (§3 `:195-197`,
+ * `:284-286`). L-P33B-1 holds the reach.
+ *
+ * **What does NOT land, declared.** No pin persisted on a segment or a dispatch:
+ * that is P-15's with the execution dictionary's amendment (the DT's Q1), and it is
+ * why this law admits no caller. No rationals, no rounding, no `cost_snapshot_*`, no
+ * valuation policy, no periods or proration (economy §4-§6). No wiring to the walk
+ * or to the usage recorders. No re-admission of stored rows: the door decided that.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 143 -> **144** for L-P33B-1. The ADR corpus
+ * 91 -> 92; the decision register 91 -> 93. The ledger barrel gains two values and
+ * six types.
+ *
+ * **Pins that do NOT move.** `MIGRATIONS` (21), `CONTRACT_VERSION` (`"2.6.0"`),
+ * `API_CONTRACT_VERSION` (`"0.17.0"`), `PROJECTOR_VERSION` (1),
+ * `EXPECTED_SCHEMA_OBJECTS`, `DERIVED_TABLES`, `PROJECTION_SOURCES` and every
+ * watermark and projection count: escalón B adds no table, no migration, no event
+ * type and no door. It is facts about what A already published (ADR 0076's
+ * criterion), so there is no bump.
+ *
+ * **Nine paths; four are new to the fence** — the module, its type leaf, its suite
+ * and ADR 0092 (`grep -Fc` over this file, 0 each before this block). The other five
+ * are admitted by historical blocks.
+ */
+const P33B_WRITE_SET = [
+  "packages/persistence/ledger/src/price-catalog/index.ts",
+  "packages/persistence/ledger/src/price-catalog/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/price-catalog/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0092-a-price-is-found-inside-its-pinned-catalog-version.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -10706,6 +10754,7 @@ const WRITE_SET = [
   ...P32C_WRITE_SET,
   ...P33A_WRITE_SET,
   ...P37S1_WRITE_SET,
+  ...P33B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -12094,6 +12143,12 @@ const PATH_SCOPED_LAWS = [
   // 142 -> 143 for L-P32C-1.
   {
     law: "the usage recorders stay unwired until a normalizing adapter binds them",
+    scope: "packages/*/*/src/**",
+  },
+  // P-33/catálogo B. One new path-shaped surface, so one new row: the register and
+  // the `requireScope` call sites both move 143 -> 144 for L-P33B-1.
+  {
+    law: "price resolution is reached through the ledger's barrel, and reimplemented nowhere",
     scope: "packages/*/*/src/**",
   },
 ];
@@ -26508,6 +26563,61 @@ const USAGE_IDENTITY_CALLERS = ["packages/domains/runtime/src/usage/index.ts"];
   notes.push(
     "no production source outside the module, the ledger barrel, the door and the projection names the settlement fold," +
       " and only the runtime's usage recorder joins them for the stream identity",
+  );
+}
+
+// L-P33B-1 -- price resolution is reached through the ledger's barrel, and
+// reimplemented nowhere (P-33/catálogo B, ADR 0092).
+//
+// Economy §3 answers a price by selecting one interval of one pinned catalog
+// version over a half-open window. That selection is four comparisons and a
+// boundary rule, which is exactly the size of thing a caller rewrites inline
+// rather than import -- and a second implementation of it is a second answer to
+// "what did this spend cost", reached without the door's guarantee that no two
+// intervals of a quintuple meet. The half-open end is the part that gets rewritten
+// wrong: an `instant <= effectiveTo` priced at a boundary would double-charge the
+// handover between two adjacent intervals.
+//
+// So no `src/` outside the concept -- the module and its type leaf -- and the
+// package barrel imports the module's path or names the verb. The concept, not the
+// file: the isolation law is enforced over a concept and its leaf together, which
+// is C-3 / P-37 seam 1's adjudicated mould (decision 91). The suites are outside
+// `src/` and outside the law.
+//
+// Unlike L-P32B-1 this law admits no caller at all yet, because nothing may call
+// it: the pin has no physical home on a segment or a dispatch until P-15 (the DT's
+// Q1), so a caller today would be pricing against a version nothing recorded. P-15
+// amends this row when it wires the resolution behind a recorded pin.
+const PRICE_CATALOG_SITES = [
+  "packages/persistence/ledger/src/price-catalog/index.ts",
+  "packages/persistence/ledger/src/price-catalog/types/index.ts",
+];
+const PRICE_CATALOG_BARREL = "packages/persistence/ledger/src/index.ts";
+{
+  let priceScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      if (PRICE_CATALOG_SITES.includes(relativePath) || relativePath === PRICE_CATALOG_BARREL) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      priceScanned += 1;
+      const code = stripComments(content);
+      if (code.includes("price-catalog/index.js") || /\bresolvePrice\b/.test(code)) {
+        fail(
+          relativePath +
+            " reaches price resolution; it is exported by the ledger's barrel and called by nothing yet, because" +
+            " the pin has no recorded home until P-15, and a second implementation of the half-open selection is a" +
+            " second answer to what a spend cost",
+        );
+      }
+    }
+  }
+  requireScope("price resolution is reached through the ledger's barrel, and reimplemented nowhere", priceScanned);
+  notes.push(
+    "no production source outside the price-catalog concept and the ledger barrel names price resolution",
   );
 }
 

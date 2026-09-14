@@ -495,6 +495,25 @@ export { MODEL_VERSION_PAYLOAD_KEYS, MODEL_VERSION_STATUSES } from "./types/inde
 export { PRICE_INTERVAL_KEYS, PRICE_TABLE_PAYLOAD_KEYS, PRICE_TOKEN_CLASSES } from "./types/index.js";
 
 /**
+ * Price resolution inside a pinned catalog version (P-33/catálogo B, ADR 0092).
+ *
+ * The verb, its closed status vocabulary and the four shapes it speaks in. This
+ * is the ONLY way to reach the selection: L-P33B-1 holds that no production
+ * source outside the module and this barrel names it, so a consumer that wanted
+ * a price asks here rather than writing the half-open comparison a second time
+ * — which is how two answers to one spend get into a system.
+ */
+export { PRICE_RESOLUTION_STATUSES, resolvePrice } from "./price-catalog/index.js";
+export type {
+  PriceFound,
+  PriceKey,
+  PriceMissing,
+  PricePin,
+  PriceResolution,
+  PriceResolutionStatus,
+} from "./price-catalog/index.js";
+
+/**
  * P-14 escalón C: the task intake's closed payload, its transition and the
  * client key's grammar (ADR 0087).
  *

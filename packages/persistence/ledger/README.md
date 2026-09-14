@@ -1146,8 +1146,47 @@ the dictionary's index is the primary key's own.
 
 ### What this escalón does not do
 
-No price resolution and no `PRICE_MISSING` (escalón B). No pin on a segment or a
-dispatch (P-15). No catalog on the artifact plane, no cost snapshot, no valuation.
+No pin on a segment or a dispatch (P-15). No catalog on the artifact plane, no cost
+snapshot, no valuation. Price resolution and `PRICE_MISSING` were escalón B's, and
+are described next.
+
+## Resolving a price inside a pinned catalog version
+
+`resolvePrice(intervals, pin, key, instant)` is the answer the catalog above exists
+to give (P-33/catálogo B, ADR 0092; decisions 92-93). A **pure** function: the rows
+of one version — as `readPriceIntervals` returned them — a pin, a key and the
+dispatch's authoritative instant go in, and a verdict comes out. No database handle,
+no clock, no identity, no I/O, so the same four arguments always give the same
+verdict and a replay reprices a spend to the number the spend was charged.
+
+| Verdict | Carries | When |
+| --- | --- | --- |
+| `{ status: "FOUND", interval }` | the row itself: the price, its currency, and the window it was read from | one interval of the pinned version prices the key at the instant |
+| `{ status: "PRICE_MISSING", pin }` | the pin, and **nothing else** | no interval does |
+
+There is no third member and no amount field that could be zero: economy §3 has no
+fallback rate of `0`, and `PRICE_MISSING` with the pin intact is `:284-286`'s
+sentence as a value — document and version kept, interval reference empty.
+
+What it decides, in order: a null `modelVersionId` is `PRICE_MISSING` and never
+aliased to another model version's price; the document and the version come before
+everything, so a row of another version is not a candidate however current it looks;
+the quintuple (`provider`, `modelVersionId`, `transportKind`, `tokenClass`,
+`currency`) matches exactly, with no fallback between currencies, transports or token
+classes; and the window is **half-open**, `effectiveFrom <= instant < effectiveTo`,
+with a null `effectiveTo` meaning no declared end — so at the boundary between two
+adjacent intervals exactly one prices the instant, and it is the later one.
+
+It **selects and does not re-admit**: overlap, row shape and whether a model version
+is still registered were the door's to decide (N-P14A-7), so at most one row of a
+quintuple can cover an instant and the first match is the only match. A malformed pin
+matches nothing and is answered missing.
+
+**Nothing calls it yet, and L-P33B-1 holds that**: the resolution is reached through
+this package's barrel by name and reimplemented nowhere, and the law admits no caller
+at all until P-15 gives the pin a home on a segment or a dispatch. The caller's
+instant is not validated here — it must be the canonical millisecond UTC form the
+catalog's own columns carry — which is a boundary P-15 makes checkable.
 
 ## An initiative's registration, by command and by API
 
