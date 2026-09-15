@@ -18,6 +18,19 @@ export {
   AdmittedContractVersion,
   BOUNDED_IDENTIFIER,
   BoundedIdentifier,
+  CONTENT_CONTRACT_VERSION,
+  CONTENT_BLOCK_KINDS,
+  CONTENT_MEDIA_TYPES_BY_KIND,
+  CONTENT_INLINE_TEXT_MAX_CHARS,
+  CONTENT_BLOCK_ID_MAX_CHARS,
+  CONTENT_ARTIFACT_MAX_BYTES,
+  CONTENT_METADATA_MAX_BYTES,
+  CONTENT_TOOL_RESULT_MAX_BYTES,
+  CONTENT_REQUEST_AGGREGATE_MAX_BYTES,
+  CONTENT_BLOCK_LIST_MAX,
+  CONTENT_BLOCK_REFUSALS,
+  ContentBlockSchema,
+  InstructionContentSchema,
   EXIT_OK,
   EXIT_USAGE,
   TOKENS_USED_MAX,
@@ -131,6 +144,13 @@ export {
   ArtifactRegistryEvent,
 } from "./schemas/index.js";
 
+export type {
+  ContentBlockKind,
+  ContentMediaType,
+  ContentBlockRefusal,
+  ContentBlock,
+  InstructionContent,
+} from "./schemas/index.js";
 export type { GuardViolation } from "./schemas/index.js";
 export type {
   ExecutionRefused,

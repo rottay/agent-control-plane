@@ -54,6 +54,39 @@ this table against the barrel.
 | `exit-codes` | the process exit convention, declared here because it is shared |
 | `bounded-identifier` | the one grammar a configured name must satisfy, shared by the tool edge and the recorder |
 | `artifact-record` | artifacts §2's vocabularies and the six strict shapes of an artifact event in the registry stream |
+| `content-block` | contratos §4.1's content contract v1: one ordered list of discriminated blocks, with the bounds a request is held to |
+
+## The instruction's content, contract v1
+
+Contratos §4.1 gives an instruction **one ordered list of discriminated blocks**,
+and says why in those words: "no hay tres formatos por cliente". `content-block`
+is that list (P-06 escalón A, ADR 0093). A block is `text`, `image`, `audio`,
+`document` or `tool_result`, and carries a stable `blockId`, a `mediaType`
+validated against its kind, a declared `byteLength`, the `contentSha256` of the
+bytes it describes, and an `artifactRefId` — obligatory for everything except
+short text, where short is `CONTENT_INLINE_TEXT_MAX_CHARS` (4.000), the bound
+`TaskEnvelope.objective` already applies rather than a second policy.
+
+Three rules are facts about the list and not about a block: a `blockId` names one
+block, at least one block is `text` because an instruction says something, and the
+aggregate of the request is refused even when every block fits. Over a bound is
+always a refusal — an instruction is never shortened to fit, for
+`ExecutionRequest.instructions`' reason.
+
+**Inert, by law.** `L-P06A-1` holds that no production source outside the concept
+and this package's barrels names the contract: the envelope carries no content
+until escalón B, so a caller today would compose a payload no door validates.
+Resolving a reference, composing what crosses the adapter boundary and the
+modality preflight are escalón C's.
+
+**Where the declarations live.** **Every** type of the concept is in
+`content-block/types/index.ts` — the three derived unions and the two inferred from
+the schemas — which is where owner law §7.1 puts a resource's aliases. That is why the
+schemas are named `ContentBlockSchema` and `InstructionContentSchema`: a value and a
+type may not share one name across two files, so the value is renamed and the
+collision never arises. The rename is this concept's alone; the package's other
+modules keep their merged names, and ADR 0093 carries the compiler probes that show
+what the constraint actually is.
 
 ## The laws these shapes carry
 

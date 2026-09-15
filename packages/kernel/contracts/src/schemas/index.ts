@@ -33,6 +33,41 @@ export {
   BOUNDED_IDENTIFIER,
   BoundedIdentifier,
 } from "./bounded-identifier/index.js";
+// P-06 escalón A. The instruction's content contract of contratos §4.1, version 1 —
+// the version literal, the closed kind vocabulary, the table of media types each kind
+// admits, the six bounds with their unit in the name (inline text in characters, block
+// id in characters, the three profile ceilings and the request aggregate in bytes), the
+// list ceiling, the refusal vocabulary, the two schemas and the five types. Grammar of
+// a payload, which is this package's; which door validates it is B's and which
+// transport carries it is C's (ADR 0093).
+//
+// The schemas are `…Schema` and every type of the concept is declared in its type leaf,
+// which is where owner law §7.1 puts a resource's aliases; a value and a type may not
+// share one name across two files, so the value is renamed rather than the law bent
+// (adjudication v3). The rename is this concept's alone: the package's historical
+// merged names are untouched.
+export {
+  CONTENT_CONTRACT_VERSION,
+  CONTENT_BLOCK_KINDS,
+  CONTENT_MEDIA_TYPES_BY_KIND,
+  CONTENT_INLINE_TEXT_MAX_CHARS,
+  CONTENT_BLOCK_ID_MAX_CHARS,
+  CONTENT_ARTIFACT_MAX_BYTES,
+  CONTENT_METADATA_MAX_BYTES,
+  CONTENT_TOOL_RESULT_MAX_BYTES,
+  CONTENT_REQUEST_AGGREGATE_MAX_BYTES,
+  CONTENT_BLOCK_LIST_MAX,
+  CONTENT_BLOCK_REFUSALS,
+  ContentBlockSchema,
+  InstructionContentSchema,
+} from "./content-block/index.js";
+export type {
+  ContentBlockKind,
+  ContentMediaType,
+  ContentBlockRefusal,
+  ContentBlock,
+  InstructionContent,
+} from "./content-block/index.js";
 export {
   EXIT_OK,
   EXIT_USAGE,

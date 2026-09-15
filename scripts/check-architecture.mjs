@@ -10532,6 +10532,70 @@ const P33B_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-06 escalón A — an instruction's content is an ordered list of discriminated
+ * blocks, contract v1 (ADR 0093).
+ *
+ * **What lands.** The `content-block` concept in the kernel: one ordered list of
+ * discriminated blocks, the single shape CLI, API and local all speak (contratos
+ * §4.1 `:181-183`). The closed kind vocabulary; a block id stable and unique
+ * within the list; an authorized reference obligatory for everything but short
+ * text, where "short" is 4.000 characters — the bound `objective` and
+ * `instructions` already apply, named rather than invented (the DT's Q1); a media
+ * type validated against the CLASS, from a table so schema and union cannot
+ * disagree; a declared length that is the real one and within the profile's
+ * ceiling, refused rather than truncated; the request aggregate refused even when
+ * every block fits; strict keys so a vendor field fails closed; a list that is not
+ * empty and always says something; and a `tool_result` that names its call and its
+ * effect. L-P06A-1 holds the reach.
+ *
+ * **Where the types live, and the pattern for the next kernel resource.** Every type
+ * of the concept — the three derived unions and the two inferred from the schemas —
+ * is declared in `content-block/types/index.ts`, which is where owner law §7.1 puts a
+ * resource's aliases. The schemas are therefore named `ContentBlockSchema` and
+ * `InstructionContentSchema`: a value and a type may not share one name across two
+ * files (`TS2323` on a module re-export, `TS2300` on a barrel merge, `TS2440` inside
+ * the leaf), so the VALUE is renamed and the collision never arises. The probes are
+ * facts about a merged name, not about the concept, and ADR 0093 Eight records them
+ * as exactly that. Scope is this concept alone: the package's 62 historical merged
+ * names are untouched, this is no general reform, and nothing here reopens C-3 / P-37.
+ *
+ * **What does NOT land, declared.** No change to `TaskEnvelope` and no intake: the
+ * content enters the envelope in B, which is also where `CONTRACT_VERSION` moves
+ * with the three envelope-identity vectors (Q2) and where `API_CONTRACT_VERSION`
+ * moves if the route's body changes (Q3). No producer and no consumer: resolving a
+ * reference on the private side of the adapter boundary, composing what crosses,
+ * the prompt occurrence and the modality `UNSUPPORTED` are C (Q4, Q5, Q6). No
+ * multimodal transport anywhere: the contract names five kinds, and naming a
+ * modality is not installing it.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 144 -> **145** for L-P06A-1.
+ * `CONTRACTS_SCHEMA_EXPORTS` +18. The ADR corpus 92 -> 93; the decision register
+ * 93 -> 95.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` (`"2.6.0"`, B moves it),
+ * `API_CONTRACT_VERSION` (`"0.17.0"`), `MIGRATIONS` (21), `PROJECTOR_VERSION` (1),
+ * and every schema, projection and watermark count: a payload grammar adds no
+ * table, no migration, no event type and no door.
+ *
+ * **Ten paths; three are new to the fence** — the module, its type leaf and its
+ * suite (`grep -Fc` over this file, 0 each before this block). ADR 0093 is admitted
+ * by the corpus rule rather than by a literal here, and the other six are admitted
+ * by historical blocks.
+ */
+const P06A_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/content-block/index.ts",
+  "packages/kernel/contracts/src/schemas/content-block/types/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/test/schemas/content-block/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0093-an-instructions-content-is-an-ordered-list-of-discriminated-blocks.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -10755,6 +10819,7 @@ const WRITE_SET = [
   ...P33A_WRITE_SET,
   ...P37S1_WRITE_SET,
   ...P33B_WRITE_SET,
+  ...P06A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -12149,6 +12214,12 @@ const PATH_SCOPED_LAWS = [
   // the `requireScope` call sites both move 143 -> 144 for L-P33B-1.
   {
     law: "price resolution is reached through the ledger's barrel, and reimplemented nowhere",
+    scope: "packages/*/*/src/**",
+  },
+  // P-06 escalón A. One new path-shaped surface, so one new row: the register and
+  // the `requireScope` call sites both move 144 -> 145 for L-P06A-1.
+  {
+    law: "the instruction content contract is named by its own concept and the contracts barrel, and by nothing else",
     scope: "packages/*/*/src/**",
   },
 ];
@@ -19677,6 +19748,40 @@ if (accountsIndex === null) {
   "AuthMode",
   "BOUNDED_IDENTIFIER",
   "BoundedIdentifier",
+  // P-06 escalón A. Eighteen names: the instruction content contract of contratos
+  // §4.1, version 1 — the version literal, the closed kind vocabulary, the table
+  // of media types each kind admits, the six bounds with their unit in the name
+  // (inline text in characters, block id in characters, the three profile
+  // ceilings and the request aggregate in bytes), the list ceiling, the refusal
+  // vocabulary, the two schemas and the five types. Grammar of a payload, which is
+  // this package's; which door validates it is B's and which transport carries it
+  // is C's (ADR 0093).
+  //
+  // The two schemas are `…Schema` and all five types are declared in the concept's
+  // type leaf, which is where owner law §7.1 puts a resource's aliases. A value and
+  // a type may not share one name across two files (TS2323/TS2300/TS2440), so the
+  // VALUE is renamed and the fusion never arises — the probes are facts about a
+  // merged name, not about the concept (adjudication v3). Scope is this concept
+  // alone: the package's historical merged names above are untouched, and nothing
+  // here reopens C-3 / P-37.
+  "CONTENT_ARTIFACT_MAX_BYTES",
+  "CONTENT_BLOCK_ID_MAX_CHARS",
+  "CONTENT_BLOCK_KINDS",
+  "CONTENT_BLOCK_LIST_MAX",
+  "CONTENT_BLOCK_REFUSALS",
+  "CONTENT_CONTRACT_VERSION",
+  "CONTENT_INLINE_TEXT_MAX_CHARS",
+  "CONTENT_MEDIA_TYPES_BY_KIND",
+  "CONTENT_METADATA_MAX_BYTES",
+  "CONTENT_REQUEST_AGGREGATE_MAX_BYTES",
+  "CONTENT_TOOL_RESULT_MAX_BYTES",
+  "ContentBlock",
+  "ContentBlockKind",
+  "ContentBlockRefusal",
+  "ContentBlockSchema",
+  "ContentMediaType",
+  "InstructionContent",
+  "InstructionContentSchema",
   "CHECKPOINT_MAX_BYTES",
   "CLI_SUBSCRIPTION_PROVIDERS",
   "CONTRACT_VERSION",
@@ -26618,6 +26723,72 @@ const PRICE_CATALOG_BARREL = "packages/persistence/ledger/src/index.ts";
   requireScope("price resolution is reached through the ledger's barrel, and reimplemented nowhere", priceScanned);
   notes.push(
     "no production source outside the price-catalog concept and the ledger barrel names price resolution",
+  );
+}
+
+// L-P06A-1 -- the instruction content contract stays inert until a door
+// validates it (P-06 escalón A, ADR 0093).
+//
+// Contratos §4.1 fixes ONE shape for an instruction's content, and says so in
+// those words: "no hay tres formatos por cliente". A second producer of a content
+// list -- a composition, a gateway route, an adapter assembling blocks of its own
+// -- would be exactly the three formats the sentence forbids, and it would compose
+// an instruction no door validated: the envelope does not carry content until
+// escalón B, so a caller today is building a payload nothing admits.
+//
+// So no `src/` outside the concept -- the module AND its type leaf -- and the
+// contracts barrel imports the module's path or names the contract. The concept
+// and not the file, which is C-3 / P-37 seam 1's adjudicated mould (decision 91).
+// The suites are outside `src/` and outside the law.
+//
+// Like L-P33B-1 and unlike L-P32B-1, this law admits NO caller at all. B amends
+// the row when `TaskEnvelope` carries the content and the two real doors validate
+// it; C amends it again when the resolution reaches the adapter boundary.
+const CONTENT_CONTRACT_SITES = [
+  "packages/kernel/contracts/src/schemas/content-block/index.ts",
+  "packages/kernel/contracts/src/schemas/content-block/types/index.ts",
+];
+const CONTENT_CONTRACT_BARRELS = [
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+];
+{
+  let contentScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      if (CONTENT_CONTRACT_SITES.includes(relativePath)) continue;
+      if (CONTENT_CONTRACT_BARRELS.includes(relativePath)) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      contentScanned += 1;
+      const code = stripComments(content);
+      // `\b` after "Content" would not match `InstructionContentSchema`, so the
+      // pattern names the schema suffix explicitly: the law has to bite the value a
+      // second producer would actually call, which since adjudication v3 is the
+      // renamed one.
+      if (
+        code.includes("content-block/index.js") ||
+        /\bInstructionContent(?:Schema)?\b/.test(code) ||
+        /\bContentBlockSchema\b/.test(code)
+      ) {
+        fail(
+          relativePath +
+            " names the instruction content contract; it is exported by the contracts barrel and validated by no" +
+            " door yet, because the envelope carries no content until escalon B, and a second producer of a content" +
+            " list is the three formats per client that contratos section 4.1 forbids",
+        );
+      }
+    }
+  }
+  requireScope(
+    "the instruction content contract is named by its own concept and the contracts barrel, and by nothing else",
+    contentScanned,
+  );
+  notes.push(
+    "no production source outside the content-block concept and the contracts barrels names the content contract",
   );
 }
 
