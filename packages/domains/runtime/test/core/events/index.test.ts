@@ -12,10 +12,11 @@ import type { ResolvedRoute } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
 import type { DurableInvocation } from "../../../src/contracts/index.js";
-import { ATTEMPT_OPENING_STEP, buildEvent, causalPredecessorOf, operationForStep } from "../../../src/core/events/index.js";
+import { ATTEMPT_OPENING_STEP, buildEvent, buildPromptOccurrenceEvent, causalPredecessorOf, operationForStep } from "../../../src/core/events/index.js";
+import type { PromptOccurrenceRecord } from "../../../src/core/events/index.js";
 import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP, READ_ONLY_PLAN, planStep } from "../../../src/core/lifecycle/index.js";
 import type { PlanStep } from "../../../src/core/lifecycle/index.js";
-import { LifecyclePlanError } from "../../../src/errors/index.js";
+import { LifecyclePlanError, SupervisorError } from "../../../src/errors/index.js";
 import { deterministicUuid } from "../../../src/core/coordinates/index.js";
 
 
@@ -552,5 +553,154 @@ describe("the V2 causal thread starts at the opening", () => {
     expect(after).toBe(before);
     // And the two walks really are different walks.
     expect(walkDigest(V2_INVOCATION, LIFECYCLE_PLAN)).not.toBe(walkDigest(INVOCATION, LIFECYCLE_PLAN));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-06/C — the prompt occurrence has a producer (execution §8.1, ADR 0095)
+// ---------------------------------------------------------------------------
+
+/**
+ * One lawful occurrence, from which every negative below departs by one field.
+ *
+ * `contextSha256` is null on purpose: the absent case is the fixture and the
+ * present one is the variation, because a producer that could only be shown
+ * right when a context exists would leave the absent case — the common one —
+ * unexercised (N-P06-17).
+ */
+const OCCURRENCE: PromptOccurrenceRecord = {
+  occurrenceId: "po-0001",
+  dispatchAttemptId: "dsp-0001",
+  effectId: "eff-0001",
+  routeSegmentId: "seg-0001",
+  ordinal: 0,
+  requestedModelId: "opus",
+  provider: "claude",
+  modelResolutionStatus: "RESOLVED",
+  modelVersionId: "mv-0001",
+  accountId: "acct-fixture",
+  promptSha256: "a".repeat(64),
+  promptBytes: 1_234,
+  contextSha256: null,
+};
+
+function occurrenceEvent(
+  overrides: Partial<PromptOccurrenceRecord> = {},
+  invocation: DurableInvocation = V2_INVOCATION,
+): ReturnType<typeof buildPromptOccurrenceEvent> {
+  return buildPromptOccurrenceEvent({
+    invocation,
+    state: "RUNNING",
+    emittedBy: EMITTED_BY,
+    causedBy: null,
+    occurrence: { ...OCCURRENCE, ...overrides },
+  });
+}
+
+describe("the prompt occurrence records the use of an instruction, never its bytes", () => {
+  it("N-P06-17: records the digest and the length, and a null context digest rather than a digest of nothing", () => {
+    const event = occurrenceEvent();
+    const record = event.payload["promptOccurrence"] as Record<string, unknown>;
+    expect(record["promptSha256"]).toBe("a".repeat(64));
+    expect(record["promptBytes"]).toBe(1_234);
+    expect(record["contextSha256"]).toBeNull();
+    // The positive control: a delivery that DID carry a separately addressed
+    // context says so, so the null above is a statement and not a default the
+    // producer is incapable of leaving.
+    const withContext = occurrenceEvent({ contextSha256: "c".repeat(64) });
+    const carried = withContext.payload["promptOccurrence"] as Record<string, unknown>;
+    expect(carried["contextSha256"]).toBe("c".repeat(64));
+  });
+
+  it("is the same-state passthrough the contract lists it as, on the invocation's own coordinate", () => {
+    const event = occurrenceEvent();
+    expect(ControlPlaneEvent.safeParse(event).success).toBe(true);
+    expect({
+      type: event.type,
+      fromState: event.fromState,
+      toState: event.toState,
+      taskId: event.taskId,
+      transitionId: event.transitionId,
+      correlationId: event.correlationId,
+      causationId: event.causationId,
+      occurredAt: event.occurredAt,
+      recordedAt: event.recordedAt,
+      emittedBy: event.emittedBy,
+    }).toEqual({
+      type: "PROMPT_OCCURRENCE_RECORDED",
+      fromState: "RUNNING",
+      toState: "RUNNING",
+      taskId: V2_INVOCATION.taskId,
+      transitionId: "prompt-occurrence.po-0001",
+      correlationId: V2_INVOCATION.invocationId,
+      causationId: null,
+      occurredAt: V2_INVOCATION.submittedAt,
+      recordedAt: V2_INVOCATION.submittedAt,
+      emittedBy: EMITTED_BY,
+    });
+    expect(event.idempotencyKey).toBe(
+      buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId: V2_INVOCATION.taskId,
+        revisionNumber: 1,
+        attemptNumber: 1,
+        transitionId: "prompt-occurrence.po-0001",
+      }),
+    );
+  });
+
+  it("carries the V2 coordinate and one closed record, whose fields are exactly the door's grammar", () => {
+    const event = occurrenceEvent();
+    expect(Object.keys(event.payload).sort()).toEqual([
+      "attemptNumber",
+      "promptOccurrence",
+      "revisionNumber",
+    ]);
+    expect(event.payload["revisionNumber"]).toBe(1);
+    expect(event.payload["attemptNumber"]).toBe(1);
+    const record = event.payload["promptOccurrence"] as Record<string, unknown>;
+    // The thirteen of the ledger's `PROMPT_OCCURRENCE_RECORD_KEYS`, written out
+    // rather than imported: the reader is not on this package's public surface,
+    // so the equality of the two lists is pinned by the fence (L-P06C-2) and
+    // this assertion pins that the producer really emits the list it declares.
+    expect(Object.keys(record).sort()).toEqual([
+      "accountId",
+      "contextSha256",
+      "dispatchAttemptId",
+      "effectId",
+      "modelResolutionStatus",
+      "modelVersionId",
+      "occurrenceId",
+      "ordinal",
+      "promptBytes",
+      "promptSha256",
+      "provider",
+      "requestedModelId",
+      "routeSegmentId",
+    ]);
+  });
+
+  it("N-P06-14: no block, no text and no reference reaches the payload, not even as a digest", () => {
+    const event = occurrenceEvent();
+    const text = JSON.stringify(event);
+    for (const word of ["blocks", "artifactRefId", "contentSha256", "mediaType", "byteLength", "objective", "instructions"]) {
+      expect(text).not.toContain(word);
+    }
+    expect(findCredentialViolations(event.payload)).toEqual([]);
+    expect(findTranscriptViolations(event.payload)).toEqual([]);
+  });
+
+  it("is byte-identical across rebuilds, and one occurrence has one name", () => {
+    expect(JSON.stringify(occurrenceEvent())).toBe(JSON.stringify(occurrenceEvent()));
+    // A second occurrence on the same segment is a different event; the same
+    // occurrence restated is a replay under the same key.
+    const second = occurrenceEvent({ occurrenceId: "po-0002", ordinal: 1 });
+    expect(second.idempotencyKey).not.toBe(occurrenceEvent().idempotencyKey);
+    expect(second.eventId).not.toBe(occurrenceEvent().eventId);
+  });
+
+  it("refuses an invocation without a revision, by name, rather than leaving it to the door", () => {
+    expect(() => occurrenceEvent({}, INVOCATION)).toThrow(SupervisorError);
+    expect(() => occurrenceEvent({}, INVOCATION)).toThrow(/without a revision/);
   });
 });

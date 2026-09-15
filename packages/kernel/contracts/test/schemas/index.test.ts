@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  CONTENT_REQUEST_AGGREGATE_MAX_BYTES,
+  INSTRUCTIONS_MAX_CHARS,
   ACCOUNT_ACTIONS,
   ACCOUNT_ACTION_NOTE_MAX,
   ACCOUNT_ACTION_STATE,
@@ -2116,48 +2118,98 @@ describe("ExecutionEvent", () => {
 });
 
 describe("ExecutionRequest", () => {
+  /**
+   * One lawful request, stated once.
+   *
+   * Held as a literal as well as behind the builder below, because two of the
+   * refusals are about a key being ABSENT and a builder that spreads its overrides
+   * can add a key but cannot remove one.
+   */
+  const VALID_EXECUTION_REQUEST: Record<string, unknown> = {
+    taskId: TASK_ID,
+    attempt: 1,
+    identity: WRITER,
+    instructions: "summarise the packet and propose a plan",
+    modalities: ["text"],
+    reattach: null,
+  };
+
+  /** One request, with the classes its instruction was composed from (P-06/C). */
+  const executionRequest = (
+    overrides: Record<string, unknown> = {},
+  ): ReturnType<typeof ExecutionRequest.safeParse> =>
+    ExecutionRequest.safeParse({ ...VALID_EXECUTION_REQUEST, ...overrides });
+
   it("accepts an ordinary start, with no reattachment", () => {
     const parsed = ExecutionRequest.parse({
       taskId: TASK_ID,
       attempt: 1,
       identity: WRITER,
       instructions: "summarise the packet and propose a plan",
+      modalities: ["text"],
       reattach: null,
     });
     expect(parsed.reattach).toBeNull();
     expect(parsed.instructions).toBe("summarise the packet and propose a plan");
   });
 
-  it("carries the instruction, bounded exactly as the envelope's objective is (V2-B1c)", () => {
-    // The same bound at both doors on purpose: the value comes from
-    // `TaskEnvelope.objective`, and a looser bound here would be a second
-    // policy able to disagree with the first about what the model was asked.
-    const base = {
-      taskId: TASK_ID,
-      attempt: 1,
-      identity: WRITER,
-      instructions: "do the work",
-      reattach: null,
-    };
-    expect(ExecutionRequest.safeParse({ ...base, instructions: "x".repeat(4_000) }).success).toBe(true);
-    // N2: over the bound is a refusal, never a truncation. An adapter that
-    // shortened an instruction would be inventing a policy about what the model
-    // was asked, which is the one thing no transport may decide.
-    expect(ExecutionRequest.safeParse({ ...base, instructions: "x".repeat(4_001) }).success).toBe(false);
-    expect(ExecutionRequest.safeParse({ ...base, instructions: "" }).success).toBe(false);
-    // Required, not optional: an execution with no instruction is not a start
-    // with a default, it is a request that does not say what to do.
-    const withoutInstruction: Record<string, unknown> = { ...base };
-    delete withoutInstruction["instructions"];
-    expect(ExecutionRequest.safeParse(withoutInstruction).success).toBe(false);
-    // The key set stays closed.
+  it("carries the instruction, bounded by the content aggregate the door already enforces (P-06/C)", () => {
+    // The claim this test carried until P-06/C was that the bound equals
+    // `TaskEnvelope.objective`'s four thousand, because the instruction WAS that
+    // field. Since C the instruction is composed from the text blocks of a content
+    // list, so the figure that governs is the content contract's own aggregate —
+    // `INSTRUCTIONS_MAX_CHARS = CONTENT_REQUEST_AGGREGATE_MAX_BYTES` — which is the
+    // ceiling a request's content was already held to at the door. Tests §9.6 rule 1
+    // is why: where two numbers meet, the policy already in force wins. Moving it is
+    // not a bump, because `ExecutionRequest` carries no `contractVersion`.
+    expect(INSTRUCTIONS_MAX_CHARS).toBe(CONTENT_REQUEST_AGGREGATE_MAX_BYTES);
+    expect(executionRequest({ instructions: "x".repeat(INSTRUCTIONS_MAX_CHARS) }).success).toBe(true);
+    expect(executionRequest({ instructions: "x".repeat(INSTRUCTIONS_MAX_CHARS + 1) }).success).toBe(false);
+    // Empty is still refused: an instruction that says nothing is not an instruction.
+    expect(executionRequest({ instructions: "" }).success).toBe(false);
+  });
+
+  it("keeps the key set closed at six, and neither the instruction nor its classes may be omitted", () => {
+    // The closed key set, restored and widened by one after P-06/C added
+    // `modalities`. A new REQUIRED member makes this pin more necessary rather than
+    // less: it is what makes a seventh key, or a quietly renamed one, fail here
+    // instead of at whichever adapter first read a field nobody declared.
     expect(Object.keys(ExecutionRequest.shape).sort()).toEqual([
       "attempt",
       "identity",
       "instructions",
+      "modalities",
       "reattach",
       "taskId",
     ]);
+
+    // The positive control for the four refusals below: the same builder, untouched,
+    // is admitted. Without it a refusal could be the fixture being wrong rather than
+    // the schema being right.
+    expect(executionRequest().success).toBe(true);
+
+    // Required, not optional: an execution with no instruction is not a start with a
+    // default, it is a request that does not say what to do.
+    const withoutInstruction: Record<string, unknown> = { ...VALID_EXECUTION_REQUEST };
+    delete withoutInstruction["instructions"];
+    expect(ExecutionRequest.safeParse(withoutInstruction).success).toBe(false);
+
+    // And the classes are required on the same terms (P-06/C). Absent is not "text
+    // by default": a transport decides what it can carry by reading this field, and
+    // a default would make every unstated request look like a text-only one — which
+    // is precisely the silent admission the modality preflight exists to prevent.
+    const withoutModalities: Record<string, unknown> = { ...VALID_EXECUTION_REQUEST };
+    delete withoutModalities["modalities"];
+    expect(ExecutionRequest.safeParse(withoutModalities).success).toBe(false);
+
+    // Empty is refused too, by `min(1)`, and for a reason of its own: an instruction
+    // always has at least one text block (escalón A's contract), so a request
+    // claiming it was composed from no class at all is describing something the
+    // content contract cannot produce.
+    expect(executionRequest({ modalities: [] }).success).toBe(false);
+    // A class outside the closed vocabulary is refused as well, so the field cannot
+    // become a free-text channel.
+    expect(executionRequest({ modalities: ["video"] }).success).toBe(false);
   });
 
   it("accepts a reattach reference, and requires the field to be stated", () => {
@@ -2167,6 +2219,7 @@ describe("ExecutionRequest", () => {
         attempt: 2,
         identity: WRITER,
         instructions: "rejoin the run and finish it",
+        modalities: ["text"],
         reattach: "session-abc",
       }).success,
     ).toBe(true);
@@ -2180,6 +2233,7 @@ describe("ExecutionRequest", () => {
         attempt: 1,
         identity: WRITER,
         instructions: "do the work",
+        modalities: ["text"],
       }).success,
     ).toBe(false);
   });
@@ -2190,6 +2244,7 @@ describe("ExecutionRequest", () => {
       attempt: 1,
       identity: WRITER,
       instructions: "do the work",
+      modalities: ["text"],
       reattach: null,
     };
     expect(ExecutionRequest.safeParse({ ...base, taskId: "task-1" }).success).toBe(false);

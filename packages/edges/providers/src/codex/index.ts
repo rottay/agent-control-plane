@@ -569,6 +569,11 @@ export const codexAdapter: ProviderAdapter = {
       // the plane calls unknown and perform a handshake it calls unauthorized,
       // so the honest declaration is that this transport cannot take one yet.
       // Delivering here is gated on an owner authorization to settle framing.
+      // P-06/C: the reason is still the handshake, and it is declared first because
+      // it is true of every instruction regardless of its classes -- a transport
+      // that cannot take an instruction at all does not get to say which classes
+      // it would have taken. The modality member of the union exists for the
+      // transports that can (ADR 0095).
       delivery: { kind: "UNSUPPORTED", reason: "HANDSHAKE_REQUIRED" },
     };
   },

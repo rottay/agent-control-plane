@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -13,8 +14,17 @@ import type {
   TaskEnvelope,
 } from "@acp/contracts";
 import { CONTRACT_VERSION } from "@acp/contracts";
-import { artifactRootFor, openLeaseStore, openLedger, readArtifact } from "@acp/ledger";
-import type { Ledger, LeaseStore } from "@acp/ledger";
+import {
+  ARTIFACT_ACCESS_POLICY_IDS,
+  artifactBlobLeaseStorePath,
+  artifactRootFor,
+  openArtifactBlobLeaseStore,
+  openArtifactPlane,
+  openLeaseStore,
+  openLedger,
+  readArtifact,
+} from "@acp/ledger";
+import type { ArtifactBlobLeaseStore, ArtifactPlane, Ledger, LeaseStore } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { BeatContext, DurableInvocation, ScenarioRoot } from "@acp/runtime";
@@ -34,14 +44,16 @@ import { createArbiter } from "../../../src/arbiter/index.js";
 import type { LeaseHold } from "../../../src/arbiter/index.js";
 import type { DaemonExecutionConfig } from "../../../src/daemon-child/index.js";
 import { buildWalkEffects, runComposedSqliteWalk } from "../../../src/composition/walk/index.js";
+import { instructionFor } from "../../../src/composition/index.js";
 
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
  * One text block, so the envelope's `objective` equals the first text block of its
- * content and the two spellings stay one fact. `contentSha256` is a placeholder:
- * escalón B admits and publishes, and escalón C is where a digest is checked
- * against the bytes it describes.
+ * content and the two spellings stay one fact. `contentSha256` is a placeholder and
+ * stays one after escalón C: C checks a declared digest against the bytes a
+ * REFERENCE names, and a block whose text travels inline names no reference, so
+ * there are no bytes for this figure to disagree with.
  */
 function fixtureContent(text: string): Record<string, unknown> {
   return {
@@ -164,6 +176,7 @@ function stage(name: string, taskId: string, generation: number, events: readonl
     attempt: invocation.attempt,
     emittedBy: EMITTED_BY,
     instructions: INSTRUCTIONS,
+    modalities: ["text"] as const,
     scenarioRoot: root,
     generation,
     gate: (operationIndex) => {
@@ -521,6 +534,7 @@ function walkOf(
       composed.gateCalls.push(operationIndex);
     },
     instructions: INSTRUCTIONS,
+    modalities: ["text"] as const,
     taskId: composed.invocation.taskId,
     attempt: composed.invocation.attempt,
     emittedBy: EMITTED_BY,
@@ -779,4 +793,286 @@ describe("the wrapper's switch port carries the lease this walk actually holds",
     const failed = rows.find((row) => row.type === "TASK_FAILED");
     expect(failed?.payload["reason"]).toBe("EXECUTION_FAILED");
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// P-06/C — the instruction is composed on the private side of the boundary
+//
+// The REAL producer, against a REAL ledger and a REAL artifact plane. Contratos
+// §4.1 puts inline data on the private side of the adapter boundary and §4.3 asks
+// for the proof to be driven from the real door rather than from a fixture, so
+// nothing here stubs the plane: bytes are published through it and read back
+// through the verb, under this task's own scope.
+// ---------------------------------------------------------------------------
+
+/** The blob lease stores and directories this section owns, closed and removed after each case. */
+const blobLeaseStores: ArtifactBlobLeaseStore[] = [];
+const temporaries: string[] = [];
+
+afterEach(() => {
+  for (const store of blobLeaseStores.splice(0)) {
+    try {
+      store.close();
+    } catch {
+      // already closed
+    }
+  }
+  for (const directory of temporaries.splice(0)) rmSync(directory, { recursive: true, force: true });
+});
+
+/** The bytes one referenced block resolves to, and their real digest. */
+const REFERENCED_TEXT = "the second paragraph, which lives on the artifact plane";
+const COMPOSITION_TASK = "c06c0000-0000-4000-8000-000000000001";
+const OTHER_TASK = "c06c0000-0000-4000-8000-0000000000ff";
+
+function digestOfText(text: string): string {
+  return createHash("sha256").update(Buffer.from(text, "utf8")).digest("hex");
+}
+
+interface ContentSubstrates {
+  readonly ledger: Ledger;
+  readonly plane: ArtifactPlane;
+}
+
+/** A ledger with a real artifact plane over it, closed by the suite's `afterEach`. */
+function contentSubstrates(): ContentSubstrates {
+  const directory = resolve(mkdtempSync(join(tmpdir(), "acp-p06c-")));
+  temporaries.push(directory);
+  const ledgerPath = join(directory, "control-plane.sqlite");
+  const ledger = openLedger(ledgerPath);
+  ledgers.push(ledger);
+  const leaseStore = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(ledgerPath), {
+    incarnationId: "c06c1111-1111-4111-8111-111111111111",
+    createdAt: WALK_AT,
+  });
+  blobLeaseStores.push(leaseStore);
+  return { ledger, plane: openArtifactPlane({ ledger, leaseStore, ledgerPath }) };
+}
+
+/** Publish `text` under a TASK-scoped reference, exactly as the producer's door does. */
+function publishText(
+  plane: ArtifactPlane,
+  text: string,
+  options: { readonly referenceId: string; readonly scopeId: string; readonly ordinal: number },
+): string {
+  const at = WALK_AT;
+  const suffix = String(options.ordinal).padStart(2, "0");
+  const outcome = plane.publish({
+    content: Buffer.from(text, "utf8"),
+    declaredContentSha256: digestOfText(text),
+    mediaType: "text/plain; charset=utf-8",
+    encryptionStatus: "PLAINTEXT",
+    encryptionProfile: "none",
+    commandId: "cmd-p06c-" + suffix,
+    artifactPinId: "pin-p06c-" + suffix,
+    reference: {
+      artifactReferenceId: options.referenceId,
+      artifactClass: "TASK_ENVELOPE",
+      classification: "INTERNAL",
+      scopeKind: "TASK",
+      scopeId: options.scopeId,
+      producerIdentity: EMITTED_BY,
+      accessPolicyId: ARTIFACT_ACCESS_POLICY_IDS[0] as string,
+      retentionClass: "PERMANENT",
+      expiresAt: null,
+    },
+    recordedBy: EMITTED_BY,
+    intention: {
+      eventId: deterministicUuid("p06c/intention/" + suffix),
+      idempotencyKey: digestOfText("p06c/intended/" + suffix),
+      occurredAt: at,
+      recordedAt: at,
+    },
+    terminal: {
+      eventId: deterministicUuid("p06c/terminal/" + suffix),
+      idempotencyKey: digestOfText("p06c/succeeded/" + suffix),
+      occurredAt: at,
+      recordedAt: at,
+    },
+    holding: {
+      holder: EMITTED_BY,
+      holderPid: process.pid,
+      acquiredAt: at,
+      expiresAt: new Date(Date.parse(at) + 60_000).toISOString(),
+    },
+  });
+  if (outcome.verb !== "PUBLISHED") throw new Error("the fixture could not publish: " + outcome.verb);
+  return options.referenceId;
+}
+
+/** One text block, inline or referenced, with whatever figures the case needs. */
+function textBlock(options: {
+  readonly blockId: string;
+  readonly text: string;
+  readonly artifactRefId?: string | null;
+  readonly contentSha256?: string;
+  readonly byteLength?: number;
+}): Record<string, unknown> {
+  const text = options.text;
+  return {
+    kind: "text",
+    blockId: options.blockId,
+    mediaType: "text/plain; charset=utf-8",
+    byteLength: options.byteLength ?? new TextEncoder().encode(text).byteLength,
+    contentSha256: options.contentSha256 ?? digestOfText(text),
+    artifactRefId: options.artifactRefId ?? null,
+    text,
+    toolCallId: null,
+    effectId: null,
+  };
+}
+
+/** An envelope whose content is exactly the blocks handed in. */
+function envelopeWithBlocks(taskId: string, blocks: readonly Record<string, unknown>[]): TaskEnvelope {
+  const first = blocks[0];
+  const objective = typeof first?.["text"] === "string" ? first["text"] : INSTRUCTIONS;
+  return {
+    ...envelopeFor(taskId),
+    objective,
+    content: { contentContractVersion: 1, blocks: [...blocks] },
+  } as unknown as TaskEnvelope;
+}
+
+describe("the instruction is composed from the envelope's content (P-06/C)", () => {
+  it("joins the text blocks in the list's own order, with one blank line between them", () => {
+    const { ledger } = contentSubstrates();
+    const composed = instructionFor(
+      ledger,
+      envelopeWithBlocks(COMPOSITION_TASK, [
+        textBlock({ blockId: "b1", text: "first" }),
+        textBlock({ blockId: "b2", text: "second" }),
+      ]),
+    );
+    // The order is the list's, not sorted and not grouped, and the separator is
+    // the one rule — no per-adapter variant.
+    expect(composed.instructions).toBe("first\n\nsecond");
+    expect(composed.modalities).toEqual(["text"]);
+  });
+
+  it("resolves a referenced block through the plane under this task's scope, and verifies both figures", () => {
+    const { ledger, plane } = contentSubstrates();
+    const reference = publishText(plane, REFERENCED_TEXT, {
+      referenceId: "ref-p06c-good",
+      scopeId: COMPOSITION_TASK,
+      ordinal: 1,
+    });
+    const composed = instructionFor(
+      ledger,
+      envelopeWithBlocks(COMPOSITION_TASK, [
+        textBlock({ blockId: "b1", text: "first" }),
+        textBlock({ blockId: "b2", text: REFERENCED_TEXT, artifactRefId: reference }),
+      ]),
+    );
+    // The positive control for every negative below: the referenced bytes ARE
+    // read, and what crosses is what the plane holds.
+    expect(composed.instructions).toBe("first\n\n" + REFERENCED_TEXT);
+  });
+
+  it("N-P06-13: refuses a block whose declared digest is not the digest of the bytes it names", () => {
+    const { ledger, plane } = contentSubstrates();
+    const reference = publishText(plane, REFERENCED_TEXT, {
+      referenceId: "ref-p06c-digest",
+      scopeId: COMPOSITION_TASK,
+      ordinal: 2,
+    });
+    const envelope = envelopeWithBlocks(COMPOSITION_TASK, [
+      textBlock({
+        blockId: "b1",
+        text: REFERENCED_TEXT,
+        artifactRefId: reference,
+        contentSha256: "f".repeat(64),
+      }),
+    ]);
+    expect(() => instructionFor(ledger, envelope)).toThrow(/another digest than the block declares/);
+  });
+
+  it("N-P06-13: refuses a block whose declared length is not the length of those bytes", () => {
+    const { ledger, plane } = contentSubstrates();
+    const reference = publishText(plane, REFERENCED_TEXT, {
+      referenceId: "ref-p06c-length",
+      scopeId: COMPOSITION_TASK,
+      ordinal: 3,
+    });
+    const envelope = envelopeWithBlocks(COMPOSITION_TASK, [
+      textBlock({ blockId: "b1", text: REFERENCED_TEXT, artifactRefId: reference, byteLength: 1 }),
+    ]);
+    expect(() => instructionFor(ledger, envelope)).toThrow(/another length than the block declares/);
+  });
+
+  it("N-P06-12: refuses a reference of another task's scope, and composes no half instruction", () => {
+    const { ledger, plane } = contentSubstrates();
+    const foreign = publishText(plane, REFERENCED_TEXT, {
+      referenceId: "ref-p06c-foreign",
+      scopeId: OTHER_TASK,
+      ordinal: 4,
+    });
+    const envelope = envelopeWithBlocks(COMPOSITION_TASK, [
+      textBlock({ blockId: "b1", text: "first" }),
+      textBlock({ blockId: "b2", text: REFERENCED_TEXT, artifactRefId: foreign }),
+    ]);
+    // `SCOPE_EQUALITY_V1` is the plane's own policy and the refusal is its word,
+    // not a second opinion formed here. And the instruction is not composed at
+    // all: there is no "first" half that crossed while the second was refused.
+    let thrown: unknown;
+    try {
+      instructionFor(ledger, envelope);
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect((thrown as Error | undefined)?.message).toMatch(/the private plane refuses to read/);
+    expect((thrown as Error).message).not.toContain(REFERENCED_TEXT);
+  });
+
+  it("N-P06-18: refuses a resolved block carrying credential material, naming the block and never the bytes", () => {
+    const { ledger, plane } = contentSubstrates();
+    const secret = "AKIA" + "ABCDEFGHIJKLMNOP";
+    const poisoned = "deploy with " + secret;
+    const reference = publishText(plane, poisoned, {
+      referenceId: "ref-p06c-credential",
+      scopeId: COMPOSITION_TASK,
+      ordinal: 5,
+    });
+    const envelope = envelopeWithBlocks(COMPOSITION_TASK, [
+      textBlock({ blockId: "b1", text: "first" }),
+      textBlock({ blockId: "b2", text: poisoned, artifactRefId: reference }),
+    ]);
+    let thrown: unknown;
+    try {
+      instructionFor(ledger, envelope);
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect((thrown as Error | undefined)?.message).toMatch(/blocks\[1\] carries credential material/);
+    // The bytes travel nowhere: not into the message, not into the error's shape.
+    expect((thrown as Error).message).not.toContain(secret);
+    expect(JSON.stringify(thrown)).not.toContain(secret);
+  });
+
+  it("N-P06-18: runs the guard over EACH block, including the first and the inline ones", () => {
+    const { ledger } = contentSubstrates();
+    const secret = "AKIA" + "QRSTUVWXYZ012345";
+    const envelope = envelopeWithBlocks(COMPOSITION_TASK, [
+      textBlock({ blockId: "b1", text: "deploy with " + secret }),
+      textBlock({ blockId: "b2", text: "second" }),
+    ]);
+    // The positive control is the case above it: the same composition with clean
+    // text produces an instruction. Here the FIRST block is the offender, so a
+    // guard that only ran over the last resolved one would let this through.
+    expect(() => instructionFor(ledger, envelope)).toThrow(/blocks\[0\] carries credential material/);
+  });
+
+  it("reports the distinct classes in first-appearance order, and never a block", () => {
+    const { ledger } = contentSubstrates();
+    const composed = instructionFor(
+      ledger,
+      envelopeWithBlocks(COMPOSITION_TASK, [
+        textBlock({ blockId: "b1", text: "first" }),
+        textBlock({ blockId: "b2", text: "second" }),
+      ]),
+    );
+    // Distinct, so two text blocks report one class; and the classes are all the
+    // adapter ever sees of the content (§4.1 `:199-201`).
+    expect(composed.modalities).toEqual(["text"]);
+    expect(Object.keys(composed).sort()).toEqual(["instructions", "modalities"]);
+  });
 });

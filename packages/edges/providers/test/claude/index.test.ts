@@ -65,6 +65,10 @@ function request(identity: string, overrides: Partial<SessionRequest> = {}): Ses
     workdir: root as AdmittedWorkdir,
     resumeSessionId: null,
     limits: limits(),
+    // The classes the instruction was composed from (P-06/C). Text, so the six
+    // descriptor drills below exercise the real text path and `describe` declares
+    // `STDIN`; a non-text class here is what `MODALITY_UNSUPPORTED` answers.
+    modalities: ["text"],
     ...overrides,
   } as SessionRequest;
 }

@@ -102,6 +102,7 @@ function requestFor(invocation: DurableInvocation): ExecutionRequest {
     attempt: invocation.attempt,
     identity: EMITTED_BY,
     instructions: "run the effects the test asked for",
+    modalities: ["text"],
     reattach: null,
   };
 }

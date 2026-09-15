@@ -221,6 +221,22 @@ export interface SessionRequest {
    * place that delivers.
    */
   readonly instructions: string;
+  /**
+   * The distinct block kinds the instruction was composed from (P-06/C, ADR 0095).
+   *
+   * Not the content, and never the bytes: the classes only, so a transport can say
+   * whether it could carry them **before a process exists**. `describe` is pure and
+   * this is what makes a modality refusal expressible there — an adapter cannot
+   * decide what it cannot see, and handing it the blocks would put content on the
+   * public side of the boundary, which §4.1 `:199-201` forbids.
+   *
+   * Always carries at least `"text"`, because a content list always has a text
+   * block (escalón A's contract). A kind appearing here is a claim about what was
+   * asked, not a request to transport bytes: the text is already inside
+   * `instructions`, and every other class is refused by the preflight rather than
+   * dropped from the composition.
+   */
+  readonly modalities: readonly string[];
 }
 
 export interface SessionDescriptor {
@@ -243,10 +259,22 @@ export interface SessionDescriptor {
    * returned — so no frame carrying an instruction can be built purely here.
    * Declaring that is a statement about a transport's protocol, not about a
    * capability, and no capability moves off `UNKNOWN` for it.
+   *
+   * `MODALITY_UNSUPPORTED` is the third member and the second reason (P-06/C,
+   * ADR 0095): the transport's protocol is fine and it is the **content's classes**
+   * it cannot carry. It lives inside this union rather than beside it so it reuses
+   * the one refusal point that already runs before the spawn, and it answers
+   * `PROTOCOL_UNSUPPORTED` for ADR 0034's reason — the specificity belongs in this
+   * `reason`, and minting an error code would move a pinned closed set for no
+   * semantic gain. Naming a modality is not installing one: the text route works
+   * end to end and every other class is refused here (contratos §4.1 `:202-203`).
    */
   readonly delivery:
     | { readonly kind: "STDIN" }
-    | { readonly kind: "UNSUPPORTED"; readonly reason: "HANDSHAKE_REQUIRED" };
+    | {
+        readonly kind: "UNSUPPORTED";
+        readonly reason: "HANDSHAKE_REQUIRED" | "MODALITY_UNSUPPORTED";
+      };
 }
 
 export interface ParseCursor {

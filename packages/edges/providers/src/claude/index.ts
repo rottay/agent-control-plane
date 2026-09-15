@@ -218,6 +218,19 @@ function readRecord(raw: string, stepIndex: number): RecordOutcome {
   }
 }
 
+/**
+ * The delivery of a transport that carries text and nothing else (P-06/C, ADR 0095).
+ *
+ * `STDIN` when every class the instruction was composed from is text, and
+ * `MODALITY_UNSUPPORTED` otherwise. A pure decision over the classes the request
+ * declares: no bytes are read, and the refusal happens before the spawn.
+ */
+function textOnlyDelivery(request: SessionRequest): SessionDescriptor["delivery"] {
+  const foreign = request.modalities.filter((kind) => kind !== "text");
+  if (foreign.length > 0) return { kind: "UNSUPPORTED", reason: "MODALITY_UNSUPPORTED" };
+  return { kind: "STDIN" };
+}
+
 export const claudeAdapter: ProviderAdapter = {
   provider: "claude",
 
@@ -233,7 +246,12 @@ export const claudeAdapter: ProviderAdapter = {
       // exactly the shape a real `claude` reads stdin for -- so the pipe the
       // spawn already opens is the transport, and it was never written to. The
       // declaration is all this pure method does; `startSession` performs it.
-      delivery: { kind: "STDIN" },
+      //
+      // P-06/C: stdin carries text and only text. A content list naming any other
+      // class is refused here, before a process exists, rather than delivered
+      // without the part the caller asked for -- silently dropping a block would
+      // send the model a different instruction than the one that was authorized.
+      delivery: textOnlyDelivery(request),
     };
   },
 

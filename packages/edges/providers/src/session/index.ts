@@ -312,9 +312,17 @@ export function startSession(adapter: ProviderAdapter, request: SessionRequest):
   // not yet returned, cannot be handed an instruction -- so no process is
   // created, no byte is written and no frame is sent.
   //
-  // `PROTOCOL_UNSUPPORTED` rather than a new code: the specificity lives in the
-  // descriptor's own `reason`, and minting a member would move a pinned closed
-  // set for no semantic gain.
+  // TWO reasons reach this one point since P-06/C (ADR 0095). The second is the
+  // CONTENT's: a transport whose protocol is fine may still be unable to carry
+  // the classes the instruction was composed from, and it says so by declaring
+  // `MODALITY_UNSUPPORTED` in its descriptor. It is refused here, at the same
+  // place and for the same reason as the first -- contratos §4.3 requires the
+  // refusal to happen "en el preflight, antes de gastar cuota" -- so a class
+  // this route cannot take costs nothing and starts nothing.
+  //
+  // `PROTOCOL_UNSUPPORTED` rather than a new code, for BOTH reasons: the
+  // specificity lives in the descriptor's own `reason`, and minting a member
+  // would move a pinned closed set for no semantic gain (ADR 0034).
   const delivery = descriptor.delivery;
   switch (delivery.kind) {
     case "UNSUPPORTED":

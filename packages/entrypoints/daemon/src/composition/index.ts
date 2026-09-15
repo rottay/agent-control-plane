@@ -35,9 +35,11 @@
  * seam lives in during the same packet, so no law ever reads an empty site.
  */
 
-import type { ModelExecutionPort, ResolvedRoute, TaskEnvelope } from "@acp/contracts";
+import { findCredentialViolations } from "@acp/contracts";
+import type { ContentBlockKind, ModelExecutionPort, ResolvedRoute, TaskEnvelope } from "@acp/contracts";
 import type { Ledger, LeaseStore } from "@acp/ledger";
-import { openLeaseStore, openLedger } from "@acp/ledger";
+import { openArtifactPlane, openLeaseStore, openLedger } from "@acp/ledger";
+import type { ArtifactBlobLeaseStore, ArtifactPlane } from "@acp/ledger";
 import { deriveInvocation } from "@acp/durability";
 import type { AgentHarness, ApiStreamingClient } from "@acp/providers";
 import { createAgentHarness, executionSessionId } from "@acp/providers";
@@ -232,27 +234,150 @@ export function readOwnStatus(): DaemonStatusDocument | null {
 
 /** Explicitly reclaim an abandoned lock. Never removes a live daemon's lock. */
 /**
- * The instruction an execution carries, and the only place it is produced.
+ * The lease store an instruction reader hands the plane: it refuses everything.
  *
- * It is the packet's own `objective` and nothing else: not a template, not a
- * rendering, not a concatenation of context. Both `createExecutionEffects`
- * sites call this, so there is exactly one answer to "what was the model
- * asked?" and it is the sentence the authorizing envelope already contains.
- *
- * `L-B1C-1` pins that: within the daemon, the runtime and the edges there is
- * exactly one producer of an `instructions:` field for an `ExecutionRequest`,
- * and it reads `envelope.objective`. The two drill children are named in the
- * law as deterministic, drill-only exceptions. Presentation code that renders
- * an initiative's objective on a page is outside the law's scope, because
- * rendering an objective is not producing an execution instruction.
- *
- * No bound is applied here. `TaskEnvelope.objective` and
- * `ExecutionRequest.instructions` carry the same `min(1).max(4_000)`, so a
- * value that passed the envelope door passes this one; re-bounding would be a
- * second policy able to disagree with the first.
+ * `read` goes by reference and scope and asks the lease store nothing, and opening
+ * the real one on a read would create and migrate a coordination file just to
+ * compose a prompt. `initiative-registration`'s objective reader is the precedent,
+ * verbatim.
  */
-function instructionFor(envelope: TaskEnvelope): string {
-  return envelope.objective;
+const READER_LEASE_STORE: ArtifactBlobLeaseStore = Object.freeze({
+  incarnation: refuseInstructionHolding,
+  read: refuseInstructionHolding,
+  readToken: refuseInstructionHolding,
+  acquire: refuseInstructionHolding,
+  release: refuseInstructionHolding,
+  revoke: refuseInstructionHolding,
+  takeOver: refuseInstructionHolding,
+  listOverdue: refuseInstructionHolding,
+  close: (): void => undefined,
+});
+
+function refuseInstructionHolding(): never {
+  throw new ModeError("an instruction reader takes no holding: reading a reference asks the blob lease store nothing");
+}
+
+/**
+ * How the text of several blocks is joined: one blank line, in the list's own order
+ * (P-06/C, ADR 0095).
+ *
+ * The order is the list's because §4.1 calls it an **ordered** list, and a composer
+ * that sorted or grouped would be answering a question the contract already answered.
+ * A blank line because a block boundary is a paragraph boundary and nothing smaller
+ * survives a round trip through a model's tokenizer intact; one rule, no per-adapter
+ * variant, so two transports never see different instructions for one envelope.
+ */
+const BLOCK_SEPARATOR = "\n\n";
+
+/** What the composition produces: the bytes that cross, and the classes they came from. */
+export interface ComposedInstruction {
+  readonly instructions: string;
+  readonly modalities: readonly ContentBlockKind[];
+}
+
+/**
+ * The credential guard, over ONE block, before it is joined (N-P06-18, E15).
+ *
+ * Per block rather than over the composed string, although the string contains
+ * every block and the session guard scans it again before the spawn. Two reasons,
+ * and neither is belt-and-braces: a hit here names WHICH block offended, as a path
+ * and never as bytes, and it refuses before the offending text has been joined to
+ * anything -- so the value that would have crossed the boundary is never built.
+ *
+ * Scanned as an object, because the guard's value scan is what has to run over the
+ * content. `findTranscriptViolations` is deliberately not called: it scans denied
+ * KEYS, so it is vacuous here, and calling it would look like content filtering
+ * that is not happening.
+ */
+function guardResolvedBlock(at: string, text: string): void {
+  if (findCredentialViolations({ instructions: text }).length > 0) {
+    throw new ModeError(
+      at + " carries credential material; it is refused before it is composed, and the bytes travel nowhere",
+    );
+  }
+}
+
+/**
+ * The instruction, composed from the content the envelope carries (P-06/C, ADR 0095).
+ *
+ * The one producer L-B1C-1 names, moved off `envelope.objective` and onto the content
+ * contract §4.1 froze. What it does, in order:
+ *
+ * - **the classes**, distinct and in first-appearance order, which travel to the
+ *   adapter so a transport can refuse a class it cannot carry before a process
+ *   exists. They are classes, never blocks: no byte leaves this function except
+ *   inside the returned string, which crosses exactly one boundary.
+ * - **the text**, joined by {@link BLOCK_SEPARATOR}. Only `text` blocks contribute:
+ *   every other class is the preflight's to refuse (`MODALITY_UNSUPPORTED`), and it
+ *   is refused rather than dropped, because composing an instruction without the
+ *   part the caller asked for would send the model something nobody authorized.
+ * - **the verification**, for a text block that names a reference: the referenced
+ *   bytes are authoritative, and they are read through the plane under this task's
+ *   own scope and checked against **both** declared figures — `contentSha256` and
+ *   `byteLength` — and against the inline text. A mismatch throws before a single
+ *   byte crosses (N-P06-13), and a reference of another scope is refused by the
+ *   plane's own `SCOPE_EQUALITY_V1` (N-P06-12). Either way the instruction is not
+ *   composed at all: there is no half-composed instruction.
+ *
+ * Inline text with no reference is used as it stands. Its length was checked against
+ * its bytes at the door, and re-deriving it here would be a second policy able to
+ * disagree with the first.
+ *
+ * Exported so the acceptance proof can drive the REAL producer rather than a copy of
+ * it (contratos §4.3: "no desde un fixture"). Exporting does not widen L-B1C-1: the
+ * law counts sites that ASSIGN an `instructions:` value of their own, and a caller of
+ * this function assigns nothing -- it spreads what the one producer returned.
+ */
+export function instructionFor(ledger: Ledger, envelope: TaskEnvelope): ComposedInstruction {
+  const blocks = envelope.content.blocks;
+  const modalities = [...new Set(blocks.map((block) => block.kind))];
+  const parts: string[] = [];
+  // At most one plane, opened only if a block actually names a reference. It is not
+  // closed, because an `ArtifactPlane` has nothing to close: it holds no descriptor
+  // of its own and reads through the ledger it was handed. The objective reader of
+  // `initiative-registration` opens one the same way and leaves it the same way.
+  const opened: ArtifactPlane[] = [];
+  const openOnce = (): ArtifactPlane => {
+    const standing = opened[0];
+    if (standing !== undefined) return standing;
+    const created = openArtifactPlane({ ledger, leaseStore: READER_LEASE_STORE, ledgerPath: ledger.path });
+    opened.push(created);
+    return created;
+  };
+  {
+    blocks.forEach((block, index) => {
+      if (block.kind !== "text") return;
+      const inline = block.text ?? "";
+      const at = "envelope.content.blocks[" + String(index) + "]";
+      if (block.artifactRefId === null) {
+        guardResolvedBlock(at, inline);
+        parts.push(inline);
+        return;
+      }
+      const read = openOnce().read({
+        artifactReferenceId: block.artifactRefId,
+        scopeKind: "TASK",
+        scopeId: envelope.taskId,
+      });
+      if (read.verb !== "READ") {
+        throw new ModeError(at + " names a reference the private plane refuses to read: " + read.refusal);
+      }
+      if (read.reference.contentSha256 !== block.contentSha256) {
+        throw new ModeError(at + " names content of another digest than the block declares");
+      }
+      const bytes = read.content;
+      if (bytes.byteLength !== block.byteLength) {
+        throw new ModeError(at + " names content of another length than the block declares");
+      }
+      const resolved = bytes.toString("utf8");
+      if (resolved !== inline) {
+        throw new ModeError(at + " carries text that differs from the bytes its reference names");
+      }
+      guardResolvedBlock(at, resolved);
+      parts.push(resolved);
+    });
+  }
+  return { instructions: parts.join(BLOCK_SEPARATOR), modalities };
 }
 
 export function recoverOwnStaleLock(options: {
@@ -751,7 +876,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
           landed: landing.landed,
           hold,
           gate,
-          instructions: instructionFor(options.envelope),
+          ...instructionFor(openedLedger, options.envelope),
           taskId: options.taskId,
           attempt: options.attempt,
           emittedBy: options.emittedBy,
@@ -789,7 +914,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
           taskId: options.taskId,
           attempt: options.attempt,
           emittedBy: options.emittedBy,
-          instructions: instructionFor(options.envelope),
+          ...instructionFor(openedLedger, options.envelope),
           scenarioRoot,
           generation: landing.generation,
           gate,
@@ -1059,7 +1184,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
             landed: landing.landed,
             hold: heldLease.hold,
             gate: walkGate,
-            instructions: instructionFor(walk.envelope),
+            ...instructionFor(held.ledger, walk.envelope),
             taskId: walk.spec.taskId,
             attempt: walk.spec.attempt,
             emittedBy: walk.spec.emittedBy,

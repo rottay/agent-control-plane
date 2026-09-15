@@ -195,6 +195,7 @@ export {
   InitiativeEvent,
 } from "./initiatives/index.js";
 export {
+  INSTRUCTIONS_MAX_CHARS,
   TRANSPORT_KINDS,
   TransportKind,
   CLI_SUBSCRIPTION_PROVIDERS,

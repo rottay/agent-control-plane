@@ -10685,6 +10685,85 @@ const P06B_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-06 escalón C — the instruction is resolved on the private side of the adapter
+ * boundary, and its prompt occurrence is recorded (ADR 0095).
+ *
+ * **What lands.** `instructionFor`, the one producer L-B1C-1 names, moves off
+ * `envelope.objective` and composes from the envelope's content: every `text` block
+ * in the list's own order, joined by one blank line, with a block that names a
+ * reference read through the artifact plane under **this task's** scope and checked
+ * against both declared figures — `contentSha256` and `byteLength` — and against its
+ * inline text. A mismatch or a foreign scope throws before a byte crosses, and the
+ * instruction is not composed at all: there is no half-composed instruction. The
+ * credential guard runs over **each** resolved block before the join, naming the
+ * block and never its bytes. The distinct classes travel to the adapter as the
+ * delivery union's third member; a class a transport cannot carry is refused at the
+ * pre-spawn point that already exists, with `MODALITY_UNSUPPORTED` as the reason and
+ * `PROTOCOL_UNSUPPORTED` as the code (ADR 0034). And the prompt occurrence gains the
+ * producer it never had: a pure builder for `PROMPT_OCCURRENCE_RECORDED`, on the
+ * invocation's own coordinate, carrying the digest and the length and a null context
+ * digest where there is no context.
+ *
+ * **What does NOT land, declared.** `objective` stays in the envelope's schema,
+ * bound to the first text block by B's refinement; its retirement is the next
+ * envelope bump's debt, and C moves no version. No transport multimodality: a class
+ * is evaluated and refused, and nothing is installed. No neutral §2.0 capability
+ * registry (P-22/P-23). P-15 is untouched: the daemon's child still receives the
+ * envelope from its configuration, and the appending of the occurrence event is
+ * adoption's, exactly as it is for the other V2 producers. And one gap is declared
+ * rather than closed: `ApiStreamRequest` carries no instruction, so "a child returns
+ * what it received" is proven on the CLI leg — the real door with a real child — and
+ * the API leg's half is the API transport's own debt.
+ *
+ * **Pins.** `PATH_SCOPED_LAWS` 145 -> **146** for L-P06C-1; L-P06C-2 is a two-file
+ * name-set pin and adds no row. `CONTRACTS_SCHEMA_EXPORTS` 150 -> **151** for
+ * `INSTRUCTIONS_MAX_CHARS`. L-B1C-1 and L-P06A-1 are each amended IN THEIR OWN ROW
+ * and neither is joined by a second law. The ADR corpus 94 -> 95. No contract version
+ * moves: `ExecutionRequest` carries no `contractVersion`, so the bound moving from
+ * `4_000` to `CONTENT_REQUEST_AGGREGATE_MAX_BYTES` and the new `modalities` field are
+ * shape changes to a port and not to an issued instrument. `MIGRATIONS` (21) and
+ * `PROJECTOR_VERSION` (1) are untouched: the occurrence's table, door, projection and
+ * reader have existed since migration 13.
+ *
+ * **Twenty-six paths; one is new to the fence** — ADR 0095. The measurement that
+ * produced this list is `acp-p06c-opus-write-set-proposal-v1.md` (19 routes), extended
+ * three times by adjudication before the writer touched anything outside it: to 21 for
+ * Q-C1 putting the occurrence's producer here, to 25 for four `ExecutionRequest`
+ * literals the writer's sweep had listed and failed to transcribe, and to 26 for a
+ * `SessionRequest` builder the sweep could not see because it casts a partial object
+ * and spreads its overrides. The process correction is recorded with the third: sweep
+ * by SHAPE, not by field name, and run every project before declaring a set complete.
+ */
+const P06C_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/domains/runtime/src/core/events/index.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/domains/runtime/test/execution-effects/index.test.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/edges/providers/src/contract/index.ts",
+  "packages/edges/providers/src/session/index.ts",
+  "packages/edges/providers/src/claude/index.ts",
+  "packages/edges/providers/src/codex/index.ts",
+  "packages/edges/providers/src/kimi/index.ts",
+  "packages/edges/providers/src/execution-port/index.ts",
+  "packages/edges/providers/test/session/index.test.ts",
+  "packages/edges/providers/test/claude/index.test.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/entrypoints/daemon/src/composition/index.ts",
+  "packages/entrypoints/daemon/src/composition/types/index.ts",
+  "packages/entrypoints/daemon/src/composition/walk/index.ts",
+  "packages/entrypoints/daemon/test/composition/walk/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0095-the-instruction-is-resolved-on-the-private-side-of-the-adapter-boundary.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -10910,6 +10989,7 @@ const WRITE_SET = [
   ...P33B_WRITE_SET,
   ...P06A_WRITE_SET,
   ...P06B_WRITE_SET,
+  ...P06C_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -12310,6 +12390,14 @@ const PATH_SCOPED_LAWS = [
   // the `requireScope` call sites both move 144 -> 145 for L-P06A-1.
   {
     law: "the instruction content contract is named by its own concept and the contracts barrel, and by nothing else",
+    scope: "packages/*/*/src/**",
+  },
+  // P-06 escalón C. One new path-shaped surface, so one new row: the register and
+  // the `requireScope` call sites both move 145 -> 146 for L-P06C-1. L-P06C-2 is a
+  // two-file name-set pin and not a path-shaped surface, so it adds no row, exactly
+  // as `CONTRACTS_SCHEMA_EXPORTS` adds none.
+  {
+    law: "a resolved content block enters no event, stream frame, checkpoint, telemetry attribute or log line",
     scope: "packages/*/*/src/**",
   },
 ];
@@ -19870,6 +19958,12 @@ if (accountsIndex === null) {
   "ContentBlockRefusal",
   "ContentBlockSchema",
   "ContentMediaType",
+  // P-06/C. One name: the bound an instruction is held to, which moved off
+  // `TaskEnvelope.objective`'s four thousand and onto the content aggregate the
+  // door already enforces when the instruction became a composition of blocks
+  // (ADR 0095; tests §9.6 rule 1). Not a bump — `ExecutionRequest` carries no
+  // version — and declared here because a bound a producer is held to is grammar.
+  "INSTRUCTIONS_MAX_CHARS",
   "InstructionContent",
   "InstructionContentSchema",
   "CHECKPOINT_MAX_BYTES",
@@ -23446,7 +23540,18 @@ if (tracked.status === 0) {
   // what the model is told". So the law is scoped to the execution path and to
   // the PRODUCED field: within the daemon, the runtime and the edges, exactly
   // one site builds an `instructions:` for an `ExecutionRequest`, and it reads
-  // `envelope.objective`.
+  // the envelope's content.
+  //
+  // **Amended at P-06/C (ADR 0095).** Until C the producer read
+  // `envelope.objective`, and this law asserted that name. C moved the producer
+  // to compose from the envelope's resolved content blocks, so the assertion
+  // moved with it: what the law pins is that there is exactly ONE site deciding
+  // what the model is told, and that it decides it from the instruction's
+  // content rather than from anything ambient. The field `objective` stays in
+  // the schema, bound to the first text block by the envelope's own refinement,
+  // and its retirement is the next envelope bump's debt -- so a law still
+  // asserting the old name would fail on a producer that is more correct than
+  // the one it was written for.
   //
   // It is deliberately NOT a tree-wide ban on reading `.objective`. Three
   // lawful readers render an initiative's objective on a page -- two console
@@ -23508,7 +23613,7 @@ if (tracked.status === 0) {
       relativePath +
         " produces an execution instruction; exactly one site does that (" +
         INSTRUCTION_PRODUCER +
-        "), and it reads envelope.objective",
+        "), and it composes it from the envelope's content",
     );
   }
   if (!instructionProducers.includes(INSTRUCTION_PRODUCER)) {
@@ -23516,8 +23621,11 @@ if (tracked.status === 0) {
   }
   {
     const producer = stripComments(readIfPresent(INSTRUCTION_PRODUCER) ?? "");
-    if (!/envelope\.objective/.test(producer)) {
-      fail(INSTRUCTION_PRODUCER + " produces an instruction that is not the envelope's objective");
+    if (!/envelope\.content\.blocks/.test(producer)) {
+      fail(
+        INSTRUCTION_PRODUCER +
+          " produces an instruction that is not composed from the envelope's content blocks",
+      );
     }
   }
   for (const relativePath of DRILL_INSTRUCTION_EXCEPTIONS) {
@@ -26838,6 +26946,16 @@ const PRICE_CATALOG_BARREL = "packages/persistence/ledger/src/index.ts";
 // list is the three formats per client that §4.1 forbids, and the composition that
 // resolves a reference and crosses the adapter boundary is still C's. Same row, same
 // `requireScope`: `PATH_SCOPED_LAWS` does not move for the amendment.
+//
+// AMENDED AGAIN by P-06/C (ADR 0095): the execution boundary joins the callers. It
+// names the concept for its VOCABULARY and its BOUNDS -- the block kinds a request
+// may declare as modalities, the list ceiling, and the aggregate the door already
+// enforces, which is now the bound on `instructions`. That is the §7.1 direction,
+// one way: a boundary that restated either number would be the second answer to
+// "how much content fits", which is the drift the single aggregate exists to
+// prevent. It builds no content list and validates no blocks, so the sentence the
+// law protects -- one shape, not three formats per client -- is untouched. Same
+// row, same `requireScope`: `PATH_SCOPED_LAWS` does not move for this either.
 const CONTENT_CONTRACT_SITES = [
   "packages/kernel/contracts/src/schemas/content-block/index.ts",
   "packages/kernel/contracts/src/schemas/content-block/types/index.ts",
@@ -26851,6 +26969,8 @@ const CONTENT_CONTRACT_BARRELS = [
 const CONTENT_CONTRACT_CALLERS = [
   "packages/kernel/contracts/src/schemas/task-envelope/index.ts",
   "packages/domains/runtime/src/intake/index.ts",
+  // P-06/C: the vocabulary and the bounds, never a content list.
+  "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
 ];
 {
   let contentScanned = 0;
@@ -26892,6 +27012,199 @@ const CONTENT_CONTRACT_CALLERS = [
     "no production source outside the content-block concept, the contracts barrels and the two consumers" +
       " P-06/B wires names the content contract",
   );
+}
+
+// L-P06C-1 -- a content block reaches no record, not even as a digest (P-06/C,
+// N-P06-14, ADR 0095).
+//
+// Contratos §4.1 puts inline data on the PRIVATE side of the adapter boundary, and
+// the mould for the ban is the instruction field's own declaration in
+// `execution-boundary/index.ts`: the field "crosses exactly one boundary -- this
+// process to the child -- and enters no ledger row, event payload, stream frame,
+// telemetry attribute, checkpoint, status document or log line. Not even as a
+// digest." A block resolved from the artifact plane is the same kind of thing and
+// then some: it is the content itself, so a digest of it in a row would be a
+// pointer at bytes the plane already addresses, recorded where nothing may address
+// them.
+//
+// Enforced as CONTAINMENT rather than as a word ban, because a word ban would
+// catch the artifact plane's own legitimate digests. Three things are asserted:
+//
+//   1. Exactly three tracked `src/` files may see a block at all -- the envelope's
+//      own refinement, the door that validates the content, and the one producer
+//      that composes it. A fourth reader is what would make a fifth recording site
+//      possible, so the law bites before that rather than after.
+//   2. Inside the producer, the FUNCTION that holds resolved bytes names no
+//      recorder: no event construction, no append, no checkpoint write, no
+//      telemetry attribute, no logger and no console. Scoped to the function and
+//      not to the file on purpose -- the daemon's composition root legitimately
+//      logs and writes checkpoints thirty lines away, and a file-level ban would be
+//      a law about the neighbourhood instead of about the bytes.
+//   3. The prose the mould carries stays where it is. A ban nobody can read is a
+//      ban that gets deleted by the next person who tidies the docblock.
+const BLOCK_READER_SITES = [
+  "packages/kernel/contracts/src/schemas/task-envelope/index.ts",
+  "packages/domains/runtime/src/intake/index.ts",
+  "packages/entrypoints/daemon/src/composition/index.ts",
+];
+const INSTRUCTION_COMPOSER = "packages/entrypoints/daemon/src/composition/index.ts";
+const INSTRUCTION_BOUNDARY = "packages/kernel/contracts/src/schemas/execution-boundary/index.ts";
+const BLOCK_RECORDING_NAMES =
+  /\b(?:ControlPlaneEvent|buildEvent|buildPromptOccurrenceEvent|appendEvent|writeCheckpoint|setAttribute|telemetry|logger|console)\b/;
+
+/** The body of one named function declaration, by brace depth. */
+function functionBody(source, declaration) {
+  const at = source.indexOf(declaration);
+  if (at === -1) return null;
+  let cursor = source.indexOf("{", at);
+  if (cursor === -1) return null;
+  const from = cursor;
+  let depth = 0;
+  let quote = null;
+  for (; cursor < source.length; cursor += 1) {
+    const character = source[cursor];
+    if (quote !== null) {
+      if (character === "\\") cursor += 1;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'" || character === "`") {
+      quote = character;
+      continue;
+    }
+    if (character === "{") depth += 1;
+    else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(from, cursor + 1);
+    }
+  }
+  return null;
+}
+
+{
+  let blockScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      if (BLOCK_READER_SITES.includes(relativePath)) continue;
+      // The concept itself declares the blocks; it is not a reader of an
+      // envelope's content and L-P06A-1 already holds its reach.
+      if (relativePath.startsWith("packages/kernel/contracts/src/schemas/content-block/")) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      blockScanned += 1;
+      const code = stripComments(content);
+      if (/content\.blocks/.test(code) || /\bartifactRefId\b/.test(code)) {
+        fail(
+          relativePath +
+            " reads an instruction's content blocks; exactly three sources may -- the envelope's refinement," +
+            " the door that validates the content and the one producer that composes it -- because a fourth" +
+            " reader is how a block reaches a row, an event, a checkpoint or a log",
+        );
+      }
+    }
+  }
+  const composer = readIfPresent(INSTRUCTION_COMPOSER);
+  if (composer === null) {
+    fail(INSTRUCTION_COMPOSER + " is missing; L-P06C-1 has no producer to hold the resolved bytes in");
+  } else {
+    const body = functionBody(stripComments(composer), "function instructionFor(");
+    if (body === null) {
+      fail(INSTRUCTION_COMPOSER + " no longer declares instructionFor; the function this law contains has moved");
+    } else {
+      const named = body.match(BLOCK_RECORDING_NAMES);
+      if (named !== null) {
+        fail(
+          INSTRUCTION_COMPOSER +
+            " names " +
+            named[0] +
+            " inside instructionFor; the function that holds resolved content records nothing, because a" +
+            " block enters no event, checkpoint, telemetry attribute or log line, not even as a digest",
+        );
+      }
+    }
+  }
+  const boundary = readIfPresent(INSTRUCTION_BOUNDARY);
+  if (boundary === null || !/Not even as a digest/.test(boundary)) {
+    fail(
+      INSTRUCTION_BOUNDARY +
+        " no longer carries the sentence this law is the enforcement of; the ban and its words live together",
+    );
+  }
+  requireScope(
+    "a resolved content block enters no event, stream frame, checkpoint, telemetry attribute or log line",
+    blockScanned,
+  );
+  notes.push(
+    "three readers of an instruction's content blocks over " +
+      String(blockScanned) +
+      " other sources, and the one composer records nothing",
+  );
+}
+
+// L-P06C-2 -- the prompt occurrence's producer and the ledger's grammar are one
+// shape (P-06/C, Q-C1, ADR 0095).
+//
+// The event contract's `payload` is a record of unknowns for every type, and the
+// contract says so in those words: what keeps a stray key out of an occurrence is
+// the producer. So the producer's record and the door's grammar have to be the same
+// thirteen names, and "have to be" is the kind of sentence that decays unless
+// something checks it. A key the producer omits is a row missing a column the door
+// requires; a key it invents is an event the door refuses by name at the append --
+// after the instruction has already been sent, which is the worst moment to learn
+// about a typo.
+//
+// Bidirectional, exactly as `CONTRACTS_SCHEMA_EXPORTS` is: whichever side moved,
+// the failure names it.
+const OCCURRENCE_PRODUCER_PATH = "packages/domains/runtime/src/core/events/index.ts";
+const OCCURRENCE_GRAMMAR_PATH = "packages/persistence/ledger/src/projection/index.ts";
+{
+  const producer = readIfPresent(OCCURRENCE_PRODUCER_PATH);
+  const grammar = readIfPresent(OCCURRENCE_GRAMMAR_PATH);
+  if (producer === null || grammar === null) {
+    fail(
+      "L-P06C-2 needs both the prompt occurrence's producer and the ledger's grammar; one of " +
+        OCCURRENCE_PRODUCER_PATH +
+        " and " +
+        OCCURRENCE_GRAMMAR_PATH +
+        " is missing",
+    );
+  } else {
+    const produced = interfaceMembers(stripComments(producer), "PromptOccurrenceRecord");
+    const declared = /const PROMPT_OCCURRENCE_RECORD_KEYS = \[([\s\S]*?)\] as const;/.exec(
+      stripComments(grammar),
+    );
+    if (produced === null) {
+      fail(OCCURRENCE_PRODUCER_PATH + " no longer declares PromptOccurrenceRecord");
+    } else if (declared === null || declared[1] === undefined) {
+      fail(OCCURRENCE_GRAMMAR_PATH + " no longer declares PROMPT_OCCURRENCE_RECORD_KEYS as a closed list");
+    } else {
+      const keys = [...declared[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+      const disagreement = tableDisagreement(produced, keys);
+      if (disagreement.omits.length > 0 || disagreement.invents.length > 0) {
+        fail(
+          "the prompt occurrence's producer and the ledger's grammar disagree: the producer omits [" +
+            disagreement.omits.join(", ") +
+            "] and invents [" +
+            disagreement.invents.join(", ") +
+            "]; a record the door does not declare is refused at the append, after the instruction was sent",
+        );
+      }
+      // `identity` is the recording event's `emittedBy`, so neither side may
+      // carry it as a field: a record able to name it could name another worker
+      // as the sender of a prompt it did not send.
+      if (produced.includes("identity") || keys.includes("identity")) {
+        fail("a prompt occurrence record carries no identity field; that column is the event's emittedBy");
+      }
+      notes.push(
+        "the prompt occurrence's producer and the ledger's grammar agree on " +
+          String(keys.length) +
+          " field(s), and neither names an identity",
+      );
+    }
+  }
 }
 
 // L-P32C-1 -- the usage recorders stay unwired until P-15 (P-32/captura C, Q5,

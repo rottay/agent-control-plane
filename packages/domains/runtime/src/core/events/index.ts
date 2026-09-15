@@ -2,12 +2,16 @@
 // the zod schema and the inferred type share the name.
 import { CONTRACT_VERSION, ControlPlaneEvent, ResolvedRoute } from "@acp/contracts";
 import type { ControlPlaneEvent as ControlPlaneEventType } from "@acp/contracts";
+// The resolution status is the ledger's vocabulary, imported rather than
+// restated: the read model owns the closed set, and a second spelling of it here
+// would be a second answer to the question "what statuses exist".
+import type { ModelResolutionStatus } from "@acp/ledger";
 
 import type { DurableInvocation, OperationCoordinate } from "../../contracts/index.js";
 import { deriveEventCoordinate, deriveOperationCoordinate, operationDigest } from "../coordinates/index.js";
 import { planStep } from "../lifecycle/index.js";
 import type { PlanStep } from "../lifecycle/index.js";
-import { LifecyclePlanError } from "../../errors/index.js";
+import { LifecyclePlanError, SupervisorError } from "../../errors/index.js";
 
 /**
  * Event construction.
@@ -412,4 +416,160 @@ export function operationForStep(
   step: PlanStep,
 ): OperationCoordinate {
   return deriveOperationCoordinate(invocation, step.transitionId, step.index);
+}
+
+// ---------------------------------------------------------------------------
+// The prompt occurrence (P-06/C; execution §8.1, ADR 0077, ADR 0095)
+// ---------------------------------------------------------------------------
+
+/**
+ * The durable name one prompt occurrence is recorded under.
+ *
+ * Derived from the occurrence's own id, never from a counter this module keeps,
+ * for `usageObservationTransitionId`'s reason: a resumed dispatcher restating
+ * the same occurrence rebuilds exactly this name, so the second append is a
+ * replay under the same idempotency key rather than a conflict or a duplicate
+ * row. An occurrence is recorded once, and the door says so too.
+ */
+export function promptOccurrenceTransitionId(occurrenceId: string): string {
+  return "prompt-occurrence." + occurrenceId;
+}
+
+/**
+ * What a prompt occurrence records about one delivery of an instruction
+ * (execution §8.1).
+ *
+ * The **use**, never the bytes: a digest, a length, and the coordinate the
+ * delivery happened on. The thirteen fields are exactly the ledger's
+ * `PROMPT_OCCURRENCE_RECORD_KEYS` and there is no fourteenth — the door refuses
+ * a key its grammar does not declare, and a producer whose shape were wider
+ * would be the thing that discovered that a step late.
+ *
+ * There is no `identity` here on purpose: that column is the recording event's
+ * `emittedBy`, so a record cannot name another worker as the sender.
+ */
+export interface PromptOccurrenceRecord {
+  readonly occurrenceId: string;
+  readonly dispatchAttemptId: string;
+  readonly effectId: string;
+  readonly routeSegmentId: string;
+  /**
+   * The occurrence's order within its segment.
+   *
+   * Supplied, not counted here: the door assigns one past the segment's highest
+   * and refuses anything else, so a number invented in this process would be
+   * refused at the append rather than silently accepted.
+   */
+  readonly ordinal: number;
+  /** Preserved always, even when resolution failed (execution §4, §8). */
+  readonly requestedModelId: string;
+  readonly provider: string;
+  readonly modelResolutionStatus: ModelResolutionStatus;
+  /** Present if and only if the status is RESOLVED; the door refuses the pair otherwise. */
+  readonly modelVersionId: string | null;
+  readonly accountId: string;
+  /**
+   * The digest of the instruction's bytes. The bytes themselves never travel.
+   *
+   * Conserved rather than recomputed here, because its preimage is the prompt
+   * and a prompt does not enter this package: recomputing it would mean holding
+   * the bytes at the one place that must never hold them (N-P06-14).
+   */
+  readonly promptSha256: string;
+  readonly promptBytes: number;
+  /**
+   * Null when the delivery carried no separately addressed context.
+   *
+   * Null rather than a digest of nothing, which is economy's rule about absent
+   * data applied to a prompt: an invented digest is worse than a stated
+   * absence, because no reader can tell it from a real one (N-P06-17).
+   */
+  readonly contextSha256: string | null;
+}
+
+export interface BuildPromptOccurrenceInput {
+  readonly invocation: DurableInvocation;
+  /**
+   * The task's current state, read from the ledger by the caller.
+   *
+   * It travels as both `fromState` and `toState`: recording that an instruction
+   * was sent is something a run *did*, not a move through a lifecycle, and the
+   * contract lists this type among the same-state passthroughs of the
+   * `execution` channel.
+   */
+  readonly state: ControlPlaneEventType["fromState"];
+  readonly emittedBy: string;
+  /** The event this delivery was caused by, or null where the caller has none. */
+  readonly causedBy: string | null;
+  readonly occurrence: PromptOccurrenceRecord;
+}
+
+/**
+ * Build the `PROMPT_OCCURRENCE_RECORDED` event for one delivered instruction
+ * (P-06/C; the producer ADR 0077 asked for and ADR 0080 §7 reassigned, whose
+ * condition -- the real execution port and an adapter -- is met at this
+ * escalón, as ADR 0095 records).
+ *
+ * Records that an instruction was **used**, and nothing about what it said. No
+ * block, no text and no reference enters this payload: what crosses is the
+ * digest and the length the dispatcher already held, which is what keeps
+ * N-P06-14 true of the recording path as well as of the composing one.
+ *
+ * The payload is closed by construction -- the V2 coordinate and the one record
+ * -- because the contract's `payload` is a record of unknowns for every type and
+ * the thing that keeps a stray key out is this builder, as the contract itself
+ * says of the types of P-18/protocolo C and D.
+ *
+ * Pure in the house sense: the coordinates come from the durable invocation,
+ * nothing reads a clock or a random source, and the record is passed verbatim.
+ * Recording the same occurrence twice appends once.
+ */
+export function buildPromptOccurrenceEvent(
+  input: BuildPromptOccurrenceInput,
+): ControlPlaneEventType {
+  const { invocation, occurrence } = input;
+
+  // Refused by name, here, rather than left to the door.
+  //
+  // A prompt occurrence carries the V2 coordinate, and a V1 invocation names no
+  // revision to put in it -- so there is no attempt number to attribute the
+  // delivery to. `revisionOf` in the usage recorder refuses the same thing for
+  // the same reason; relying on the door would put the error one layer from its
+  // cause.
+  const revision = invocation.revision;
+  if (revision === undefined) {
+    throw new SupervisorError(
+      "refusing to record a prompt occurrence for an invocation without a revision; an" +
+        " occurrence carries the V2 coordinate, and a V1 invocation names no segment or" +
+        " attempt to attribute the delivery to",
+    );
+  }
+
+  const transitionId = promptOccurrenceTransitionId(occurrence.occurrenceId);
+  const coordinate = deriveEventCoordinate(invocation, transitionId, 0);
+
+  // Parsed, not cast: the event contract runs the credential and transcript
+  // guards over the payload, and a producer that trusted its own object would
+  // be the one place this package's fail-closed law is not applied.
+  return ControlPlaneEvent.parse({
+    contractVersion: CONTRACT_VERSION,
+    eventId: coordinate.eventId,
+    taskId: invocation.taskId,
+    attempt: invocation.attempt,
+    transitionId,
+    idempotencyKey: coordinate.idempotencyKey,
+    type: "PROMPT_OCCURRENCE_RECORDED",
+    fromState: input.state,
+    toState: input.state,
+    emittedBy: input.emittedBy,
+    occurredAt: coordinate.occurredAt,
+    recordedAt: coordinate.recordedAt,
+    correlationId: invocation.invocationId,
+    causationId: input.causedBy,
+    payload: {
+      revisionNumber: revision.revisionNumber,
+      attemptNumber: revision.attemptNumber,
+      promptOccurrence: { ...occurrence },
+    },
+  });
 }

@@ -671,6 +671,10 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
         // bounds it: the value was bounded at `ExecutionRequest`, and a second
         // policy here could disagree with the first about what was asked.
         instructions: asked.instructions,
+        // And the classes it was composed from, for the same reason and with the
+        // same discipline: carried, never inspected (P-06/C). The port does not
+        // decide what a transport can take — the adapter's `describe` does.
+        modalities: asked.modalities,
       };
 
       let session: AdapterSession;

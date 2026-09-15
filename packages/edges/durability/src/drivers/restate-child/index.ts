@@ -728,6 +728,9 @@ export async function runRestateChild(config: RestateChildConfig): Promise<void>
               attempt: invocation.attempt,
               identity: config.emittedBy,
               instructions: DRILL_INSTRUCTION,
+              // A named exception of L-B1C-1 carries a constant instruction, so its
+              // classes are the constant's own: text, and nothing else (P-06/C).
+              modalities: ["text"],
               reattach: null,
             },
             scenarioRoot,

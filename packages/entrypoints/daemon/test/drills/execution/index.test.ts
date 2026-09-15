@@ -66,14 +66,17 @@ import type { DaemonExecutionConfig, DaemonSubmission } from "../../../src/daemo
 import { resolveDaemonRoot } from "../../../src/paths/index.js";
 import type { ScheduledWalk } from "../../../src/scheduler/index.js";
 import { startDaemon, stopDaemon } from "../../../src/index.js";
+import { instructionFor } from "../../../src/composition/index.js";
+import type { ComposedInstruction } from "../../../src/composition/index.js";
 
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
  * One text block, so the envelope's `objective` equals the first text block of its
- * content and the two spellings stay one fact. `contentSha256` is a placeholder:
- * escalón B admits and publishes, and escalón C is where a digest is checked
- * against the bytes it describes.
+ * content and the two spellings stay one fact. `contentSha256` is a placeholder and
+ * stays one after escalón C: C checks a declared digest against the bytes a
+ * REFERENCE names, and a block whose text travels inline names no reference, so
+ * there are no bytes for this figure to disagree with.
  */
 function fixtureContent(text: string): Record<string, unknown> {
   return {
@@ -503,6 +506,57 @@ function scriptedClaude(lines: readonly string[]): ProviderAdapter {
   };
 }
 
+/**
+ * The same real adapter, behind a child that RETURNS WHAT IT RECEIVED (§4.3).
+ *
+ * It reads stdin to EOF, writes those bytes to a side file it owns, and only then
+ * speaks the provider's wire format. The side file and not stdout, for the reason
+ * the providers package's own delivery fixture gives: stdout is adapter-parsed, so
+ * echoing an instruction there would turn it into a classified event whose bounded
+ * payload can reach a log — the exact leak N-P06-14 forbids.
+ */
+function echoingClaude(echoPath: string, lines: readonly string[]): ProviderAdapter {
+  const program = [
+    "const chunks = [];",
+    "process.stdin.on('data', (c) => chunks.push(c));",
+    "process.stdin.on('end', () => {",
+    "  require('node:fs').writeFileSync(" + JSON.stringify(echoPath) + ", Buffer.concat(chunks));",
+    "  const lines = " + JSON.stringify([...lines]) + ";",
+    "  for (const line of lines) process.stdout.write(line + '\\n');",
+    "  process.exit(0);",
+    "});",
+  ].join("\n");
+  return {
+    ...claudeAdapter,
+    describe(request: SessionRequest): SessionDescriptor {
+      return {
+        provider: "claude",
+        argv: ["-e", program],
+        env: { PATH: "/usr/bin:/bin" },
+        cwd: request.workdir,
+        delivery: { kind: "STDIN" },
+      };
+    },
+  };
+}
+
+/**
+ * The same real adapter declaring it cannot carry the content's classes (§4.3).
+ *
+ * The refusal is the descriptor's, which is what puts it before the spawn: the
+ * class travels, the adapter says no, and `startSession` never reaches
+ * `spawnAdmitted`.
+ */
+function modalityRefusingClaude(echoPath: string): ProviderAdapter {
+  const base = echoingClaude(echoPath, CLAUDE_LINES);
+  return {
+    ...base,
+    describe(request: SessionRequest): SessionDescriptor {
+      return { ...base.describe(request), delivery: { kind: "UNSUPPORTED", reason: "MODALITY_UNSUPPORTED" } };
+    },
+  };
+}
+
 function cliBinding(lines: readonly string[]): CliBinding {
   const root = drillRoot();
   const context = { provider: "claude", taskId: TASK };
@@ -617,6 +671,7 @@ function executionRequest(): ExecutionRequest {
     attempt: 1,
     identity: EMITTED_BY,
     instructions: DRILL_OBJECTIVE,
+    modalities: ["text"],
     reattach: null,
   };
 }
@@ -654,6 +709,15 @@ async function walk(
    * equality would fail for a reason that has nothing to do with the transports.
    */
   worktree?: string,
+  /**
+   * The execution this walk asks for.
+   *
+   * Defaults to the drill's own fixture request, which is what every case before
+   * P-06/C wants. The acceptance proof hands in one composed by the REAL producer
+   * instead, because §4.3 asks for the proof to be driven from the real door and
+   * not from a fixture.
+   */
+  request: ExecutionRequest = executionRequest(),
 ): Promise<Walk> {
   const root = scenario(name);
   const ledger = openLedger(scenarioLedgerPath(root));
@@ -663,7 +727,7 @@ async function walk(
   const effects = createExecutionEffects({
     port: recording(port, trail),
     route,
-    request: executionRequest(),
+    request,
     scenarioRoot: root,
   });
   const supervisor = new SqliteSupervisor({
@@ -4177,6 +4241,7 @@ describe("F5: the switch lands on the account it chose (trigger seeded)", () => 
           attempt: 1,
           identity: EMITTED_BY,
           instructions: DRILL_OBJECTIVE,
+          modalities: ["text"],
           reattach: null,
         },
         scenarioRoot: root,
@@ -4450,6 +4515,7 @@ function r6Start(port: ModelExecutionPort): Promise<unknown> {
     attempt: 1,
     identity: EMITTED_BY,
     instructions: "start the packet",
+    modalities: ["text"],
     reattach: null,
   });
 }
@@ -4557,4 +4623,171 @@ describe("R6: the daemon binds a transport it was given a client for", () => {
     // nothing -- the factory closed over the key, and the factory is not in it.
     expect(JSON.stringify(r6ApiExecution("/tmp/x"))).not.toContain(SECRET);
   });
+});
+
+// ---------------------------------------------------------------------------
+// §4.3 — the acceptance proof (P-06/C, ADR 0095)
+//
+// "Un hijo que devuelve lo que recibió, ejercitado desde la puerta real —CLI y
+// API— y no desde un fixture." So the instruction is composed by the REAL
+// producer over a real ledger, carried by the real execution port through the
+// real Claude adapter, and handed to a real child process that writes back
+// exactly the bytes it was given. No provider is paid: the child is the drill's,
+// behind the real boundary.
+// ---------------------------------------------------------------------------
+
+/** Two text blocks, so the proof exercises the join and not just a pass-through. */
+const ACCEPTANCE_FIRST = "read the packet and say what you were asked";
+const ACCEPTANCE_SECOND = "then stop, without writing anything";
+
+function acceptanceEnvelope(taskId: string): TaskEnvelope {
+  const block = (blockId: string, text: string): Record<string, unknown> => ({
+    kind: "text",
+    blockId,
+    mediaType: "text/plain; charset=utf-8",
+    byteLength: new TextEncoder().encode(text).byteLength,
+    contentSha256: createHash("sha256").update(Buffer.from(text, "utf8")).digest("hex"),
+    artifactRefId: null,
+    text,
+    toolCallId: null,
+    effectId: null,
+  });
+  return {
+    ...envelopeFor(taskId, INITIATIVE_ID),
+    objective: ACCEPTANCE_FIRST,
+    content: {
+      contentContractVersion: 1,
+      blocks: [block("b1", ACCEPTANCE_FIRST), block("b2", ACCEPTANCE_SECOND)],
+    },
+  } as unknown as TaskEnvelope;
+}
+
+/** The instruction the one producer composes for that envelope, over a real ledger. */
+function acceptanceInstruction(name: string): ComposedInstruction {
+  const root = scenario(name);
+  const ledger = openLedger(scenarioLedgerPath(root));
+  ledgers.push(ledger);
+  return instructionFor(ledger, acceptanceEnvelope(TASK));
+}
+
+describe("the acceptance proof: a child returns what it received (contratos section 4.3)", () => {
+  it("delivers the composed instruction to a real child on the CLI leg, and the child returns exactly it", async () => {
+    const composed = acceptanceInstruction("p06c-accept-compose");
+    // The composition is the producer's, not this fixture's: it joined two text
+    // blocks in the list's order with the one separator.
+    expect(composed.instructions).toBe(ACCEPTANCE_FIRST + "\n\n" + ACCEPTANCE_SECOND);
+    expect(composed.modalities).toEqual(["text"]);
+
+    const echoPath = join(drillRoot(), "acceptance-cli.txt");
+    const port = createExecutionPort({
+      bindings: new Map([[ACCOUNT, { ...cliBinding(CLAUDE_LINES), adapter: echoingClaude(echoPath, CLAUDE_LINES) }]]),
+    });
+    const done = await walk("p06c-accept-cli", port, resolvedCliRoute(), undefined, {
+      ...executionRequest(),
+      instructions: composed.instructions,
+      modalities: [...composed.modalities],
+    });
+
+    // What the child received, byte for byte, read back from the file the child
+    // itself wrote. The walk completed normally around it.
+    expect(readFileSync(echoPath, "utf8")).toBe(composed.instructions);
+    expect(done.state).toBe("CHECKPOINTED");
+    expect(done.trail.map((event) => event.kind)).toEqual(SHARED_KINDS);
+  }, 60_000);
+
+  it("N-P06-14: the delivered instruction reaches no event body, no evidence and no trail", async () => {
+    const composed = acceptanceInstruction("p06c-accept-quiet-compose");
+    const echoPath = join(drillRoot(), "acceptance-quiet.txt");
+    const port = createExecutionPort({
+      bindings: new Map([[ACCOUNT, { ...cliBinding(CLAUDE_LINES), adapter: echoingClaude(echoPath, CLAUDE_LINES) }]]),
+    });
+    const done = await walk("p06c-accept-quiet", port, resolvedCliRoute(), undefined, {
+      ...executionRequest(),
+      instructions: composed.instructions,
+      modalities: [...composed.modalities],
+    });
+
+    // It reached the child -- the positive control that makes the absences below
+    // mean something.
+    expect(readFileSync(echoPath, "utf8")).toBe(composed.instructions);
+    const everywhere = [
+      JSON.stringify(done.bodiesWithoutRoute),
+      JSON.stringify(done.trail),
+      done.markerJson,
+      done.evidence.join("|"),
+    ].join("|");
+    for (const fragment of [ACCEPTANCE_FIRST, ACCEPTANCE_SECOND, composed.instructions]) {
+      expect(everywhere).not.toContain(fragment);
+    }
+    // Not even as a digest: the sha-256 of what was asked is not in the log either.
+    const digest = createHash("sha256").update(Buffer.from(composed.instructions, "utf8")).digest("hex");
+    expect(everywhere).not.toContain(digest);
+  }, 60_000);
+
+  it("N-P06-15: a class the transport cannot carry refuses before a process exists, through the real port", async () => {
+    const composed = acceptanceInstruction("p06c-accept-modality-compose");
+    const echoPath = join(drillRoot(), "acceptance-modality.txt");
+    const port = createExecutionPort({
+      bindings: new Map([
+        [ACCOUNT, { ...cliBinding(CLAUDE_LINES), adapter: modalityRefusingClaude(echoPath) }],
+      ]),
+    });
+    const outcome = await port.start(resolvedCliRoute(), {
+      ...executionRequest(),
+      instructions: composed.instructions,
+      modalities: [...composed.modalities],
+    });
+
+    // The port's own classified answer, and no child: the side file the echoing
+    // subject would have written does not exist, because nothing ran.
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error("the port admitted a transport that cannot carry the content");
+    const refused = outcome;
+    expect(refused.refusal).toBe("TRANSPORT_UNAVAILABLE");
+    expect(refused.at).toBe("startSession/PROTOCOL_UNSUPPORTED");
+    expect(existsSync(echoPath)).toBe(false);
+  }, 60_000);
+
+  it("runs the same composed instruction on the API leg, whose stream request carries no instruction at all", async () => {
+    const composed = acceptanceInstruction("p06c-accept-api-compose");
+    const seen: unknown[] = [];
+    const recordingClient: ApiStreamingClient = {
+      provider: "claude",
+      models: ["opus"],
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async *stream(request): AsyncIterable<ApiStreamChunk> {
+        seen.push(request);
+        for (const chunk of API_SCENARIO) yield chunk;
+      },
+    };
+    const port = createExecutionPort({
+      bindings: new Map([[ACCOUNT, cliBinding(CLAUDE_LINES)]]),
+      apiBindings: new Map([[ACCOUNT, { client: recordingClient }]]),
+    });
+    const done = await walk("p06c-accept-api", port, { ...resolvedCliRoute(), transportKind: "API_KEY" }, undefined, {
+      ...executionRequest(),
+      instructions: composed.instructions,
+      modalities: [...composed.modalities],
+    });
+
+    expect(done.state).toBe("CHECKPOINTED");
+    // MEASURED, not assumed: `ApiStreamRequest` carries the model, the task, the
+    // attempt and the identity -- and no instruction. So "a child returns what it
+    // received" is not expressible on this leg without widening a shape this packet
+    // does not own; the gap belongs to the API transport and is declared in ADR
+    // 0095 rather than papered over here. What IS proven is that the instruction
+    // composed by the one producer drives this leg to the same terminal state and
+    // that none of it reaches the request, the trail or the log.
+    expect(seen).toHaveLength(1);
+    expect(Object.keys(seen[0] as Record<string, unknown>).sort()).toEqual([
+      "attempt",
+      "identity",
+      "model",
+      "taskId",
+    ]);
+    const everywhere = JSON.stringify(seen) + JSON.stringify(done.bodiesWithoutRoute) + JSON.stringify(done.trail);
+    for (const fragment of [ACCEPTANCE_FIRST, ACCEPTANCE_SECOND]) {
+      expect(everywhere).not.toContain(fragment);
+    }
+  }, 60_000);
 });

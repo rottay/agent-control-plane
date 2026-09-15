@@ -105,6 +105,7 @@ function request(overrides: Partial<ExecutionRequest> = {}): ExecutionRequest {
     attempt: 1,
     identity: IDENTITY,
     instructions: "summarise the packet",
+    modalities: ["text"],
     reattach: null,
     ...overrides,
   };

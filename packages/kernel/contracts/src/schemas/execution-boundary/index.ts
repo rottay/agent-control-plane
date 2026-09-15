@@ -10,6 +10,11 @@
 
 import { z } from "zod";
 import {
+  CONTENT_BLOCK_KINDS,
+  CONTENT_BLOCK_LIST_MAX,
+  CONTENT_REQUEST_AGGREGATE_MAX_BYTES,
+} from "../content-block/index.js";
+import {
   RepoRelativePath,
   Sha256Hex,
   Timestamp,
@@ -344,6 +349,30 @@ export type ExecutionEvent = z.infer<typeof ExecutionEvent>;
  * here: those belong to the adapter that owns the transport, and putting them in
  * the owned boundary would make this contract change every time a transport did.
  */
+/** The block kinds a composition may report, from escalón A's closed vocabulary. */
+const ContentBlockKindSchema = z.enum(CONTENT_BLOCK_KINDS);
+
+/**
+ * How long an instruction may be, in characters (P-06/C, ADR 0095).
+ *
+ * `4_000` while the instruction was one envelope field, because that is what
+ * `TaskEnvelope.objective` carries and a second, looser bound would have been a place
+ * for the two to disagree. Since P-06/C the instruction is **composed** from the text
+ * blocks of a content list, so the figure that governs is the content contract's own:
+ * a list may hold up to `CONTENT_BLOCK_LIST_MAX` blocks, each text block up to
+ * `CONTENT_INLINE_TEXT_MAX_CHARS`, and the composition writes them one after another.
+ *
+ * The bound moves to the aggregate the request contract already admits rather than to
+ * the arithmetic product, because tests §9.6 rule 1 governs where these numbers meet:
+ * when a policy already in force is more restrictive, the policy in force wins, and
+ * `CONTENT_REQUEST_AGGREGATE_MAX_BYTES` is the ceiling a request's content was already
+ * held to at the door. Over it is a **contract refusal**, never a truncation.
+ *
+ * Moving it is not a bump: `ExecutionRequest` carries no `contractVersion` (it is a
+ * port shape, not an issued instrument), so no version moves for this number.
+ */
+export const INSTRUCTIONS_MAX_CHARS = CONTENT_REQUEST_AGGREGATE_MAX_BYTES;
+
 export const ExecutionRequest = z.strictObject({
   taskId: Uuid,
   attempt: z.number().int().positive().max(10_000),
@@ -351,12 +380,15 @@ export const ExecutionRequest = z.strictObject({
   /**
    * What the model is being asked to do (V2-B1c).
    *
-   * Required, and bounded exactly as `TaskEnvelope.objective` is bounded —
-   * `min(1).max(4_000)` — because that is where the value comes from and a
-   * second, looser bound at the boundary would be a place for the two to
-   * disagree. Over the bound is a **contract refusal**, never a truncation: an
-   * adapter that shortened an instruction would be inventing a policy about
-   * what the model was asked, which is the one thing no transport may decide.
+   * Required, and bounded by {@link INSTRUCTIONS_MAX_CHARS} — the aggregate the
+   * content contract already holds a request to, for the reason that constant's
+   * own docblock gives. It was `TaskEnvelope.objective`'s `max(4_000)` while the
+   * instruction was that one field; since P-06/C it is composed from the text
+   * blocks of a content list, and the bound follows the value rather than the
+   * field it used to come from. Over the bound is a **contract refusal**, never a
+   * truncation: an adapter that shortened an instruction would be inventing a
+   * policy about what the model was asked, which is the one thing no transport
+   * may decide.
    *
    * The field is write-only in the plane's sense. It crosses exactly one
    * boundary — this process to the child — and enters no ledger row, event
@@ -364,7 +396,21 @@ export const ExecutionRequest = z.strictObject({
    * log line. Not even as a digest: the plane records that work was asked for,
    * not what was said.
    */
-  instructions: z.string().min(1).max(4_000),
+  instructions: z.string().min(1).max(INSTRUCTIONS_MAX_CHARS),
+  /**
+   * The distinct block kinds the instruction was composed from (P-06/C, ADR 0095).
+   *
+   * Classes only — never a block, never its bytes, never a digest. It exists so a
+   * transport can refuse a class it cannot carry **before a process exists**, which
+   * §4.1 `:202-203` and `:228-232` ask for and which a pure `describe` cannot do
+   * without seeing something. Handing it the blocks instead would put content on the
+   * public side of the adapter boundary, and `:199-201` forbids that.
+   *
+   * Non-empty, and in practice always containing `"text"`: escalón A's contract
+   * refuses a content list with no text block, so an instruction always says
+   * something.
+   */
+  modalities: z.array(ContentBlockKindSchema).min(1).max(CONTENT_BLOCK_LIST_MAX),
   /**
    * An execution to rejoin rather than start. Null is the ordinary case.
    *

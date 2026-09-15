@@ -67,6 +67,9 @@ function request(
     resumeSessionId: null,
     limits: limits(),
     instructions: INSTRUCTION,
+    // The classes the instruction was composed from (P-06/C). Text only unless a
+    // test says otherwise, which is the route this packet carries end to end.
+    modalities: ["text"],
     ...overrides,
   } as SessionRequest;
 }
@@ -485,7 +488,10 @@ describe("a binary is admitted for the session too", () => {
  */
 describe("delivering the instruction", () => {
   /** A subject that reads stdin to EOF and writes what it got to a file. */
-  function echoingAdapter(echoPath: string, kind: "STDIN" | "UNSUPPORTED"): ProviderAdapter {
+  function echoingAdapter(
+    echoPath: string,
+    kind: "STDIN" | "UNSUPPORTED" | "MODALITY",
+  ): ProviderAdapter {
     const program = [
       "const chunks = [];",
       "process.stdin.on('data', (c) => chunks.push(c));",
@@ -506,7 +512,9 @@ describe("delivering the instruction", () => {
           delivery:
             kind === "STDIN"
               ? ({ kind: "STDIN" } as const)
-              : ({ kind: "UNSUPPORTED", reason: "HANDSHAKE_REQUIRED" } as const),
+              : kind === "MODALITY"
+                ? ({ kind: "UNSUPPORTED", reason: "MODALITY_UNSUPPORTED" } as const)
+                : ({ kind: "UNSUPPORTED", reason: "HANDSHAKE_REQUIRED" } as const),
         };
       },
     };
@@ -593,6 +601,31 @@ describe("delivering the instruction", () => {
     expect(existsSync(echoPath)).toBe(false);
   });
 
+  it("N-P06-15 refuses a class the transport cannot carry without opening a process", () => {
+    // The second reason of the same refusal point (P-06/C). The composition does
+    // NOT drop a non-text block and does not refuse it either: the classes travel
+    // to the adapter, the adapter declares it cannot carry them, and the refusal
+    // happens here -- before `spawnAdmitted`, so there is no pid, no byte written
+    // and no unauthorized consumption on any account.
+    const echoPath = join(drillRoot(), "modality.txt");
+    const before = ownedPids.length;
+    let thrown: unknown;
+    try {
+      startSession(
+        echoingAdapter(echoPath, "MODALITY"),
+        request(IMPLEMENTER, { lines: [], exitCode: 0 }, { modalities: ["text", "image"] }),
+      );
+    } catch (error: unknown) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AdapterError);
+    // `PROTOCOL_UNSUPPORTED` for both reasons, by ADR 0034: the specificity lives
+    // in the descriptor's `reason` and no closed code set moves for a modality.
+    expect((thrown as AdapterError).code).toBe("PROTOCOL_UNSUPPORTED");
+    expect(ownedPids.length).toBe(before);
+    expect(existsSync(echoPath)).toBe(false);
+  });
+
   it("N8 leaves the delivery union closed, with no silent third path", () => {
     // The union is enforced by the compiler through an exhaustive switch with a
     // `never` guard, so an unhandled kind fails the build rather than falling
@@ -605,7 +638,12 @@ describe("delivering the instruction", () => {
     const unsupported = echoingAdapter(echoPath, "UNSUPPORTED").describe(
       request(IMPLEMENTER, { lines: [], exitCode: 0 }),
     );
+    const modality = echoingAdapter(echoPath, "MODALITY").describe(
+      request(IMPLEMENTER, { lines: [], exitCode: 0 }),
+    );
     expect(stdin.delivery).toEqual({ kind: "STDIN" });
     expect(unsupported.delivery).toEqual({ kind: "UNSUPPORTED", reason: "HANDSHAKE_REQUIRED" });
+    // Three declarations, two reasons, one refusal point (P-06/C).
+    expect(modality.delivery).toEqual({ kind: "UNSUPPORTED", reason: "MODALITY_UNSUPPORTED" });
   });
 });

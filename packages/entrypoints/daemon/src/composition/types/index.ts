@@ -25,6 +25,7 @@ import type { DurableInvocation, ScenarioRoot } from "@acp/runtime";
 
 import type { LeaseHold } from "../../arbiter/index.js";
 import type { DaemonExecutionConfig } from "../../daemon-child/index.js";
+import type { ContentBlockKind } from "@acp/contracts";
 
 /**
  * The dependencies one walk's execution effects close over, named.
@@ -54,6 +55,12 @@ export interface WalkEffectsInput {
   readonly emittedBy: string;
   /** The instruction the execution carries; the caller produces it with `instructionFor`. */
   readonly instructions: string;
+  /**
+   * The classes the instruction was composed from (P-06/C, ADR 0095). Carried, not
+   * inspected: the adapter's `describe` is what decides whether a transport can take
+   * them, and no block or byte travels with them.
+   */
+  readonly modalities: readonly ContentBlockKind[];
   readonly scenarioRoot: ScenarioRoot;
   /**
    * The landing generation that leads the usage rows' durable names
@@ -89,6 +96,12 @@ export interface ComposedSqliteWalkInput {
   readonly hold: LeaseHold;
   readonly gate: (operationIndex: number) => void;
   readonly instructions: string;
+  /**
+   * The classes the instruction was composed from (P-06/C, ADR 0095). Carried, not
+   * inspected: the adapter's `describe` is what decides whether a transport can take
+   * them, and no block or byte travels with them.
+   */
+  readonly modalities: readonly ContentBlockKind[];
   readonly taskId: string;
   readonly attempt: number;
   readonly emittedBy: string;

@@ -373,6 +373,11 @@ export const kimiAdapter: ProviderAdapter = {
       // `sessionId` the server returns to `session/new`, so it cannot exist
       // before the process does and cannot be built purely here -- it is a
       // client-side conversation driven by parse results, not one frame.
+      // P-06/C: the reason is still the handshake, and it is declared first because
+      // it is true of every instruction regardless of its classes -- a transport
+      // that cannot take an instruction at all does not get to say which classes
+      // it would have taken. The modality member of the union exists for the
+      // transports that can (ADR 0095).
       delivery: { kind: "UNSUPPORTED", reason: "HANDSHAKE_REQUIRED" },
       cwd: request.workdir,
     };

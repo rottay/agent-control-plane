@@ -115,6 +115,7 @@ export {
   ResolvedRoute,
   ExecutionEvent,
   ExecutionRequest,
+  INSTRUCTIONS_MAX_CHARS,
   formatWorkerIdentity,
   parseWorkerIdentity,
   isLifecycleState,
