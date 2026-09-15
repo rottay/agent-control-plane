@@ -81,6 +81,34 @@ import {
   ToolCallRow,
 } from "../../src/index.js";
 
+/**
+ * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
+ *
+ * One text block, so the envelope's `objective` equals the first text block of its
+ * content and the two spellings stay one fact. `contentSha256` is a placeholder:
+ * escalón B admits and publishes, and escalón C is where a digest is checked
+ * against the bytes it describes.
+ */
+function fixtureContent(text: string): Record<string, unknown> {
+  return {
+    contentContractVersion: 1,
+    blocks: [
+      {
+        kind: "text",
+        blockId: "b1",
+        mediaType: "text/plain; charset=utf-8",
+        byteLength: new TextEncoder().encode(text).byteLength,
+        contentSha256: "0".repeat(64),
+        artifactRefId: null,
+        text,
+        toolCallId: null,
+        effectId: null,
+      },
+    ],
+  };
+}
+
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -2267,7 +2295,7 @@ describe("the initiative registration's wire contract (P-14/B)", () => {
 
   it("N-P14B-14: moves the API version and the write table, and adds no error code", () => {
     // `0.16.0` when it landed; P-14/C's sixth write door moved it again.
-    expect(API_CONTRACT_VERSION).toBe("0.17.0");
+    expect(API_CONTRACT_VERSION).toBe("0.18.0");
     expect(isWriteRoute("initiatives")).toBe(true);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(15);
@@ -2286,6 +2314,7 @@ describe("the task intake's wire contract (P-14/C)", () => {
       initiativeId: INITIATIVE_ID,
       title: "Enter a task",
       objective: "Enter one task by command and by API.",
+      content: fixtureContent("Enter one task by command and by API."),
       classification: "MECHANICAL",
       issuedBy: "kimi/k3/coordinator/01",
       issuedAt: "2026-09-13T12:00:00.000Z",
@@ -2423,13 +2452,13 @@ describe("the task intake's wire contract (P-14/C)", () => {
   });
 
   it("N-P14C-23: moves the API version and the write table, and adds no method and no error code", () => {
-    expect(API_CONTRACT_VERSION).toBe("0.17.0");
+    expect(API_CONTRACT_VERSION).toBe("0.18.0");
     expect(isWriteRoute("tasks")).toBe(true);
     expect(API_WRITE_ROUTES).toHaveLength(6);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(15);
     // Derived from `CONTRACT_VERSION`, which P-32/captura B moved to 2.6.0 (ADR 0089).
-    expect(LEDGER_CONTRACT_VERSION).toBe("2.6.0");
+    expect(LEDGER_CONTRACT_VERSION).toBe("2.7.0");
   });
 });
 
@@ -2920,7 +2949,7 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.17.0");
+    expect(API_CONTRACT_VERSION).toBe("0.18.0");
   });
 
   it("names the thirteenth error code, and the version the surface now stands at", () => {
@@ -2937,7 +2966,7 @@ describe("the tool call's wire contract", () => {
     // that did not move with it is exactly the point — the version tracks the
     // whole surface, not one list. The number stays a literal so it is asserted
     // rather than echoed.
-    expect(API_CONTRACT_VERSION).toBe("0.17.0");
+    expect(API_CONTRACT_VERSION).toBe("0.18.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
@@ -2950,7 +2979,7 @@ describe("the tool call's wire contract", () => {
     expect(API_ERROR_CODES).toContain("CAPABILITY_UNSUPPORTED");
     expect(API_ERROR_CODES).toContain("SCENARIO_UNCONFIGURED");
     expect(API_ERROR_CODES).toHaveLength(15);
-    expect(API_CONTRACT_VERSION).toBe("0.17.0");
+    expect(API_CONTRACT_VERSION).toBe("0.18.0");
 
     // The distinction is the reason both exist. `SCENARIO_UNCONFIGURED` is an
     // operator problem a restart fixes, on the shape

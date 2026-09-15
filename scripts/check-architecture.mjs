@@ -10596,6 +10596,95 @@ const P06A_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-06 escalón B — the task envelope carries the instruction's content, and both
+ * doors validate it (ADR 0094).
+ *
+ * **What lands.** `TaskEnvelope` gains `content: InstructionContentSchema`,
+ * **required** and imported from escalón A rather than restated. It enters the
+ * preimage of `envelope_sha256` by construction — the preimage is the canonical JSON
+ * of the whole parsed envelope — so changing a block changes the revision's identity
+ * (§3 `:144-147`). `objective` stays and is bound to the first `text` block by a
+ * refinement, so the instruction has two spellings and cannot have two meanings; C
+ * removes it when it moves the producer. Both real doors validate the blocks, because
+ * both come through the runtime's intake, and the intake verifies that every
+ * reference the content names exists under this task's scope
+ * (`CONTENT_REFERENCE_UNKNOWN`). The door verifies and does not publish: an envelope
+ * carries a reference and a digest, never bytes.
+ *
+ * **The bump, and its measured drag.** `CONTRACT_VERSION` `2.6.0` -> `2.7.0`, a minor
+ * on decision 85's mould, with `SUPPORTED_CONTRACT_VERSIONS` gaining it and keeping
+ * all five earlier members. The three envelope-identity vectors were recomputed
+ * **twice** each — by `envelopeSha256` and by `node:crypto` over the preimage — and
+ * agree. `LEDGER_CONTRACT_VERSION` moves too, and is **derived**: it is
+ * `= CONTRACT_VERSION` at `protocol/src/version/index.ts`, so its ~170 symbol users
+ * follow with no edit and only its one literal pin moved.
+ * `API_CONTRACT_VERSION` `0.17.0` -> `0.18.0` (Q3), an independent literal and a
+ * deliberate decision: the intake route's body changed with the envelope.
+ *
+ * **What does NOT land, declared.** No change to `instructionFor`, which still reads
+ * `objective`; no resolution of a reference, no composition to the adapter, no prompt
+ * occurrence, no modality preflight — all C. P-15 is untouched: the daemon's child
+ * still receives the envelope from its configuration.
+ *
+ * **Pins.** `CONTRACT_VERSION` 2.6.0 -> 2.7.0; `SUPPORTED_CONTRACT_VERSIONS` five ->
+ * six; `API_CONTRACT_VERSION` 0.17.0 -> 0.18.0; `TASK_INTAKE_CODES` nine -> ten. The
+ * ADR corpus 93 -> 94; the decision register 95 -> 98. `PATH_SCOPED_LAWS` stays
+ * **145**: L-P06A-1 is amended in its own row rather than joined by a second.
+ * `CONTRACTS_SCHEMA_EXPORTS` stays 150 — the content contract's names were already
+ * exported by A and `TaskEnvelope` is not a new name. `MIGRATIONS` (21) and
+ * `PROJECTOR_VERSION` (1) are untouched.
+ *
+ * **Thirty-five paths; one is new to the fence** — ADR 0094. The measurement that
+ * produced this list is `acp-p06b-opus-write-set-proposal-v1.md`: three sweeps over
+ * every tracked file, then three routes added mid-flight for `API_CONTRACT_VERSION`
+ * literal pins the writer's sweep had missed (adjudicated before a line was written),
+ * and a thirty-fifth ratified after the writer declared having touched it outside the
+ * frozen set: `protocol/src/version/index.ts`, the DEFINITION of
+ * `API_CONTRACT_VERSION`, without which the already-adjudicated Q3 cannot be applied.
+ * The sweep had found that literal's consumers and missed its producer.
+ * Seven of the eleven envelope-literal routes turned out not to break — the literals
+ * are casts, so the drag is runtime and not typecheck — and are declared unused: a
+ * write-set is a ceiling, not a quota.
+ */
+const P06B_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/task-envelope/index.ts",
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/persistence/ledger/src/envelope-identity/index.ts",
+  "packages/persistence/ledger/test/envelope-identity/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/domains/runtime/src/intake/index.ts",
+  "packages/domains/runtime/src/intake/types/index.ts",
+  "packages/domains/runtime/test/intake/index.test.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/test/conflict-graph/index.test.ts",
+  "packages/domains/runtime/test/pilots/helpers/index.ts",
+  "packages/domains/runtime/test/submission/index.test.ts",
+  "packages/entrypoints/cli/src/intake/index.ts",
+  "packages/entrypoints/cli/test/intake/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/gateway/src/task-intake/index.ts",
+  "packages/entrypoints/gateway/test/task-intake/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/test/composition/walk/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/leases/index.test.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
+  "packages/entrypoints/daemon/test/scheduler/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0094-the-task-envelope-carries-the-instructions-content.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -10820,6 +10909,7 @@ const WRITE_SET = [
   ...P37S1_WRITE_SET,
   ...P33B_WRITE_SET,
   ...P06A_WRITE_SET,
+  ...P06B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -26741,9 +26831,13 @@ const PRICE_CATALOG_BARREL = "packages/persistence/ledger/src/index.ts";
 // and not the file, which is C-3 / P-37 seam 1's adjudicated mould (decision 91).
 // The suites are outside `src/` and outside the law.
 //
-// Like L-P33B-1 and unlike L-P32B-1, this law admits NO caller at all. B amends
-// the row when `TaskEnvelope` carries the content and the two real doors validate
-// it; C amends it again when the resolution reaches the adapter boundary.
+// AMENDED by P-06/B (ADR 0094): the law no longer admits no caller. `TaskEnvelope`
+// now carries the content, so the envelope's own schema names it, and the runtime's
+// intake validates it at both real doors — those are the consumers B wires, and they
+// are named below. Everything else is still refused: a second producer of a content
+// list is the three formats per client that §4.1 forbids, and the composition that
+// resolves a reference and crosses the adapter boundary is still C's. Same row, same
+// `requireScope`: `PATH_SCOPED_LAWS` does not move for the amendment.
 const CONTENT_CONTRACT_SITES = [
   "packages/kernel/contracts/src/schemas/content-block/index.ts",
   "packages/kernel/contracts/src/schemas/content-block/types/index.ts",
@@ -26751,6 +26845,12 @@ const CONTENT_CONTRACT_SITES = [
 const CONTENT_CONTRACT_BARRELS = [
   "packages/kernel/contracts/src/schemas/index.ts",
   "packages/kernel/contracts/src/index.ts",
+];
+// The consumers P-06/B wires, and no others: the envelope's own schema, which carries
+// the content, and the runtime's intake, which validates it for both real doors.
+const CONTENT_CONTRACT_CALLERS = [
+  "packages/kernel/contracts/src/schemas/task-envelope/index.ts",
+  "packages/domains/runtime/src/intake/index.ts",
 ];
 {
   let contentScanned = 0;
@@ -26761,6 +26861,7 @@ const CONTENT_CONTRACT_BARRELS = [
       if (!/\.tsx?$/.test(relativePath)) continue;
       if (CONTENT_CONTRACT_SITES.includes(relativePath)) continue;
       if (CONTENT_CONTRACT_BARRELS.includes(relativePath)) continue;
+      if (CONTENT_CONTRACT_CALLERS.includes(relativePath)) continue;
       const content = readIfPresent(relativePath);
       if (content === null) continue;
       contentScanned += 1;
@@ -26788,7 +26889,8 @@ const CONTENT_CONTRACT_BARRELS = [
     contentScanned,
   );
   notes.push(
-    "no production source outside the content-block concept and the contracts barrels names the content contract",
+    "no production source outside the content-block concept, the contracts barrels and the two consumers" +
+      " P-06/B wires names the content contract",
   );
 }
 

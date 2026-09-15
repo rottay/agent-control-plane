@@ -10,6 +10,34 @@ import {
 } from "../../src/envelope-identity/index.js";
 
 /**
+ * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
+ *
+ * One text block, so the envelope's `objective` equals the first text block of its
+ * content and the two spellings stay one fact. `contentSha256` is a placeholder:
+ * escalón B admits and publishes, and escalón C is where a digest is checked
+ * against the bytes it describes.
+ */
+function fixtureContent(text: string): Record<string, unknown> {
+  return {
+    contentContractVersion: 1,
+    blocks: [
+      {
+        kind: "text",
+        blockId: "b1",
+        mediaType: "text/plain; charset=utf-8",
+        byteLength: new TextEncoder().encode(text).byteLength,
+        contentSha256: "0".repeat(64),
+        artifactRefId: null,
+        text,
+        toolCallId: null,
+        effectId: null,
+      },
+    ],
+  };
+}
+
+
+/**
  * The envelope revision preimage, pinned before anything depends on it (P-05/A).
  *
  * This suite exists for the reason the account sidecar's does: the digest is an
@@ -61,13 +89,16 @@ import {
  * revision record's payload, never a field of the envelope. Computed twice
  * again, the same two ways, and the two agree on all three.
  *
+ * P-06/B moved the version to `"2.7.0"` and the envelope gained its content, so the
+ * three vectors below were recomputed once more — twice each, as decision 85 asks: by
+ * `envelopeSha256` and by `node:crypto` over the preimage, agreeing on all three.
  * P-32/captura B moved the version to `"2.6.0"` (ADR 0089) and the three vectors
  * moved with it again, for the same reason and with the same consequence
  * declared — and for no other: the usage types B adds are task events, never
  * fields of the envelope, and the schema, the prefix and the encoding did not
  * move. Computed twice, the same two ways, and the two agree on all three.
  */
-const CONTRACT = "2.6.0";
+const CONTRACT = "2.7.0";
 const ISSUER = "kimi/k3/coordinator/01";
 const AT = "2026-09-11T09:00:00.000Z";
 const TASK_ID = "6f1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d";
@@ -82,6 +113,7 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
     initiativeId: INITIATIVE_ID,
     title: "Pin the envelope revision preimage",
     objective: "Compute one digest over every field of the contract, and freeze it.",
+    content: fixtureContent("Compute one digest over every field of the contract, and freeze it."),
     classification: "SEMANTIC",
     issuedBy: ISSUER,
     issuedAt: AT,
@@ -117,8 +149,17 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
  * N01 read as what the finding describes: two packets, differing in the one
  * thing that decides what the work IS.
  */
+/**
+ * One envelope whose instruction is `objective`, in both spellings (P-06/B).
+ *
+ * Since escalón B the envelope refuses an objective that disagrees with the first
+ * text block of its content, so "differing only in the objective" is expressed by
+ * moving the one fact and not one of its two spellings. The probe below is
+ * unchanged in what it proves — two instructions, two digests — and sharper about
+ * what an instruction is.
+ */
 function withObjective(objective: string): Record<string, unknown> {
-  return envelope({ objective });
+  return envelope({ objective, content: fixtureContent(objective) });
 }
 
 describe("the envelope revision preimage is pinned, not merely consistent", () => {
@@ -203,7 +244,36 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
         expect(envelopeIdentityPreimageV1(base)).toContain(CONTRACT);
         continue;
       }
-      if (key === "budget") {
+      if (key === "objective") {
+        // The instruction has two spellings and they may not disagree, so this
+        // mutation moves both. It is still one semantic change (P-06/B, ADR 0094).
+        const revised = String(current) + " (revised)";
+        candidate = envelope({ objective: revised, content: fixtureContent(revised) });
+      } else if (key === "content") {
+        // And the content moves without touching the prose: a second block, not a
+        // text one, so the first text block still equals the objective and the only
+        // thing that changed is the content.
+        const baseContent = base["content"] as { readonly blocks: readonly Record<string, unknown>[] };
+        candidate = envelope({
+          content: {
+            contentContractVersion: 1,
+            blocks: [
+              ...baseContent.blocks,
+              {
+                kind: "document",
+                blockId: "b2",
+                mediaType: "application/pdf",
+                byteLength: 11,
+                contentSha256: "1".repeat(64),
+                artifactRefId: "ref-1",
+                text: null,
+                toolCallId: null,
+                effectId: null,
+              },
+            ],
+          },
+        });
+      } else if (key === "budget") {
         candidate = envelope({ budget: { ...envelope()["budget"] as object, maxTokens: 399_999 } });
       } else if (key === "output") {
         candidate = envelope({ output: { kind: "REPORT", description: "a report instead" } });
@@ -406,10 +476,10 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
     // encoding changes while staying internally consistent — every other test
     // here would compute the new bytes the new way and agree with itself.
     const vectors: readonly (readonly [Record<string, unknown>, string])[] = [
-      [envelope(), "e545359fc245ffb0b30fe4a4e11da45a442462700fb411a0996bc5fd5e51137d"],
+      [envelope(), "f3720698721d0603bcf0a39529f3e1ff95f8f2e50b0979c817b0cb0243756a93"],
       [
         withObjective("Delete the production ledger."),
-        "fc8a46e7a566cc37d5fb119e7888ff386afeb03dbbd118c8b34e4e58aab0e5ec",
+        "a9c358e4be82866424f777279ee61f4a28c8c6545865446a44f3cf4bf637f1c8",
       ],
       [
         envelope({
@@ -419,7 +489,7 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
           visualEvidenceRequired: true,
           eligibility: { roles: ["reviewer"], providers: ["anthropic"], requiredCapabilities: [] },
         }),
-        "dc973b768e0186523e51e1103f61b8bf807947638c4686912777fc9835e00daf",
+        "f52ae8041d356ee41a98913d4da2edf774b3202dddb15ed5fa9468ac87c43e17",
       ],
     ];
 

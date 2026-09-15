@@ -160,6 +160,7 @@ export const TASK_INTAKE_WRITE_REFUSALS = Object.freeze(
  */
 export const TASK_INTAKE_CODES = [
   "CLIENT_KEY_CONFLICT",
+  "CONTENT_REFERENCE_UNKNOWN",
   "ENVELOPE_INVALID",
   "INITIATIVE_UNKNOWN",
   "REQUEST_FIELD_INVALID",
@@ -632,6 +633,31 @@ function preconditions(ledger: Ledger, parsed: ParsedTaskIntake): TaskIntakeReso
  * replay, another is `CONFLICT`, and a task another key entered first is
  * `CONFLICT` on its id.
  */
+/**
+ * The refusal a content reference earns when the plane does not hold it, or null.
+ *
+ * Scoped to the task the envelope names: a reference that exists under another
+ * task's scope is not this task's to read, so it earns the same word rather than
+ * being admitted because the id happened to resolve.
+ */
+function contentReferenceRefusal(ledger: Ledger, envelope: TaskEnvelope): TaskIntakeRefused | null {
+  const blocks = envelope.content.blocks;
+  for (let index = 0; index < blocks.length; index += 1) {
+    const artifactRefId = blocks[index]?.artifactRefId;
+    if (artifactRefId === undefined || artifactRefId === null) continue;
+    const reference = ledger.getArtifactReference(artifactRefId);
+    const mine = reference?.scopeKind === "TASK" && reference.scopeId === envelope.taskId;
+    if (!mine) {
+      return refuse(
+        "REQUEST_INVALID",
+        "CONTENT_REFERENCE_UNKNOWN",
+        "envelope.content.blocks[" + String(index) + "].artifactRefId",
+      );
+    }
+  }
+  return null;
+}
+
 export function intakeTask(input: TaskIntakeInput): TaskIntakeOutcome {
   const { ledger, plane, identities } = input;
 
@@ -639,6 +665,19 @@ export function intakeTask(input: TaskIntakeInput): TaskIntakeOutcome {
   if (!form.ok) return form;
   const { parsed } = form;
   const taskId = parsed.envelope.taskId;
+
+  // Every reference the content names has to exist, and belong to this task
+  // (P-06/B, ADR 0094). Escalón A's contract makes a reference obligatory for
+  // everything but short text and says nothing about whether it resolves — that is a
+  // fact about the plane, not about the payload's shape, so it is checked here, and
+  // in both doors, because both come through this function.
+  //
+  // The door **verifies**; it does not publish. The envelope carries a reference and
+  // a digest, never bytes, so there is nothing here to publish: the producer
+  // publishes what it references before it submits, and admitting an envelope whose
+  // content points at nothing would record work no worker can read.
+  const unresolved = contentReferenceRefusal(ledger, parsed.envelope);
+  if (unresolved !== null) return unresolved;
 
   const decided = againstRecorded(ledger, parsed);
   if (decided !== null) return decided;

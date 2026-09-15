@@ -49,6 +49,34 @@ import {
 import type { DaemonSubmission, SubmissionCoordinates } from "../../src/submission/index.js";
 
 /**
+ * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
+ *
+ * One text block, so the envelope's `objective` equals the first text block of its
+ * content and the two spellings stay one fact. `contentSha256` is a placeholder:
+ * escalón B admits and publishes, and escalón C is where a digest is checked
+ * against the bytes it describes.
+ */
+function fixtureContent(text: string): Record<string, unknown> {
+  return {
+    contentContractVersion: 1,
+    blocks: [
+      {
+        kind: "text",
+        blockId: "b1",
+        mediaType: "text/plain; charset=utf-8",
+        byteLength: new TextEncoder().encode(text).byteLength,
+        contentSha256: "0".repeat(64),
+        artifactRefId: null,
+        text,
+        toolCallId: null,
+        effectId: null,
+      },
+    ],
+  };
+}
+
+
+/**
  * The submission path (V2-B7S).
  *
  * What this file proves is that election happens **above the walk** and that
@@ -1001,6 +1029,7 @@ describe("the submission digest and the envelope digest answer different questio
     initiativeId: INITIATIVE,
     title: "Elect a route and bind it to the attempt",
     objective: "Prove the two digests on this path are not one digest.",
+    content: fixtureContent("Prove the two digests on this path are not one digest."),
     classification: "SEMANTIC",
     issuedBy: "kimi/k3/coordinator/01",
     issuedAt: SUBMITTED_AT,
@@ -1057,7 +1086,13 @@ describe("the submission digest and the envelope digest answer different questio
     // submission digest does not budge, because not one envelope field enters
     // it. Two packets, one submission identity — that is the defect, stated as
     // an assertion rather than as prose.
-    const different = { ...ENVELOPE, objective: "Delete the production ledger." };
+    // Both spellings of the one instruction move together: since escalón B the
+    // envelope refuses an objective that disagrees with its first text block.
+    const different = {
+      ...ENVELOPE,
+      objective: "Delete the production ledger.",
+      content: fixtureContent("Delete the production ledger."),
+    };
     expect(envelopeSha256(different)).not.toBe(envelopeSha256(ENVELOPE));
     expect(canonicalSubmissionDigest(FIXED_SUBMISSION)).toBe(
       canonicalSubmissionDigest(FIXED_SUBMISSION),

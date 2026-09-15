@@ -16,6 +16,7 @@ import {
   Timestamp,
   Uuid,
 } from "../primitives/index.js";
+import { InstructionContentSchema } from "../content-block/index.js";
 import { PathDigest } from "../shared-references/index.js";
 import { WORKER_ROLES, WorkerIdentityString, WorkerRole } from "../worker-identity/index.js";
 
@@ -109,7 +110,32 @@ export const TaskEnvelope = z
      */
     initiativeId: Uuid,
     title: z.string().min(1).max(200),
+    /**
+     * The instruction in prose, and the field escalón C retires.
+     *
+     * It is **not** a second authority on what the model was asked: the
+     * refinement below requires it to equal the first `text` block of `content`,
+     * so the two spellings are one fact and neither can drift. It stays in B
+     * because `instructionFor` reads it to build an `ExecutionRequest`, and moving
+     * that producer to read `content` is escalón C's (ADR 0093's Consequences).
+     * When C moves it, this field goes.
+     */
     objective: z.string().min(1).max(4_000),
+    /**
+     * What the model is asked, in the contract of contratos §4.1 (ADR 0093).
+     *
+     * **Required.** An optional content field would be the second authority ADR
+     * 0093 refused, and an envelope no door admitted should not be constructible
+     * at all; the cost is that every envelope literal states it, and it is paid
+     * once (adjudication of P-06/B, decision 2).
+     *
+     * Imported, never restated: `InstructionContentSchema` is the single authority
+     * on a block's shape, and a copy here would be a second one. It enters the
+     * preimage of `envelope_sha256` by construction, because the preimage is the
+     * canonical JSON of the whole parsed envelope — so changing one block changes
+     * the revision's identity (§3 `:144-147`, N-P06-10).
+     */
+    content: InstructionContentSchema,
     classification: TaskClassification,
     issuedBy: WorkerIdentityString,
     issuedAt: Timestamp,
@@ -182,6 +208,22 @@ export const TaskEnvelope = z
         code: "custom",
         message: "write-set entries must be unique",
         path: ["writeSet"],
+      });
+    }
+
+    // One instruction, two spellings, and they may not disagree. `content` is the
+    // authority contratos §4.1 names; `objective` is the projection escalón C
+    // retires, and until it does, the envelope refuses to carry a prose objective
+    // that says something other than its first text block. That is what keeps ADR
+    // 0093's rejection of "two authorities" true while `instructionFor` still
+    // reads the prose.
+    const firstText = value.content.blocks.find((block) => block.kind === "text");
+    if (firstText !== undefined && firstText.text !== value.objective) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "the objective is the first text block of the content; one instruction may not have two spellings",
+        path: ["objective"],
       });
     }
   });

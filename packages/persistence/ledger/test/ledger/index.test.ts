@@ -7643,8 +7643,8 @@ describe("a version this build does not read is refused, by name", () => {
     // identity: three supported-but-not-current members, four in the loop.
     // P-32/captura B moved it again (ADR 0089), for an identity: four
     // supported-but-not-current members, five in the loop.
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", CONTRACT_VERSION]);
-    expect(CONTRACT_VERSION).toBe("2.6.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", CONTRACT_VERSION]);
+    expect(CONTRACT_VERSION).toBe("2.7.0");
 
     // The history is fabricated with `restampVersion` rather than taken from a
     // fixture, and the correction matters: there is no recorded `"2.2.0"`
@@ -7793,7 +7793,7 @@ describe("a version this build does not read is refused, by name", () => {
     migrated.append(
       responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }),
     );
-    expect(CONTRACT_VERSION).toBe("2.6.0");
+    expect(CONTRACT_VERSION).toBe("2.7.0");
     expect(migrated.listEvents().events.at(-1)?.event.contractVersion).toBe(CONTRACT_VERSION);
     expect(migrated.getResponseOccurrenceForPrompt("po-1")?.occurrenceId).toBe("ro-1");
     expect(migrated.rebuildReadModel().replayedEvents).toBe(6);
@@ -14383,8 +14383,8 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
     expect(stale.message).toContain("2.4.0");
     // P-32/captura B moved the version in force on to 2.6.0 (ADR 0089); the
     // cohort's rule reads every version after the closed list the same way.
-    expect(CONTRACT_VERSION).toBe("2.6.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0"]);
+    expect(CONTRACT_VERSION).toBe("2.7.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0"]);
     ledger.close();
   });
 });
@@ -16119,9 +16119,9 @@ describe("usage is a declared stream and a measured observation, and the door se
       reopened.append({ ...usageStream({ taskId: randomUUID(), transitionId: "stale" }), contractVersion: "2.5.0" }),
     );
     expect(stale.path).toBe("contractVersion");
-    expect(stale.message).toContain("2.6.0");
+    expect(stale.message).toContain("2.7.0");
     expect(stale.message).toContain("2.5.0");
-    expect(CONTRACT_VERSION).toBe("2.6.0");
+    expect(CONTRACT_VERSION).toBe("2.7.0");
     expect(settlementsOf(path, effectId)).toHaveLength(1);
     expect(reopened.verifyIntegrity().ok).toBe(true);
   });

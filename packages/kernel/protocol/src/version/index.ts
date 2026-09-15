@@ -199,7 +199,7 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * which is ledger schema and not the shape of a recorded event. ADR 0087 carries
  * the reasoning.
  */
-export const API_CONTRACT_VERSION = "0.17.0" as const;
+export const API_CONTRACT_VERSION = "0.18.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

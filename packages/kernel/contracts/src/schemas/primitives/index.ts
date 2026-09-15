@@ -18,7 +18,7 @@ import { z } from "zod";
  * is a producer whose output nobody can predict. What may hold more than one
  * value is the *reader's* set below.
  */
-export const CONTRACT_VERSION = "2.6.0" as const;
+export const CONTRACT_VERSION = "2.7.0" as const;
 
 /**
  * The contract versions a **reader** accepts (P-18/protocolo A, ADR 0072).
@@ -79,7 +79,7 @@ export const CONTRACT_VERSION = "2.6.0" as const;
  * `normalization_policy_sha256`. That is C's class and F's, not D's. `"2.5.0"`
  * joins the other three here for ever.
  */
-export const SUPPORTED_CONTRACT_VERSIONS = ["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0"] as const;
+export const SUPPORTED_CONTRACT_VERSIONS = ["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0"] as const;
 
 /**
  * The UTF-8 byte length of a string, browser-safe.

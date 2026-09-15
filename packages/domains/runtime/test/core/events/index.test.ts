@@ -392,7 +392,7 @@ describe("N-G-1: an invocation without a revision builds exactly the bytes it bu
     // the carriage of the envelope reference reached none of them. P-32/captura B
     // moved the version once more, to 2.6.0 (ADR 0089), and held for the same
     // reason: the vectors stay stamped as a6ed7c3 built them.
-    expect(CONTRACT_VERSION).toBe("2.6.0");
+    expect(CONTRACT_VERSION).toBe("2.7.0");
     expect(walkDigest(INVOCATION, LIFECYCLE_PLAN, "2.4.0")).toBe(
       "5c8e92f22adcb75867c79bfa353bf4dc90c57028532c06253640b4437cc2291f",
     );
@@ -460,7 +460,7 @@ describe("N-G-7: the opening is B's payload, field by field, and nothing more", 
     // invocation exactly as the digest is.
     const opening = buildWith(V2_INVOCATION, ATTEMPT_OPENING_STEP);
     // The version in force, which P-32/captura B moved to 2.6.0 (ADR 0089).
-    expect(opening.contractVersion).toBe("2.6.0");
+    expect(opening.contractVersion).toBe("2.7.0");
     expect(Object.keys(opening.payload).sort()).toEqual([
       "attemptNumber",
       "envelopeArtifactReferenceId",

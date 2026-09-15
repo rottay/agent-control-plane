@@ -73,11 +73,13 @@ aggregate of the request is refused even when every block fits. Over a bound is
 always a refusal — an instruction is never shortened to fit, for
 `ExecutionRequest.instructions`' reason.
 
-**Inert, by law.** `L-P06A-1` holds that no production source outside the concept
-and this package's barrels names the contract: the envelope carries no content
-until escalón B, so a caller today would compose a payload no door validates.
-Resolving a reference, composing what crosses the adapter boundary and the
-modality preflight are escalón C's.
+**Reached by two consumers, and no more.** `L-P06A-1` admitted no caller when A
+landed; escalón B amended it in its own row to admit exactly the two it wires —
+`TaskEnvelope`, which carries the content, and the runtime's intake, which validates
+it for both real doors (ADR 0094). Everything else is still refused, because a second
+producer of a content list is the three formats per client §4.1 forbids. Resolving a
+reference, composing what crosses the adapter boundary and the modality preflight are
+escalón C's.
 
 **Where the declarations live.** **Every** type of the concept is in
 `content-block/types/index.ts` — the three derived unions and the two inferred from
@@ -93,9 +95,12 @@ what the constraint actually is.
 - **Strict objects.** Object schemas are built with `strictObject`, so an
   unknown key is a validation failure rather than a silently carried field. A
   producer that grows a field fails at the boundary instead of leaking it.
-- **One version written, a set admitted.** `CONTRACT_VERSION` is the single
-  literal a **producer** stamps. `SUPPORTED_CONTRACT_VERSIONS` is the set a
-  **reader** admits, and `ContractVersion` is `z.enum` of it, so a record
+- **One version written, a set admitted.** `CONTRACT_VERSION` is `"2.7.0"` since
+  P-06 escalón B, which put the instruction's content inside `TaskEnvelope` (ADR
+  0094): a required field on a shape that is issued, so the literal moved and
+  `SUPPORTED_CONTRACT_VERSIONS` grew to six without losing a member, and every stored
+  row still reads. It is the single literal a **producer** stamps.
+  `SUPPORTED_CONTRACT_VERSIONS` is the set a **reader** admits, and `ContractVersion` is `z.enum` of it, so a record
   written under a version outside the set cannot be parsed as if it were
   current. The two are separate because a `z.literal` answers both questions
   with one value and is therefore symmetric: moving it would make every record

@@ -29,6 +29,34 @@ import { buildServer } from "../../src/build-server/index.js";
 import { recordTaskIntake } from "../../src/task-intake/index.js";
 
 /**
+ * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
+ *
+ * One text block, so the envelope's `objective` equals the first text block of its
+ * content and the two spellings stay one fact. `contentSha256` is a placeholder:
+ * escalón B admits and publishes, and escalón C is where a digest is checked
+ * against the bytes it describes.
+ */
+function fixtureContent(text: string): Record<string, unknown> {
+  return {
+    contentContractVersion: 1,
+    blocks: [
+      {
+        kind: "text",
+        blockId: "b1",
+        mediaType: "text/plain; charset=utf-8",
+        byteLength: new TextEncoder().encode(text).byteLength,
+        contentSha256: "0".repeat(64),
+        artifactRefId: null,
+        text,
+        toolCallId: null,
+        effectId: null,
+      },
+    ],
+  };
+}
+
+
+/**
  * Evidence for the plane's sixth write door: `POST /api/v1/tasks` (P-14/C, ADR
  * 0087).
  *
@@ -146,6 +174,7 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
     initiativeId: INITIATIVE,
     title: "Enter a task",
     objective: OBJECTIVE,
+    content: fixtureContent(OBJECTIVE),
     classification: "MECHANICAL",
     issuedBy: COORDINATOR,
     issuedAt: AT,

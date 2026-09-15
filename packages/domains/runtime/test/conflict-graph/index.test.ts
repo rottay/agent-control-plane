@@ -14,6 +14,34 @@ import {
 } from "../../src/conflict-graph/index.js";
 import type { ConflictOutcome, GraphRefused } from "../../src/conflict-graph/index.js";
 
+/**
+ * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
+ *
+ * One text block, so the envelope's `objective` equals the first text block of its
+ * content and the two spellings stay one fact. `contentSha256` is a placeholder:
+ * escalón B admits and publishes, and escalón C is where a digest is checked
+ * against the bytes it describes.
+ */
+function fixtureContent(text: string): Record<string, unknown> {
+  return {
+    contentContractVersion: 1,
+    blocks: [
+      {
+        kind: "text",
+        blockId: "b1",
+        mediaType: "text/plain; charset=utf-8",
+        byteLength: new TextEncoder().encode(text).byteLength,
+        contentSha256: "0".repeat(64),
+        artifactRefId: null,
+        text,
+        toolCallId: null,
+        effectId: null,
+      },
+    ],
+  };
+}
+
+
 const ISSUED_AT = "2026-08-29T12:00:00.000Z";
 /**
  * One fixed initiative for every drill packet.
@@ -48,6 +76,7 @@ function envelope(parts: Parts = {}): TaskEnvelope {
     initiativeId: INITIATIVE_ID,
     title: "drill",
     objective: "a conflict-graph drill packet",
+    content: fixtureContent("a conflict-graph drill packet"),
     classification: "MECHANICAL",
     issuedBy: "kimi/k3/coordinator/01",
     issuedAt: ISSUED_AT,
