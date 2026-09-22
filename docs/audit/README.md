@@ -50,7 +50,7 @@ una vez y los demás enlazan.
 | [Decisiones](decisions/index.md) | mandatos y adjudicaciones | qué está resuelto, qué quedó superseded y qué sigue abierto |
 | [Roadmap](roadmap/index.md) | secuencia y gates | en qué orden, con qué dependencia y qué compuerta |
 | [Implementación](implementation/index.md) | cómo se entrega | el prompt de arranque, cuándo parar, qué evidencia se exige |
-| [Coordinación y kickoff de Kimi](kickoff.md) | gestión de agentes | Kimi DT y commits, Opus writer, consultas a Codex, continuidad y ritmo de trabajo |
+| [Coordinación de agentes](kickoff.md) | gestión de agentes | desde el 2026-09-22, Claude (claude-admin) DT y commits, Opus writer, Fable auditor read-only a criterio del DT, Codex consultor vía owner; continuidad, ritmo y el kickoff histórico de Kimi |
 | ↳ [Packets](implementation/packets/index.md) | unidades de trabajo | qué se puede asignar hoy y qué falta congelar |
 | ↳ [Cobertura por packet](implementation/packets/requirements/index.md) · [Paralelismo](roadmap/parallelism/index.md) | asignación y concurrencia | un responsable por requisito; dependencias, cortes, conflictos y delegación acotada |
 | ↳ [Migración](implementation/migration/index.md) | el puente de autoridad | cómo esta especificación pasa a gobernar, y cómo se retiran los borradores |

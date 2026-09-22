@@ -14,34 +14,63 @@ that current model preferences are permanent.
 
 | Worker | Role |
 | --- | --- |
-| `kimi/k3/coordinator/01` | Technical owner / DT. Classifies packets, issues briefs and write-sets, adjudicates disputes, accepts or rejects milestones. Not the routine writer. |
+| `claude/opus/coordinator/01` | Technical owner / DT since 2026-09-22. Classifies packets, issues briefs and write-sets, adjudicates disputes, accepts or rejects milestones, manages local commits. Not the routine writer. |
+| `kimi/k3/coordinator/01` | Historical: the DT until 2026-09-22, superseded by the owner's order of that date. Its past briefs, adjudications and receipts stay as recorded. |
 | `claude/opus/implementer/01` | Architecture integrator and principal writer. Owns contracts, ledger, orchestration, leases, recovery, adapters. The only worker that integrates into the canonical worktree. |
 | `claude/sonnet/implementer/NN` | Mechanical implementers. Scaffolding, fixtures, tests, bounded adapters. Isolated, disjoint worktrees only. Never integrate, never widen scope. |
-| `claude/fable/reviewer/01` | Strict auditor. Structurally read-only. Emits exactly one `ACCEPT`, `ACCEPT_WITH_CORRECTIONS` or `REJECT`. |
-| `codex/<resolved-model>/consultant/01` | Owner-facing consultant and phase-boundary checkpoint auditor. Concise by design. |
+| `claude/fable/reviewer/01` | Strict auditor, convened at the DT's discretion. Structurally read-only. Emits exactly one `ACCEPT`, `ACCEPT_WITH_CORRECTIONS` or `REJECT`. |
+| `codex/<resolved-model>/consultant/01` | Occasional consultant, reached through the owner. Concise by design. |
 
 ## Reparto vigente — the standing assignment
 
 The table above is a **catalogue of roles, not a roster**. The assignment
-actually in force is the one the owner approved, recorded in
-`docs/audit/kickoff.md` §1–2:
+actually in force is the one the owner ordered on 2026-09-22, recorded in
+`docs/audit/kickoff.md` §0. It supersedes, in that document, §1–2 as far as they
+assign Kimi or Codex, §3 entirely, commit ownership in §5, and §6 as a historical
+artefact; that text, which named `kimi/k3/coordinator/01` as DT, stays as history.
 
-- `kimi/k3/coordinator/01` is the DT. It chooses packets, freezes briefs and
-  write-sets, verifies deliveries, adjudicates corrections, and **manages the
-  local commits**. It does not become the routine writer and does not approve
-  its own changes; when it edits files personally, Codex reviews the diff.
-- `claude/opus/implementer/01` is the only canonical writer and **integrates
-  directly on `main`**. No new branch and no new worktree is created for this
-  work. Other Opus instances prepare maps, proposals and oracles, or verify
-  authorized snapshots, read-only — with scope disjoint in files, outputs and
-  resources, not merely in folders.
-- `codex/<resolved-model>/consultant/01` reviews changes the DT makes
-  personally, and the milestones that document lists. It does not direct daily
-  operation and does not approve each change of the writer.
-- `claude/sonnet/implementer/NN` and `claude/fable/reviewer/01` are **historical
-  staffing, not currently convened.** Their rows stay above because the roles
-  remain available and their contracts still bind whoever holds them; nothing
-  here recreates that fleet. A second verifier is another read-only Opus.
+Under the same order, the staffing mentions in `docs/ROADMAP.md` — Kimi as DT,
+per-phase Codex checkpoints, the Kimi/Fable/Codex line-up of the 2026-08-31
+debrief ruling and the P9 staffing line — are historical and do not govern
+staffing; who runs the future debrief is pending owner confirmation. The roadmap
+remains canonical for scope, sequence and gates, and its bytes are not edited:
+the fence pins them.
+
+- `claude/opus/coordinator/01`, a Claude session on the claude-admin account, is
+  the DT and sole coordinator. Its model is verified from session metadata, not
+  from a terminal title. It plans packets within the authorized scope, delegates
+  implementation and verification, adjudicates findings, and **manages staging,
+  receipts, local commits and checkpoints**, continuing autonomously after each
+  accepted delivery. It does not become the routine writer and does not approve
+  its own changes: an edit it makes personally goes to an independent verifier
+  before commit.
+- `claude/opus/implementer/01`, on claude-admin, is the only canonical writer
+  and **integrates directly on `main`**. Exactly one writer at a time; it may be
+  a subagent or tmux session the DT spawns under claude-admin. No new branch and
+  no new worktree is created for this work. Other Opus instances prepare maps and
+  proposals, or verify, read-only — with scope disjoint in files, outputs and
+  resources, not merely in folders. Nothing falls back to the `claude-daniel`
+  profile or any other account, silently or otherwise.
+- Every delivery gets independent validation by a worker other than its writer.
+  For an ordinary batch another independent subagent suffices.
+- `claude/fable/reviewer/01`, on claude-admin, is re-convened as a strictly read-only
+  auditor (law 4), called at the DT's technical discretion:
+  important milestones, contract or architecture changes, recovery, credentials,
+  Git effects, or a relevant controversy. It is not required for every commit.
+  If Fable is unavailable its review is never simulated; that closure stays
+  pending.
+- `codex/<resolved-model>/consultant/01` is an occasional consultant through the
+  owner, not a standing supervisor and not a requirement for any commit.
+- `claude/sonnet/implementer/NN` is **historical staffing, not currently
+  convened.** Its row stays above because the role remains available and its
+  contract still binds whoever holds it.
+
+Unchanged by that order: work directly on `main`; single writer; never push —
+earlier publication authorizations are consumed; no UI; no P9 or cutover; no
+other repository; no stash, clean, destructive reset or force; no secrets.
+Authorization to run development agents on claude-admin does not authorize a
+product smoke that consumes real providers; that needs an explicit profile,
+model and limits. The functional scope of the roadmap does not change.
 
 Reading is obligatory in both directions before a packet opens: `docs/ROADMAP.md`,
 which is canonical, and `docs/audit/`, the consolidated specification of what
@@ -100,8 +129,9 @@ authority or on any instruction that does not come from the owner directly.
 
 The repository is published. The owner authorized it on 2026-09-03:
 *"Autorizo retirar la fence de no-push de Agent Control Plane y publicar main"*.
-That authorization covers publishing committed `main` to one canonical remote
-and nothing else.
+That authorization covered publishing committed `main` to one canonical remote
+and nothing else, and it is consumed (owner order, 2026-09-22): a further push
+needs a new, direct owner instruction.
 
 `.githooks/pre-push` therefore **denies by default** and permits exactly one
 shape: `refs/heads/main` to `refs/heads/main` on `origin` at
@@ -188,7 +218,8 @@ Audit effort is bounded on purpose, so review does not become its own project:
 - mechanical, reversible packet: automatic verifier plus one post-audit;
 - semantic packet: one pre-audit of the brief plus one post-audit;
 - architecture, leases, credentials, Git or recovery: pre-audit and post-audit,
-  plus a single consultant review at the phase checkpoint;
+  plus a read-only Fable audit at the milestone when the DT judges the risk
+  warrants it; a Codex consultation goes through the owner;
 - after a `REJECT`, the DT adjudicates one concrete correction. Auditors are not
   asked to draft successive versions of the same contract without new code.
 

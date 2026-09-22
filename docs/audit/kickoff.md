@@ -1,9 +1,58 @@
-# Coordinación: Kimi dirige, Opus implementa, Codex revisa
+# Coordinación de agentes: reparto vigente y contrato histórico de kickoff
 
 Dueño del reparto de agentes y del prompt de kickoff. Describe la organización
 aprobada por el owner; no es otro roadmap ni reemplaza los contratos del producto.
 
 [Entrega](implementation/index.md) · [Packets](implementation/packets/index.md) · [Paralelismo](roadmap/parallelism/index.md) · [Decisiones](decisions/index.md)
+
+## 0. Reparto vigente desde el 2026-09-22 (orden del owner)
+
+Kimi (`kimi/k3/coordinator/01`) deja de ser el DT el 2026-09-22. Todo lo que este
+documento dice de Kimi como coordinador es histórico; no se reescribe, queda
+superseded por esta sección.
+
+Por la misma orden, las menciones de staffing de `docs/ROADMAP.md` —Kimi como DT,
+los checkpoints de Codex por fase, la terna Kimi/Fable/Codex del fallo de debrief
+del 2026-08-31 y la línea de staffing de P9— son históricas y no gobiernan el
+reparto; quién conduce el debrief futuro queda pendiente de confirmación del
+owner. El roadmap sigue siendo canónico en alcance, secuencia y gates, y sus bytes
+no se editan: el fence los fija.
+
+| Agente | Rol vigente |
+| --- | --- |
+| Claude en la cuenta claude-admin, `claude/opus/coordinator/01` | DT y único coordinador. Modelo verificado en la metadata de la sesión, no en el título de la terminal. Planifica packets dentro del alcance autorizado, delega implementación y verificación, adjudica hallazgos y gestiona staging, receipts, commits locales y checkpoints; sigue en forma autónoma tras cada entrega aceptada. No es el writer habitual ni aprueba cambios propios |
+| Claude Opus en claude-admin, `claude/opus/implementer/01` | Único writer canónico sobre `main`, uno por vez; puede ser un subagente o una sesión de terminal que el DT lanza bajo claude-admin. Otros Opus mapean, proponen o verifican read-only con salidas disjuntas. Nunca se cae a los perfiles de Daniel (`claude-daniel`) ni a otra cuenta, y menos en silencio |
+| Fable en claude-admin, `claude/fable/reviewer/01` | Auditor estrictamente read-only, convocado a criterio técnico del DT: hitos importantes, cambios de contrato o arquitectura, recuperación, credenciales, efectos Git o controversias relevantes. No hace falta en cada commit |
+| Codex | Consultor ocasional a través del owner; no es supervisor permanente ni requisito de ningún commit |
+
+Toda entrega necesita verificación independiente de alguien distinto del writer.
+Para un lote común alcanza con otro subagente independiente; Fable no se vuelve un
+cuello de botella ritual. Ningún writer certifica su propio cambio.
+
+El título anterior fue reemplazado y se conserva citado aquí: «Kimi dirige, Opus
+implementa, Codex revisa». Quedan superseded, sin borrar su texto:
+
+- §1–§2 en todo lo que asignan a Kimi o a Codex;
+- §3 entera: las ediciones propias del DT pasan a un verificador independiente
+  (otro agente) antes del commit, no a Codex; los hitos de §3.2 reciben una
+  auditoría read-only de Fable cuando el DT juzga que el riesgo lo amerita, y
+  Codex puede consultarse a través del owner. Si Fable no está disponible, su
+  revisión nunca se simula: ese cierre queda pendiente;
+- en §5, la titularidad de los commits: los gestiona el DT vigente;
+- §6, el prompt de kickoff para Kimi, que queda como artefacto histórico.
+
+En §4 y en el resto de §5, donde dice Kimi se lee «el DT»; lo que esas secciones
+dicen de Codex cede ante esta.
+
+Sin cambios: se trabaja directamente sobre `main`, sin ramas ni worktrees nuevos;
+un solo writer; no push (las autorizaciones de publicación anteriores están
+consumidas); sin UI; sin P9 ni cutover; sin otros repositorios; sin stash, clean,
+resets destructivos ni force; sin secretos. Autorizar agentes de desarrollo en
+claude-admin **no** autoriza smokes de producto que consuman proveedores reales:
+esos requieren perfil, modelo y límites explícitos. El alcance funcional del
+roadmap no cambia.
+
+El resto de esta página es el contrato de kickoff tal como se aprobó para Kimi.
 
 ## 1. Mandato y límites
 

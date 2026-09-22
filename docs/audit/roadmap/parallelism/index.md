@@ -8,7 +8,7 @@ Estado: **planificación**. No cambia readiness, no autoriza ejecución ni workt
 El inventario conserva 39 IDs; los sufijos de packets §1.8 son entregas internas,
 no hitos adicionales ni porcentajes nuevos.
 
-La asignación concreta Kimi/Opus/Codex y el protocolo de consulta viven en
+La asignación vigente de agentes y el protocolo de consulta viven en
 [coordinación](../../kickoff.md); esta página sólo
 define dependencias de integración, conflictos y paralelismo permitido.
 

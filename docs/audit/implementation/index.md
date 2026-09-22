@@ -11,8 +11,9 @@ encargo, cuándo hay que parar, qué evidencia se exige y qué está prohibido.
 
 El prompt único y el reparto aprobado están en
 [coordinación](../kickoff.md), con bloque copiable de kickoff en §6.
-Kimi K3 dirige y gestiona commits; Opus implementa; Codex revisa cambios propios
-de Kimi e hitos importantes. No mantener otra copia del prompt aquí.
+Desde el 2026-09-22 rige [coordinación §0](../kickoff.md): Claude (claude-admin) es
+DT y gestiona commits; Opus implementa; Fable audita read-only a criterio del DT y
+Codex es consultor vía owner. No mantener otra copia del prompt aquí.
 
 La autorización de ejecutar la da el owner. Readiness tiene su único dueño en
 [packets](packets/index.md); roles, consultas y continuidad en coordinación;

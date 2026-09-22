@@ -20,7 +20,8 @@ conventions repeated below.
   permits only `main` to `main` on the canonical `origin`, fast-forward only,
   with `ACP_OWNER_PUBLISH=1` set for that one command. Never set that variable,
   never add a remote, and never use `gh` to publish. `pnpm check` drives the
-  hook's full deny/permit matrix.
+  hook's full deny/permit matrix. That publication authorization is consumed
+  (owner order, 2026-09-22); a further push needs a new owner instruction.
 - Local commits require a `CommitAuthorizationReceipt` from an independent
   verifier. Do not commit unless the owner or the DT asked for it.
 - **no partial cutover**. Nothing here is adopted into real operation before P8
@@ -32,15 +33,22 @@ conventions repeated below.
 ## Where Claude sits, and what it reads
 
 The standing assignment is in `AGENTS.md` under "Reparto vigente" and originates
-in `docs/audit/kickoff.md` §1–2. Two consequences bind Claude Code sessions here:
+in the owner's order of 2026-09-22, recorded in `docs/audit/kickoff.md` §0. Every
+session in it runs on the claude-admin account; none falls back to the
+`claude-daniel` profile or any other account. Three consequences bind Claude Code
+sessions here:
 
 - **One Opus integrates, directly on `main`.** It is the only canonical writer.
   Other Opus sessions prepare maps, proposals and oracles or verify authorized
   snapshots, read-only. Nothing about that widens a write-set.
 - **The DT commits.** This is the same rule already stated above — do not commit
   unless the owner or the DT asked for it — read from the other side: the commit
-  window belongs to `kimi/k3/coordinator/01`, and a writer does not stage, commit
-  or mutate the index inside it.
+  window belongs to the DT, `claude/opus/coordinator/01`, and a writer does not
+  stage, commit or mutate the index inside it. The DT's own file edits go to an
+  independent verifier before it commits them.
+- **Fable audits when the DT calls it.** `claude/fable/reviewer/01` is read-only
+  and convened at the DT's discretion, not on every commit; an unavailable Fable
+  leaves its closure pending, never simulated.
 
 Read `docs/ROADMAP.md`, which is canonical, and `docs/audit/`, the consolidated
 specification, before opening a packet. ADR 0061 admits that folder to the
@@ -52,6 +60,11 @@ roadmap governs.
 Do not spawn subagents for shared bootstrap or authority paths: contracts,
 schemas, ledger, orchestrator, leases, adapters base, the Git fence, or the
 authority documents. Those are integrator-owned and single-writer by law.
+
+The one exception is the canonical writer itself: the DT may spawn it as a
+subagent or tmux session under claude-admin. That subagent is the single writer,
+not a second one; while it holds the worktree no other session, subagent or not,
+writes, and it spawns no writing subagents of its own on those paths.
 
 Subagents are appropriate only for disjoint leaves with their own exact
 write-sets and a scope that is disjoint in files, outputs and resources — not in
