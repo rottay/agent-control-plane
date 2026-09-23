@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { PRICE_RESOLUTION_STATUSES, resolvePrice } from "../../src/price-catalog/index.js";
+import {
+  PRICE_RESOLUTION_STATUSES,
+  pinCovers,
+  resolvePrice,
+  selectVigentCatalogVersion,
+} from "../../src/price-catalog/index.js";
 import type { PriceKey, PricePin } from "../../src/price-catalog/index.js";
 import type { PriceIntervalReadModel } from "../../src/types/index.js";
 
@@ -287,5 +292,70 @@ describe("the resolver selects and does not re-admit (N-P14A-7's precedent)", ()
     expect(resolvePrice([impossible], PIN, key(), FEB).status).toBe("PRICE_MISSING");
     // And a row whose window is sound resolves, which is all this module decides.
     expect(resolvePrice([interval()], PIN, key(), FEB).status).toBe("FOUND");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón C — which version is in force, and whether it covers (ADR 0103)
+// ---------------------------------------------------------------------------
+
+describe("the version in force is the latest to have taken effect, and a tie is refused (P-15 escalón C)", () => {
+  const V1 = { catalogVersion: 1, effectiveFrom: JAN };
+  const V2 = { catalogVersion: 2, effectiveFrom: MAR };
+
+  it("answers NONE before any version takes effect, and never picks the nearest", () => {
+    expect(selectVigentCatalogVersion([V1, V2], "2025-12-31T23:59:59.999Z")).toEqual({ kind: "NONE" });
+    expect(selectVigentCatalogVersion([], FEB)).toEqual({ kind: "NONE" });
+  });
+
+  it("answers the version whose start is the greatest at or before the instant, the start itself included", () => {
+    expect(selectVigentCatalogVersion([V1, V2], JAN)).toEqual({ kind: "VIGENT", catalogVersion: 1, effectiveFrom: JAN });
+    expect(selectVigentCatalogVersion([V1, V2], FEB)).toEqual({ kind: "VIGENT", catalogVersion: 1, effectiveFrom: JAN });
+    expect(selectVigentCatalogVersion([V1, V2], MAR)).toEqual({ kind: "VIGENT", catalogVersion: 2, effectiveFrom: MAR });
+  });
+
+  it("orders by effect, never by number or by the order it was handed", () => {
+    // A higher number that takes effect earlier is not the later version.
+    const lowLater = { catalogVersion: 3, effectiveFrom: JAN };
+    const highEarlier = { catalogVersion: 4, effectiveFrom: FEB };
+    expect(selectVigentCatalogVersion([highEarlier, lowLater], MAR)).toEqual({ kind: "VIGENT", catalogVersion: 4, effectiveFrom: FEB });
+    expect(selectVigentCatalogVersion([V2, V1], FEB)).toEqual(selectVigentCatalogVersion([V1, V2], FEB));
+  });
+
+  it("C-R2: two versions sharing the ruling instant are AMBIGUOUS, fed straight to the selector, and none is picked", () => {
+    const tied = { catalogVersion: 5, effectiveFrom: MAR };
+    expect(selectVigentCatalogVersion([V1, V2, tied], MAR)).toEqual({ kind: "AMBIGUOUS", catalogVersions: [2, 5], effectiveFrom: MAR });
+    // A tie that no longer rules is no ambiguity: before it takes effect, V1 rules.
+    expect(selectVigentCatalogVersion([V1, V2, tied], FEB)).toEqual({ kind: "VIGENT", catalogVersion: 1, effectiveFrom: JAN });
+  });
+});
+
+describe("a pin covers a segment only by an interval of that exact version, in force at the instant (P-15 escalón C)", () => {
+  const segment = { provider: "claude", modelVersionId: MODEL, transportKind: "API_KEY" };
+
+  it("covers with an interval of the pinned version for the segment's three columns", () => {
+    expect(pinCovers([interval()], PIN, segment, FEB)).toBe(true);
+  });
+
+  it("never covers a segment whose model version is not resolved, however many rows exist", () => {
+    expect(pinCovers([interval()], PIN, { ...segment, modelVersionId: null }, FEB)).toBe(false);
+  });
+
+  it("ignores a row of another version, another provider, model or transport", () => {
+    expect(pinCovers([interval()], PIN_TWO, segment, FEB)).toBe(false);
+    expect(pinCovers([interval({ provider: "other" })], PIN, segment, FEB)).toBe(false);
+    expect(pinCovers([interval({ modelVersionId: OTHER_MODEL })], PIN, segment, FEB)).toBe(false);
+    expect(pinCovers([interval({ transportKind: "CLI_SUBSCRIPTION" })], PIN, segment, FEB)).toBe(false);
+  });
+
+  it("holds the window half-open: the start covers, the end does not", () => {
+    const bounded = interval({ effectiveFrom: FEB, effectiveTo: MAR });
+    expect(pinCovers([bounded], PIN, segment, FEB)).toBe(true);
+    expect(pinCovers([bounded], PIN, segment, MAR)).toBe(false);
+    expect(pinCovers([bounded], PIN, segment, JAN)).toBe(false);
+  });
+
+  it("asks nothing of class or currency: any class of the key's three columns covers", () => {
+    expect(pinCovers([interval({ tokenClass: "cache_read", currency: "EUR" })], PIN, segment, FEB)).toBe(true);
   });
 });

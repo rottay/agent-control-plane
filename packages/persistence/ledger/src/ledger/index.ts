@@ -43,6 +43,7 @@ import {
 } from "../errors/index.js";
 import {
   ACCOUNT_INTEGRITY_MIGRATION,
+  DISPATCH_CATALOG_PIN_MIGRATION,
   EFFECT_RESULT_REFERENCE_MIGRATION,
   MODEL_VERSION_PROJECTION,
   PRICE_INTERVAL_PROJECTION,
@@ -104,6 +105,7 @@ import {
   sameRevisionRecord,
   canonicalSegment,
   dispatchOutcomeRecord,
+  dispatchPinReading,
   dispatchTransitionAdmitted,
   effectOutcomeArrival,
   effectIdV1,
@@ -272,6 +274,8 @@ import {
   type UsageSettlementRecord,
   type UsageSettlementSourceHeadReadModel,
 } from "../types/index.js";
+import { pinCovers, selectVigentCatalogVersion } from "../price-catalog/index.js";
+import type { CatalogVersionFact, PricePin } from "../price-catalog/index.js";
 
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
 const MAX_BUSY_TIMEOUT_MS = 300_000;
@@ -1404,6 +1408,9 @@ interface DispatchAttemptRow {
   readonly terminal_at: string | null;
   readonly recorded_at: string;
   readonly sequence: number;
+  readonly dispatch_contract_version: string;
+  readonly catalog_document_id: string | null;
+  readonly catalog_version: number | null;
 }
 
 /** One stored prompt occurrence row (P-18/D). Snake case, because it is a row. */
@@ -1665,6 +1672,9 @@ function dispatchAttemptRowToModel(row: DispatchAttemptRow): DispatchAttemptRead
     terminalAt: row.terminal_at,
     recordedAt: row.recorded_at,
     sequence: row.sequence,
+    dispatchContractVersion: row.dispatch_contract_version,
+    catalogDocumentId: row.catalog_document_id,
+    catalogVersion: row.catalog_version,
   };
 }
 
@@ -2744,6 +2754,55 @@ function foldEffectOutcomeCohortAtMigration(db: Database.Database): void {
   }
 }
 
+/**
+ * Write the bearing version of every delivery a ledger already holds, once, as
+ * migration 23 lands (P-15 escalón C, ADR 0103).
+ *
+ * `foldEffectOutcomeCohortAtMigration`'s shape. The migration adds
+ * `dispatch_contract_version` as NULL on every row, and a row without one is one the
+ * integrity replay refuses, because the fold writes the version of the intention
+ * that bore it. So the intentions are read again, in sequence order, through
+ * `dispatchPinReading` — the reader the door and the fold use, never a second one in
+ * SQL — and each row gets its event's version and the pin that event names, first
+ * event wins. On a ledger this migration first meets every such version is in the
+ * cohort before and the pin is NULL; the pin is written too so that a ledger rewound
+ * past 23 after it held later deliveries re-applies to the rows its events say. The
+ * UPDATE trigger holds both cases. A row that no longer reads as an event is skipped
+ * rather than refused, for `foldModelVersionsAtMigration`'s reason.
+ */
+function foldDispatchCohortAtMigration(db: Database.Database): void {
+  const rows = db
+    .prepare(
+      "SELECT sequence, event_json FROM control_plane_events WHERE type = 'DISPATCH_INTENDED' " +
+        "ORDER BY sequence ASC",
+    )
+    .all() as { readonly sequence: number; readonly event_json: string }[];
+  const update = db.prepare(
+    "UPDATE dispatch_attempt_read_model SET dispatch_contract_version = ?, catalog_document_id = ?, " +
+      "catalog_version = ? WHERE dispatch_attempt_id = ? AND dispatch_contract_version IS NULL",
+  );
+  for (const row of rows) {
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(row.event_json);
+    } catch {
+      continue;
+    }
+    const parsed = ControlPlaneEvent.safeParse(decoded);
+    if (!parsed.success) continue;
+    const reading = dispatchPinReading(parsed.data);
+    if (reading?.kind !== "pin") continue;
+    const dispatch = nextDispatchAttemptProjection(parsed.data, row.sequence);
+    if (dispatch === null) continue;
+    update.run(
+      parsed.data.contractVersion,
+      reading.pin === null ? null : reading.pin.catalogDocumentId,
+      reading.pin === null ? null : reading.pin.catalogVersion,
+      dispatch.dispatchAttemptId,
+    );
+  }
+}
+
 function activateAccountIntegrity(db: Database.Database, activatedAt: string): void {
   const rows = db
     .prepare("SELECT " + ACCOUNT_EVENT_COLUMNS + " FROM account_events ORDER BY sequence ASC")
@@ -3034,6 +3093,11 @@ export class Ledger {
               // hold an outcome; this writes it from each outcome's own event.
               if (migration.version === EFFECT_RESULT_REFERENCE_MIGRATION) {
                 foldEffectOutcomeCohortAtMigration(db);
+              }
+              // Migration 23 added the bearing version to rows that already
+              // exist; this writes it from each delivery's own intention.
+              if (migration.version === DISPATCH_CATALOG_PIN_MIGRATION) {
+                foldDispatchCohortAtMigration(db);
               }
             },
           });
@@ -4816,6 +4880,13 @@ export class Ledger {
     revisionNumber: number,
     attemptNumber: number,
   ): void {
+    // The price pin's grammar first (ADR 0103): a present-invalid key, half a pair,
+    // a pin on the cohort before or none on the cohort after is refused in the
+    // reader's words, never read as a delivery that says nothing about its price.
+    const pinReading = dispatchPinReading(event);
+    if (pinReading?.kind === "refused") {
+      throw new LedgerValidationError([{ path: pinReading.path, message: pinReading.message }]);
+    }
     const dispatch = nextDispatchAttemptProjection(event, 0);
     if (dispatch === null) {
       throw new LedgerValidationError([
@@ -4985,6 +5056,175 @@ export class Ledger {
         },
       ]);
     }
+
+    // The pin names what this delivery will be valued against, and it is checked
+    // here, before the delivery exists and so before any provider is asked
+    // (ADR 0103; adjudication v2 C3). Door only, on the result reference's
+    // precedent: the registry is another stream, and a rebuild folds one at a time.
+    if (dispatch.catalogDocumentId !== null && dispatch.catalogVersion !== null) {
+      this.#assertCatalogPin(
+        { catalogDocumentId: dispatch.catalogDocumentId, catalogVersion: dispatch.catalogVersion },
+        segment,
+        event.occurredAt,
+      );
+    }
+  }
+
+  /**
+   * A dispatch's price pin, against the registry (P-15 escalón C, ADR 0103).
+   *
+   * Three questions, in order, each refused by name with the instant and never with
+   * a price, a zero or an estimate:
+   *
+   * - **(a)** the pin names a published `PRICE_TABLE` version of that document;
+   * - **(b)** it is the version **in force** at the dispatch instant — the one with the
+   *   greatest `effectiveFrom` at or before it (`selectVigentCatalogVersion`); none in
+   *   force, or two sharing that instant, is refused rather than resolved;
+   * - **(c)** it **covers** the segment: an interval of that version names the
+   *   segment's provider, model version and transport kind, and holds the instant
+   *   (`pinCovers`). A segment whose model version is not resolved is never covered.
+   */
+  #assertCatalogPin(
+    pin: PricePin,
+    segment: ExecutionRouteSegmentReadModel,
+    instant: string,
+  ): void {
+    // The instant first, before anything is selected (ADR 0103, ADR 0092's inherited
+    // obligation). The selector compares instants as text, which is time order only
+    // for the contract's one canonical form — ISO-8601 with milliseconds, in UTC, `Z`.
+    // The event's `occurredAt` is a contract Timestamp that admits offsets, so an
+    // instant in another spelling would be compared out of order and pick the wrong
+    // version: it is refused here, never normalized and never selected over.
+    if (!isInstant(instant)) {
+      throw new LedgerValidationError([
+        {
+          path: "occurredAt",
+          message:
+            "a dispatch from 2.9.0 is priced at its instant, which must be the contract's canonical form " +
+            "(ISO-8601 with milliseconds, in UTC, ending in Z); this event's is not, and no catalog version is " +
+            "selected over an instant in any other spelling",
+        },
+      ]);
+    }
+    const at = (key: string): string => "payload." + DISPATCH_KEY + "." + key;
+    const versions = this.#catalogVersions(pin.catalogDocumentId);
+    if (versions.length === 0) {
+      throw new LedgerValidationError([
+        {
+          path: at("catalogDocumentId"),
+          message:
+            "the price pin names catalog document " +
+            safeRowIdentifier(pin.catalogDocumentId) +
+            ", which the registry does not hold as a published PRICE_TABLE",
+        },
+      ]);
+    }
+    if (!versions.some((version) => version.catalogVersion === pin.catalogVersion)) {
+      throw new LedgerValidationError([
+        {
+          path: at("catalogVersion"),
+          message:
+            "the price pin names version " +
+            String(pin.catalogVersion) +
+            " of catalog document " +
+            safeRowIdentifier(pin.catalogDocumentId) +
+            ", which was never published",
+        },
+      ]);
+    }
+    const selection = selectVigentCatalogVersion(versions, instant);
+    if (selection.kind === "NONE") {
+      throw new LedgerValidationError([
+        {
+          path: at("catalogVersion"),
+          message:
+            "no version of catalog document " +
+            safeRowIdentifier(pin.catalogDocumentId) +
+            " is in force at " +
+            instant +
+            ": every published version takes effect later, and a delivery is priced by the version in force",
+        },
+      ]);
+    }
+    if (selection.kind === "AMBIGUOUS") {
+      throw new LedgerValidationError([
+        {
+          path: at("catalogVersion"),
+          message:
+            "catalog document " +
+            safeRowIdentifier(pin.catalogDocumentId) +
+            " has versions " +
+            selection.catalogVersions.join(", ") +
+            " taking effect at the same instant " +
+            selection.effectiveFrom +
+            ", so none is in force at " +
+            instant +
+            "; an ambiguous pin is refused, never resolved by picking one",
+        },
+      ]);
+    }
+    if (selection.catalogVersion !== pin.catalogVersion) {
+      throw new LedgerValidationError([
+        {
+          path: at("catalogVersion"),
+          message:
+            "the price pin names version " +
+            String(pin.catalogVersion) +
+            " of catalog document " +
+            safeRowIdentifier(pin.catalogDocumentId) +
+            ", and the version in force at " +
+            instant +
+            " is " +
+            String(selection.catalogVersion) +
+            " (effective from " +
+            selection.effectiveFrom +
+            ")",
+        },
+      ]);
+    }
+    const intervals = (
+      this.#stmt(
+        "SELECT * FROM price_interval_read_model WHERE catalog_document_id = ? AND catalog_version = ?",
+      ).all(pin.catalogDocumentId, pin.catalogVersion) as PriceIntervalRow[]
+    ).map(priceIntervalRowToModel);
+    const key = {
+      provider: segment.provider,
+      modelVersionId: segment.modelVersionId,
+      transportKind: segment.transportKind,
+    };
+    if (!pinCovers(intervals, pin, key, instant)) {
+      throw new LedgerValidationError([
+        {
+          path: at("catalogVersion"),
+          message:
+            segment.modelVersionId === null
+              ? "the delivery's segment names no resolved model version, and a price is never aliased " +
+                "from another model: no catalog version covers it, so it cannot be dispatched before spend"
+              : "version " +
+                String(pin.catalogVersion) +
+                " of catalog document " +
+                safeRowIdentifier(pin.catalogDocumentId) +
+                " prices no interval of provider " +
+                safeRowIdentifier(segment.provider) +
+                ", model version " +
+                safeRowIdentifier(segment.modelVersionId) +
+                " and transport " +
+                safeRowIdentifier(segment.transportKind) +
+                " in force at " +
+                instant,
+        },
+      ]);
+    }
+  }
+
+  /** Every published version of one `PRICE_TABLE` document, as the vigente rule reads it. */
+  #catalogVersions(catalogDocumentId: string): readonly CatalogVersionFact[] {
+    return (
+      this.#stmt(
+        "SELECT document_version, effective_from FROM registry_events " +
+          "WHERE document_id = ? AND document_kind = 'PRICE_TABLE' ORDER BY effective_from, document_version",
+      ).all(catalogDocumentId) as { readonly document_version: number; readonly effective_from: string }[]
+    ).map((row) => ({ catalogVersion: row.document_version, effectiveFrom: row.effective_from }));
   }
 
   /**
@@ -5638,6 +5878,13 @@ export class Ledger {
     const effect = nextEffectProjection(event, sequence);
     if (effect !== null) this.#insertEffect(effect);
 
+    // `#assertDispatchIntention` has already refused a present-invalid pin in this
+    // transaction; the refusal is thrown again here only so this write can never
+    // read one as a delivery with no pin.
+    const pinReading = dispatchPinReading(event);
+    if (pinReading?.kind === "refused") {
+      throw new LedgerValidationError([{ path: pinReading.path, message: pinReading.message }]);
+    }
     const dispatch = nextDispatchAttemptProjection(event, sequence);
     if (dispatch !== null) this.#insertDispatchAttempt(dispatch);
 
@@ -6125,8 +6372,9 @@ export class Ledger {
       "INSERT INTO dispatch_attempt_read_model (" +
         "dispatch_attempt_id, effect_id, route_segment_id, attempt_ordinal, " +
         "provider_idempotency_key, external_handle, dispatch_state, requested_at, " +
-        "accepted_at, terminal_at, recorded_at, sequence" +
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "accepted_at, terminal_at, recorded_at, sequence, " +
+        "dispatch_contract_version, catalog_document_id, catalog_version" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       dispatch.dispatchAttemptId,
       dispatch.effectId,
@@ -6140,6 +6388,9 @@ export class Ledger {
       dispatch.terminalAt,
       dispatch.recordedAt,
       dispatch.sequence,
+      dispatch.dispatchContractVersion,
+      dispatch.catalogDocumentId,
+      dispatch.catalogVersion,
     );
   }
 
@@ -7578,6 +7829,32 @@ export class Ledger {
       ).map(priceIntervalRowToModel),
     );
     return run();
+  }
+
+  /**
+   * The catalog version of one `PRICE_TABLE` document in force at an instant (P-15
+   * escalón C, ADR 0103), or `null` when none is — no version has taken effect, or
+   * two share the greatest `effectiveFrom` and neither may be picked. The instant
+   * must be the contract's canonical form, or the query is refused.
+   *
+   * The same selection the append door holds a dispatch's pin to, over the same rows,
+   * so the pin a composition chooses here is the one the door admits. It answers
+   * which version rules; whether that version covers a segment is `pinCovers`'
+   * question, over `readPriceIntervals`.
+   */
+  getVigentCatalogPin(catalogDocumentId: string, instant: string): PricePin | null {
+    this.#assertOpen("getVigentCatalogPin");
+    const documentId = requireArtifactIdentifier(catalogDocumentId, "catalogDocumentId");
+    // The door's rule, for the door's reason: an instant in any other spelling would
+    // be compared out of order, so it is refused rather than answered.
+    if (!isInstant(instant)) {
+      throw new LedgerQueryError(
+        "instant must be the contract's canonical form, ISO-8601 with milliseconds in UTC ending in Z",
+      );
+    }
+    const selection = selectVigentCatalogVersion(this.#catalogVersions(documentId), instant);
+    if (selection.kind !== "VIGENT") return null;
+    return { catalogDocumentId: documentId, catalogVersion: selection.catalogVersion };
   }
 
   /**

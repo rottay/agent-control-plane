@@ -514,6 +514,17 @@ export type {
 } from "./price-catalog/index.js";
 
 /**
+ * The vigente rule and coverage of a price pin (P-15 escalón C, ADR 0103).
+ *
+ * The append door refuses a dispatch whose pin is not the version of its document in
+ * force at the dispatch instant, or that does not cover the delivery's segment, with
+ * these two functions; P-15/D's composition chooses its pin with the same two and
+ * `Ledger.getVigentCatalogPin`, so the choice and the check are one authority.
+ */
+export { pinCovers, selectVigentCatalogVersion } from "./price-catalog/index.js";
+export type { CatalogVersionFact, PinCoverageKey, VigentSelection } from "./price-catalog/index.js";
+
+/**
  * P-14 escalón C: the task intake's closed payload, its transition and the
  * client key's grammar (ADR 0087).
  *

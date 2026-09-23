@@ -94,3 +94,32 @@ export interface PriceMissing {
  * about what that means for a budget belongs to whoever reads it.
  */
 export type PriceResolution = PriceFound | PriceMissing;
+
+/**
+ * One published version of a price catalog document, as the vigente rule reads it
+ * (P-15 escalón C, ADR 0103): its number and the instant it takes effect.
+ */
+export interface CatalogVersionFact {
+  readonly catalogVersion: number;
+  readonly effectiveFrom: string;
+}
+
+/**
+ * Which version of one document is in force at an instant (adjudication v2 C3).
+ *
+ * Three members and no fourth: the one version in force, none (no version has
+ * taken effect yet), or an ambiguity — two or more versions sharing the greatest
+ * `effectiveFrom` at or before the instant — which is refused, never resolved by
+ * picking one.
+ */
+export type VigentSelection =
+  | { readonly kind: "VIGENT"; readonly catalogVersion: number; readonly effectiveFrom: string }
+  | { readonly kind: "NONE" }
+  | { readonly kind: "AMBIGUOUS"; readonly catalogVersions: readonly number[]; readonly effectiveFrom: string };
+
+/** What a pin must cover: the delivery segment's three columns of economy §3's key. */
+export interface PinCoverageKey {
+  readonly provider: string;
+  readonly modelVersionId: string | null;
+  readonly transportKind: string;
+}

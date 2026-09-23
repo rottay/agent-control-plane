@@ -405,6 +405,30 @@ canónico).
 | `terminal_at` | TEXT | NULL | `NULL` mientras `dispatch_state NOT IN ('SETTLED','ABANDONED')`; explícito y obligatorio en ambos. Un `ABANDONED` puede ocurrir antes de cualquier despacho real, en cuyo caso `accepted_at` permanece `NULL`. |
 | `recorded_at` | TEXT | NOT NULL | — |
 | `sequence` | INTEGER | NOT NULL | — |
+| `dispatch_contract_version` | TEXT | NOT NULL (por trigger) | Versión de contrato del `DISPATCH_INTENDED` que originó la entrega (P-15/C, migración 23). `CHECK` de no vacía; que sea obligatoria lo impone el trigger, porque un `CHECK` agregado con `ADD COLUMN` se prueba contra las filas existentes antes del backfill. |
+| `catalog_document_id` | TEXT | NULL | Documento `PRICE_TABLE` contra el que se valorará esta entrega, fijado **antes** del gasto (economía §3 `:208`). `NULL` **sólo** en la cohorte anterior a 2.9.0; obligatorio en toda entrega de 2.9.0 en adelante. `CHECK` de no vacío. |
+| `catalog_version` | INTEGER | NULL | Versión de ese documento. `CHECK >= 1`; el par (`catalog_document_id`, `catalog_version`) es ambos `NULL` o ambos presentes (`ck_dispatch_attempt_read_model__catalog_pin_pair`). |
+
+**El pin de precio (P-15/C, ADR 0103).** Dos triggers, uno por camino por el que llega
+una fila (el rebuild inserta, el backfill actualiza), sostienen la cohorte con una lista
+cerrada congelada en la migración, nunca con una comparación de versiones:
+`dispatch_contract_version` ∈ {`2.2.0` … `2.8.0`} ⇒ el pin es `NULL`; cualquier otra ⇒
+el pin está presente; y una fila sin versión se rechaza en la primera sentencia, así que
+`NULL NOT IN (...)` nunca la deja pasar. El lector del fold y de la puerta lee las dos
+claves presente-inválido (ausente, válido, o rechazado nombrando el campo, `null`
+incluido) y rechaza medio par.
+
+**La puerta** comprueba, antes de que exista la entrega y por lo tanto antes de llamar a
+ningún proveedor: (a) el pin nombra una versión publicada de un `PRICE_TABLE`; (b) es la
+**vigente** en el instante del despacho — la de mayor `effective_from` ≤ `occurredAt`
+(streams `:313`, `:338`); ninguna vigente, o dos que comparten ese instante, se rechaza,
+nunca se elige una; (c) **cubre** el segmento: un intervalo de esa versión nombra el
+proveedor, el `model_version_id` y el `transport_kind` del segmento y contiene el
+instante en su ventana semiabierta. Un segmento sin `model_version_id` resuelto nunca
+está cubierto (ADR 0092 Four): un precio no se aliasa, así que desde 2.9.0 no se
+despacha. La clase de token y la moneda no se piden aquí: su ausencia es `PRICE_MISSING`
+de la valoración (economía §4.2 `:248`). La existencia, la vigencia y la cobertura son
+preguntas sobre otro stream, así que las hace la puerta, no un trigger.
 
 La intención del despacho fija route_segment_id antes de enviar. El fold exige
 que ese segmento y el efecto compartan (task_id,revision_number,attempt_number),

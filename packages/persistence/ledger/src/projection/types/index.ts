@@ -85,6 +85,17 @@ export type DispatchOutcomeReading =
   | { readonly kind: "refused"; readonly path: string; readonly message: string };
 
 /**
+ * What one dispatch intention's price pin reads as (P-15 escalón C, ADR 0103):
+ * the pin, or `null` for a delivery of the cohort before 2.9.0 that names none; or
+ * the refusal of a present-invalid key, half a pair, or a pin on the wrong side of
+ * the cohort, at its own path. `DispatchOutcomeReading`'s shape, for the same
+ * reason: a value that is not one is refused, never read as absent.
+ */
+export type DispatchPinReading =
+  | { readonly kind: "pin"; readonly pin: { readonly catalogDocumentId: string; readonly catalogVersion: number } | null }
+  | { readonly kind: "refused"; readonly path: string; readonly message: string };
+
+/**
  * What an arriving outcome is to the effect row it names (P-07 escalón B,
  * ADR 0098; ADR 0084 Five's single comparison).
  *

@@ -11137,6 +11137,74 @@ const P15B_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-15 escalón C: effect, dispatch and price-pin builders; migration 23; contract
+ * 2.9.0 (adjudication v2 C3, C7; ADR 0103).
+ *
+ * **What lands.** The runtime's events concept gains the builders of an effect's
+ * intention, a delivery's intention and a delivery's moves (INFLIGHT, ABANDONED,
+ * SETTLED), each closed by construction and off the runtime barrel. A delivery
+ * pins the price catalog version it will be valued against: two keys of its
+ * `DISPATCH_INTENDED`, required from 2.9.0, none before, and the append door holds
+ * the pin to a published `PRICE_TABLE` version, the one in force at the dispatch
+ * instant, covering the segment. Migration 23 adds the three delivery columns with
+ * their CHECKs and two cohort triggers, and backfills the bearing version.
+ *
+ * **Pins that move.** `CONTRACT_VERSION` 2.8.0 -> **2.9.0** and
+ * `SUPPORTED_CONTRACT_VERSIONS` seven -> **eight**; `MIGRATIONS` 22 -> **23**; the
+ * `tr_` inventory 11 -> **13**; `PATH_SCOPED_LAWS` 150 -> **151** for L-P15C-1;
+ * L-P33B-1 amended in its row. The ADR corpus 102 -> 103.
+ *
+ * **Pins that do NOT move.** `API_CONTRACT_VERSION`; `CONTRACTS_SCHEMA_EXPORTS` 161;
+ * `RUNTIME_PUBLIC_EXPORTS` 285 (the builders stay off the barrel until D);
+ * `PROVIDERS_PUBLIC_EXPORTS`; the event vocabulary 35.
+ *
+ * **Thirty-eight paths; one is new to the fence** -- ADR 0103. Nine tests joined by the
+ * DT's two widenings: three runtime and daemon fixtures, because pre-2.9.0 fixtures
+ * had to gain a pin the version in force now requires; and B's six PC-B1 suites, whose
+ * vectors are now held by restamping the one field the bump moved.
+ */
+const P15C_WRITE_SET = [
+  "packages/domains/runtime/src/core/events/index.ts",
+  "packages/domains/runtime/src/core/events/types/index.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/projection/types/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/price-catalog/index.ts",
+  "packages/persistence/ledger/src/price-catalog/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/price-catalog/index.test.ts",
+  "packages/persistence/ledger/test/envelope-identity/index.test.ts",
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "docs/audit/architecture/database/execution/index.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0103-a-delivery-pins-the-price-catalog-version-it-will-be-valued-against.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "packages/domains/runtime/test/operation-result/index.test.ts",
+  "packages/domains/runtime/test/usage/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/domains/runtime/test/pressure/index.test.ts",
+  "packages/domains/runtime/test/tool-receipt/index.test.ts",
+  "packages/domains/runtime/test/failure/index.test.ts",
+  "packages/domains/runtime/test/cancellation/index.test.ts",
+  "packages/domains/runtime/test/switch-executor/index.test.ts",
+  "packages/domains/runtime/test/switch-landing/index.test.ts",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11370,6 +11438,7 @@ const WRITE_SET = [
   ...P07D_WRITE_SET,
   ...P15A_WRITE_SET,
   ...P15B_WRITE_SET,
+  ...P15C_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -12809,6 +12878,13 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the Claude session name is the only node:crypto site in providers",
     scope: "packages/edges/providers/src/**",
+  },
+  // P-15 escalón C. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 150 -> 151 for L-P15C-1. L-P33B-1 is amended in
+  // its own row and adds none.
+  {
+    law: "only the runtime's events concept constructs an effect, a delivery or a delivery's move",
+    scope: "packages/*/*/src/**",
   },
 ];
 
@@ -27453,11 +27529,22 @@ const USAGE_IDENTITY_CALLERS = ["packages/domains/runtime/src/usage/index.ts"];
 // it: the pin has no physical home on a segment or a dispatch until P-15 (the DT's
 // Q1), so a caller today would be pricing against a version nothing recorded. P-15
 // amends this row when it wires the resolution behind a recorded pin.
+//
+// AMENDED by P-15 escalón C (ADR 0103), in this row: the pin now has its home on the
+// delivery, and the ledger's append door holds it to the version in force and to
+// coverage. So `ledger/src/ledger/index.ts` is admitted as the ONE caller, and only
+// for the two names that decide a pin — `selectVigentCatalogVersion` and `pinCovers`
+// — with their types. `resolvePrice` stays uncalled: valuation is not this escalón's,
+// and the door never answers a price, only whether the pin may be recorded. The
+// admission is checked for staleness, as L-P07A-1's readers are. Same row, same
+// `requireScope`: `PATH_SCOPED_LAWS` does not move for the amendment.
 const PRICE_CATALOG_SITES = [
   "packages/persistence/ledger/src/price-catalog/index.ts",
   "packages/persistence/ledger/src/price-catalog/types/index.ts",
 ];
 const PRICE_CATALOG_BARREL = "packages/persistence/ledger/src/index.ts";
+const PRICE_PIN_CALLER = "packages/persistence/ledger/src/ledger/index.ts";
+const PRICE_PIN_CALLER_NAMES = ["pinCovers", "selectVigentCatalogVersion"];
 {
   let priceScanned = 0;
   if (tracked.status === 0) {
@@ -27470,19 +27557,126 @@ const PRICE_CATALOG_BARREL = "packages/persistence/ledger/src/index.ts";
       if (content === null) continue;
       priceScanned += 1;
       const code = stripComments(content);
+      if (relativePath === PRICE_PIN_CALLER) {
+        const imported = /import \{([^}]*)\} from "\.\.\/price-catalog\/index\.js";/.exec(code)?.[1] ?? "";
+        const names = imported.split(",").map((name) => name.trim()).filter(Boolean).sort();
+        if (JSON.stringify(names) !== JSON.stringify(PRICE_PIN_CALLER_NAMES)) {
+          fail(
+            relativePath +
+              " imports [" +
+              names.join(", ") +
+              "] from the price-catalog concept; it is admitted for exactly " +
+              PRICE_PIN_CALLER_NAMES.join(" and ") +
+              ", the two names that decide a dispatch's pin",
+          );
+        }
+        if (/\bresolvePrice\b/.test(code)) {
+          fail(relativePath + " names resolvePrice; the door decides whether a pin may be recorded, and answers no price");
+        }
+        for (const name of PRICE_PIN_CALLER_NAMES) {
+          if (!new RegExp("\\b" + name + "\\(").test(code)) {
+            fail(relativePath + " no longer calls " + name + "; its admission to L-P33B-1 is stale");
+          }
+        }
+        continue;
+      }
       if (code.includes("price-catalog/index.js") || /\bresolvePrice\b/.test(code)) {
         fail(
           relativePath +
-            " reaches price resolution; it is exported by the ledger's barrel and called by nothing yet, because" +
-            " the pin has no recorded home until P-15, and a second implementation of the half-open selection is a" +
-            " second answer to what a spend cost",
+            " reaches price resolution; it is exported by the ledger's barrel and called only by the ledger's" +
+            " append door, which holds a dispatch's pin to it (ADR 0103), and a second implementation of the" +
+            " half-open selection is a second answer to what a spend cost",
         );
       }
     }
   }
   requireScope("price resolution is reached through the ledger's barrel, and reimplemented nowhere", priceScanned);
   notes.push(
-    "no production source outside the price-catalog concept and the ledger barrel names price resolution",
+    "no production source outside the price-catalog concept and the ledger barrel names price resolution, and " +
+      PRICE_PIN_CALLER +
+      " calls " +
+      PRICE_PIN_CALLER_NAMES.join(" and ") +
+      " and nothing else of it",
+  );
+}
+
+// L-P15C-1 -- only the runtime's events concept constructs an effect, a delivery or
+// a delivery's move (P-15 escalón C, ADR 0103).
+//
+// `EFFECT_INTENDED`, `DISPATCH_INTENDED` and `DISPATCH_OUTCOME_RECORDED` are the
+// three records the spend chain rests on: the effect's identities the door
+// recomputes, the delivery's price pin, the move and its outcome. Each has one
+// builder, closed by construction, in `runtime/src/core/events/index.ts`, and P-15/D
+// adds the call sites that must spread builder output rather than build literals.
+// So in `src/`, only that file writes `type: "<one of the three>"`. The mould is the
+// `ACCOUNT_SWITCH_COMPLETED` construction law and L-P07A-1's single authority; the
+// vacuity guard is the home itself, which must construct each of the three. The
+// suites are outside `src/` and outside the law.
+//
+// A constant spelling counts too: any `src/` identifier declared as one of the three
+// words (the ledger's own `EFFECT_INTENDED` and `DISPATCH_INTENDED` among them) is
+// collected first, and `type: <that identifier>` is a construction like the literal.
+// Stated limit: an identifier renamed on import, a value computed at run time, or a
+// spread of an object that already carries `type` is not seen.
+const EXECUTION_RECORD_HOME = "packages/domains/runtime/src/core/events/index.ts";
+const EXECUTION_RECORD_TYPES = ["EFFECT_INTENDED", "DISPATCH_INTENDED", "DISPATCH_OUTCOME_RECORDED"];
+{
+  const construction = (type) => new RegExp("\\btype:\\s*\"" + type + "\"");
+  // Every identifier `src/` declares as one of the three words, with or without a type.
+  const aliases = new Map(EXECUTION_RECORD_TYPES.map((type) => [type, new Set()]));
+  if (tracked.status === 0) {
+    for (const relativePath of tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const code = stripComments(readIfPresent(relativePath) ?? "");
+      for (const match of code.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]+)?=\s*"(EFFECT_INTENDED|DISPATCH_INTENDED|DISPATCH_OUTCOME_RECORDED)"/g)) {
+        aliases.get(match[2])?.add(match[1]);
+      }
+    }
+  }
+  const constantConstruction = (type) =>
+    [...(aliases.get(type) ?? [])].map((name) => new RegExp("\\btype:\\s*" + name.replace(/\$/g, "\\$") + "\\b"));
+  let recordScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      if (relativePath === EXECUTION_RECORD_HOME) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      recordScanned += 1;
+      const code = stripComments(content);
+      for (const type of EXECUTION_RECORD_TYPES) {
+        if (construction(type).test(code) || constantConstruction(type).some((pattern) => pattern.test(code))) {
+          fail(
+            relativePath +
+              " constructs " +
+              type +
+              "; only " +
+              EXECUTION_RECORD_HOME +
+              " builds it, closed by construction, and a caller spreads the builder's output",
+          );
+        }
+      }
+    }
+  }
+  const home = stripComments(readIfPresent(EXECUTION_RECORD_HOME) ?? "");
+  for (const type of EXECUTION_RECORD_TYPES) {
+    if (!construction(type).test(home)) {
+      fail(EXECUTION_RECORD_HOME + " no longer constructs " + type + "; the law's one builder of it is gone");
+    }
+  }
+  requireScope("only the runtime's events concept constructs an effect, a delivery or a delivery's move", recordScanned);
+  notes.push(
+    "only " +
+      EXECUTION_RECORD_HOME +
+      " constructs " +
+      EXECUTION_RECORD_TYPES.join(", ") +
+      ", by literal or by any of " +
+      String([...aliases.values()].reduce((sum, names) => sum + names.size, 0)) +
+      " constant spelling(s), over " +
+      String(recordScanned) +
+      " other sources",
   );
 }
 

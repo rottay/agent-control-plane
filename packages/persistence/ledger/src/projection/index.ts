@@ -123,6 +123,7 @@ import {
 import type {
   DispatchOutcomeReading,
   DispatchOutcomeRecord,
+  DispatchPinReading,
   EffectOutcomeArrival,
   OccurrenceOwner,
   OccurrenceReading,
@@ -143,6 +144,7 @@ import type {
 export type {
   DispatchOutcomeReading,
   DispatchOutcomeRecord,
+  DispatchPinReading,
   EffectOutcomeArrival,
   OccurrenceOwner,
   OccurrenceReading,
@@ -257,6 +259,28 @@ export const PRE_RESULT_REFERENCE_CONTRACT_VERSIONS: readonly string[] = [
   "2.6.0",
   "2.7.0",
 ];
+
+/**
+ * The contract versions whose dispatches carry no price pin (P-15 escalón C, ADR 0103).
+ *
+ * `PRE_RESULT_REFERENCE_CONTRACT_VERSIONS`' rule, for migration 23: a closed list of
+ * every version a build before that migration could stamp, spelled identically in
+ * its two triggers, never a comparison of version strings. A `DISPATCH_INTENDED` of
+ * one of these seven names no pin; one of any later version names one.
+ */
+export const PRE_CATALOG_PIN_CONTRACT_VERSIONS: readonly string[] = [
+  "2.2.0",
+  "2.3.0",
+  "2.4.0",
+  "2.5.0",
+  "2.6.0",
+  "2.7.0",
+  "2.8.0",
+];
+
+/** The two keys inside `payload.dispatch` that pin its price catalog version (ADR 0103). */
+export const CATALOG_DOCUMENT_ID_KEY = "catalogDocumentId";
+export const CATALOG_VERSION_KEY = "catalogVersion";
 
 /** The two keys inside `payload.outcome` that name an effect's result (ADR 0098). */
 export const RESULT_ARTIFACT_REFERENCE_KEY = "resultArtifactReferenceId";
@@ -1517,6 +1541,12 @@ export function nextDispatchAttemptProjection(
     return null;
   }
 
+  // A refused pin is not a delivery with no pin: the door, the write and the
+  // fold each ask `dispatchPinReading` first and refuse in its words, so reaching
+  // here with a refusal projects nothing rather than a pin-less row.
+  const pin = dispatchPinReading(event);
+  if (pin === null || pin.kind === "refused") return null;
+
   return {
     dispatchAttemptId,
     effectId,
@@ -1530,7 +1560,103 @@ export function nextDispatchAttemptProjection(
     terminalAt: null,
     recordedAt: event.recordedAt,
     sequence,
+    dispatchContractVersion: event.contractVersion,
+    catalogDocumentId: pin.pin === null ? null : pin.pin.catalogDocumentId,
+    catalogVersion: pin.pin === null ? null : pin.pin.catalogVersion,
   };
+}
+
+/**
+ * The price pin one dispatch intention carries, read present-invalid (P-15
+ * escalón C, ADR 0103; decision 56's rule for the two new keys).
+ *
+ * `null` for any other event type, and for a payload with no dispatch record (the
+ * door refuses that with its own words). Otherwise, in order, each refusal at its
+ * own path and never echoing the value:
+ *
+ * 1. a key present with a value that is not what it names — non-empty text for the
+ *    document, a safe integer of at least one for the version — is refused rather
+ *    than read as absent, JSON `null` included;
+ * 2. half a pair is refused at the key that is missing;
+ * 3. a pin on a version of the cohort before is refused: no build of that
+ *    contract produced one;
+ * 4. no pin on any later version is refused by name: from 2.9.0 a delivery is
+ *    priced against a version fixed before the spend.
+ *
+ * Whether the pin names a published version, the one in force at the instant, and
+ * one that covers the segment is the append door's question, asked against the
+ * registry — a rebuild folds one chain at a time.
+ */
+export function dispatchPinReading(event: ControlPlaneEvent): DispatchPinReading | null {
+  if (event.type !== DISPATCH_INTENDED) return null;
+  const record = payloadRecord(event.payload, DISPATCH_KEY);
+  if (record === null) return null;
+
+  const at = (key: string): string => "payload." + DISPATCH_KEY + "." + key;
+  const rawDocument = record[CATALOG_DOCUMENT_ID_KEY];
+  const rawVersion = record[CATALOG_VERSION_KEY];
+  const documentId = recordText(record, CATALOG_DOCUMENT_ID_KEY);
+  const version = recordCount(record, CATALOG_VERSION_KEY, 1);
+  if (rawDocument !== undefined && documentId === null) {
+    return {
+      kind: "refused",
+      path: at(CATALOG_DOCUMENT_ID_KEY),
+      message:
+        CATALOG_DOCUMENT_ID_KEY +
+        ", when present, is non-empty text; this event says " +
+        shownValue(rawDocument) +
+        ", and a value that is not one is refused rather than read as absent",
+    };
+  }
+  if (rawVersion !== undefined && version === null) {
+    return {
+      kind: "refused",
+      path: at(CATALOG_VERSION_KEY),
+      message:
+        CATALOG_VERSION_KEY +
+        ", when present, is a whole number of at least 1; this event says " +
+        shownValue(rawVersion) +
+        ", and a value that is not one is refused rather than read as absent",
+    };
+  }
+  if ((documentId === null) !== (version === null)) {
+    const missing = documentId === null ? CATALOG_DOCUMENT_ID_KEY : CATALOG_VERSION_KEY;
+    return {
+      kind: "refused",
+      path: at(missing),
+      message:
+        "a price pin is a document and one of its versions, both or neither; this event names " +
+        (documentId === null ? CATALOG_VERSION_KEY : CATALOG_DOCUMENT_ID_KEY) +
+        " without " +
+        missing,
+    };
+  }
+
+  const before = PRE_CATALOG_PIN_CONTRACT_VERSIONS.includes(event.contractVersion);
+  if (documentId !== null && version !== null) {
+    if (before) {
+      return {
+        kind: "refused",
+        path: at(CATALOG_DOCUMENT_ID_KEY),
+        message:
+          "a dispatch of contract version " +
+          event.contractVersion +
+          " carries no price pin: no build of that contract produced one",
+      };
+    }
+    return { kind: "pin", pin: { catalogDocumentId: documentId, catalogVersion: version } };
+  }
+  if (!before) {
+    return {
+      kind: "refused",
+      path: at(CATALOG_DOCUMENT_ID_KEY),
+      message:
+        "a price pin is required from 2.9.0: a dispatch of contract version " +
+        event.contractVersion +
+        " names the catalog document and version it will be valued against, fixed before the spend",
+    };
+  }
+  return { kind: "pin", pin: null };
 }
 
 /**
@@ -1927,11 +2053,16 @@ export function canonicalSegment(segment: ExecutionRouteSegmentReadModel): strin
  * delivery a conflict, which is the opposite of what this table is for.
  */
 export function canonicalDispatchBirth(dispatch: DispatchAttemptReadModel): string {
+  // The price pin is part of the birth since P-15 escalón C (ADR 0103): the same
+  // delivery pinned to another catalog version is a different intention, and a
+  // delivery is intended once.
   return [
     dispatch.effectId,
     dispatch.routeSegmentId,
     String(dispatch.attemptOrdinal),
     dispatch.requestedAt,
+    dispatch.catalogDocumentId ?? "",
+    dispatch.catalogVersion === null ? "" : String(dispatch.catalogVersion),
   ].join(" ");
 }
 
@@ -3611,6 +3742,12 @@ export function applyEventToSnapshot(
     }
   }
 
+  // A refused pin is refused here in the door's words (ADR 0103): a stored history
+  // holding one is a history the door would have refused.
+  const pinReading = dispatchPinReading(event);
+  if (pinReading?.kind === "refused") {
+    throw new LedgerValidationError([{ path: pinReading.path, message: pinReading.message }]);
+  }
   const dispatch = nextDispatchAttemptProjection(event, sequence);
   if (dispatch !== null) {
     const existing = snapshot.dispatchAttempts.get(dispatch.dispatchAttemptId);

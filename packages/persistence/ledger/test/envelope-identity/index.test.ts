@@ -103,8 +103,13 @@ function fixtureContent(text: string): Record<string, unknown> {
  * reason: the result pair is a key of an outcome's payload, never a field of the
  * envelope. Recomputed twice, by `envelopeSha256` and by `node:crypto` over the
  * preimage, and the two agree on all three.
+ *
+ * P-15 escalón C moved the version to `"2.9.0"` (ADR 0103), for the dispatch pin
+ * cohort of migration 23, and the three vectors moved with it once more, for no
+ * other reason: the pin is a key of a dispatch's payload, never a field of the
+ * envelope. Recomputed twice, the same two ways, and the two agree on all three.
  */
-const CONTRACT = "2.8.0";
+const CONTRACT = "2.9.0";
 const ISSUER = "kimi/k3/coordinator/01";
 const AT = "2026-09-11T09:00:00.000Z";
 const TASK_ID = "6f1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d";
@@ -482,10 +487,10 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
     // encoding changes while staying internally consistent — every other test
     // here would compute the new bytes the new way and agree with itself.
     const vectors: readonly (readonly [Record<string, unknown>, string])[] = [
-      [envelope(), "70d265f1a4faccef67ad42fed334d81ee11cae7528a96bbfe3ea7075ad216659"],
+      [envelope(), "9bdea2fa8afdfac1c99b39af66e63683f2f5aca7f291504a4f287810ad19f4a9"],
       [
         withObjective("Delete the production ledger."),
-        "2b58cc006a94b547a0556f0a31a119678d5f84d0df778d6d63b259c1fb54aca4",
+        "9d28fabc134b6a72970db111b95777308c7b3fb15f0dc2c8ef3ecdcd7b8455d2",
       ],
       [
         envelope({
@@ -495,7 +500,7 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
           visualEvidenceRequired: true,
           eligibility: { roles: ["reviewer"], providers: ["anthropic"], requiredCapabilities: [] },
         }),
-        "17ab800891c1989eb45ff7f737922edbdc107038539c02e2b0332070e70b7d25",
+        "e56d454e206a7a59e4b6ceefd14e3fd70b21733a29c13ab3764027d02f9e05f3",
       ],
     ];
 

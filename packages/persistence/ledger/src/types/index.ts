@@ -665,6 +665,18 @@ export interface DispatchAttemptReadModel {
   readonly terminalAt: string | null;
   readonly recordedAt: string;
   readonly sequence: number;
+  /**
+   * The contract version of the `DISPATCH_INTENDED` that bore this delivery
+   * (P-15 escalón C, ADR 0103), which decides whether the pin below is required.
+   */
+  readonly dispatchContractVersion: string;
+  /**
+   * The price catalog version this delivery will be valued against, fixed before
+   * any spend (execution §7; economy §3 `:208`). Both `null` exactly on a delivery
+   * of the cohort before 2.9.0, and both present on every later one.
+   */
+  readonly catalogDocumentId: string | null;
+  readonly catalogVersion: number | null;
 }
 
 /**

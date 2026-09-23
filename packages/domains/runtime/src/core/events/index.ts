@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
+
 // `ResolvedRoute` is imported as a value: this module parses through it, and
 // the zod schema and the inferred type share the name.
 import { CONTRACT_VERSION, ControlPlaneEvent, ResolvedRoute } from "@acp/contracts";
+import { effectIdV1, effectIdempotencyKeyV1, logicalOperationSha256 } from "@acp/ledger";
 import type { ControlPlaneEvent as ControlPlaneEventType } from "@acp/contracts";
 
 import type { DurableInvocation, OperationCoordinate } from "../../contracts/index.js";
@@ -10,8 +13,12 @@ import type { PlanStep } from "../lifecycle/index.js";
 import { LifecyclePlanError, SupervisorError } from "../../errors/index.js";
 
 import type {
+  BuildDispatchIntentionInput,
+  BuildDispatchTransitionInput,
+  BuildEffectIntentionInput,
   BuildPromptOccurrenceInput,
   BuildResponseOccurrenceInput,
+  ExecutionSegmentRecord,
   PromptOccurrenceRecord,
   ResponseOccurrenceRecord,
 } from "./types/index.js";
@@ -23,8 +30,15 @@ import type {
  * concept's precedent).
  */
 export type {
+  BuildDispatchIntentionInput,
+  BuildDispatchTransitionInput,
+  BuildEffectIntentionInput,
   BuildPromptOccurrenceInput,
   BuildResponseOccurrenceInput,
+  DispatchIntentionFacts,
+  DispatchTransition,
+  EffectIntentionFacts,
+  ExecutionSegmentRecord,
   PromptOccurrenceRecord,
   ResponseOccurrenceRecord,
 } from "./types/index.js";
@@ -605,5 +619,244 @@ export function buildResponseOccurrenceEvent(
       attemptNumber: revision.attemptNumber,
       responseOccurrence: record,
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// P-15 escalón C — the effect, its deliveries and their moves (ADR 0103)
+// ---------------------------------------------------------------------------
+
+/** Refuse a V1 invocation by name: an execution record names a revision's attempt. */
+function requireRevision(invocation: BuildEffectIntentionInput["invocation"], what: string): NonNullable<BuildEffectIntentionInput["invocation"]["revision"]> {
+  const revision = invocation.revision;
+  if (revision === undefined) {
+    throw new SupervisorError(
+      "refusing to build " +
+        what +
+        " for an invocation without a revision; an execution record carries the V2 coordinate, and a V1 " +
+        "invocation names no revision, attempt or segment to attribute it to",
+    );
+  }
+  return revision;
+}
+
+/** A transition name no id can overflow: the kind, then the id's sha-256 (Q-C3). */
+function digestTransitionId(kind: string, id: string): string {
+  return kind + "." + createHash("sha256").update(id, "utf8").digest("hex");
+}
+
+/**
+ * The segment record, field by field: the sixteen names the ledger's segment fold
+ * reads, each stated, so a wider value handed in cannot widen the payload.
+ */
+function segmentRecordOf(segment: ExecutionSegmentRecord): ExecutionSegmentRecord {
+  const record: ExecutionSegmentRecord = {
+    routeSegmentId: segment.routeSegmentId,
+    segmentNumber: segment.segmentNumber,
+    provider: segment.provider,
+    model: segment.model,
+    modelResolutionStatus: segment.modelResolutionStatus,
+    modelVersionId: segment.modelVersionId,
+    accountId: segment.accountId,
+    transportKind: segment.transportKind,
+    capabilityPolicyVersion: segment.capabilityPolicyVersion,
+    routingAssignmentId: segment.routingAssignmentId,
+    reservationId: segment.reservationId,
+    predecessorSegmentId: segment.predecessorSegmentId,
+    handoffReason: segment.handoffReason,
+    escalatedFromAttempt: segment.escalatedFromAttempt,
+    escalationReason: segment.escalationReason,
+    resolvedAt: segment.resolvedAt,
+  };
+  return record;
+}
+
+/** The transition an effect's intention is recorded under: its own id, 80 characters. */
+export function effectIntentionTransitionId(effectId: string): string {
+  return "effect-intended." + effectId;
+}
+
+/**
+ * Build the `EFFECT_INTENDED` of one effect (execution §6; P-15 escalón C, ADR 0103).
+ *
+ * The identities are derived here, with the ledger's own functions imported from
+ * its barrel and never restated: the effect id from the attempt's coordinate and
+ * the segment's number, the idempotency key from the same plus the kind and the
+ * revision's envelope digest, and the logical digest from the invocation id and
+ * the two keys. The door recomputes all three and refuses a disagreement, so a
+ * builder that restated them could only be wrong. Closed by construction: the
+ * payload is exactly the coordinate, the segment and the effect record.
+ */
+export function buildEffectIntentionEvent(input: BuildEffectIntentionInput): ControlPlaneEventType {
+  const { invocation, segment, effect } = input;
+  const revision = requireRevision(invocation, "an effect intention");
+  const coordinate = {
+    taskId: invocation.taskId,
+    revisionNumber: revision.revisionNumber,
+    attemptNumber: revision.attemptNumber,
+    segmentNumber: segment.segmentNumber,
+    operationOrdinal: effect.operationOrdinal,
+  };
+  const effectId = effectIdV1(coordinate);
+  const record = {
+    effectId,
+    operationOrdinal: effect.operationOrdinal,
+    effectKind: effect.effectKind,
+    semanticScopeKey: effect.semanticScopeKey,
+    localOperationKey: effect.localOperationKey,
+    logicalOperationSha256: logicalOperationSha256({
+      invocationId: invocation.invocationId,
+      semanticScopeKey: effect.semanticScopeKey,
+      localOperationKey: effect.localOperationKey,
+    }),
+    requestContractVersion: effect.requestContractVersion,
+    requestSha256: effect.requestSha256,
+    idempotencyKey: effectIdempotencyKeyV1({
+      ...coordinate,
+      effectKind: effect.effectKind,
+      envelopeSha256: revision.envelopeSha256,
+    }),
+  };
+  const transitionId = effectIntentionTransitionId(effectId);
+  const eventCoordinate = deriveEventCoordinate(invocation, transitionId, 0);
+  return ControlPlaneEvent.parse({
+    contractVersion: CONTRACT_VERSION,
+    eventId: eventCoordinate.eventId,
+    taskId: invocation.taskId,
+    attempt: invocation.attempt,
+    transitionId,
+    idempotencyKey: eventCoordinate.idempotencyKey,
+    type: "EFFECT_INTENDED",
+    fromState: input.state,
+    toState: input.state,
+    emittedBy: input.emittedBy,
+    occurredAt: eventCoordinate.occurredAt,
+    recordedAt: eventCoordinate.recordedAt,
+    correlationId: invocation.invocationId,
+    causationId: input.causedBy,
+    payload: { ...payloadCoordinate(invocation), segment: segmentRecordOf(segment), effect: record },
+  });
+}
+
+/** The transition a delivery's intention is recorded under, bounded whatever its id. */
+export function dispatchIntentionTransitionId(dispatchAttemptId: string): string {
+  return digestTransitionId("dispatch-intended", dispatchAttemptId);
+}
+
+/**
+ * Build the `DISPATCH_INTENDED` of one delivery (execution §7; P-15 escalón C,
+ * ADR 0103).
+ *
+ * The price pin is a required input, so this builder cannot emit a pin-less
+ * delivery at 2.9.0: the delivery names the catalog version it will be valued
+ * against before any provider is asked. Which version that is — the one in force
+ * at the dispatch instant, covering the segment — is the door's question and the
+ * caller's choice (`Ledger.getVigentCatalogPin`, `pinCovers`); this builds it.
+ * The dispatch instant is the invocation's canonical `occurredAt`, through
+ * `deriveEventCoordinate`, and never a clock.
+ */
+export function buildDispatchIntentionEvent(input: BuildDispatchIntentionInput): ControlPlaneEventType {
+  const { invocation, segment, dispatch } = input;
+  requireRevision(invocation, "a dispatch intention");
+  const record = {
+    dispatchAttemptId: dispatch.dispatchAttemptId,
+    effectId: dispatch.effectId,
+    attemptOrdinal: dispatch.attemptOrdinal,
+    catalogDocumentId: dispatch.pin.catalogDocumentId,
+    catalogVersion: dispatch.pin.catalogVersion,
+  };
+  const transitionId = dispatchIntentionTransitionId(dispatch.dispatchAttemptId);
+  const eventCoordinate = deriveEventCoordinate(invocation, transitionId, 0);
+  return ControlPlaneEvent.parse({
+    contractVersion: CONTRACT_VERSION,
+    eventId: eventCoordinate.eventId,
+    taskId: invocation.taskId,
+    attempt: invocation.attempt,
+    transitionId,
+    idempotencyKey: eventCoordinate.idempotencyKey,
+    type: "DISPATCH_INTENDED",
+    fromState: input.state,
+    toState: input.state,
+    emittedBy: input.emittedBy,
+    occurredAt: eventCoordinate.occurredAt,
+    recordedAt: eventCoordinate.recordedAt,
+    correlationId: invocation.invocationId,
+    causationId: input.causedBy,
+    payload: { ...payloadCoordinate(invocation), segment: segmentRecordOf(segment), dispatch: record },
+  });
+}
+
+/** The transition one move of a delivery is recorded under, one per move and bounded. */
+export function dispatchTransitionId(kind: "INFLIGHT" | "ABANDONED" | "SETTLED", dispatchAttemptId: string): string {
+  return digestTransitionId("dispatch-" + kind.toLowerCase(), dispatchAttemptId);
+}
+
+/**
+ * Build one move of a delivery as a `DISPATCH_OUTCOME_RECORDED` (P-15 escalón C,
+ * C-D2 and Q-C2; ADR 0103).
+ *
+ * One builder, one record per arm, each written field by field in its own
+ * literal, so no arm can carry another's keys: `INFLIGHT` states the accepted
+ * instant and the handle and nothing terminal; `ABANDONED` states the terminal
+ * instant and never an accepted instant or a handle; `SETTLED` states the terminal
+ * instant, the effect's outcome, and the result pair only when there is one — the
+ * ledger's grammar (P-07 escalón B) decides which statuses may carry it. The door
+ * holds the move to `DISPATCH_STATE_TRANSITIONS`.
+ */
+export function buildDispatchTransitionEvent(input: BuildDispatchTransitionInput): ControlPlaneEventType {
+  const { invocation, transition } = input;
+  requireRevision(invocation, "a dispatch transition");
+  let record: Record<string, unknown>;
+  switch (transition.kind) {
+    case "INFLIGHT":
+      record = {
+        dispatchAttemptId: transition.dispatchAttemptId,
+        dispatchState: "INFLIGHT",
+        acceptedAt: transition.acceptedAt,
+        externalHandle: transition.externalHandle,
+      };
+      break;
+    case "ABANDONED":
+      record = {
+        dispatchAttemptId: transition.dispatchAttemptId,
+        dispatchState: "ABANDONED",
+        terminalAt: transition.terminalAt,
+        ...(transition.effectOutcomeStatus === null ? {} : { effectOutcomeStatus: transition.effectOutcomeStatus }),
+      };
+      break;
+    case "SETTLED":
+      record = {
+        dispatchAttemptId: transition.dispatchAttemptId,
+        dispatchState: "SETTLED",
+        terminalAt: transition.terminalAt,
+        ...(transition.effectOutcomeStatus === null ? {} : { effectOutcomeStatus: transition.effectOutcomeStatus }),
+        ...(transition.result === null
+          ? {}
+          : { resultArtifactReferenceId: transition.result.artifactReferenceId, resultSha256: transition.result.sha256 }),
+      };
+      break;
+    default: {
+      const unreachable: never = transition;
+      return unreachable;
+    }
+  }
+  const transitionId = dispatchTransitionId(transition.kind, transition.dispatchAttemptId);
+  const eventCoordinate = deriveEventCoordinate(invocation, transitionId, 0);
+  return ControlPlaneEvent.parse({
+    contractVersion: CONTRACT_VERSION,
+    eventId: eventCoordinate.eventId,
+    taskId: invocation.taskId,
+    attempt: invocation.attempt,
+    transitionId,
+    idempotencyKey: eventCoordinate.idempotencyKey,
+    type: "DISPATCH_OUTCOME_RECORDED",
+    fromState: input.state,
+    toState: input.state,
+    emittedBy: input.emittedBy,
+    occurredAt: eventCoordinate.occurredAt,
+    recordedAt: eventCoordinate.recordedAt,
+    correlationId: invocation.invocationId,
+    causationId: input.causedBy,
+    payload: { ...payloadCoordinate(invocation), outcome: record },
   });
 }

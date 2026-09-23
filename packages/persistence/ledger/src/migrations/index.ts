@@ -2924,6 +2924,92 @@ BEGIN
 END;
 `,
   },
+  {
+    version: 23,
+    name: "dispatch_catalog_pin",
+    sql: `
+-- A delivery pins the price catalog version it will be valued against, before any
+-- spend (P-15 escalón C, ADR 0103; execution §7; economy §3 \`:208\`).
+--
+-- **Additive, and the table is not rebuilt.** Three nullable columns with no
+-- default: every row already there reads NULL in each. The pin stays NULL on those
+-- rows, which is correct: every delivery a ledger already holds was intended
+-- before 2.9.0. The version that bore each row is written from its own
+-- \`DISPATCH_INTENDED\` by code, in this same transaction, after this text runs.
+--
+-- **What is a CHECK and what is a trigger** (datos §3.7, invariant 13).
+-- Version-independent row law is a CHECK, each spelled so a NULL cannot pass by
+-- accident: a version, when present, is non-empty; a document, when present, is
+-- non-empty; a version number, when present, is at least 1; and the pin is both
+-- NULL or both present. "A row carries its version" cannot be a CHECK here, for
+-- migration 22's reason: SQLite tests a CHECK added by ADD COLUMN against the rows
+-- already there, and it would abort on every ledger holding a delivery before the
+-- backfill runs. So it is the triggers' first statement, beside the cohort rule.
+ALTER TABLE dispatch_attempt_read_model ADD COLUMN dispatch_contract_version TEXT
+  CONSTRAINT ck_dispatch_attempt_read_model__dispatch_contract_version
+    CHECK (dispatch_contract_version IS NULL OR length(dispatch_contract_version) > 0);
+
+ALTER TABLE dispatch_attempt_read_model ADD COLUMN catalog_document_id TEXT
+  CONSTRAINT ck_dispatch_attempt_read_model__catalog_document_id
+    CHECK (catalog_document_id IS NULL OR length(catalog_document_id) > 0);
+
+ALTER TABLE dispatch_attempt_read_model ADD COLUMN catalog_version INTEGER
+  CONSTRAINT ck_dispatch_attempt_read_model__catalog_version
+    CHECK (catalog_version IS NULL OR catalog_version >= 1)
+  CONSTRAINT ck_dispatch_attempt_read_model__catalog_pin_pair
+    CHECK ((catalog_document_id IS NULL) = (catalog_version IS NULL));
+
+-- The cohort, by trigger, on both paths a row arrives by.
+--
+-- The cohort before is a CLOSED list frozen here, never a comparison of version
+-- strings: the seven are every version a build before this migration could stamp,
+-- a migration is immutable, and a version bumped later falls into the cohort after
+-- without touching this text. The fold's \`PRE_CATALOG_PIN_CONTRACT_VERSIONS\` spells
+-- the same seven, and the suite holds the two spellings equal. A delivery of the
+-- cohort before names no pin; one of the cohort after always names one.
+-- \`x NOT IN (...)\` is NULL when \`x\` is NULL, so a row without a version is caught
+-- by the first statement and never let through by the third.
+--
+-- Two triggers, because a rebuild INSERTs a row and the backfill UPDATEs one; the
+-- UPDATE trigger names all three columns, so a raw write to any of them alone is
+-- held to the same rule.
+--
+-- **Whether the pin is published, in force and covering is not checked here, and
+-- cannot be.** Those are questions about a projection of the registry stream; this
+-- row is a projection of the task stream, and a rebuild folds one chain at a time.
+-- The append door asks them, by name, before it writes.
+CREATE TRIGGER tr_dispatch_attempt_read_model__validate_pin_on_insert
+BEFORE INSERT ON dispatch_attempt_read_model
+BEGIN
+  SELECT RAISE(ABORT, 'dispatch_attempt_read_model.dispatch_contract_version is required on every delivery')
+  WHERE NEW.dispatch_contract_version IS NULL;
+
+  SELECT RAISE(ABORT, 'dispatch_attempt_read_model.catalog_document_id and catalog_version must be NULL on a delivery of contract version 2.2.0, 2.3.0, 2.4.0, 2.5.0, 2.6.0, 2.7.0 or 2.8.0')
+  WHERE NEW.dispatch_contract_version IN ('2.2.0', '2.3.0', '2.4.0', '2.5.0', '2.6.0', '2.7.0', '2.8.0')
+    AND NEW.catalog_document_id IS NOT NULL;
+
+  SELECT RAISE(ABORT, 'dispatch_attempt_read_model.catalog_document_id and catalog_version are required on a delivery of every later contract version')
+  WHERE NEW.dispatch_contract_version NOT IN ('2.2.0', '2.3.0', '2.4.0', '2.5.0', '2.6.0', '2.7.0', '2.8.0')
+    AND NEW.catalog_document_id IS NULL;
+END;
+
+CREATE TRIGGER tr_dispatch_attempt_read_model__validate_pin_on_update
+BEFORE UPDATE OF dispatch_contract_version, catalog_document_id, catalog_version
+ON dispatch_attempt_read_model
+BEGIN
+  SELECT RAISE(ABORT, 'dispatch_attempt_read_model.dispatch_contract_version is required on every delivery')
+  WHERE NEW.dispatch_contract_version IS NULL;
+
+  SELECT RAISE(ABORT, 'dispatch_attempt_read_model.catalog_document_id and catalog_version must be NULL on a delivery of contract version 2.2.0, 2.3.0, 2.4.0, 2.5.0, 2.6.0, 2.7.0 or 2.8.0')
+  WHERE NEW.dispatch_contract_version IN ('2.2.0', '2.3.0', '2.4.0', '2.5.0', '2.6.0', '2.7.0', '2.8.0')
+    AND NEW.catalog_document_id IS NOT NULL;
+
+  SELECT RAISE(ABORT, 'dispatch_attempt_read_model.catalog_document_id and catalog_version are required on a delivery of every later contract version')
+  WHERE NEW.dispatch_contract_version NOT IN ('2.2.0', '2.3.0', '2.4.0', '2.5.0', '2.6.0', '2.7.0', '2.8.0')
+    AND NEW.catalog_document_id IS NULL;
+END;
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -3261,6 +3347,15 @@ export const PRICE_INTERVAL_CATALOG_MIGRATION = 21;
 export const EFFECT_RESULT_REFERENCE_MIGRATION = 22;
 
 /**
+ * The migration that gives a delivery its price catalog pin (P-15 escalón C, ADR 0103).
+ *
+ * Named for `EFFECT_RESULT_REFERENCE_MIGRATION`'s reasons: the suite and the rewind
+ * fixtures hold the number against where the SQL sits, and the ledger hangs the
+ * backfill of every recorded delivery's version off this exact version.
+ */
+export const DISPATCH_CATALOG_PIN_MIGRATION = 23;
+
+/**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
  * Named rather than written as a literal at the two sites that need it, because
@@ -3585,6 +3680,11 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   // admits a SUCCEEDED with no result, or a result on an outcome of the cohort before.
   { type: "trigger", name: "tr_effect_read_model__validate_result_on_insert" },
   { type: "trigger", name: "tr_effect_read_model__validate_result_on_update" },
+  // P-15 escalón C. Two triggers and nothing else, for migration 22's reason:
+  // dropping either leaves `schema_migrations` intact while the table quietly
+  // admits a delivery of 2.9.0 with no pin, or a pin on one of the cohort before.
+  { type: "trigger", name: "tr_dispatch_attempt_read_model__validate_pin_on_insert" },
+  { type: "trigger", name: "tr_dispatch_attempt_read_model__validate_pin_on_update" },
 ];
 
 export interface MigrationConformance {

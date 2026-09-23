@@ -9,12 +9,37 @@ import {
   findTranscriptViolations,
 } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
-import { PROMPT_OCCURRENCE_RECORD_KEYS, RESPONSE_OCCURRENCE_RECORD_KEYS } from "@acp/ledger";
+import {
+  PROMPT_OCCURRENCE_RECORD_KEYS,
+  RESPONSE_OCCURRENCE_RECORD_KEYS,
+  effectIdV1,
+  effectIdempotencyKeyV1,
+  logicalOperationSha256,
+} from "@acp/ledger";
 import { describe, expect, it } from "vitest";
 
 import type { DurableInvocation } from "../../../src/contracts/index.js";
-import { ATTEMPT_OPENING_STEP, buildEvent, buildPromptOccurrenceEvent, buildResponseOccurrenceEvent, causalPredecessorOf, operationForStep } from "../../../src/core/events/index.js";
-import type { PromptOccurrenceRecord, ResponseOccurrenceRecord } from "../../../src/core/events/index.js";
+import {
+  ATTEMPT_OPENING_STEP,
+  buildDispatchIntentionEvent,
+  buildDispatchTransitionEvent,
+  buildEffectIntentionEvent,
+  buildEvent,
+  buildPromptOccurrenceEvent,
+  buildResponseOccurrenceEvent,
+  causalPredecessorOf,
+  dispatchIntentionTransitionId,
+  dispatchTransitionId,
+  effectIntentionTransitionId,
+  operationForStep,
+} from "../../../src/core/events/index.js";
+import type {
+  DispatchTransition,
+  EffectIntentionFacts,
+  ExecutionSegmentRecord,
+  PromptOccurrenceRecord,
+  ResponseOccurrenceRecord,
+} from "../../../src/core/events/index.js";
 import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP, READ_ONLY_PLAN, planStep } from "../../../src/core/lifecycle/index.js";
 import type { PlanStep } from "../../../src/core/lifecycle/index.js";
 import { LifecyclePlanError, SupervisorError } from "../../../src/errors/index.js";
@@ -394,8 +419,9 @@ describe("N-G-1: an invocation without a revision builds exactly the bytes it bu
     // the carriage of the envelope reference reached none of them. P-32/captura B
     // moved the version once more, to 2.6.0 (ADR 0089), and held for the same
     // reason: the vectors stay stamped as a6ed7c3 built them. P-07 escalón B moved
-    // it to 2.8.0 (ADR 0098), and the vectors held again.
-    expect(CONTRACT_VERSION).toBe("2.8.0");
+    // it to 2.8.0 (ADR 0098), and the vectors held again; P-15 escalón C moved it to
+    // 2.9.0 (ADR 0103), and they held once more.
+    expect(CONTRACT_VERSION).toBe("2.9.0");
     expect(walkDigest(INVOCATION, LIFECYCLE_PLAN, "2.4.0")).toBe(
       "5c8e92f22adcb75867c79bfa353bf4dc90c57028532c06253640b4437cc2291f",
     );
@@ -462,8 +488,8 @@ describe("N-G-7: the opening is B's payload, field by field, and nothing more", 
     // names its envelope by reference (decision 41, ADR 0084), carried from the
     // invocation exactly as the digest is.
     const opening = buildWith(V2_INVOCATION, ATTEMPT_OPENING_STEP);
-    // The version in force, which P-07 escalón B moved to 2.8.0 (ADR 0098).
-    expect(opening.contractVersion).toBe("2.8.0");
+    // The version in force, which P-15 escalón C moved to 2.9.0 (ADR 0103).
+    expect(opening.contractVersion).toBe("2.9.0");
     expect(Object.keys(opening.payload).sort()).toEqual([
       "attemptNumber",
       "envelopeArtifactReferenceId",
@@ -817,10 +843,18 @@ describe("the response occurrence records an answer's digest and length, never i
 describe("P-15/B: the payload-coordinate refactor of buildEvent moves no byte", () => {
   it("builds both plans' V2 walks, opening included, exactly as before B", () => {
     // Lifted by running the pre-B `buildEvent` (HEAD 313512d) over this file's
-    // fixture; the V1 vectors above already hold the V1 half.
+    // fixture; the V1 vectors above already hold the V1 half. Stamped 2.8.0, the
+    // version they were lifted under, for the reason the V1 vectors are stamped:
+    // P-15 escalón C moved the version in force to 2.9.0 (ADR 0103) and nothing
+    // else of these bytes.
     const v2Walk = (plan: readonly PlanStep[]): string =>
       createHash("sha256")
-        .update([ATTEMPT_OPENING_STEP, ...plan].map((step) => JSON.stringify(buildWith(V2_INVOCATION, step, plan))).join("\n"), "utf8")
+        .update(
+          [ATTEMPT_OPENING_STEP, ...plan]
+            .map((step) => JSON.stringify({ ...buildWith(V2_INVOCATION, step, plan), contractVersion: "2.8.0" }))
+            .join("\n"),
+          "utf8",
+        )
         .digest("hex");
     expect(v2Walk(LIFECYCLE_PLAN)).toBe(
       // Lifted by running the pre-B source (HEAD 313512d) over this fixture.
@@ -837,5 +871,201 @@ describe("P-15/B: the payload-coordinate refactor of buildEvent moves no byte", 
       const keys = Object.keys(buildWith(V2_INVOCATION, step).payload);
       expect(keys.slice(0, 3)).toEqual(["submissionDigest", "revisionNumber", "attemptNumber"]);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón C — the effect, dispatch and transition builders (ADR 0103)
+// ---------------------------------------------------------------------------
+
+const SEGMENT: ExecutionSegmentRecord = {
+  routeSegmentId: "seg-1",
+  segmentNumber: 1,
+  provider: "anthropic",
+  model: "claude-opus-5",
+  modelResolutionStatus: "RESOLVED",
+  modelVersionId: "claude-opus-5-20260101",
+  accountId: "acct-1",
+  transportKind: "CLI_SUBSCRIPTION",
+  capabilityPolicyVersion: "policy-1",
+  routingAssignmentId: null,
+  reservationId: null,
+  predecessorSegmentId: null,
+  handoffReason: null,
+  escalatedFromAttempt: null,
+  escalationReason: null,
+  resolvedAt: null,
+};
+
+const EFFECT: EffectIntentionFacts = {
+  operationOrdinal: 0,
+  effectKind: "model_execution",
+  semanticScopeKey: "run",
+  localOperationKey: "compose-answer",
+  requestContractVersion: "1",
+  requestSha256: "b".repeat(64),
+};
+
+const PIN = { catalogDocumentId: "catalog-fixture", catalogVersion: 1 } as const;
+
+const SEGMENT_KEYS = Object.keys(SEGMENT).sort();
+
+function effectEvent(invocation: DurableInvocation = V2_INVOCATION, segment: ExecutionSegmentRecord = SEGMENT, effect: EffectIntentionFacts = EFFECT) {
+  return buildEffectIntentionEvent({ invocation, state: "RUNNING", emittedBy: EMITTED_BY, causedBy: null, segment, effect });
+}
+
+function dispatchEvent(invocation: DurableInvocation = V2_INVOCATION, dispatchAttemptId = "dsp-1") {
+  return buildDispatchIntentionEvent({
+    invocation,
+    state: "RUNNING",
+    emittedBy: EMITTED_BY,
+    causedBy: null,
+    segment: SEGMENT,
+    dispatch: { dispatchAttemptId, effectId: "e".repeat(64), attemptOrdinal: 1, pin: PIN },
+  });
+}
+
+function transitionEvent(transition: DispatchTransition, invocation: DurableInvocation = V2_INVOCATION) {
+  return buildDispatchTransitionEvent({ invocation, state: "RUNNING", emittedBy: EMITTED_BY, causedBy: null, transition });
+}
+
+describe("P-15/C: the effect, dispatch and transition builders are closed by construction (ADR 0103)", () => {
+  it("PC-C5: the effect intention carries the coordinate, the sixteen segment names and the effect record, and nothing else", () => {
+    const event = effectEvent();
+    expect(ControlPlaneEvent.safeParse(event).success).toBe(true);
+    expect(event.type).toBe("EFFECT_INTENDED");
+    expect(Object.keys(event.payload).sort()).toEqual(["attemptNumber", "effect", "revisionNumber", "segment"]);
+    expect(Object.keys(event.payload["segment"] as object).sort()).toEqual(SEGMENT_KEYS);
+    expect(SEGMENT_KEYS).toHaveLength(16);
+    expect(Object.keys(event.payload["effect"] as object).sort()).toEqual([
+      "effectId",
+      "effectKind",
+      "idempotencyKey",
+      "localOperationKey",
+      "logicalOperationSha256",
+      "operationOrdinal",
+      "requestContractVersion",
+      "requestSha256",
+      "semanticScopeKey",
+    ]);
+  });
+
+  it("derives the three identities with the ledger's own functions, never restated", () => {
+    const effect = effectEvent().payload["effect"] as Record<string, unknown>;
+    const coordinate = { taskId: INVOCATION.taskId, revisionNumber: 1, attemptNumber: 1, segmentNumber: 1, operationOrdinal: 0 };
+    expect(effect["effectId"]).toBe(effectIdV1(coordinate));
+    expect(effect["idempotencyKey"]).toBe(
+      effectIdempotencyKeyV1({ ...coordinate, effectKind: "model_execution", envelopeSha256: REVISION.envelopeSha256 }),
+    );
+    expect(effect["logicalOperationSha256"]).toBe(
+      logicalOperationSha256({ invocationId: V2_INVOCATION.invocationId, semanticScopeKey: "run", localOperationKey: "compose-answer" }),
+    );
+    expect(effectEvent().transitionId).toBe(effectIntentionTransitionId(effectIdV1(coordinate)));
+    expect(effectEvent().transitionId).toHaveLength(80);
+  });
+
+  it("the dispatch intention carries its pin, required, and exactly five dispatch names", () => {
+    const event = dispatchEvent();
+    expect(ControlPlaneEvent.safeParse(event).success).toBe(true);
+    expect(event.type).toBe("DISPATCH_INTENDED");
+    expect(event.payload["dispatch"]).toEqual({
+      dispatchAttemptId: "dsp-1",
+      effectId: "e".repeat(64),
+      attemptOrdinal: 1,
+      catalogDocumentId: "catalog-fixture",
+      catalogVersion: 1,
+    });
+    expect(Object.keys(event.payload).sort()).toEqual(["attemptNumber", "dispatch", "revisionNumber", "segment"]);
+  });
+
+  it("Q-C3: a transition name fits the contract's bound whatever the delivery id, and is stable", () => {
+    for (const id of ["dsp-1", "x".repeat(1_000), "an id with spaces/and slashes"]) {
+      for (const transitionId of [
+        dispatchIntentionTransitionId(id),
+        dispatchTransitionId("INFLIGHT", id),
+        dispatchTransitionId("ABANDONED", id),
+        dispatchTransitionId("SETTLED", id),
+      ]) {
+        expect(transitionId.length).toBeLessThanOrEqual(120);
+        expect(transitionId).toMatch(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
+      }
+      expect(dispatchIntentionTransitionId(id)).toBe(dispatchIntentionTransitionId(id));
+      expect(ControlPlaneEvent.safeParse(dispatchEvent(V2_INVOCATION, id)).success).toBe(true);
+    }
+    expect(dispatchIntentionTransitionId("a")).not.toBe(dispatchIntentionTransitionId("b"));
+  });
+
+  it("each transition arm writes its own keys and no other's", () => {
+    const inflight = transitionEvent({ kind: "INFLIGHT", dispatchAttemptId: "dsp-1", acceptedAt: "2026-09-23T12:00:01.000Z", externalHandle: "handle-1" });
+    expect(inflight.payload["outcome"]).toEqual({
+      dispatchAttemptId: "dsp-1",
+      dispatchState: "INFLIGHT",
+      acceptedAt: "2026-09-23T12:00:01.000Z",
+      externalHandle: "handle-1",
+    });
+    const abandoned = transitionEvent({ kind: "ABANDONED", dispatchAttemptId: "dsp-1", terminalAt: "2026-09-23T12:00:02.000Z", effectOutcomeStatus: null });
+    expect(abandoned.payload["outcome"]).toEqual({ dispatchAttemptId: "dsp-1", dispatchState: "ABANDONED", terminalAt: "2026-09-23T12:00:02.000Z" });
+    const settledBare = transitionEvent({
+      kind: "SETTLED",
+      dispatchAttemptId: "dsp-1",
+      terminalAt: "2026-09-23T12:00:02.000Z",
+      effectOutcomeStatus: "FAILED",
+      result: null,
+    });
+    expect(settledBare.payload["outcome"]).toEqual({
+      dispatchAttemptId: "dsp-1",
+      dispatchState: "SETTLED",
+      terminalAt: "2026-09-23T12:00:02.000Z",
+      effectOutcomeStatus: "FAILED",
+    });
+    const settledPair = transitionEvent({
+      kind: "SETTLED",
+      dispatchAttemptId: "dsp-1",
+      terminalAt: "2026-09-23T12:00:02.000Z",
+      effectOutcomeStatus: "SUCCEEDED",
+      result: { artifactReferenceId: "ref-result", sha256: "c".repeat(64) },
+    });
+    expect(Object.keys(settledPair.payload["outcome"] as object).sort()).toEqual([
+      "dispatchAttemptId",
+      "dispatchState",
+      "effectOutcomeStatus",
+      "resultArtifactReferenceId",
+      "resultSha256",
+      "terminalAt",
+    ]);
+    for (const event of [inflight, abandoned, settledBare, settledPair]) {
+      expect(event.type).toBe("DISPATCH_OUTCOME_RECORDED");
+      expect(Object.keys(event.payload).sort()).toEqual(["attemptNumber", "outcome", "revisionNumber"]);
+      expect(ControlPlaneEvent.safeParse(event).success).toBe(true);
+    }
+  });
+
+  it("F1: a value wider than its type yields exactly the declared names, and the extra value nowhere", () => {
+    const stray = "stray-" + "builder-value";
+    const widerSegment = { ...SEGMENT, stray } as ExecutionSegmentRecord;
+    const widerEffect = { ...EFFECT, effectId: "f".repeat(64), stray } as EffectIntentionFacts;
+    const effect = effectEvent(V2_INVOCATION, widerSegment, widerEffect);
+    expect(Object.keys(effect.payload["segment"] as object).sort()).toEqual(SEGMENT_KEYS);
+    expect((effect.payload["effect"] as Record<string, unknown>)["effectId"]).not.toBe("f".repeat(64));
+    const widerTransition = {
+      kind: "INFLIGHT",
+      dispatchAttemptId: "dsp-1",
+      acceptedAt: "2026-09-23T12:00:01.000Z",
+      externalHandle: "handle-1",
+      terminalAt: "2026-09-23T12:00:02.000Z",
+      effectOutcomeStatus: "SUCCEEDED",
+      stray,
+    } as DispatchTransition;
+    const inflight = transitionEvent(widerTransition);
+    expect(Object.keys(inflight.payload["outcome"] as object).sort()).toEqual(["acceptedAt", "dispatchAttemptId", "dispatchState", "externalHandle"]);
+    for (const event of [effect, inflight]) expect(JSON.stringify(event)).not.toContain(stray);
+  });
+
+  it("N-C-12: a V1 invocation is refused by name, before anything is built, by all three", () => {
+    expect(() => effectEvent(INVOCATION)).toThrow(SupervisorError);
+    expect(() => dispatchEvent(INVOCATION)).toThrow(/without a revision/);
+    expect(() =>
+      transitionEvent({ kind: "INFLIGHT", dispatchAttemptId: "dsp-1", acceptedAt: "2026-09-23T12:00:01.000Z", externalHandle: "h" }, INVOCATION),
+    ).toThrow(SupervisorError);
   });
 });

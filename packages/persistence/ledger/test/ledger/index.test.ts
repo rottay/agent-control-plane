@@ -16,7 +16,7 @@ import {
   buildIdempotencyKey,
   buildInitiativeIdempotencyKey,
   buildV2IdempotencyKey,
-  type ControlPlaneEvent,
+  ControlPlaneEvent,
   type ControlPlaneEventType,
   type TaskState,
 } from "@acp/contracts";
@@ -66,13 +66,14 @@ import {
   TASK_SUBMISSION_MIGRATION,
   USAGE_CAPTURE_MIGRATION,
   PRICE_INTERVAL_CATALOG_MIGRATION,
+  DISPATCH_CATALOG_PIN_MIGRATION,
   EFFECT_RESULT_REFERENCE_MIGRATION,
   MIGRATIONS,
   MODEL_VERSION_REGISTRY_MIGRATION,
   TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
   applyMigrations,
 } from "../../src/migrations/index.js";
-import { applyEventToSnapshot, createProjectionSnapshot } from "../../src/projection/index.js";
+import { applyEventToSnapshot, createProjectionSnapshot, dispatchPinReading } from "../../src/projection/index.js";
 
 // ---------------------------------------------------------------------------
 // Temporary databases
@@ -339,7 +340,7 @@ describe("open", () => {
     // coordinate, P-08's sidecar and the registry stream, typed causal triple and
     // watermark table of P-09.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1381,12 +1382,34 @@ function dropPriceIntervalCatalog(raw: Database.Database): void {
  * version back from its event.
  */
 function dropEffectResultReference(raw: Database.Database): void {
+  // Twenty-three first (P-15 escalón C): rewinding past 22 means rewinding past
+  // everything applied after it, and a re-applied 23 over its own columns aborts.
+  dropDispatchCatalogPin(raw);
   raw.exec(
     "DROP TRIGGER tr_effect_read_model__validate_result_on_update; " +
       "DROP TRIGGER tr_effect_read_model__validate_result_on_insert; " +
       "ALTER TABLE effect_read_model DROP COLUMN result_sha256; " +
       "ALTER TABLE effect_read_model DROP COLUMN result_artifact_reference_id; " +
       "ALTER TABLE effect_read_model DROP COLUMN outcome_contract_version;",
+  );
+}
+
+/**
+ * Migration 23 undone: the delivery's price pin (P-15 escalón C, ADR 0103).
+ *
+ * Migration 22's order: both triggers first, because a column a trigger names
+ * cannot be dropped; then \`catalog_version\` before \`catalog_document_id\`, because
+ * the former's pair CHECK names the latter; then \`dispatch_contract_version\`. No
+ * watermark and no row moves: the re-applied 23 writes each delivery's version and
+ * pin back from its intention.
+ */
+function dropDispatchCatalogPin(raw: Database.Database): void {
+  raw.exec(
+    "DROP TRIGGER tr_dispatch_attempt_read_model__validate_pin_on_update; " +
+      "DROP TRIGGER tr_dispatch_attempt_read_model__validate_pin_on_insert; " +
+      "ALTER TABLE dispatch_attempt_read_model DROP COLUMN catalog_version; " +
+      "ALTER TABLE dispatch_attempt_read_model DROP COLUMN catalog_document_id; " +
+      "ALTER TABLE dispatch_attempt_read_model DROP COLUMN dispatch_contract_version;",
   );
 }
 
@@ -3115,7 +3138,7 @@ describe("the recorded execution route", () => {
     // The upgrade: the pending tail applies on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3551,7 +3574,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -5752,7 +5775,7 @@ describe("the account sidecar is activated once, over everything, atomically", (
     // The upgrade: migration 10 applies on open and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((m) => m.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
@@ -6638,7 +6661,12 @@ function demoteEnvelopeCohort(path: string, version = "2.4.0"): void {
     const registry = raw
       .prepare("SELECT subject_kind, content_digest FROM registry_events")
       .all() as { readonly subject_kind: string; readonly content_digest: string }[];
-    if (registry.some((row) => row.subject_kind !== "ARTIFACT" || row.content_digest !== ENVELOPE_CONTENT)) {
+    // The fixture catalog of P-15 escalón C is admitted too: it is what every
+    // delivery since 2.9.0 is pinned to, and it goes with the envelope below.
+    const planted = (row: { readonly subject_kind: string; readonly content_digest: string }): boolean =>
+      (row.subject_kind === "ARTIFACT" && row.content_digest === ENVELOPE_CONTENT) ||
+      (row.subject_kind === "DOCUMENT" && FIXTURE_CATALOG_DIGESTS.includes(row.content_digest));
+    if (!registry.every(planted)) {
       throw new Error("only a registry holding the planted envelope alone can be demoted");
     }
     const anchored = raw
@@ -6666,6 +6694,10 @@ function demoteEnvelopeCohort(path: string, version = "2.4.0"): void {
         "DELETE FROM artifact_pin_read_model; " +
         "DELETE FROM artifact_reference_read_model; " +
         "DELETE FROM artifact_blob_read_model; " +
+        "DELETE FROM price_interval_read_model; " +
+        "DELETE FROM model_version_transport; " +
+        "DELETE FROM model_version_eligible_role; " +
+        "DELETE FROM model_version_read_model; " +
         "DELETE FROM registry_events; " +
         "DELETE FROM sqlite_sequence WHERE name = 'registry_events';",
     );
@@ -6700,6 +6732,7 @@ function demoteEnvelopeCohort(path: string, version = "2.4.0"): void {
       if (decoded["contractVersion"] === CONTRACT_VERSION) decoded["contractVersion"] = version;
       const payload = decoded["payload"] as Record<string, unknown>;
       delete payload["envelopeArtifactReferenceId"];
+      stripDispatchPin(payload);
       const rewritten = canonicalJsonStringify(decoded);
       const digest = chainDigest(previous, rewritten);
       rewrite.run(rewritten, decoded["contractVersion"], previous, digest, row.sequence);
@@ -6717,6 +6750,7 @@ function demoteEnvelopeCohort(path: string, version = "2.4.0"): void {
           "envelope_artifact_reference_id = NULL",
       )
       .run(version);
+    demoteDispatchRows(raw, version);
   });
 }
 
@@ -7629,14 +7663,14 @@ describe("a version this build does not read is refused, by name", () => {
     );
     ledger.close();
 
-    restampVersion(path, 2, "2.9.0");
+    restampVersion(path, 2, "2.10.0");
     const reopened = open(path);
 
     // 1. Reading events. The whole page fails closed rather than returning a
     //    row this build cannot vouch for.
     const listed = caught(() => reopened.listEvents());
     expect(listed).toBeInstanceOf(LedgerIntegrityError);
-    expect(String(listed)).toContain("2.9.0");
+    expect(String(listed)).toContain("2.10.0");
     expect(String(listed)).toContain(SUPPORTED_CONTRACT_VERSIONS.join(", "));
 
     // 2. Verifying. The problem is reported with its own kind, and the detail
@@ -7647,7 +7681,7 @@ describe("a version this build does not read is refused, by name", () => {
       (problem) => problem.kind === "EVENT_CONTRACT",
     );
     expect(contractProblems).toHaveLength(1);
-    expect(contractProblems[0]?.detail).toContain("2.9.0");
+    expect(contractProblems[0]?.detail).toContain("2.10.0");
     expect(contractProblems[0]?.detail).toContain(CONTRACT_VERSION);
     expect(contractProblems[0]?.sequence).toBe(2);
 
@@ -7655,7 +7689,7 @@ describe("a version this build does not read is refused, by name", () => {
     //    read model that is missing an event without saying so.
     const rebuilt = caught(() => reopened.rebuildReadModel());
     expect(rebuilt).toBeInstanceOf(LedgerIntegrityError);
-    expect(String(rebuilt)).toContain("2.9.0");
+    expect(String(rebuilt)).toContain("2.10.0");
   });
 
   it("keeps the general message for every other way a row can fail the contract", () => {
@@ -7702,9 +7736,10 @@ describe("a version this build does not read is refused, by name", () => {
     // identity: three supported-but-not-current members, four in the loop.
     // P-32/captura B moved it again (ADR 0089), for an identity: four
     // supported-but-not-current members, five in the loop. P-06/B and P-07
-    // escalón B (ADR 0098, a cohort again) moved it twice more.
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", CONTRACT_VERSION]);
-    expect(CONTRACT_VERSION).toBe("2.8.0");
+    // escalón B (ADR 0098, a cohort again) moved it twice more, and P-15 escalón C
+    // (ADR 0103, a cohort) once more.
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", CONTRACT_VERSION]);
+    expect(CONTRACT_VERSION).toBe("2.9.0");
 
     // The history is fabricated with `restampVersion` rather than taken from a
     // fixture, and the correction matters: there is no recorded `"2.2.0"`
@@ -7776,7 +7811,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7835,7 +7870,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7853,7 +7888,7 @@ describe("a version this build does not read is refused, by name", () => {
     migrated.append(
       responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }),
     );
-    expect(CONTRACT_VERSION).toBe("2.8.0");
+    expect(CONTRACT_VERSION).toBe("2.9.0");
     expect(migrated.listEvents().events.at(-1)?.event.contractVersion).toBe(CONTRACT_VERSION);
     expect(migrated.getResponseOccurrenceForPrompt("po-1")?.occurrenceId).toBe("ro-1");
     expect(migrated.rebuildReadModel().replayedEvents).toBe(6);
@@ -7886,7 +7921,7 @@ describe("a version this build does not read is refused, by name", () => {
 
       const migrated = open(path);
       expect(migrated.status().migrations.map((migration) => migration.version), version).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
       ]);
       expect(
         migrated.listEvents().events.map((record) => record.event.contractVersion),
@@ -8036,7 +8071,7 @@ describe("migration 11 applies whole, over a ledger that already has a history",
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
     ]);
 
     // Reads still answer, with the same rows and the same head.
@@ -9100,7 +9135,7 @@ function segmentRecord(input: SegmentInput = {}): Record<string, unknown> {
     modelResolutionStatus: "RESOLVED",
     modelVersionId: "claude-opus-5-20260101",
     accountId: input.accountId ?? "acct-1",
-    transportKind: "cli",
+    transportKind: "CLI_SUBSCRIPTION",
     capabilityPolicyVersion: "policy-1",
     ...(input.overrides ?? {}),
   };
@@ -9198,11 +9233,75 @@ interface DispatchInput {
   readonly attemptNumber?: number;
   readonly attempt?: number;
   readonly occurredAt?: string;
+  /**
+   * The price pin (P-15 escalón C, ADR 0103). The fixture catalog's version 1 by
+   * default, because the version in force requires one; `null` writes none, and a
+   * record writes exactly the keys it holds, so a drill can write a present-invalid
+   * one.
+   */
+  readonly pin?: Record<string, unknown> | null;
+}
+
+/**
+ * The fixture price catalog every dispatch below is pinned to (P-15 escalón C).
+ *
+ * From 2.9.0 a delivery names the catalog version in force at its instant, and one
+ * that covers its segment, or the door refuses it. So the fixtures that deliver an
+ * effect publish one first: the segment's model version registered under its
+ * provider, then version 1 of a `PRICE_TABLE` pricing that model on the segment's
+ * transport from before `EFFECT_AT`, with no end. The price is fixture data, and
+ * never zero.
+ */
+const FIXTURE_CATALOG = "catalog-fixture";
+const FIXTURE_MODEL_VERSION = "claude-opus-5-20260101";
+const FIXTURE_CATALOG_FROM = "2026-01-01T00:00:00.000Z";
+const FIXTURE_PIN = { catalogDocumentId: FIXTURE_CATALOG, catalogVersion: 1 } as const;
+/** The content digests of the two fixture catalog documents, as the demotions recognize them. */
+const FIXTURE_CATALOG_DIGESTS: readonly string[] = ["6".repeat(64), "5".repeat(64)];
+
+function plantFixtureCatalog(ledger: Ledger): void {
+  if (ledger.getVigentCatalogPin(FIXTURE_CATALOG, EFFECT_AT) !== null) return;
+  ledger.appendRegistryEvent(
+    makeModelVersionDocument(FIXTURE_MODEL_VERSION, {
+      eventId: "c0c0c0c0-0000-4000-8000-00000000c001",
+      contentDigest: "6".repeat(64),
+      payload: modelVersionPayload({ provider: "anthropic" }),
+      effectiveFrom: FIXTURE_CATALOG_FROM,
+      occurredAt: FIXTURE_CATALOG_FROM,
+      recordedAt: FIXTURE_CATALOG_FROM,
+    }),
+  );
+  ledger.appendRegistryEvent(
+    makeRegistryDocument({
+      eventId: "c0c0c0c0-0000-4000-8000-00000000c002",
+      documentKind: "PRICE_TABLE",
+      documentId: FIXTURE_CATALOG,
+      contentDigest: "5".repeat(64),
+      effectiveFrom: FIXTURE_CATALOG_FROM,
+      occurredAt: FIXTURE_CATALOG_FROM,
+      recordedAt: FIXTURE_CATALOG_FROM,
+      payload: {
+        intervals: [
+          {
+            provider: "anthropic",
+            modelVersionId: FIXTURE_MODEL_VERSION,
+            transportKind: "CLI_SUBSCRIPTION",
+            tokenClass: "input",
+            currency: "USD",
+            effectiveFrom: FIXTURE_CATALOG_FROM,
+            effectiveTo: null,
+            pricePerMillionNanos: 15_000_000_000,
+          },
+        ],
+      },
+    }),
+  );
 }
 
 /** One `DISPATCH_INTENDED` event: the delivery, and the segment it runs on. */
 function dispatchIntention(input: DispatchInput): Record<string, unknown> {
   const attemptOrdinal = input.attemptOrdinal ?? 1;
+  const pin = input.pin === undefined ? FIXTURE_PIN : input.pin;
   return makeEvent({
     taskId: input.taskId,
     attempt: input.attempt ?? 1,
@@ -9219,6 +9318,7 @@ function dispatchIntention(input: DispatchInput): Record<string, unknown> {
         dispatchAttemptId: input.dispatchAttemptId ?? "dsp-" + String(attemptOrdinal),
         effectId: input.effectId,
         attemptOrdinal,
+        ...(pin ?? {}),
       },
     },
   });
@@ -9283,6 +9383,7 @@ function seedOpenAttempt(
   invocationId = "inv-1",
 ): void {
   plantEnvelopeReference(ledger);
+  plantFixtureCatalog(ledger);
   ledger.append(
     attemptOpening({ taskId, attempt: 1, transitionId: "open", invocationId }),
   );
@@ -11244,6 +11345,7 @@ describe("an answer keeps its origin (execution §8.2)", () => {
     // the same task, and an answer to attempt 1's prompt recorded there.
     const ledger = open(temporaryDatabase());
     plantEnvelopeReference(ledger);
+    plantFixtureCatalog(ledger);
     const taskId = randomUUID();
     const revisionId = randomUUID();
     ledger.append(
@@ -13252,7 +13354,7 @@ describe("migration 15 rebuilds the registry stream and changes no row (N-P36A-1
     const migrated = open(path);
     // Fifteen applies over the history at fourteen, and sixteen through nineteen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(ARTIFACT_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(DISPATCH_CATALOG_PIN_MIGRATION);
     const report = migrated.verifyIntegrity();
     expect(report.problems).toEqual([]);
     expect(report.coverage.find((entry) => entry.sourceStream === "registry_events")?.checkedThroughSequence).toBe(3);
@@ -14435,7 +14537,7 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
       expect(migrated.status().migrations.map((migration) => migration.version), version).toContain(
         TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
       );
-      expect(migrated.status().migrations.at(-1)?.version, version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
+      expect(migrated.status().migrations.at(-1)?.version, version).toBe(DISPATCH_CATALOG_PIN_MIGRATION);
       expect(readRevisions(path).map((row) => [row.contract_version, row.envelope_artifact_reference_id]), version).toEqual([
         [version, null],
         [version, null],
@@ -14470,8 +14572,8 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
     expect(stale.message).toContain("2.4.0");
     // P-32/captura B moved the version in force on to 2.6.0 (ADR 0089); the
     // cohort's rule reads every version after the closed list the same way.
-    expect(CONTRACT_VERSION).toBe("2.8.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0"]);
+    expect(CONTRACT_VERSION).toBe("2.9.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0"]);
     ledger.close();
   });
 });
@@ -14887,7 +14989,7 @@ describe("migration 17 lands whole over a registry that already holds model vers
     const migrated = open(path);
     // Seventeen re-applies, and eighteen and nineteen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(MODEL_VERSION_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(DISPATCH_CATALOG_PIN_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
 
@@ -15025,7 +15127,7 @@ describe("migration 18 gives the initiative projection its registration columns 
 
     const migrated = open(path);
     // Nineteen re-applied after it (P-14 C): the rewind undid both.
-    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(DISPATCH_CATALOG_PIN_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     expect(readInitiativeColumns(path)).toEqual(before.rows);
@@ -15270,7 +15372,7 @@ describe("a task's client key has one home, folded from its intake (P-14 C)", ()
     });
 
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(DISPATCH_CATALOG_PIN_MIGRATION);
     expect(readSubmissionRows(path)).toEqual(rows);
     expect(migrated.getTask(taskId)).toEqual(task);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
@@ -16169,7 +16271,7 @@ describe("usage is a declared stream and a measured observation, and the door se
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(USAGE_CAPTURE_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(DISPATCH_CATALOG_PIN_MIGRATION);
     expect(usageDump(path)).toBe(live);
     expect(settlementsOf(path, secondEffect)).toEqual([
       expect.objectContaining({ revision: 1, status: "UNKNOWN", sequence: dispatch.sequence, computedAt: dispatch.event.recordedAt }),
@@ -16206,9 +16308,9 @@ describe("usage is a declared stream and a measured observation, and the door se
       reopened.append({ ...usageStream({ taskId: randomUUID(), transitionId: "stale" }), contractVersion: "2.5.0" }),
     );
     expect(stale.path).toBe("contractVersion");
-    expect(stale.message).toContain("2.8.0");
+    expect(stale.message).toContain(CONTRACT_VERSION);
     expect(stale.message).toContain("2.5.0");
-    expect(CONTRACT_VERSION).toBe("2.8.0");
+    expect(CONTRACT_VERSION).toBe("2.9.0");
     expect(settlementsOf(path, effectId)).toHaveLength(1);
     expect(reopened.verifyIntegrity().ok).toBe(true);
   });
@@ -16842,7 +16944,7 @@ describe("migration 21 lands whole over a registry that already holds price cata
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(PRICE_INTERVAL_CATALOG_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(DISPATCH_CATALOG_PIN_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
 
@@ -16927,7 +17029,7 @@ describe("migration 21 lands whole over a registry that already holds price cata
     });
 
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(DISPATCH_CATALOG_PIN_MIGRATION);
     expect(migrated.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 2 })).toEqual([]);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     expect(migrated.rebuildReadModel().priceIntervalRows).toBe(3);
@@ -16982,7 +17084,7 @@ function settleWith(
  * alone: a `2.7.0` revision still names its envelope, and a planted RESPONSE
  * reference that nothing names any more is harmless. The caller rebuilds.
  */
-function demoteResultCohort(path: string, version = "2.7.0"): void {
+function demoteResultCohort(path: string, version = "2.7.0", options: { readonly keepPin?: boolean } = {}): void {
   withRawDatabase(path, (raw) => {
     const anchored = raw
       .prepare("SELECT COUNT(*) AS n FROM control_plane_events WHERE causation_sha256 IS NOT NULL")
@@ -17016,6 +17118,7 @@ function demoteResultCohort(path: string, version = "2.7.0"): void {
         delete (outcome as Record<string, unknown>)["resultArtifactReferenceId"];
         delete (outcome as Record<string, unknown>)["resultSha256"];
       }
+      if (options.keepPin !== true) stripDispatchPin(decoded["payload"] as Record<string, unknown>);
       const rewritten = canonicalJsonStringify(decoded);
       const digest = chainDigest(previous, rewritten);
       rewrite.run(rewritten, decoded["contractVersion"], previous, digest, row.sequence);
@@ -17026,7 +17129,35 @@ function demoteResultCohort(path: string, version = "2.7.0"): void {
       .prepare("UPDATE projection_watermark SET source_head_sha256 = ? WHERE source_stream = ?")
       .run(previous, "control_plane_events");
     for (const sql of streamTriggers) raw.exec(sql);
+    if (options.keepPin !== true) demoteDispatchRows(raw, version);
   });
+}
+
+/**
+ * The two pin keys taken off a delivery's payload, for the demotion fixtures: no
+ * build before 2.9.0 wrote them (P-15 escalón C, ADR 0103).
+ */
+function stripDispatchPin(payload: Record<string, unknown>): void {
+  const dispatch = payload["dispatch"];
+  if (typeof dispatch === "object" && dispatch !== null) {
+    delete (dispatch as Record<string, unknown>)["catalogDocumentId"];
+    delete (dispatch as Record<string, unknown>)["catalogVersion"];
+  }
+}
+
+/**
+ * The delivery rows a demoted history now states: the version it was restamped
+ * with and no pin. Skipped on a base without migration 23's columns.
+ */
+function demoteDispatchRows(raw: Database.Database, version: string): void {
+  const columns = raw.prepare("PRAGMA table_info(dispatch_attempt_read_model)").all() as { readonly name: string }[];
+  if (!columns.some((column) => column.name === "dispatch_contract_version")) return;
+  raw
+    .prepare(
+      "UPDATE dispatch_attempt_read_model SET dispatch_contract_version = ?, catalog_document_id = NULL, " +
+        "catalog_version = NULL",
+    )
+    .run(version);
 }
 
 /** A ledger whose one effect ended FAILED naming a result (P-P07B-2). */
@@ -17061,7 +17192,7 @@ describe("an effect records its result by reference, with its outcome (P-07 esca
       resultArtifactReferenceId: RESULT_REFERENCE,
       resultSha256: RESULT_DIGEST,
     });
-    expect(CONTRACT_VERSION).toBe("2.8.0");
+    expect(CONTRACT_VERSION).toBe("2.9.0");
     expect(ledger.verifyIntegrity().ok).toBe(true);
     ledger.close();
   });
@@ -17132,7 +17263,7 @@ describe("an effect records its result by reference, with its outcome (P-07 esca
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(EFFECT_RESULT_REFERENCE_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(DISPATCH_CATALOG_PIN_MIGRATION);
     expect(migrated.getEffect(effectId)?.outcomeContractVersion).toBe("2.7.0");
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
@@ -17209,7 +17340,7 @@ describe("an effect records its result by reference, with its outcome (P-07 esca
     const before = ledger.listEvents({ limit: 1000 }).events.length;
     const refused = refusalOf(() => ledger.append(settleWith(taskId, "settle-1", "SUCCEEDED")));
     expect(refused.path).toBe("payload.outcome.resultArtifactReferenceId");
-    expect(refused.message).toContain("a SUCCEEDED outcome of contract version 2.8.0 names its result");
+    expect(refused.message).toContain("a SUCCEEDED outcome of contract version " + CONTRACT_VERSION + " names its result");
     expect(ledger.listEvents({ limit: 1000 }).events.length).toBe(before);
     expect(ledger.getEffect(effectId)?.outcomeStatus).toBeNull();
     ledger.close();
@@ -17364,7 +17495,7 @@ describe("an effect records its result by reference, with its outcome (P-07 esca
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(EFFECT_RESULT_REFERENCE_MIGRATION);
     });
     const reopened = open(again);
-    expect(reopened.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
+    expect(reopened.status().migrations.at(-1)?.version).toBe(DISPATCH_CATALOG_PIN_MIGRATION);
     // A 2.8.0 SUCCEEDED gets its version AND its pair back from its own event,
     // so the rows equal what the fold computes and the replay agrees.
     expect(effectRows(again).map((row) => [row["outcome_contract_version"], row["result_sha256"]])).toEqual([
@@ -17380,7 +17511,463 @@ describe("an effect records its result by reference, with its outcome (P-07 esca
     seedDelivery(ledger, taskId);
     const stale = refusalOf(() => ledger.append({ ...settleWith(taskId, "settle-1", "FAILED"), contractVersion: "2.7.0" }));
     expect(stale.path).toBe("contractVersion");
-    expect(stale.message).toContain("2.8.0");
+    expect(stale.message).toContain(CONTRACT_VERSION);
+    ledger.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón C — a delivery pins the price catalog version it will be valued
+// against, before any spend (ADR 0103; adjudication v2 C3)
+// ---------------------------------------------------------------------------
+
+/** A second catalog document of the fixture's model, for the vigente drills. */
+const VIGENT_CATALOG = "catalog-vigente";
+const VIGENT_T0 = "2026-06-01T00:00:00.000Z";
+const VIGENT_T1 = "2026-08-01T00:00:00.000Z";
+
+/** One interval of the fixture's model, provider and transport. */
+function fixtureInterval(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    provider: "anthropic",
+    modelVersionId: FIXTURE_MODEL_VERSION,
+    transportKind: "CLI_SUBSCRIPTION",
+    tokenClass: "input",
+    currency: "USD",
+    effectiveFrom: FIXTURE_CATALOG_FROM,
+    effectiveTo: null,
+    pricePerMillionNanos: 15_000_000_000,
+    ...overrides,
+  };
+}
+
+/** Publish one version of a PRICE_TABLE document through the registry door. */
+function publishCatalogVersion(
+  ledger: Ledger,
+  documentId: string,
+  version: number,
+  effectiveFrom: string,
+  intervals: readonly Record<string, unknown>[] = [fixtureInterval()],
+): void {
+  ledger.appendRegistryEvent(
+    makeRegistryDocument({
+      documentKind: "PRICE_TABLE",
+      documentId,
+      documentVersion: version,
+      ...(version === 1 ? {} : { parentDocumentVersion: version - 1 }),
+      contentDigest: String(version).repeat(64).slice(0, 64),
+      effectiveFrom,
+      occurredAt: effectiveFrom,
+      recordedAt: effectiveFrom,
+      payload: { intervals },
+    }),
+  );
+}
+
+/** A ledger with an open attempt and its first effect intended, and no delivery yet. */
+function seedEffectOnly(ledger: Ledger, taskId: string): string {
+  seedOpenAttempt(ledger, taskId);
+  ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+  return firstEffectId(taskId);
+}
+
+/** The delivery rows of a closed ledger, every column. */
+function dispatchRows(path: string): readonly Record<string, unknown>[] {
+  return readRows(path, "SELECT * FROM dispatch_attempt_read_model ORDER BY dispatch_attempt_id");
+}
+
+describe("a delivery pins the catalog version it will be valued against (P-15 escalón C, ADR 0103)", () => {
+  it("PC-C2: a 2.9.0 delivery with the vigente, covering pin lands with its version and pin, and replays", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedEffectOnly(ledger, taskId);
+    const intention = dispatchIntention({ taskId, transitionId: "dispatch-1", effectId });
+    expect(ledger.append(intention).inserted).toBe(true);
+    expect(ledger.listDispatchAttempts(effectId)[0]).toMatchObject({
+      dispatchContractVersion: CONTRACT_VERSION,
+      catalogDocumentId: FIXTURE_CATALOG,
+      catalogVersion: 1,
+    });
+    expect(CONTRACT_VERSION).toBe("2.9.0");
+    const count = ledger.status().eventCount;
+    expect(ledger.append(intention).inserted).toBe(false);
+    expect(ledger.status().eventCount).toBe(count);
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    const path = ledger.path;
+    ledger.close();
+    expect(dispatchRows(path).map((row) => [row["dispatch_contract_version"], row["catalog_document_id"], row["catalog_version"]])).toEqual([
+      ["2.9.0", FIXTURE_CATALOG, 1],
+    ]);
+  });
+
+  it("PC-C3: the version in force, and only it — before, between and after two versions", () => {
+    const cases: readonly (readonly [string, number | null])[] = [
+      ["2026-05-01T00:00:00.000Z", null],
+      [VIGENT_T0, 1],
+      ["2026-07-01T00:00:00.000Z", 1],
+      [VIGENT_T1, 2],
+      [EFFECT_AT, 2],
+    ];
+    for (const [instant, vigent] of cases) {
+      for (const pinned of [1, 2]) {
+        const ledger = open(temporaryDatabase());
+        const taskId = randomUUID();
+        const effectId = seedEffectOnly(ledger, taskId);
+        publishCatalogVersion(ledger, VIGENT_CATALOG, 1, VIGENT_T0, [fixtureInterval({ effectiveFrom: VIGENT_T0 })]);
+        publishCatalogVersion(ledger, VIGENT_CATALOG, 2, VIGENT_T1, [fixtureInterval({ effectiveFrom: VIGENT_T1 })]);
+        expect(ledger.getVigentCatalogPin(VIGENT_CATALOG, instant)).toEqual(
+          vigent === null ? null : { catalogDocumentId: VIGENT_CATALOG, catalogVersion: vigent },
+        );
+        const before = ledger.status();
+        const append = (): unknown =>
+          ledger.append(
+            dispatchIntention({
+              taskId,
+              transitionId: "dispatch-1",
+              effectId,
+              occurredAt: instant,
+              pin: { catalogDocumentId: VIGENT_CATALOG, catalogVersion: pinned },
+            }),
+          );
+        if (vigent === pinned) {
+          expect(append(), instant + " v" + String(pinned)).toMatchObject({ inserted: true });
+        } else {
+          const refused = refusalOf(append);
+          expect(refused.path, instant + " v" + String(pinned)).toBe("payload.dispatch.catalogVersion");
+          expect(refused.message).toContain(instant);
+          if (vigent !== null) expect(refused.message).toContain("in force at " + instant + " is " + String(vigent));
+          expect(ledger.status().eventCount).toBe(before.eventCount);
+          expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
+        }
+        ledger.close();
+      }
+    }
+  });
+
+  it("PC-C4: a ledger at 22 holding a 2.8.0 delivery upgrades, the version is written from its event, and a rebuild agrees", () => {
+    const ledger = open(temporaryDatabase());
+    seedDelivery(ledger, randomUUID());
+    const path = ledger.path;
+    ledger.close();
+    demoteResultCohort(path, "2.8.0");
+    const demoted = open(path);
+    demoted.rebuildReadModel();
+    demoted.close();
+    const control = temporaryDatabase();
+    copyFileSync(path, control);
+
+    withRawDatabase(path, (raw) => {
+      dropDispatchCatalogPin(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(DISPATCH_CATALOG_PIN_MIGRATION);
+    });
+    const migrated = open(path);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(DISPATCH_CATALOG_PIN_MIGRATION);
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+    migrated.close();
+    const upgraded = dispatchRows(path);
+    expect(upgraded.map((row) => [row["dispatch_contract_version"], row["catalog_document_id"], row["catalog_version"]])).toEqual([
+      ["2.8.0", null, null],
+    ]);
+    const rebuilt = open(path);
+    rebuilt.rebuildReadModel();
+    rebuilt.close();
+    expect(dispatchRows(path)).toEqual(upgraded);
+
+    // The control of the control: the same SQL without the backfill leaves the
+    // version NULL, and the integrity replay says so.
+    withRawDatabase(control, (raw) => {
+      dropDispatchCatalogPin(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(DISPATCH_CATALOG_PIN_MIGRATION);
+      const twentyThird = MIGRATIONS.filter((migration) => migration.version === DISPATCH_CATALOG_PIN_MIGRATION);
+      raw.transaction((): void => {
+        applyMigrations(raw, twentyThird, EFFECT_AT, {});
+      }).immediate();
+    });
+    const unbackfilled = open(control);
+    expect(unbackfilled.verifyIntegrity().ok).toBe(false);
+    unbackfilled.close();
+    expect(dispatchRows(control).map((row) => row["dispatch_contract_version"])).toEqual([null]);
+  });
+
+  it("N-C-1: a 2.9.0 delivery with no pin is refused, required from 2.9.0, with zero delta", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedEffectOnly(ledger, taskId);
+    const before = ledger.status();
+    const refused = refusalOf(() => ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId, pin: null })));
+    expect(refused.path).toBe("payload.dispatch.catalogDocumentId");
+    expect(refused.message).toContain("required from 2.9.0");
+    expect(ledger.status().eventCount).toBe(before.eventCount);
+    expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
+    ledger.close();
+  });
+
+  it("N-C-2: a 2.8.0 delivery that carries a pin is refused by the fold, where no door stands", () => {
+    const ledger = open(temporaryDatabase());
+    seedDelivery(ledger, randomUUID());
+    const path = ledger.path;
+    ledger.close();
+    // The history restamped 2.8.0 with the pin kept: a stored history no build of
+    // that contract could write. The door admits only the version in force, so the
+    // fold is where it is met.
+    demoteResultCohort(path, "2.8.0", { keepPin: true });
+    const reopened = open(path);
+    const refused = caught(() => reopened.rebuildReadModel());
+    expect(refused).toBeInstanceOf(LedgerValidationError);
+    expect(String(refused)).toContain("a dispatch of contract version 2.8.0 carries no price pin");
+    reopened.close();
+  });
+
+  it("N-C-3 and N-C-4: half a pair, and every present-invalid value, refused by name at the key, never read as absent", () => {
+    const documents: readonly unknown[] = [undefined, null, "", 1, {}, FIXTURE_CATALOG];
+    const versions: readonly unknown[] = [undefined, null, 0, -1, "1", 1.5, 2 ** 53, 1];
+    for (const document of documents) {
+      for (const version of versions) {
+        const lawfulDocument = document === FIXTURE_CATALOG;
+        const lawfulVersion = version === 1;
+        if (document === undefined && version === undefined) continue; // N-C-1
+        if (lawfulDocument && lawfulVersion) continue; // PC-C2
+        const ledger = open(temporaryDatabase());
+        const taskId = randomUUID();
+        const effectId = seedEffectOnly(ledger, taskId);
+        const pin: Record<string, unknown> = {};
+        if (document !== undefined) pin["catalogDocumentId"] = document;
+        if (version !== undefined) pin["catalogVersion"] = version;
+        const before = ledger.status().eventCount;
+        const candidate = dispatchIntention({ taskId, transitionId: "dispatch-1", effectId, pin });
+        const refused = refusalOf(() => ledger.append(candidate));
+        const cell = JSON.stringify([document ?? "absent", version ?? "absent"]);
+        // The door and the fold agree cell for cell: the door's refusal is the
+        // reader's own, which is what the fold throws on the same event.
+        const reading = dispatchPinReading(ControlPlaneEvent.parse(candidate));
+        expect({ cell, refused }).toEqual({
+          cell,
+          refused: reading?.kind === "refused" ? { path: reading.path, message: reading.message } : "the reader admits it",
+        });
+        // The document is read first; a lawful or absent document yields the version's refusal.
+        const invalidDocument = document !== undefined && !lawfulDocument;
+        const invalidVersion = version !== undefined && !lawfulVersion;
+        const expectedPath = invalidDocument
+          ? "payload.dispatch.catalogDocumentId"
+          : invalidVersion
+            ? "payload.dispatch.catalogVersion"
+            : document === undefined
+              ? "payload.dispatch.catalogDocumentId"
+              : "payload.dispatch.catalogVersion";
+        expect({ cell, path: refused.path }).toEqual({ cell, path: expectedPath });
+        expect(refused.message, cell).not.toContain("does not constitute");
+        expect(ledger.status().eventCount).toBe(before);
+        ledger.close();
+      }
+    }
+  });
+
+  it("N-C-5: a pin that names no PRICE_TABLE, or a version never published, is refused", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedEffectOnly(ledger, taskId);
+    const notAPriceTable = refusalOf(() =>
+      ledger.append(
+        dispatchIntention({ taskId, transitionId: "dispatch-1", effectId, pin: { catalogDocumentId: FIXTURE_MODEL_VERSION, catalogVersion: 1 } }),
+      ),
+    );
+    expect(notAPriceTable.path).toBe("payload.dispatch.catalogDocumentId");
+    expect(notAPriceTable.message).toContain("does not hold as a published PRICE_TABLE");
+    const neverPublished = refusalOf(() =>
+      ledger.append(
+        dispatchIntention({ taskId, transitionId: "dispatch-1", effectId, pin: { catalogDocumentId: FIXTURE_CATALOG, catalogVersion: 7 } }),
+      ),
+    );
+    expect(neverPublished.path).toBe("payload.dispatch.catalogVersion");
+    expect(neverPublished.message).toContain("never published");
+    ledger.close();
+  });
+
+  it("N-C-6 and N-C-7: a version not yet in force, and an older one while a newer rules, are refused naming the instant", () => {
+    // Not yet in force: version 2 takes effect after the dispatch instant.
+    const later = open(temporaryDatabase());
+    const laterTask = randomUUID();
+    const laterEffect = seedEffectOnly(later, laterTask);
+    publishCatalogVersion(later, FIXTURE_CATALOG, 2, "2026-12-01T00:00:00.000Z");
+    const notYet = refusalOf(() =>
+      later.append(dispatchIntention({ taskId: laterTask, transitionId: "dispatch-1", effectId: laterEffect, pin: { catalogDocumentId: FIXTURE_CATALOG, catalogVersion: 2 } })),
+    );
+    expect(notYet.message).toContain("in force at " + EFFECT_AT + " is 1");
+    later.close();
+    // Older while newer rules: version 2 took effect before the dispatch instant.
+    const newer = open(temporaryDatabase());
+    const newerTask = randomUUID();
+    const newerEffect = seedEffectOnly(newer, newerTask);
+    publishCatalogVersion(newer, FIXTURE_CATALOG, 2, "2026-08-01T00:00:00.000Z");
+    const older = refusalOf(() =>
+      newer.append(dispatchIntention({ taskId: newerTask, transitionId: "dispatch-1", effectId: newerEffect })),
+    );
+    expect(older.path).toBe("payload.dispatch.catalogVersion");
+    expect(older.message).toContain("in force at " + EFFECT_AT + " is 2");
+    newer.close();
+  });
+
+  it("N-C-8 and N-C-9: a vigente version that prices nothing for the segment, and a segment with no resolved model, are refused (c)", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedEffectOnly(ledger, taskId);
+    // Another transport on the delivery's own segment: no interval of version 1 names it.
+    const uncovered = refusalOf(() =>
+      ledger.append(
+        dispatchIntention({
+          taskId,
+          transitionId: "dispatch-1",
+          effectId,
+          segment: segmentRecord({ routeSegmentId: "seg-api", segmentNumber: 2, predecessorSegmentId: "seg-1", overrides: { transportKind: "API_KEY" } }),
+        }),
+      ),
+    );
+    expect(uncovered.path).toBe("payload.dispatch.catalogVersion");
+    expect(uncovered.message).toContain("prices no interval");
+    // A segment whose model version is not resolved is never covered (Q-C1).
+    const unresolved = refusalOf(() =>
+      ledger.append(
+        dispatchIntention({
+          taskId,
+          transitionId: "dispatch-1",
+          effectId,
+          segment: segmentRecord({
+            routeSegmentId: "seg-unresolved",
+            segmentNumber: 2,
+            predecessorSegmentId: "seg-1",
+            overrides: { modelResolutionStatus: "UNKNOWN", modelVersionId: null },
+          }),
+        }),
+      ),
+    );
+    expect(unresolved.path).toBe("payload.dispatch.catalogVersion");
+    expect(unresolved.message).toContain("names no resolved model version");
+    ledger.close();
+  });
+
+  it("N-C-10: the window is half-open — its start covers, its end does not", () => {
+    for (const [effectiveTo, admitted] of [
+      [EFFECT_AT, false],
+      ["2026-09-12T09:00:00.001Z", true],
+    ] as const) {
+      const ledger = open(temporaryDatabase());
+      const taskId = randomUUID();
+      const effectId = seedEffectOnly(ledger, taskId);
+      publishCatalogVersion(ledger, VIGENT_CATALOG, 1, VIGENT_T0, [fixtureInterval({ effectiveFrom: VIGENT_T0, effectiveTo })]);
+      const append = (): unknown =>
+        ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId, pin: { catalogDocumentId: VIGENT_CATALOG, catalogVersion: 1 } }));
+      if (admitted) expect(append()).toMatchObject({ inserted: true });
+      else expect(refusalOf(append).message).toContain("prices no interval");
+      ledger.close();
+    }
+    // And the start is covered: an instant equal to the interval's start lands.
+    const start = open(temporaryDatabase());
+    const startTask = randomUUID();
+    const startEffect = seedEffectOnly(start, startTask);
+    publishCatalogVersion(start, VIGENT_CATALOG, 1, VIGENT_T0, [fixtureInterval({ effectiveFrom: EFFECT_AT })]);
+    expect(
+      start.append(dispatchIntention({ taskId: startTask, transitionId: "dispatch-1", effectId: startEffect, pin: { catalogDocumentId: VIGENT_CATALOG, catalogVersion: 1 } })),
+    ).toMatchObject({ inserted: true });
+    start.close();
+  });
+
+  it("N-C-11: the same delivery with another pin is the existing \"intended once\" conflict", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedEffectOnly(ledger, taskId);
+    publishCatalogVersion(ledger, VIGENT_CATALOG, 1, VIGENT_T0, [fixtureInterval({ effectiveFrom: VIGENT_T0 })]);
+    ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId }));
+    const refused = refusalOf(() =>
+      ledger.append(
+        dispatchIntention({ taskId, transitionId: "dispatch-1b", effectId, pin: { catalogDocumentId: VIGENT_CATALOG, catalogVersion: 1 } }),
+      ),
+    );
+    expect(refused.path).toBe("payload.dispatch.dispatchAttemptId");
+    expect(refused.message).toContain("a delivery is intended once");
+    ledger.close();
+  });
+
+  it("N-C-12: a delivery instant in any other spelling is refused at occurredAt before any version is selected", () => {
+    // The selector compares instants as text, which is time order only in the
+    // canonical form. The repro (verifier F1): this offset instant is
+    // 2026-07-31T23:00Z, when version 1 rules, yet as text it sorts after version
+    // 2's start, so a textual selection would refuse the right pin and admit the
+    // wrong one. It must be refused for both pins, never selected over.
+    const repro = "2026-08-01T01:00:00+02:00";
+    const spellings = [repro, "2026-09-12T09:00:00Z", "2026-09-12T09:00:00.000z", "2026-09-12T11:00:00.000+02:00"];
+    for (const instant of spellings) {
+      for (const pinned of [1, 2]) {
+        const ledger = open(temporaryDatabase());
+        const taskId = randomUUID();
+        const effectId = seedEffectOnly(ledger, taskId);
+        publishCatalogVersion(ledger, VIGENT_CATALOG, 1, VIGENT_T0, [fixtureInterval({ effectiveFrom: VIGENT_T0 })]);
+        publishCatalogVersion(ledger, VIGENT_CATALOG, 2, VIGENT_T1, [fixtureInterval({ effectiveFrom: VIGENT_T1 })]);
+        const before = ledger.status();
+        const refused = refusalOf(() =>
+          ledger.append(
+            dispatchIntention({
+              taskId,
+              transitionId: "dispatch-1",
+              effectId,
+              occurredAt: instant,
+              pin: { catalogDocumentId: VIGENT_CATALOG, catalogVersion: pinned },
+            }),
+          ),
+        );
+        expect(refused.path, instant + " v" + String(pinned)).toBe("occurredAt");
+        expect(refused.message, instant).not.toContain("in force at");
+        expect(ledger.status().eventCount).toBe(before.eventCount);
+        expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
+        // The query refuses the same spellings rather than answering them.
+        expect(caught(() => ledger.getVigentCatalogPin(VIGENT_CATALOG, instant)), instant).toBeInstanceOf(LedgerQueryError);
+        ledger.close();
+      }
+    }
+    // The contract admits the offset and the no-millis forms, so the door is what
+    // refuses them: the control that the refusal above is the ledger's, not the parse's.
+    for (const instant of [repro, "2026-09-12T09:00:00Z"]) {
+      expect(ControlPlaneEvent.safeParse(dispatchIntention({ taskId: randomUUID(), transitionId: "d", effectId: "e", occurredAt: instant })).success, instant).toBe(
+        true,
+      );
+    }
+    // Positive control: the same instant in the canonical form selects version 1 and lands.
+    const canonical = new Date(repro).toISOString();
+    expect(canonical).toBe("2026-07-31T23:00:00.000Z");
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedEffectOnly(ledger, taskId);
+    publishCatalogVersion(ledger, VIGENT_CATALOG, 1, VIGENT_T0, [fixtureInterval({ effectiveFrom: VIGENT_T0 })]);
+    publishCatalogVersion(ledger, VIGENT_CATALOG, 2, VIGENT_T1, [fixtureInterval({ effectiveFrom: VIGENT_T1 })]);
+    expect(ledger.getVigentCatalogPin(VIGENT_CATALOG, canonical)).toEqual({ catalogDocumentId: VIGENT_CATALOG, catalogVersion: 1 });
+    const wrong = refusalOf(() =>
+      ledger.append(
+        dispatchIntention({ taskId, transitionId: "dispatch-1", effectId, occurredAt: canonical, pin: { catalogDocumentId: VIGENT_CATALOG, catalogVersion: 2 } }),
+      ),
+    );
+    expect(wrong.message).toContain("in force at " + canonical + " is 1");
+    expect(
+      ledger.append(
+        dispatchIntention({ taskId, transitionId: "dispatch-1", effectId, occurredAt: canonical, pin: { catalogDocumentId: VIGENT_CATALOG, catalogVersion: 1 } }),
+      ),
+    ).toMatchObject({ inserted: true });
+    ledger.close();
+  });
+
+  it("C-R2: two versions sharing an effective instant make the pin ambiguous, refused and never resolved (kept while C precedes R)", () => {
+    // The registry does not forbid the tie today, so it can be planted through its
+    // own door; the selector's pure test is the lasting one (price-catalog suite).
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedEffectOnly(ledger, taskId);
+    publishCatalogVersion(ledger, VIGENT_CATALOG, 1, VIGENT_T0, [fixtureInterval({ effectiveFrom: VIGENT_T0 })]);
+    publishCatalogVersion(ledger, VIGENT_CATALOG, 2, VIGENT_T0, [fixtureInterval({ effectiveFrom: VIGENT_T0 })]);
+    expect(ledger.getVigentCatalogPin(VIGENT_CATALOG, EFFECT_AT)).toBeNull();
+    for (const version of [1, 2]) {
+      const refused = refusalOf(() =>
+        ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId, pin: { catalogDocumentId: VIGENT_CATALOG, catalogVersion: version } })),
+      );
+      expect(refused.message).toContain("versions 1, 2 taking effect at the same instant");
+    }
     ledger.close();
   });
 });

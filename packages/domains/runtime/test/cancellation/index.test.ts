@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { CONTRACT_VERSION, ControlPlaneEvent, buildIdempotencyKey, buildV2IdempotencyKey } from "@acp/contracts";
 import type { Checkpoint, ResolvedRoute, TaskState } from "@acp/contracts";
-import { createCheckpointStore, openLedger } from "@acp/ledger";
+import { canonicalJsonStringify, createCheckpointStore, openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -710,8 +710,19 @@ function sha256(text: string): string {
 }
 
 /** The canonical bytes of the task's last event. */
+/**
+ * The event's canonical bytes with its version restamped "2.8.0", the version the
+ * vectors below were lifted under: P-15 escalón C moved the version in force to
+ * 2.9.0 and that one field only (ADR 0103), so every other byte is held.
+ */
+function restampedAsLifted(canonicalJson: string): string {
+  const event = JSON.parse(canonicalJson) as Record<string, unknown>;
+  event["contractVersion"] = "2.8.0";
+  return canonicalJsonStringify(event);
+}
+
 function lastEventSha(ledger: Ledger, taskId: string): string {
-  return sha256(ledger.listEvents({ taskId, limit: 500 }).events.at(-1)?.canonicalJson ?? "");
+  return sha256(restampedAsLifted(ledger.listEvents({ taskId, limit: 500 }).events.at(-1)?.canonicalJson ?? "{}"));
 }
 
 /**

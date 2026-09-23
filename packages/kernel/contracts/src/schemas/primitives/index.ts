@@ -18,7 +18,7 @@ import { z } from "zod";
  * is a producer whose output nobody can predict. What may hold more than one
  * value is the *reader's* set below.
  */
-export const CONTRACT_VERSION = "2.8.0" as const;
+export const CONTRACT_VERSION = "2.9.0" as const;
 
 /**
  * The contract versions a **reader** accepts (P-18/protocolo A, ADR 0072).
@@ -85,8 +85,22 @@ export const CONTRACT_VERSION = "2.8.0" as const;
  * migration 22 keys that on a closed list of the versions no build before it could
  * stamp with a result. A cohort keyed on a version the producer never moved could not
  * tell the two apart, so the literal moves. `"2.7.0"` joins the others here for ever.
+ *
+ * **Eight members from P-15 escalón C (ADR 0103), on the same reason.** From 2.9.0 a
+ * `DISPATCH_INTENDED` pins the price catalog version it will be valued against, and
+ * migration 23 keys that on a closed list of the seven versions no build before it
+ * could stamp with a pin. `"2.8.0"` joins the others here for ever.
  */
-export const SUPPORTED_CONTRACT_VERSIONS = ["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0"] as const;
+export const SUPPORTED_CONTRACT_VERSIONS = [
+  "2.2.0",
+  "2.3.0",
+  "2.4.0",
+  "2.5.0",
+  "2.6.0",
+  "2.7.0",
+  "2.8.0",
+  "2.9.0",
+] as const;
 
 /**
  * The UTF-8 byte length of a string, browser-safe.

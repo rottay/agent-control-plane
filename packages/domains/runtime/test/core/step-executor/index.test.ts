@@ -30,7 +30,15 @@ import {
   probeEffect,
 } from "../../../src/toy/repository/index.js";
 import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
-import { ATTEMPT_OPENING_STEP, buildEvent, operationForStep } from "../../../src/core/events/index.js";
+import {
+  ATTEMPT_OPENING_STEP,
+  buildDispatchIntentionEvent,
+  buildDispatchTransitionEvent,
+  buildEffectIntentionEvent,
+  buildEvent,
+  operationForStep,
+} from "../../../src/core/events/index.js";
+import type { DispatchTransition, ExecutionSegmentRecord } from "../../../src/core/events/index.js";
 import { SqliteSupervisor } from "../../../src/drivers/sqlite-supervisor/index.js";
 import { deriveInvocation } from "../../../src/submission/index.js";
 import { settleFailure } from "../../../src/failure/index.js";
@@ -1230,7 +1238,7 @@ function segmentRecord(segmentNumber: number, accountId: string): Record<string,
     modelResolutionStatus: "RESOLVED",
     modelVersionId: "claude-opus-5-20260101",
     accountId,
-    transportKind: "cli",
+    transportKind: "CLI_SUBSCRIPTION",
     capabilityPolicyVersion: "policy-1",
   };
 }
@@ -1333,7 +1341,7 @@ function effectIntention(context: BeatContext, transitionId: string, segmentNumb
 function dispatchIntention(context: BeatContext, transitionId: string, effectId: string, attemptOrdinal: number, segmentNumber: number, accountId: string): Record<string, unknown> {
   return executionEvent(context, transitionId, "DISPATCH_INTENDED", {
     segment: segmentRecord(segmentNumber, accountId),
-    dispatch: { dispatchAttemptId: "dsp-" + String(attemptOrdinal), effectId, attemptOrdinal },
+    dispatch: { dispatchAttemptId: "dsp-" + String(attemptOrdinal), effectId, attemptOrdinal, ...FIXTURE_PIN },
   });
 }
 
@@ -1343,9 +1351,80 @@ function dispatchOutcome(context: BeatContext, transitionId: string, dispatchAtt
   });
 }
 
+/**
+ * The fixture price catalog a delivery is pinned to (P-15 escalón C, ADR 0103).
+ *
+ * From 2.9.0 a `DISPATCH_INTENDED` names the catalog version in force at its
+ * instant, and one that covers its segment, or the door refuses it: pre-2.9.0
+ * fixtures had to gain a pin because the version in force now requires one. So the
+ * fixture publishes one through the registry's own door — the segment's model
+ * version registered under its provider, then version 1 of a `PRICE_TABLE` pricing
+ * that model on the segment's transport from before any fixture instant, with no
+ * end. The price is fixture data, and never zero.
+ */
+const FIXTURE_CATALOG = "catalog-fixture";
+const FIXTURE_MODEL_VERSION = "claude-opus-5-20260101";
+const FIXTURE_CATALOG_FROM = "2026-01-01T00:00:00.000Z";
+const FIXTURE_PIN = { catalogDocumentId: FIXTURE_CATALOG, catalogVersion: 1 } as const;
+
+function plantFixtureCatalog(ledger: Ledger): void {
+  if (ledger.getVigentCatalogPin(FIXTURE_CATALOG, FIXTURE_CATALOG_FROM) !== null) return;
+  const document = (
+    eventId: string,
+    documentKind: string,
+    documentId: string,
+    contentDigest: string,
+    payload: Record<string, unknown>,
+  ): Record<string, unknown> => ({
+    contractVersion: CONTRACT_VERSION,
+    eventId,
+    idempotencyKey: documentId + "/1",
+    documentKind,
+    documentId,
+    documentVersion: 1,
+    parentDocumentVersion: null,
+    contentDigest,
+    recordedBy: "kimi/k3/coordinator/01",
+    effectiveFrom: FIXTURE_CATALOG_FROM,
+    occurredAt: FIXTURE_CATALOG_FROM,
+    recordedAt: FIXTURE_CATALOG_FROM,
+    payload,
+  });
+  ledger.appendRegistryEvent(
+    document("c0c0c0c0-0000-4000-8000-00000000c001", "MODEL_VERSION", FIXTURE_MODEL_VERSION, "6".repeat(64), {
+      provider: "anthropic",
+      model: "claude-opus-5",
+      release: "2026-01-01",
+      status: "ACTIVE",
+      contextTokens: 200000,
+      policyVersion: "2026.09.0",
+      deprecatedAt: null,
+      eligibleRoles: ["coordinator", "implementer", "reviewer", "consultant", "verifier"],
+      transports: ["CLI_SUBSCRIPTION"],
+    }),
+  );
+  ledger.appendRegistryEvent(
+    document("c0c0c0c0-0000-4000-8000-00000000c002", "PRICE_TABLE", FIXTURE_CATALOG, "5".repeat(64), {
+      intervals: [
+        {
+          provider: "anthropic",
+          modelVersionId: FIXTURE_MODEL_VERSION,
+          transportKind: "CLI_SUBSCRIPTION",
+          tokenClass: "input",
+          currency: "USD",
+          effectiveFrom: FIXTURE_CATALOG_FROM,
+          effectiveTo: null,
+          pricePerMillionNanos: 15_000_000_000,
+        },
+      ],
+    }),
+  );
+}
+
 /** Open the attempt and walk the real plan into RUNNING, with the effect performed. */
 async function walkIntoRun(name: string, taskId: string): Promise<{ context: BeatContext; ledger: Ledger }> {
   const { context, ledger } = v2ContextFor(name, taskId);
+  plantFixtureCatalog(ledger);
   walkUntil(context, "RUNNING");
   await applyIntentEffect(context, INTENT_STEP);
   expect(ledger.getTask(taskId)?.latestAttemptNumber).toBe(1);
@@ -1574,5 +1653,173 @@ describe("P-15/B N-B-4/N-B-5: a payload coordinate is whole and valid, or the ev
       }
     }
     expect(landed).toEqual(["V1/absent/absent", "V2/valid/valid"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón C: the builders' events land on a real V2 walk (ADR 0103)
+// ---------------------------------------------------------------------------
+
+const BUILT_SEGMENT: ExecutionSegmentRecord = {
+  routeSegmentId: "seg-1",
+  segmentNumber: 1,
+  provider: "anthropic",
+  model: "claude-opus-5",
+  modelResolutionStatus: "RESOLVED",
+  modelVersionId: FIXTURE_MODEL_VERSION,
+  accountId: "acct-1",
+  transportKind: "CLI_SUBSCRIPTION",
+  capabilityPolicyVersion: "policy-1",
+  routingAssignmentId: null,
+  reservationId: null,
+  predecessorSegmentId: null,
+  handoffReason: null,
+  escalatedFromAttempt: null,
+  escalationReason: null,
+  resolvedAt: null,
+};
+
+/** A V2 walk in RUNNING with one effect intended and one delivery intended, both by the builders. */
+async function builtDelivery(name: string, taskId: string): Promise<{ context: BeatContext; ledger: Ledger; effectId: string }> {
+  const { context, ledger } = await walkIntoRun(name, taskId);
+  const state = ledger.getTask(taskId)?.currentState ?? "RUNNING";
+  const effect = buildEffectIntentionEvent({
+    invocation: context.invocation,
+    state,
+    emittedBy: EMITTED_BY,
+    causedBy: null,
+    segment: BUILT_SEGMENT,
+    effect: {
+      operationOrdinal: 0,
+      effectKind: "model_execution",
+      semanticScopeKey: SCOPE,
+      localOperationKey: STEP_KEY,
+      requestContractVersion: "1",
+      requestSha256: requestDigest(context),
+    },
+  });
+  expect(ledger.append(effect).inserted).toBe(true);
+  const effectId = (effect.payload["effect"] as { readonly effectId: string }).effectId;
+  const dispatch = buildDispatchIntentionEvent({
+    invocation: context.invocation,
+    state,
+    emittedBy: EMITTED_BY,
+    causedBy: null,
+    segment: BUILT_SEGMENT,
+    dispatch: { dispatchAttemptId: "dsp-1", effectId, attemptOrdinal: 1, pin: FIXTURE_PIN },
+  });
+  expect(ledger.append(dispatch).inserted).toBe(true);
+  return { context, ledger, effectId };
+}
+
+function transitionOn(context: BeatContext, ledger: Ledger, transition: DispatchTransition) {
+  return buildDispatchTransitionEvent({
+    invocation: context.invocation,
+    state: ledger.getTask(context.invocation.taskId)?.currentState ?? "RUNNING",
+    emittedBy: EMITTED_BY,
+    causedBy: null,
+    transition,
+  });
+}
+
+describe("P-15/C: the effect, dispatch and transition builders land through the real door on a V2 walk", () => {
+  it("PC-C1/PC-C2: the effect and the delivery land as built, the pin with them, and replay", async () => {
+    const taskId = "40404040-4040-4040-8040-4040404040c1";
+    const { context, ledger, effectId } = await builtDelivery("p15c-built", taskId);
+    expect(ledger.getEffect(effectId)).toMatchObject({ effectId, routeSegmentId: "seg-1", operationOrdinal: 0 });
+    expect(ledger.listDispatchAttempts(effectId)[0]).toMatchObject({
+      dispatchAttemptId: "dsp-1",
+      dispatchState: "INTENDED",
+      dispatchContractVersion: "2.9.0",
+      catalogDocumentId: FIXTURE_PIN.catalogDocumentId,
+      catalogVersion: FIXTURE_PIN.catalogVersion,
+    });
+    // The same effect and delivery rebuilt: exact replays.
+    const state = ledger.getTask(taskId)?.currentState ?? "RUNNING";
+    const again = buildDispatchIntentionEvent({
+      invocation: context.invocation,
+      state,
+      emittedBy: EMITTED_BY,
+      causedBy: null,
+      segment: BUILT_SEGMENT,
+      dispatch: { dispatchAttemptId: "dsp-1", effectId, attemptOrdinal: 1, pin: FIXTURE_PIN },
+    });
+    expect(ledger.append(again).inserted).toBe(false);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("C-D2: INTENDED → INFLIGHT → SETTLED lands arm by arm, and the illegal moves are refused in the door's words", async () => {
+    const taskId = "40404040-4040-4040-8040-4040404040c2";
+    const { context, ledger, effectId } = await builtDelivery("p15c-moves", taskId);
+    const inflight = transitionOn(context, ledger, { kind: "INFLIGHT", dispatchAttemptId: "dsp-1", acceptedAt: SUBMITTED_AT, externalHandle: "handle-1" });
+    expect(ledger.append(inflight).inserted).toBe(true);
+    expect(ledger.listDispatchAttempts(effectId)[0]).toMatchObject({ dispatchState: "INFLIGHT", acceptedAt: SUBMITTED_AT, externalHandle: "handle-1" });
+    // INFLIGHT again under another handle: the move is recorded once, under its
+    // own name, so a second acceptance with other content is a conflict.
+    const rehandled = transitionOn(context, ledger, { kind: "INFLIGHT", dispatchAttemptId: "dsp-1", acceptedAt: SUBMITTED_AT, externalHandle: "handle-2" });
+    expect(() => ledger.append(rehandled)).toThrow(LedgerIdempotencyConflictError);
+    const settled = transitionOn(context, ledger, { kind: "SETTLED", dispatchAttemptId: "dsp-1", terminalAt: SUBMITTED_AT, effectOutcomeStatus: "FAILED", result: null });
+    expect(ledger.append(settled).inserted).toBe(true);
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("FAILED");
+    // The recorded INFLIGHT again is a replay of that event, and moves nothing back.
+    const count = ledger.status().eventCount;
+    expect(ledger.append(inflight).inserted).toBe(false);
+    expect(ledger.listDispatchAttempts(effectId)[0]?.dispatchState).toBe("SETTLED");
+    // SETTLED → ABANDONED: a settled delivery moves nowhere.
+    const abandoned = transitionOn(context, ledger, { kind: "ABANDONED", dispatchAttemptId: "dsp-1", terminalAt: SUBMITTED_AT, effectOutcomeStatus: null });
+    expect(() => ledger.append(abandoned)).toThrow(LedgerValidationError);
+    expect(ledger.status().eventCount).toBe(count);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("C-D2: INTENDED → ABANDONED lands with no accepted instant, and nothing moves it after", async () => {
+    const taskId = "40404040-4040-4040-8040-4040404040c3";
+    const { context, ledger, effectId } = await builtDelivery("p15c-abandoned", taskId);
+    const abandoned = transitionOn(context, ledger, { kind: "ABANDONED", dispatchAttemptId: "dsp-1", terminalAt: SUBMITTED_AT, effectOutcomeStatus: null });
+    expect(ledger.append(abandoned).inserted).toBe(true);
+    expect(ledger.listDispatchAttempts(effectId)[0]).toMatchObject({ dispatchState: "ABANDONED", acceptedAt: null, externalHandle: null });
+    const settled = transitionOn(context, ledger, { kind: "SETTLED", dispatchAttemptId: "dsp-1", terminalAt: SUBMITTED_AT, effectOutcomeStatus: "FAILED", result: null });
+    expect(() => ledger.append(settled)).toThrow(LedgerValidationError);
+  });
+
+  it("C-D2 matrix: each arm's fields, present and invalid, are carried as given and refused by the door at the field", async () => {
+    // The builder is typed and carries what it is handed; the door's grammar is
+    // what judges a value (CORR-2). So a present-invalid field never reaches a row,
+    // and a lawful one lands — the builder and the door agree cell by cell.
+    // `null` for the outcome is the builder's own "none" (the key is not written),
+    // so that field's present-invalid values are the ones a caller could hand in.
+    const invalidFor = (field: string): readonly unknown[] => (field === "effectOutcomeStatus" ? ["", 42, "MAYBE"] : [null, "", 42]);
+    const arms: readonly { readonly base: DispatchTransition; readonly fields: readonly string[] }[] = [
+      { base: { kind: "INFLIGHT", dispatchAttemptId: "dsp-1", acceptedAt: SUBMITTED_AT, externalHandle: "handle-1" }, fields: ["acceptedAt", "externalHandle"] },
+      { base: { kind: "ABANDONED", dispatchAttemptId: "dsp-1", terminalAt: SUBMITTED_AT, effectOutcomeStatus: null }, fields: ["terminalAt"] },
+      { base: { kind: "SETTLED", dispatchAttemptId: "dsp-1", terminalAt: SUBMITTED_AT, effectOutcomeStatus: "FAILED", result: null }, fields: ["terminalAt", "effectOutcomeStatus"] },
+    ];
+    let cell = 0;
+    for (const { base, fields } of arms) {
+      for (const field of fields) {
+        for (const value of [...invalidFor(field), (base as unknown as Record<string, unknown>)[field]]) {
+          cell += 1;
+          const taskId = "40404040-4040-4040-8040-40404041" + String(cell).padStart(4, "0");
+          const { context, ledger } = await builtDelivery("p15c-matrix-" + String(cell), taskId);
+          const transition = { ...base, [field]: value } as DispatchTransition;
+          const lawful = value === (base as unknown as Record<string, unknown>)[field];
+          const before = ledger.status().eventCount;
+          const name = base.kind + "." + field + "=" + JSON.stringify(value);
+          let refusal: unknown = null;
+          try {
+            ledger.append(transitionOn(context, ledger, transition));
+          } catch (error) {
+            refusal = error;
+          }
+          if (lawful) {
+            expect({ name, refusal }).toEqual({ name, refusal: null });
+          } else {
+            expect(refusal, name).not.toBeNull();
+            expect(ledger.status().eventCount, name).toBe(before);
+          }
+        }
+      }
+    }
+    expect(cell).toBe(20);
   });
 });

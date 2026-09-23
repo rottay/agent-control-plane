@@ -41,6 +41,9 @@ import {
   effectIdempotencyPreimageV1,
   logicalOperationSha256,
   nextDispatchAttemptProjection,
+  dispatchPinReading,
+  canonicalDispatchBirth,
+  PRE_CATALOG_PIN_CONTRACT_VERSIONS,
   nextEffectProjection,
   nextExecutionRouteSegmentProjection,
   requestSha256,
@@ -2139,7 +2142,7 @@ describe("the three P-18/protocolo C folds are gated and total (execution §4, �
       revisionNumber: 1,
       attemptNumber: 1,
       segment: segment(),
-      dispatch: { dispatchAttemptId: "dsp-1", effectId: "a".repeat(64), attemptOrdinal: 1 },
+      dispatch: { dispatchAttemptId: "dsp-1", effectId: "a".repeat(64), attemptOrdinal: 1, catalogDocumentId: "catalog-fixture", catalogVersion: 1 },
     };
     const dispatch = nextDispatchAttemptProjection(
       executionEvent("DISPATCH_INTENDED", dispatchPayload),
@@ -2296,7 +2299,7 @@ describe("the three P-18/protocolo C folds are gated and total (execution §4, �
         revisionNumber: 1,
         attemptNumber: 1,
         segment: segment(),
-        dispatch: { dispatchAttemptId: "dsp-1", effectId, attemptOrdinal: 1 },
+        dispatch: { dispatchAttemptId: "dsp-1", effectId, attemptOrdinal: 1, catalogDocumentId: "catalog-fixture", catalogVersion: 1 },
       }),
       2,
       EVENT_SHA256,
@@ -2447,7 +2450,7 @@ function snapshotWithDelivery(): ReturnType<typeof createProjectionSnapshot> {
       revisionNumber: 1,
       attemptNumber: 1,
       segment: segment(),
-      dispatch: { dispatchAttemptId: "dsp-1", effectId: OCCURRENCE_EFFECT, attemptOrdinal: 1 },
+      dispatch: { dispatchAttemptId: "dsp-1", effectId: OCCURRENCE_EFFECT, attemptOrdinal: 1, catalogDocumentId: "catalog-fixture", catalogVersion: 1 },
     }),
     2,
     EVENT_SHA256,
@@ -3171,6 +3174,8 @@ describe("the P-18 value types of the projection live in a pure type leaf (CORR-
     expect(declared).toEqual([
       "DispatchOutcomeRecord",
       "DispatchOutcomeReading",
+      // P-15 escalón C: the pin's reading, beside its sibling (ADR 0103).
+      "DispatchPinReading",
       "EffectOutcomeArrival",
       "OccurrenceReading",
       "OccurrenceRefusal",
@@ -3841,7 +3846,7 @@ describe("one capture function folds usage for the door, the rebuild and the mig
       revisionNumber: 1,
       attemptNumber: 1,
       segment: segment(),
-      dispatch: { dispatchAttemptId: "dsp-2", effectId: OCCURRENCE_EFFECT, attemptOrdinal: 2 },
+      dispatch: { dispatchAttemptId: "dsp-2", effectId: OCCURRENCE_EFFECT, attemptOrdinal: 2, catalogDocumentId: "catalog-fixture", catalogVersion: 1 },
     });
     // Never by the ordinal: the question is whether the effect has a revision.
     expect(nextUsageCapture(usageSnapshotView(snapshot), second, 3, "f".repeat(64))).toBeNull();
@@ -4054,5 +4059,85 @@ describe("P-07 B: a resolution names its result by reference and digest, by coho
       resultArtifactReferenceId: null,
       resultSha256: null,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón C — the dispatch pin reads three ways, by cohort (ADR 0103)
+// ---------------------------------------------------------------------------
+
+describe("the dispatch pin reads three ways, by cohort, and the fold refuses what the reader refuses (P-15 escalón C)", () => {
+  const ABSENT = Symbol("absent");
+  const DOCUMENTS: readonly unknown[] = [ABSENT, null, "", 1, {}, "doc"];
+  const NUMBERS: readonly unknown[] = [ABSENT, null, 0, -1, "1", 1.5, 2 ** 53, 1];
+  const COHORT_AFTER = ["2.9.0"];
+
+  function dispatchEvent(version: string, document: unknown, number: unknown): ControlPlaneEvent {
+    const dispatch: Record<string, unknown> = { dispatchAttemptId: "dsp-1", effectId: "a".repeat(64), attemptOrdinal: 1 };
+    if (document !== ABSENT) dispatch["catalogDocumentId"] = document;
+    if (number !== ABSENT) dispatch["catalogVersion"] = number;
+    return executionEvent(
+      "DISPATCH_INTENDED",
+      { revisionNumber: 1, attemptNumber: 1, segment: segment(), dispatch },
+      { contractVersion: version as ControlPlaneEvent["contractVersion"] },
+    );
+  }
+
+  /** The rule, restated from the ADR: what the reader must answer for one cell. */
+  function oracle(version: string, document: unknown, number: unknown): "none" | "pin" | "refused" {
+    const documentOk = typeof document === "string" && document.length > 0;
+    const numberOk = typeof number === "number" && Number.isSafeInteger(number) && number >= 1;
+    if (document !== ABSENT && !documentOk) return "refused";
+    if (number !== ABSENT && !numberOk) return "refused";
+    if ((document === ABSENT) !== (number === ABSENT)) return "refused";
+    const before = PRE_CATALOG_PIN_CONTRACT_VERSIONS.includes(version);
+    if (document === ABSENT) return before ? "none" : "refused";
+    return before ? "refused" : "pin";
+  }
+
+  it("answers every cell of cohort x document x version as the rule does, and never reads present-invalid as absent", () => {
+    let cells = 0;
+    for (const version of [...PRE_CATALOG_PIN_CONTRACT_VERSIONS, ...COHORT_AFTER]) {
+      for (const document of DOCUMENTS) {
+        for (const number of NUMBERS) {
+          cells += 1;
+          const reading = dispatchPinReading(dispatchEvent(version, document, number));
+          const got = reading === null ? "null" : reading.kind === "refused" ? "refused" : reading.pin === null ? "none" : "pin";
+          const cell = JSON.stringify([version, document === ABSENT ? "absent" : document, number === ABSENT ? "absent" : number]);
+          expect({ cell, got }).toEqual({ cell, got: oracle(version, document, number) });
+          // A projected row exists exactly when the reading is not a refusal.
+          const row = nextDispatchAttemptProjection(dispatchEvent(version, document, number), 6);
+          expect({ cell, row: row !== null }).toEqual({ cell, row: got !== "refused" });
+          if (row !== null) {
+            expect(row.dispatchContractVersion).toBe(version);
+            expect([row.catalogDocumentId, row.catalogVersion]).toEqual(got === "pin" ? [document, number] : [null, null]);
+          }
+        }
+      }
+    }
+    expect(cells).toBe(8 * 6 * 8);
+  });
+
+  it("the fold refuses a refused pin with the reader's words, and folds a lawful one", () => {
+    const refused = dispatchEvent("2.9.0", null, 1);
+    const reading = dispatchPinReading(refused);
+    if (reading?.kind !== "refused") throw new Error("expected a refusal");
+    let error: unknown = null;
+    try {
+      applyEventToSnapshot(createProjectionSnapshot(), refused, 6, "f".repeat(64));
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(LedgerValidationError);
+    expect((error as LedgerValidationError).issues[0]).toEqual({ path: reading.path, message: reading.message });
+  });
+
+  it("the birth carries the pin: another pin is another intention, the same one a replay", () => {
+    const one = nextDispatchAttemptProjection(dispatchEvent("2.9.0", "doc", 1), 6);
+    const again = nextDispatchAttemptProjection(dispatchEvent("2.9.0", "doc", 1), 9);
+    const other = nextDispatchAttemptProjection(dispatchEvent("2.9.0", "doc", 2), 6);
+    if (one === null || again === null || other === null) throw new Error("expected three rows");
+    expect(canonicalDispatchBirth(one)).toBe(canonicalDispatchBirth(again));
+    expect(canonicalDispatchBirth(one)).not.toBe(canonicalDispatchBirth(other));
   });
 });

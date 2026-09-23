@@ -309,6 +309,76 @@ function revisionFor(taskId: string): InvocationRevision {
 }
 
 /** Register the task's envelope reference, as a fixture (the usage suite's, restated). */
+/**
+ * The fixture price catalog a delivery is pinned to (P-15 escalón C, ADR 0103).
+ *
+ * From 2.9.0 a `DISPATCH_INTENDED` names the catalog version in force at its
+ * instant, and one that covers its segment, or the door refuses it: pre-2.9.0
+ * fixtures had to gain a pin because the version in force now requires one. So the
+ * fixture publishes one through the registry's own door — the segment's model
+ * version registered under its provider, then version 1 of a `PRICE_TABLE` pricing
+ * that model on the segment's transport from before any fixture instant, with no
+ * end. The price is fixture data, and never zero.
+ */
+const FIXTURE_CATALOG = "catalog-fixture";
+const FIXTURE_MODEL_VERSION = "claude-opus-5-20260101";
+const FIXTURE_CATALOG_FROM = "2026-01-01T00:00:00.000Z";
+const FIXTURE_PIN = { catalogDocumentId: FIXTURE_CATALOG, catalogVersion: 1 } as const;
+
+function plantFixtureCatalog(ledger: Ledger): void {
+  if (ledger.getVigentCatalogPin(FIXTURE_CATALOG, FIXTURE_CATALOG_FROM) !== null) return;
+  const document = (
+    eventId: string,
+    documentKind: string,
+    documentId: string,
+    contentDigest: string,
+    payload: Record<string, unknown>,
+  ): Record<string, unknown> => ({
+    contractVersion: CONTRACT_VERSION,
+    eventId,
+    idempotencyKey: documentId + "/1",
+    documentKind,
+    documentId,
+    documentVersion: 1,
+    parentDocumentVersion: null,
+    contentDigest,
+    recordedBy: "kimi/k3/coordinator/01",
+    effectiveFrom: FIXTURE_CATALOG_FROM,
+    occurredAt: FIXTURE_CATALOG_FROM,
+    recordedAt: FIXTURE_CATALOG_FROM,
+    payload,
+  });
+  ledger.appendRegistryEvent(
+    document("c0c0c0c0-0000-4000-8000-00000000c001", "MODEL_VERSION", FIXTURE_MODEL_VERSION, "6".repeat(64), {
+      provider: "anthropic",
+      model: "claude-opus-5",
+      release: "2026-01-01",
+      status: "ACTIVE",
+      contextTokens: 200000,
+      policyVersion: "2026.09.0",
+      deprecatedAt: null,
+      eligibleRoles: ["coordinator", "implementer", "reviewer", "consultant", "verifier"],
+      transports: ["CLI_SUBSCRIPTION"],
+    }),
+  );
+  ledger.appendRegistryEvent(
+    document("c0c0c0c0-0000-4000-8000-00000000c002", "PRICE_TABLE", FIXTURE_CATALOG, "5".repeat(64), {
+      intervals: [
+        {
+          provider: "anthropic",
+          modelVersionId: FIXTURE_MODEL_VERSION,
+          transportKind: "CLI_SUBSCRIPTION",
+          tokenClass: "input",
+          currency: "USD",
+          effectiveFrom: FIXTURE_CATALOG_FROM,
+          effectiveTo: null,
+          pricePerMillionNanos: 15_000_000_000,
+        },
+      ],
+    }),
+  );
+}
+
 function plantEnvelopeReference(ledger: Ledger, taskId: string): void {
   const reference = "ref-envelope-" + taskId;
   const content = "7".repeat(64);
@@ -363,7 +433,7 @@ function segmentRecord(): Record<string, unknown> {
     modelResolutionStatus: "RESOLVED",
     modelVersionId: "claude-opus-5-20260101",
     accountId: "acct-1",
-    transportKind: "cli",
+    transportKind: "CLI_SUBSCRIPTION",
     capabilityPolicyVersion: "policy-1",
   };
 }
@@ -422,6 +492,7 @@ function world(name: string, faults: ArtifactPlaneTestFaults = {}): World {
   const plane = openArtifactPlane({ ledger, leaseStore, ledgerPath, __testFaults: faults });
   const taskId = deterministicUuid("operation-result/" + name);
   plantEnvelopeReference(ledger, taskId);
+  plantFixtureCatalog(ledger);
   const invocation = deriveInvocation(taskId, 1, V2_AT, "c".repeat(64), revisionFor(taskId));
   const context: BeatContext = {
     ledger,
@@ -456,7 +527,7 @@ function world(name: string, faults: ArtifactPlaneTestFaults = {}): World {
   ledger.append(
     executionEvent(ledger, invocation, "dispatch-1", "DISPATCH_INTENDED", {
       segment: segmentRecord(),
-      dispatch: { dispatchAttemptId: "dsp-1", effectId, attemptOrdinal: 1 },
+      dispatch: { dispatchAttemptId: "dsp-1", effectId, attemptOrdinal: 1, ...FIXTURE_PIN },
     }),
   );
   return { ledger, plane, ledgerPath, invocation, effectId, taskId };

@@ -2457,8 +2457,8 @@ describe("the task intake's wire contract (P-14/C)", () => {
     expect(API_WRITE_ROUTES).toHaveLength(6);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(15);
-    // Derived from `CONTRACT_VERSION`, which P-07 escalón B moved to 2.8.0 (ADR 0098).
-    expect(LEDGER_CONTRACT_VERSION).toBe("2.8.0");
+    // Derived from `CONTRACT_VERSION`, which P-15 escalón C moved to 2.9.0 (ADR 0103).
+    expect(LEDGER_CONTRACT_VERSION).toBe("2.9.0");
   });
 });
 

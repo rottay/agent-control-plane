@@ -840,7 +840,22 @@ describe("integrity", () => {
     ).toHaveLength(1);
     expect(
       (reapplied.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v,
-    ).toBe(22);
+    ).toBe(23);
+    // P-15 escalón C: and it re-applied 23 over the delivery table 13 recreated,
+    // without aborting — the three pin columns and both triggers are back.
+    expect(
+      reapplied
+        .prepare("SELECT name FROM pragma_table_info('dispatch_attempt_read_model') WHERE name IN (?, ?, ?) ORDER BY name")
+        .all("catalog_document_id", "catalog_version", "dispatch_contract_version"),
+    ).toHaveLength(3);
+    expect(
+      reapplied
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE ? ORDER BY name")
+        .all("tr_dispatch_attempt_read_model__validate_pin_%"),
+    ).toEqual([
+      { name: "tr_dispatch_attempt_read_model__validate_pin_on_insert" },
+      { name: "tr_dispatch_attempt_read_model__validate_pin_on_update" },
+    ]);
     // P-07 escalón B: and it re-applied 22 over the table 13 recreated, without
     // aborting — the three result columns and both triggers are back.
     expect(

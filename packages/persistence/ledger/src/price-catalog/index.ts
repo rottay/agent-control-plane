@@ -1,6 +1,13 @@
 import type { PriceIntervalReadModel } from "../types/index.js";
 
-import type { PriceKey, PricePin, PriceResolution } from "./types/index.js";
+import type {
+  CatalogVersionFact,
+  PinCoverageKey,
+  PriceKey,
+  PricePin,
+  PriceResolution,
+  VigentSelection,
+} from "./types/index.js";
 
 /**
  * The value types of this concept live in their own leaf,
@@ -15,6 +22,9 @@ export type {
   PriceFound,
   PriceMissing,
   PriceResolution,
+  CatalogVersionFact,
+  VigentSelection,
+  PinCoverageKey,
 } from "./types/index.js";
 
 /**
@@ -145,4 +155,75 @@ function missing(pin: PricePin): PriceResolution {
     status: "PRICE_MISSING",
     pin: { catalogDocumentId: pin.catalogDocumentId, catalogVersion: pin.catalogVersion },
   };
+}
+
+/**
+ * The version of one catalog document in force at an instant (P-15 escalón C,
+ * ADR 0103; adjudication v2 C3 (ii); streams `:313, :338`).
+ *
+ * Among the versions whose `effectiveFrom` is at or before the instant, the one
+ * with the greatest `effectiveFrom`. A version that has not taken effect yet is
+ * never in force, however high its number; an older version is not in force while
+ * a newer one rules. Pure: the caller reads the versions, this decides.
+ *
+ * **A tie is refused, never broken.** Two versions sharing the greatest
+ * `effectiveFrom` are `AMBIGUOUS` (Q-C3): neither the higher number nor the later
+ * sequence is a rule anybody wrote, so picking one would invent a precedence. The
+ * registry does not yet forbid publishing such a pair, so this is the one place
+ * the ambiguity is caught.
+ *
+ * Text order is time order for the canonical ISO-8601 millisecond UTC form the
+ * registry's own column carries, which is the comparison `resolvePrice` makes.
+ */
+export function selectVigentCatalogVersion(
+  versions: readonly CatalogVersionFact[],
+  instant: string,
+): VigentSelection {
+  let greatest: string | null = null;
+  for (const version of versions) {
+    if (version.effectiveFrom > instant) continue;
+    if (greatest === null || version.effectiveFrom > greatest) greatest = version.effectiveFrom;
+  }
+  if (greatest === null) return { kind: "NONE" };
+  const ruling = versions
+    .filter((version) => version.effectiveFrom === greatest)
+    .map((version) => version.catalogVersion)
+    .sort((a, b) => a - b);
+  const [only] = ruling;
+  if (ruling.length !== 1 || only === undefined) {
+    return { kind: "AMBIGUOUS", catalogVersions: ruling, effectiveFrom: greatest };
+  }
+  return { kind: "VIGENT", catalogVersion: only, effectiveFrom: greatest };
+}
+
+/**
+ * Does a pinned version cover a delivery's segment at an instant (P-15 escalón C,
+ * ADR 0103; adjudication v2 C3 (iii))?
+ *
+ * Yes when at least one interval of that exact version names the segment's
+ * provider, model version and transport kind, and its half-open window
+ * `[effectiveFrom, effectiveTo)` holds the instant — `resolvePrice`'s own window.
+ * A segment whose model version is `null` is **never** covered (ADR 0092 Four): a
+ * price for a model nobody named is not aliased from another. Class and currency
+ * are not asked here: an absent class is valuation's `PRICE_MISSING`, not a reason
+ * to refuse the delivery.
+ */
+export function pinCovers(
+  intervals: readonly PriceIntervalReadModel[],
+  pin: PricePin,
+  key: PinCoverageKey,
+  instant: string,
+): boolean {
+  const modelVersionId = key.modelVersionId;
+  if (modelVersionId === null) return false;
+  return intervals.some(
+    (interval) =>
+      interval.catalogDocumentId === pin.catalogDocumentId &&
+      interval.catalogVersion === pin.catalogVersion &&
+      interval.provider === key.provider &&
+      interval.modelVersionId === modelVersionId &&
+      interval.transportKind === key.transportKind &&
+      instant >= interval.effectiveFrom &&
+      (interval.effectiveTo === null || instant < interval.effectiveTo),
+  );
 }

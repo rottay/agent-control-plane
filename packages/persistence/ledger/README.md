@@ -708,7 +708,7 @@ updates), that hold the cohort:
 | `outcome_contract_version` | result pair |
 | --- | --- |
 | `2.2.0` … `2.7.0` — a closed list frozen in the migration | must be `NULL` |
-| anything else — `2.8.0` today | required on `SUCCEEDED`; optional on `FAILED` |
+| anything else — `2.8.0` and `2.9.0` today | required on `SUCCEEDED`; optional on `FAILED` |
 
 Version-independent row law is a CHECK: the pair is both `NULL` or both present,
 the digest has the common shape, a result exists only on `SUCCEEDED` or `FAILED`,
@@ -731,6 +731,44 @@ function the door and the fold share.
 
 The cohort is keyed on the version, so the version moved: P-07 escalón B moved
 `CONTRACT_VERSION` to `"2.8.0"`, a cohort and not an identity (ADR 0084's reason).
+
+### The delivery's price pin, by cohort (migration 23)
+
+P-15 escalón C (ADR 0103). A delivery names the price catalog version it will be
+valued against before any spend: `payload.dispatch.catalogDocumentId` and
+`payload.dispatch.catalogVersion`. Migration 23 adds `dispatch_contract_version`,
+`catalog_document_id` and `catalog_version` to `dispatch_attempt_read_model` by
+`ADD COLUMN`, with CHECKs for the row law that holds in every version (non-empty
+text, a version of at least 1, the pair both or neither), and two triggers that hold
+the cohort:
+
+| `dispatch_contract_version` | pin |
+| --- | --- |
+| `2.2.0` … `2.8.0` — a closed list frozen in the migration | must be `NULL` |
+| anything else — `2.9.0` today | required |
+| `NULL` | refused, by the first statement |
+
+On upgrade, code in the migration's transaction writes each delivery's version (and
+pin) from its own `DISPATCH_INTENDED`, through the reader the door and the fold use.
+
+**The reader checks form and cohort**, present-invalid, and refuses by name: a key
+that is not what it names (`null` included), half a pair, a pin on a version of the
+cohort before, and none on a later one. **The door checks the registry**: the pin
+names a published `PRICE_TABLE` version; it is the version **in force** at the
+dispatch instant (`selectVigentCatalogVersion`: the greatest `effectiveFrom` at or
+before it; none in force, or a tie at that instant, is refused, never picked); and it
+**covers** the delivery's segment (`pinCovers`: an interval of that version for the
+segment's provider, model version and transport kind, half-open around the instant).
+A segment with no resolved model version is never covered. The pin is part of the
+delivery's birth, so the same delivery with another pin is the "intended once"
+conflict.
+
+`Ledger.getVigentCatalogPin(documentId, instant)` answers which version is in force,
+over the rows the door reads, so the pin a composition chooses is the one the door
+admits; `selectVigentCatalogVersion` and `pinCovers` are on the barrel for the same
+reason. `resolvePrice` stays uncalled: the door decides whether a pin may be
+recorded, never a price. The version moved again for this cohort: P-15 escalón C
+moved `CONTRACT_VERSION` to `"2.9.0"`.
 
 ### What this escalón does not write
 

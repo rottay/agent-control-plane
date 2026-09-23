@@ -1,3 +1,8 @@
+import { mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -50,13 +55,16 @@ import {
   PRICE_INTERVAL_CATALOG_MIGRATION,
   PRICE_INTERVAL_PROJECTION,
   EFFECT_RESULT_REFERENCE_MIGRATION,
+  DISPATCH_CATALOG_PIN_MIGRATION,
   TASK_STREAM,
   checkMigrationConformance,
 } from "../../src/migrations/index.js";
 import {
+  PRE_CATALOG_PIN_CONTRACT_VERSIONS,
   PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS,
   PRE_RESULT_REFERENCE_CONTRACT_VERSIONS,
 } from "../../src/projection/index.js";
+import { openLedger } from "../../src/ledger/index.js";
 import { DOCUMENT_KINDS } from "../../src/types/index.js";
 import type { AppliedMigration } from "../../src/types/index.js";
 import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
@@ -196,7 +204,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -221,6 +229,7 @@ describe("migration 7 appends the watermark table without touching the applied s
       "usage_capture",
       "price_interval_catalog",
       "effect_result_reference",
+      "dispatch_catalog_pin",
     ]);
   });
 
@@ -452,7 +461,7 @@ describe("migration 8 types causality without touching the applied seven", () =>
     expect(EIGHTH?.sql ?? "").not.toContain("validate_v2_coordinate");
   });
 
-  it("inventories every trigger named by the §3.2 convention, and there are eleven", () => {
+  it("inventories every trigger named by the §3.2 convention, and there are thirteen", () => {
     // Without the inventory, dropping a trigger would leave `schema_migrations`
     // untouched and no check would notice. Migration 9 recreates the first two
     // under the same names, so the inventory does not move for them; the other
@@ -485,6 +494,9 @@ describe("migration 8 types causality without touching the applied seven", () =>
       // updates one (ADR 0098).
       { type: "trigger", name: "tr_effect_read_model__validate_result_on_insert" },
       { type: "trigger", name: "tr_effect_read_model__validate_result_on_update" },
+      // P-15 escalón C: the dispatch pin cohort's pair, for the same two paths (ADR 0103).
+      { type: "trigger", name: "tr_dispatch_attempt_read_model__validate_pin_on_insert" },
+      { type: "trigger", name: "tr_dispatch_attempt_read_model__validate_pin_on_update" },
     ]);
     // And the legacy prefix still names exactly the three streams that coined
     // it, so the rename did not quietly move one of theirs.
@@ -545,7 +557,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
     ]);
   });
 
@@ -989,8 +1001,9 @@ describe("migration 12 adds the attempt's own record without touching the applie
     // the ninth is migration 16's, which is another table's rule.
     expect(statements).not.toContain("CREATE TRIGGER");
     const triggers = EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"));
-    // Nine until migration 22 added its two (P-07 escalón B).
-    expect(triggers).toHaveLength(11);
+    // Nine until migration 22 added its two (P-07 escalón B), and eleven until
+    // migration 23 added its two (P-15 escalón C).
+    expect(triggers).toHaveLength(13);
     expect(triggers.filter((object) => object.name.startsWith("tr_task_attempt"))).toEqual([]);
   });
 
@@ -1072,7 +1085,7 @@ describe("migration 14 adds the occurrences without touching the applied thirtee
     expect(statements).not.toContain("CREATE TRIGGER");
     // Eight when this migration landed; migration 16 adds the ninth, and
     // migration 22 the tenth and eleventh.
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(11);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(13);
   });
 
   it("names both tables' constraints by the §3.2 convention, and §8's pair verbatim", () => {
@@ -1493,7 +1506,7 @@ describe("migration 15 rebuilds the registry stream and adds the artifact plane"
     ]);
     // Eight when this migration landed; the ninth is migration 16's, the tenth
     // and eleventh migration 22's.
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(11);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(13);
     expect(statements).not.toMatch(/CREATE TRIGGER tr_artifact/);
   });
 });
@@ -1527,7 +1540,7 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
     // Sixteen when this migration landed; the seventeenth is P-14 A's, the
     // eighteenth P-14 B's, the nineteenth P-14 C's, the twentieth P-32/captura B's
     // the twenty-first P-33/catálogo A's and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(22);
+    expect(MIGRATIONS).toHaveLength(23);
     expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION]?.name).toBe("model_version_registry");
   });
 
@@ -1572,7 +1585,7 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
       type: "trigger",
       name: "tr_task_revision_read_model__validate_envelope_reference",
     });
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(11);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(13);
   });
 
   it("freezes the cohort as a closed list, spelled as the fold spells it, and never compares versions", () => {
@@ -1625,7 +1638,7 @@ describe("migration 17 folds the model version registry from the registry stream
     // Seventeen when this migration landed; the eighteenth is P-14 B's, the
     // nineteenth P-14 C's, the twentieth P-32/captura B's and the twenty-first
     // P-33/catálogo A's, and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(22);
+    expect(MIGRATIONS).toHaveLength(23);
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION]?.name).toBe("initiative_registration_detail");
   });
 
@@ -1721,7 +1734,7 @@ describe("migration 17 folds the model version registry from the registry stream
       { type: "table", name: "model_version_transport" },
       { type: "index", name: "ux_model_version_transport__transport" },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(11);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(13);
   });
 });
 
@@ -1750,7 +1763,7 @@ describe("migration 18 adds the initiative projection's three columns and nothin
     // Eighteen when this migration landed; the nineteenth is P-14 C's, the
     // twentieth P-32/captura B's, the twenty-first P-33/catálogo A's and the
     // twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(22);
+    expect(MIGRATIONS).toHaveLength(23);
     expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION]?.name).toBe("task_submission");
   });
 
@@ -1800,7 +1813,7 @@ describe("migration 19 gives a task's client key its one home", () => {
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION - 1]?.name).toBe("task_submission");
     // Nineteen when this migration landed; the twentieth is P-32/captura B's and
     // the twenty-first P-33/catálogo A's, and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(22);
+    expect(MIGRATIONS).toHaveLength(23);
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION]?.name).toBe("usage_capture");
   });
 
@@ -1877,7 +1890,7 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
     expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION - 1]?.name).toBe("usage_capture");
     // Twenty when this migration landed; the twenty-first is P-33/catálogo A's
     // and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(22);
+    expect(MIGRATIONS).toHaveLength(23);
     expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION]?.name).toBe("price_interval_catalog");
   });
 
@@ -2006,7 +2019,7 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
       { type: "table", name: "usage_settlement_source_head_read_model" },
       { type: "table", name: "usage_settlement_observation_read_model" },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(11);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(13);
   });
 });
 
@@ -2033,7 +2046,7 @@ describe("migration 21 gives a price catalog version its one table", () => {
     expect(PRICE_INTERVAL_CATALOG_MIGRATION).toBe(21);
     expect(MIGRATIONS[PRICE_INTERVAL_CATALOG_MIGRATION - 1]?.name).toBe("price_interval_catalog");
     // Twenty-one when this migration landed; the twenty-second is P-07 B's.
-    expect(MIGRATIONS).toHaveLength(22);
+    expect(MIGRATIONS).toHaveLength(23);
   });
 
   it("H-1: creates economy's table under economy's name, STRICT, and nothing else is created, altered or dropped", () => {
@@ -2112,7 +2125,7 @@ describe("migration 21 gives a price catalog version its one table", () => {
     expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("price_"))).toEqual([
       { type: "table", name: PRICE_INTERVAL_PROJECTION },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(11);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(13);
     // No kind is added: the stream has carried PRICE_TABLE since migration 9.
     expect(DOCUMENT_KINDS).toContain("PRICE_TABLE");
   });
@@ -2134,12 +2147,12 @@ describe("migration 22 names an effect's result by reference, with its outcome, 
     .filter((line) => !line.trimStart().startsWith("--"))
     .join("\n");
 
-  it("sits at the tail of a set whose order is fixed", () => {
+  it("sits at the position a set whose order is fixed gave it", () => {
     expect(TWENTY_SECOND?.version).toBe(22);
     expect(TWENTY_SECOND?.name).toBe("effect_result_reference");
     expect(EFFECT_RESULT_REFERENCE_MIGRATION).toBe(22);
     expect(MIGRATIONS[EFFECT_RESULT_REFERENCE_MIGRATION - 1]?.name).toBe("effect_result_reference");
-    expect(MIGRATIONS).toHaveLength(22);
+    expect(MIGRATIONS).toHaveLength(23);
   });
 
   it("adds three columns in place and two triggers, and creates, drops, updates and seeds nothing else", () => {
@@ -2196,5 +2209,200 @@ describe("migration 22 names an effect's result by reference, with its outcome, 
     // migration immutability; the suite holds it equal to the contract (ADR 0098).
     const listed = /outcome_status IN \(([^)]*)\)\)/.exec(statements)?.[1] ?? "";
     expect(listed.split(", ").map((word) => word.replaceAll("'", ""))).toEqual([...RESULT_STATUSES]);
+  });
+});
+
+/**
+ * Migration 23, the delivery's price pin by cohort (P-15 escalón C, ADR 0103).
+ *
+ * The text, as migration 22's suite reads its own; and then the NULL lesson made
+ * mechanical: every combination of the three nullable columns, written by raw SQL
+ * on the INSERT path and again on the UPDATE path, against an oracle written here
+ * from the rule and not from the SQL. `test/ledger` asserts what the door, the fold,
+ * the rebuild and the backfill do with it.
+ */
+describe("migration 23 pins a delivery's price catalog version, by cohort", () => {
+  const TWENTY_THIRD = MIGRATIONS[22];
+
+  const statements = (TWENTY_THIRD?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+
+  it("sits at the tail of a set whose order is fixed", () => {
+    expect(TWENTY_THIRD?.version).toBe(23);
+    expect(TWENTY_THIRD?.name).toBe("dispatch_catalog_pin");
+    expect(DISPATCH_CATALOG_PIN_MIGRATION).toBe(23);
+    expect(MIGRATIONS[DISPATCH_CATALOG_PIN_MIGRATION - 1]?.name).toBe("dispatch_catalog_pin");
+    expect(MIGRATIONS).toHaveLength(23);
+  });
+
+  it("adds three columns in place and two triggers, and creates, drops, updates and seeds nothing else", () => {
+    expect([...statements.matchAll(/ALTER TABLE (\w+) ADD COLUMN (\w+) (TEXT|INTEGER)/g)].map((match) => [match[1], match[2], match[3]])).toEqual([
+      ["dispatch_attempt_read_model", "dispatch_contract_version", "TEXT"],
+      ["dispatch_attempt_read_model", "catalog_document_id", "TEXT"],
+      ["dispatch_attempt_read_model", "catalog_version", "INTEGER"],
+    ]);
+    expect([...statements.matchAll(/CREATE TRIGGER (\w+)/g)].map((match) => match[1])).toEqual([
+      "tr_dispatch_attempt_read_model__validate_pin_on_insert",
+      "tr_dispatch_attempt_read_model__validate_pin_on_update",
+    ]);
+    expect(statements).not.toMatch(/CREATE TABLE|CREATE INDEX|DROP |^\s*UPDATE |INSERT INTO|ON CONFLICT/m);
+    expect(TWENTY_THIRD?.sql ?? "").not.toContain("projection_watermark");
+  });
+
+  it("names every CHECK and trigger by the §3.2 convention, and the triggers share one body", () => {
+    for (const name of [
+      "ck_dispatch_attempt_read_model__dispatch_contract_version",
+      "ck_dispatch_attempt_read_model__catalog_document_id",
+      "ck_dispatch_attempt_read_model__catalog_version",
+      "ck_dispatch_attempt_read_model__catalog_pin_pair",
+    ]) {
+      expect(statements, name).toContain("CONSTRAINT " + name + "\n");
+    }
+    expect(statements).toContain("BEFORE INSERT ON dispatch_attempt_read_model");
+    expect(statements).toContain(
+      "BEFORE UPDATE OF dispatch_contract_version, catalog_document_id, catalog_version",
+    );
+    const bodies = [...statements.matchAll(/BEGIN\n([\s\S]*?)\nEND;/g)].map((match) => match[1]);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toBe(bodies[1]);
+  });
+
+  it("spells the cohort before as the fold does, a closed list and never a comparison", () => {
+    const lists = [...statements.matchAll(/(?:NOT )?IN \(('2\.[^)]*)\)/g)].map((match) =>
+      (match[1] ?? "").split(", ").map((version) => version.replaceAll("'", "")),
+    );
+    expect(lists).toHaveLength(4);
+    for (const list of lists) expect(list).toEqual([...PRE_CATALOG_PIN_CONTRACT_VERSIONS]);
+    expect(PRE_CATALOG_PIN_CONTRACT_VERSIONS).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0"]);
+    // The pin cohort is the result cohort plus the version that ended it.
+    expect(PRE_CATALOG_PIN_CONTRACT_VERSIONS).toEqual([...PRE_RESULT_REFERENCE_CONTRACT_VERSIONS, "2.8.0"]);
+    expect(statements).not.toMatch(/contract_version\s*[<>]/);
+  });
+
+  /**
+   * The rule, written here from the ADR and never from the SQL: which cells land,
+   * and for a refused one, which statement or CHECK refuses it first. Triggers run
+   * before CHECKs on both paths, in statement order.
+   */
+  const COHORT = ["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0"];
+  const VERSIONS: readonly (string | null)[] = [null, "", ...COHORT, "2.9.0", "9.9.9"];
+  const DOCUMENTS: readonly (string | null)[] = [null, "", "doc"];
+  const NUMBERS: readonly (number | null)[] = [null, 0, 1];
+
+  function oracle(version: string | null, document: string | null, number: number | null): { admit: boolean; refusedBy: readonly string[] } {
+    if (version === null) return { admit: false, refusedBy: ["dispatch_contract_version is required"] };
+    if (COHORT.includes(version) && document !== null) return { admit: false, refusedBy: ["must be NULL on a delivery of contract version"] };
+    if (!COHORT.includes(version) && document === null) return { admit: false, refusedBy: ["are required on a delivery of every later contract version"] };
+    const checks: string[] = [];
+    if (version === "") checks.push("ck_dispatch_attempt_read_model__dispatch_contract_version");
+    if (document === "") checks.push("ck_dispatch_attempt_read_model__catalog_document_id");
+    if (number !== null && number < 1) checks.push("ck_dispatch_attempt_read_model__catalog_version");
+    if ((document === null) !== (number === null)) checks.push("ck_dispatch_attempt_read_model__catalog_pin_pair");
+    return { admit: checks.length === 0, refusedBy: checks };
+  }
+
+  /**
+   * A database at migration 23, opened raw with foreign keys off, so a row needs
+   * only the columns the rule is about. Created by the ledger's own open, which is
+   * the only thing that bootstraps the migration table.
+   */
+  function base(): Database.Database {
+    const directory = mkdtempSync(join(realpathSync(tmpdir()), "acp-p15c-matrix-"));
+    const path = join(directory, "ledger.sqlite");
+    openLedger(path).close();
+    const raw = new Database(path);
+    raw.pragma("foreign_keys = OFF");
+    return raw;
+  }
+
+  const INSERT =
+    "INSERT INTO dispatch_attempt_read_model (dispatch_attempt_id, effect_id, route_segment_id, attempt_ordinal, " +
+    "dispatch_state, requested_at, recorded_at, sequence, dispatch_contract_version, catalog_document_id, catalog_version) " +
+    "VALUES (?, ?, 'seg-1', 1, 'INTENDED', '2026-09-23T12:00:00.000Z', '2026-09-23T12:00:00.000Z', 1, ?, ?, ?)";
+
+  function verdict(write: () => void): { admit: boolean; message: string } {
+    try {
+      write();
+      return { admit: true, message: "" };
+    } catch (error) {
+      return { admit: false, message: String(error) };
+    }
+  }
+
+  function check(path: string, cell: string, got: { admit: boolean; message: string }, expected: ReturnType<typeof oracle>): void {
+    expect({ path, cell, admit: got.admit }).toEqual({ path, cell, admit: expected.admit });
+    if (!expected.admit) {
+      expect(
+        expected.refusedBy.some((fragment) => got.message.includes(fragment)),
+        path + " " + cell + ": " + got.message,
+      ).toBe(true);
+    }
+  }
+
+  it("the INSERT path: 99 cells, each landing or refused exactly as the rule says, by the statement that owns it", () => {
+    const raw = base();
+    let cells = 0;
+    let admitted = 0;
+    for (const version of VERSIONS) {
+      for (const document of DOCUMENTS) {
+        for (const number of NUMBERS) {
+          const cell = JSON.stringify([version, document, number]);
+          const id = "dsp-insert-" + String(cells);
+          cells += 1;
+          const expected = oracle(version, document, number);
+          const got = verdict(() => raw.prepare(INSERT).run(id, "effect-" + id, version, document, number));
+          check("INSERT", cell, got, expected);
+          if (got.admit) admitted += 1;
+        }
+      }
+    }
+    expect(cells).toBe(99);
+    // The seven versions of the cohort before with no pin, and the two later ones with a lawful pin.
+    expect(admitted).toBe(9);
+    raw.close();
+  });
+
+  it("the UPDATE path: the same 99 cells written over a lawful row, each as the rule says", () => {
+    const raw = base();
+    let cells = 0;
+    let admitted = 0;
+    for (const version of VERSIONS) {
+      for (const document of DOCUMENTS) {
+        for (const number of NUMBERS) {
+          const cell = JSON.stringify([version, document, number]);
+          const id = "dsp-update-" + String(cells);
+          cells += 1;
+          raw.prepare(INSERT).run(id, "effect-" + id, "2.8.0", null, null);
+          const expected = oracle(version, document, number);
+          const got = verdict(() =>
+            raw
+              .prepare(
+                "UPDATE dispatch_attempt_read_model SET dispatch_contract_version = ?, catalog_document_id = ?, " +
+                  "catalog_version = ? WHERE dispatch_attempt_id = ?",
+              )
+              .run(version, document, number, id),
+          );
+          check("UPDATE", cell, got, expected);
+          if (got.admit) admitted += 1;
+        }
+      }
+    }
+    expect(cells).toBe(99);
+    expect(admitted).toBe(9);
+    raw.close();
+  });
+
+  it("a version-NULL row fails on the first statement, and never passes through the third", () => {
+    // `NULL NOT IN (...)` is NULL, so a trigger that relied on the third statement
+    // alone would let a NULL version with no pin through. The first statement is
+    // what catches it, and its message is the one raised.
+    const raw = base();
+    const got = verdict(() => raw.prepare(INSERT).run("dsp-null", "effect-null", null, null, null));
+    expect(got.admit).toBe(false);
+    expect(got.message).toContain("dispatch_contract_version is required on every delivery");
+    expect(got.message).not.toContain("are required on a delivery of every later contract version");
+    raw.close();
   });
 });
