@@ -77,8 +77,27 @@ import {
   parseWorkerIdentity,
   serializedByteLength,
   utf8ByteLength,
+  USAGE_REPORT_KINDS,
+  USAGE_SOURCE_CLASSES,
 } from "../../src/index.js";
 import type { DriverAccepted, DriverOutcome } from "../../src/index.js";
+
+/** One complete usage report: every class known and summed (P-15/D2). */
+function usageReport(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    kind: "usage",
+    stepIndex: 1,
+    inputTokens: 1,
+    outputTokens: 2,
+    cacheWriteTokens: 3,
+    cacheReadTokens: 4,
+    totalTokens: 10,
+    reportKind: "CUMULATIVE",
+    isFinal: true,
+    sourceObservationId: "obs-1",
+    ...overrides,
+  };
+}
 
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
@@ -2015,13 +2034,86 @@ describe("ExecutionEvent", () => {
   });
 
   it("keeps step ordering on usage, so it folds in the order it happened", () => {
-    const parsed = ExecutionEvent.parse({ kind: "usage", stepIndex: 3, tokensUsed: 1_200 });
+    const parsed = ExecutionEvent.parse(usageReport({ stepIndex: 3 }));
     if (parsed.kind !== "usage") throw new Error("expected usage");
     expect(parsed.stepIndex).toBe(3);
-    expect(ExecutionEvent.safeParse({ kind: "usage", tokensUsed: 5 }).success).toBe(false);
-    expect(
-      ExecutionEvent.safeParse({ kind: "usage", stepIndex: -1, tokensUsed: 5 }).success,
-    ).toBe(false);
+    expect(ExecutionEvent.safeParse(usageReport({ stepIndex: -1 })).success).toBe(false);
+    // `tokensUsed` is gone (P-15/D2): one number for every class was the double count's shape.
+    expect(ExecutionEvent.safeParse({ ...usageReport(), tokensUsed: 5 }).success).toBe(false);
+  });
+
+  it("N-D17: every usage field, absent, null, zero, negative, fractional, text and valid, against an oracle (P-15/D2)", () => {
+    const ABSENT = Symbol("absent");
+    // The oracle, written here: absent is a malformed report; a class or the total
+    // may be null (UNKNOWN) or a non-negative integer, and 0 is a real zero; every
+    // other key has its own grammar and no null.
+    const CLASS_KEYS = ["inputTokens", "outputTokens", "cacheWriteTokens", "cacheReadTokens", "totalTokens"];
+    const admits = (key: string, value: unknown): boolean => {
+      if (value === ABSENT) return false;
+      if (CLASS_KEYS.includes(key)) {
+        return value === null || (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 100_000_000);
+      }
+      if (key === "stepIndex") return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 100_000;
+      if (key === "reportKind") return typeof value === "string" && (USAGE_REPORT_KINDS as readonly string[]).includes(value);
+      if (key === "isFinal") return typeof value === "boolean";
+      if (key === "sourceObservationId") return typeof value === "string" && value.length >= 1 && value.length <= 512;
+      return false;
+    };
+    const cells: Record<string, readonly unknown[]> = {
+      inputTokens: [ABSENT, null, 0, -1, 1.5, "1", 7],
+      outputTokens: [ABSENT, null, 0, -1, 1.5, "1", 7],
+      cacheWriteTokens: [ABSENT, null, 0, -1, 1.5, "1", 7],
+      cacheReadTokens: [ABSENT, null, 0, -1, 1.5, "1", 7],
+      totalTokens: [ABSENT, null, 0, -1, 1.5, "1", 7],
+      stepIndex: [ABSENT, null, 0, -1, 1.5, "1", 4],
+      reportKind: [ABSENT, null, "", "SNAPSHOT", "delta", "DELTA", "CUMULATIVE", "CORRECTION"],
+      isFinal: [ABSENT, null, false, true, 0, 1, "true"],
+      sourceObservationId: [ABSENT, null, "", 7, "x".repeat(513), "obs-1"],
+    };
+    let admitted = 0;
+    for (const [key, values] of Object.entries(cells)) {
+      for (const value of values) {
+        // Every class unknown, so the sum rule is not what a cell measures.
+        const candidate: Record<string, unknown> = usageReport({
+          inputTokens: null,
+          outputTokens: null,
+          cacheWriteTokens: null,
+          cacheReadTokens: null,
+          totalTokens: null,
+        });
+        if (value === ABSENT) Reflect.deleteProperty(candidate, key);
+        else candidate[key] = value;
+        const cell = key + "=" + (value === ABSENT ? "<absent>" : JSON.stringify(value));
+        const verdict = admits(key, value);
+        expect({ cell, ok: ExecutionEvent.safeParse(candidate).success }).toEqual({ cell, ok: verdict });
+        if (verdict) admitted += 1;
+      }
+    }
+    expect(admitted).toBeGreaterThan(0);
+    // A parsed null stays null: UNKNOWN is never read as 0.
+    const unknown = ExecutionEvent.parse(usageReport({ inputTokens: null, totalTokens: null }));
+    expect(unknown.kind === "usage" ? [unknown.inputTokens, unknown.totalTokens] : []).toEqual([null, null]);
+  });
+
+  it("P-15/D2 v2: with every class known the total is required and is their sum; beside an unknown class it is at least the known sum", () => {
+    expect(ExecutionEvent.safeParse(usageReport()).success).toBe(true);
+    expect(ExecutionEvent.safeParse(usageReport({ totalTokens: 11 })).success).toBe(false);
+    // Four known classes and a null total: REFUSED (v2) — the source knew the total.
+    expect(ExecutionEvent.safeParse(usageReport({ totalTokens: null })).success).toBe(false);
+    // One class unknown: the total may be unknown, or at least the known sum (1 + 2 + 4 = 7 here).
+    expect(ExecutionEvent.safeParse(usageReport({ cacheWriteTokens: null, totalTokens: null })).success).toBe(true);
+    expect(ExecutionEvent.safeParse(usageReport({ cacheWriteTokens: null, totalTokens: 7 })).success).toBe(true);
+    expect(ExecutionEvent.safeParse(usageReport({ cacheWriteTokens: null, totalTokens: 99 })).success).toBe(true);
+    expect(ExecutionEvent.safeParse(usageReport({ cacheWriteTokens: null, totalTokens: 6 })).success).toBe(false);
+    // Every class unknown: any total, or none.
+    const blind = { inputTokens: null, outputTokens: null, cacheWriteTokens: null, cacheReadTokens: null };
+    expect(ExecutionEvent.safeParse(usageReport({ ...blind, totalTokens: 0 })).success).toBe(true);
+    expect(ExecutionEvent.safeParse(usageReport({ ...blind, totalTokens: null })).success).toBe(true);
+  });
+
+  it("P-15/D2: the usage vocabularies are the ones the ledger's CHECKs hold, in precedence order", () => {
+    expect([...USAGE_SOURCE_CLASSES]).toEqual(["PROVIDER_AUTHORITATIVE", "WRAPPER_MEASURED", "ESTIMATE"]);
+    expect([...USAGE_REPORT_KINDS]).toEqual(["DELTA", "CUMULATIVE", "CORRECTION"]);
   });
 
   it("accepts the rest of the normalized vocabulary", () => {

@@ -40,6 +40,8 @@ export {
   EXIT_OK,
   EXIT_USAGE,
   TOKENS_USED_MAX,
+  USAGE_REPORT_KINDS,
+  USAGE_SOURCE_CLASSES,
   CHECKPOINT_MAX_BYTES,
   EVENT_PAYLOAD_MAX_BYTES,
   WORKER_ROLES,
@@ -159,6 +161,7 @@ export type {
   InstructionContent,
 } from "./schemas/index.js";
 export type { ResultStatus, ResultRefusal, ResultContract } from "./schemas/index.js";
+export type { UsageReportKind, UsageSourceClass } from "./schemas/index.js";
 export type { GuardViolation } from "./schemas/index.js";
 export type {
   ExecutionOutputSink,

@@ -13,7 +13,6 @@ import type {
 } from "../contract/index.js";
 import { unknownCapabilities } from "../contract/index.js";
 import { buildEnv } from "../config-root/index.js";
-import { isReportableTokenCount } from "../events/index.js";
 
 /**
  * The Codex App Server descriptor and JSON-RPC envelope parser.
@@ -396,9 +395,11 @@ function readTokenUsage(params: unknown): FrameOutcome {
   if (!isRecord(usage)) return MALFORMED;
   const last = usage["last"];
   if (!isRecord(last)) return MALFORMED;
-  const tokens = last["totalTokens"];
-  if (!isReportableTokenCount(tokens)) return { ok: true, signals: [] };
-  return { ok: true, signals: [{ kind: "step", tokensUsed: tokens, stepIndex: 0 }] };
+  // No usage report until this adapter executes (P-15/D2, ADR 0105; ND-D2-1): the
+  // frame is read and held to its shape, but no capture shows whether its count is
+  // a delta or a running total, or which id would name it, and a report built on
+  // that guess would be one invented. Absent is UNKNOWN, never a guess.
+  return { ok: true, signals: [] };
 }
 
 /**

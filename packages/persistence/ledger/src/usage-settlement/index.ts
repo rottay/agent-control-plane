@@ -1,3 +1,5 @@
+import { USAGE_REPORT_KINDS, USAGE_SOURCE_CLASSES } from "@acp/contracts";
+
 import { GENESIS_SHA256, canonicalJsonStringify, sha256Hex } from "../canonical-json/index.js";
 import { LedgerValidationError } from "../errors/index.js";
 
@@ -107,13 +109,18 @@ export type {
  */
 export const USAGE_MEASUREMENT_STREAM_PREIMAGE_PREFIX_V1 = "acp/usage-measurement-stream/v1\n";
 
-/** Source classes, highest precedence first (economy §1.1, §1.3.3). */
-export const USAGE_SOURCE_CLASSES = ["PROVIDER_AUTHORITATIVE", "WRAPPER_MEASURED", "ESTIMATE"] as const;
-
-
-
-/** Report kinds (economy §1.2). */
-export const USAGE_REPORT_KINDS = ["DELTA", "CUMULATIVE", "CORRECTION"] as const;
+/**
+ * Source classes, highest precedence first (economy §1.1, §1.3.3), and report kinds
+ * (economy §1.2).
+ *
+ * Declared in `@acp/contracts` since P-15/D2 (ADR 0105, decision 137): the execution
+ * port names a report's kind, and a port shape cannot import this package. They are
+ * re-exported here under the same names, so every reader of the ledger reads the one
+ * declaration. `USAGE_SOURCE_POLICY_V1.precedence` below stays a literal: its digest
+ * is attested, and deriving it from the constant would make a reordering of the set
+ * silently move a pinned policy.
+ */
+export { USAGE_REPORT_KINDS, USAGE_SOURCE_CLASSES };
 
 
 

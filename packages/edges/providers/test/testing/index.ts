@@ -93,10 +93,23 @@ function readRecord(raw: string): ProviderSignal | "UNKNOWN" | "MALFORMED" {
       return { kind: "started", resolvedModel: model, protocolVersion: version };
     }
     case "step": {
+      // The fake's one-number step, read as a usage report whose class split is
+      // unknown (P-15/D2): its total, never a 0 in a class nobody reported.
       const tokens = record["tokensUsed"];
       const index = record["stepIndex"];
       if (typeof tokens !== "number" || typeof index !== "number") return "MALFORMED";
-      return { kind: "step", tokensUsed: tokens, stepIndex: index };
+      return {
+        kind: "step",
+        stepIndex: index,
+        inputTokens: null,
+        outputTokens: null,
+        cacheWriteTokens: null,
+        cacheReadTokens: null,
+        totalTokens: tokens,
+        reportKind: "CUMULATIVE",
+        isFinal: true,
+        sourceObservationId: "fake/step-" + String(index),
+      };
     }
     case "checkpoint": {
       const digest = record["digest"];

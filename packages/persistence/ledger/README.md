@@ -1485,6 +1485,14 @@ price, cost or valuation (P-33).
 
 ## Usage, declared and measured, and settled by the door
 
+**Where the vocabularies live (P-15/D2, ADR 0105; decision 137).** `USAGE_SOURCE_CLASSES`
+and `USAGE_REPORT_KINDS` are declared in `@acp/contracts` — the execution port's usage
+report names a kind, and a port shape cannot import this package — and
+`usage-settlement` re-exports them under the same names. The read models' unions
+derive from them; migration 20's CHECK text stays as written and a test holds it equal
+to the constants; `USAGE_SOURCE_POLICY_V1.precedence` stays a literal, attested by its
+digest.
+
 P-32/captura escalón B (ADR 0089; decisions 83-85). Economy §1.2 writes a stream, an
 observation and the settlement with the append and the head in one transaction, so
 migration 20, two event types, the door and the rebuild land together, and escalón

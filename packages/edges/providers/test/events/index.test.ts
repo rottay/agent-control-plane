@@ -52,7 +52,18 @@ describe("every normalized event maps onto the frozen vocabulary", () => {
   it("translates each provider signal to its declared type", () => {
     const cases: { readonly signal: ProviderSignal; readonly frozen: string }[] = [
       { signal: { kind: "started", resolvedModel: "m", protocolVersion: "1" }, frozen: "RUN_STARTED" },
-      { signal: { kind: "step", tokensUsed: 5, stepIndex: 0 }, frozen: "ATOMIC_STEP_COMPLETED" },
+      { signal: {
+        kind: "step",
+        stepIndex: 0,
+        inputTokens: null,
+        outputTokens: 5,
+        cacheWriteTokens: null,
+        cacheReadTokens: null,
+        totalTokens: null,
+        reportKind: "CUMULATIVE",
+        isFinal: true,
+        sourceObservationId: "obs-1",
+      }, frozen: "ATOMIC_STEP_COMPLETED" },
       { signal: { kind: "checkpoint", digest: "abc" }, frozen: "CHECKPOINT_WRITTEN" },
       { signal: { kind: "authRequired", reason: "LOGIN_REQUIRED" }, frozen: "AUTH_REQUIRED_RAISED" },
       { signal: { kind: "state", toState: "DISCOVERED" }, frozen: "TASK_STATE_CHANGED" },
@@ -84,7 +95,18 @@ describe("every normalized event maps onto the frozen vocabulary", () => {
   });
 
   it("is deterministic: the same signal yields the same event every time", () => {
-    const signal: ProviderSignal = { kind: "step", tokensUsed: 1200, stepIndex: 3 };
+    const signal: ProviderSignal = {
+        kind: "step",
+        stepIndex: 3,
+        inputTokens: null,
+        outputTokens: 1200,
+        cacheWriteTokens: null,
+        cacheReadTokens: null,
+        totalTokens: null,
+        reportKind: "CUMULATIVE",
+        isFinal: true,
+        sourceObservationId: "obs-1",
+      };
     const first = JSON.stringify(toNormalized(signal, "kimi", TASK));
     for (let index = 0; index < 100; index += 1) {
       expect(JSON.stringify(toNormalized(signal, "kimi", TASK))).toBe(first);
@@ -123,5 +145,33 @@ describe("the private signals never become events (P-07 escalón C, ADR 0099)", 
     }
     // Positive control: a signal with a mapping still maps.
     expect(toNormalized({ kind: "state", toState: "SUCCESS" }, "claude", TASK)).not.toBeNull();
+  });
+});
+
+describe("P-15/D2: a usage report crosses normalization field for field, null kept null", () => {
+  it("carries every field of the report, and a null class stays null — never 0", () => {
+    const signal: ProviderSignal = {
+      kind: "step",
+      stepIndex: 2,
+      inputTokens: 0,
+      outputTokens: null,
+      cacheWriteTokens: 7,
+      cacheReadTokens: null,
+      totalTokens: null,
+      reportKind: "DELTA",
+      isFinal: false,
+      sourceObservationId: "obs-2",
+    };
+    expect(toNormalized(signal, "claude", TASK)?.payload).toEqual({
+      stepIndex: 2,
+      inputTokens: 0,
+      outputTokens: null,
+      cacheWriteTokens: 7,
+      cacheReadTokens: null,
+      totalTokens: null,
+      reportKind: "DELTA",
+      isFinal: false,
+      sourceObservationId: "obs-2",
+    });
   });
 });

@@ -135,7 +135,8 @@ describe("a session streams what the provider actually said", () => {
     expect(failure).toBeNull();
     expect(events.map((event) => event.name)).toEqual(["session.started", "step.completed"]);
     expect(events[0]?.frozenType).toBe("RUN_STARTED");
-    expect(events[1]?.payload["tokensUsed"]).toBe(1200);
+    // The fake's step is a usage report of that total, class split unknown (P-15/D2).
+    expect(events[1]?.payload).toMatchObject({ totalTokens: 1200, inputTokens: null, outputTokens: null });
   });
 
   it("reassembles a record split across chunk boundaries", async () => {

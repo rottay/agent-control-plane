@@ -161,7 +161,102 @@ attribute.
 - **`resolvePrice`** trusts its caller's instant. That is a note for P-33.
 - The walk, the config form, the evidence root, usage and the drill are D2 to D4's.
 
-## D2 — to be recorded with D2
+## D2 — decisions 136 to 138
+
+### Five — the usage report at the port, and never a 0 for UNKNOWN (decision 136; C9, C-D5)
+
+`ExecutionEvent`'s `usage` member was `{stepIndex, tokensUsed}`: one number for every
+token class, which is the shape that let a per-record count and a final count be summed
+into ADR 0099's double count. It is now one report:
+
+- `inputTokens`, `outputTokens`, `cacheWriteTokens`, `cacheReadTokens` and
+  `totalTokens`, each a non-negative integer or `null`. `null` is UNKNOWN; a zero is a
+  real zero; an absent key is a malformed report, refused by the strict object. When
+  all four classes are known, the total is required and is their sum, or the report
+  is refused — a known split beside an unknown total is a total the source did know.
+  When any class is unknown the total may be unknown; when it is stated it is at least
+  the sum of the classes that are known, or the report is refused.
+- `reportKind` from `USAGE_REPORT_KINDS`; `isFinal` a boolean at the port, mapped to
+  `0 | 1` where the ledger records it; `sourceObservationId`, the source's own id for
+  the observation, non-empty.
+- `stepIndex` stays, and `completed.stepIndex` carries the last report's (C-D5).
+
+`tokensUsed` is removed. The provider's `step` signal and the API and local usage chunks
+carry the same fields, and the port parses the report through the member. The runtime's
+`UsageSample` carries them verbatim; the legacy sink records the total when it is
+known and **nothing** when it is `null` — never a 0 standing in for a count nobody
+reported. The two drill children's scripted reports carry a total of 1 and an unknown
+class split, so their legacy rows are unchanged.
+
+`CONTRACT_VERSION` does not move: `ExecutionEvent` is a port shape, not a ledger event.
+
+### Six — the vocabularies move to contracts (decision 137; C-D4)
+
+`USAGE_SOURCE_CLASSES` and `USAGE_REPORT_KINDS` were the ledger's, their only reader
+(decision 45). The port now names a report's kind, and contracts and providers cannot
+import the ledger, so the sets move to a new contracts capability module,
+`usage-measure`, with their derived unions in its type leaf; the ledger re-exports the
+constants under the same names, its usage-settlement type leaf re-exports the two
+unions rather than declaring them — one declaration each — and its read models' unions
+derive from them. Migration
+20's CHECK text stays as written, and a test holds it equal to the constants. The
+settlement policy's `precedence` stays a literal: its digest is attested, and deriving
+it from the set would let a reordering silently move a pinned policy.
+
+### Seven — Claude reports usage once, and the adapters declare their sources (decision 138; C9, C-D5)
+
+- **Claude** reports exactly one usage report per run, from the `result` record's
+  `usage`: CUMULATIVE, final, its id `session_id + "/result"`. CUMULATIVE for the whole
+  session is what the captures prove, and they are single-run sessions only. A
+  `--resume` reuses the session id, so a resumed run yields a second result with the
+  **same** `sourceObservationId` and a usage scope — the whole session, or that run
+  alone — nobody has observed. That is a D3 obligation: D3 refuses such a second report
+  or distinguishes it, and never folds it as a restatement of the first. The policy
+  object and its digest do not move; the bound is on the claim. The four classes are
+  read by name (`input_tokens`, `output_tokens`, `cache_creation_input_tokens`,
+  `cache_read_input_tokens`); a class the record does not carry is `null`, the total the
+  sum only when all four are known; a present value that is not a count, a `usage` that
+  is not an object, or a report with no session id is refused, never read as absent.
+  Assistant records report nothing: one message arrives as several records, each
+  repeating its usage. `stepIndex` is the number of distinct assistant message ids,
+  carried across chunk splits. Replaying the captured success sample now yields one
+  report — 1, 1, 1, 1 and a total of 4 — where it yielded two.
+- **Codex and Kimi** report no usage until they execute (ND-D2-1 (b)): no capture shows
+  whether their counts are deltas or running totals, or which id would name one.
+- **`CLAUDE_USAGE_SOURCE`** declares the measurement stream's static facts once:
+  `claude-cli`, `PROVIDER_AUTHORITATIVE`, the normalization policy object and its
+  digest. The digest is a pinned literal of SHA-256 over the policy's canonical JSON
+  (ND-D2-2 (a)), recomputed by the providers suite: L-P15A-1 admits `node:crypto` in
+  providers only for the session name, and it does not move.
+
+### The V1 consequences (decision 138)
+
+The legacy sink keeps writing `TOKEN_USAGE_RECORDED` from D2's reports, so what V1's
+quota sees changes now, not in D3:
+
+- **Claude's** recorded tokens change from each assistant record's `output_tokens` —
+  a message counted once per record that repeated it, ADR 0099's double count — to one
+  row per run carrying the four-class session total (input, output and both cache
+  classes).
+- **Claude without a `result`** — a run killed, crashed or cut before the CLI writes
+  it — records nothing, where it recorded the assistant records seen so far.
+- **Codex and Kimi** record nothing from D2 onwards: they emit no usage, so V1's quota
+  is blind for them **now**, not only from D3.
+
+### What D2 does not do
+
+- **L-P32C-1** stays: no `src/` names the usage recorders yet. D3 wires `recordStream`
+  into the walk, retires it and adds L-P15D-1 in its place.
+- **Quota blindness** for a V2 walk is D3's statement, where the walk stops calling the
+  legacy recorder; the V1 blindness above for Codex and Kimi is D2's own.
+- **A resumed Claude run** (a second `result` under the same `sourceObservationId`) is
+  left to D3, which must refuse or distinguish it.
+- **The launchd lifecycle fixture**
+  (`packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts`) keeps a stale
+  fake Claude stream: an assistant record with usage and a result without it, so its
+  walk now spends nothing. It asserts nothing about usage and is left as it is. The
+  fallback gate and the daemon drills, whose streams were the same, now carry the
+  result's usage and each pin exactly one spend row.
 
 ## D3 — to be recorded with D3
 

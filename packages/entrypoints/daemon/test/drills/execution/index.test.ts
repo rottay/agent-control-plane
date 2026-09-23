@@ -110,6 +110,28 @@ import type {
   ResultSample,
 } from "../../../../../domains/runtime/src/operation-result/index.js";
 
+/** One usage report of a known total, class split unknown (P-15/D2): what an API or scripted leg reports. */
+function usageReport(stepIndex: number, total: number): Extract<ExecutionEvent, { kind: "usage" }> {
+  return {
+    kind: "usage",
+    stepIndex,
+    inputTokens: null,
+    outputTokens: null,
+    cacheWriteTokens: null,
+    cacheReadTokens: null,
+    totalTokens: total,
+    reportKind: "CUMULATIVE",
+    isFinal: true,
+    sourceObservationId: "obs-" + String(stepIndex),
+  };
+}
+
+/** The one number a legacy sink records; a report with no total records nothing, so a drill that reaches here has one. */
+function totalOf(sample: UsageSample): number {
+  if (sample.totalTokens === null) throw new Error("a report with no total is recorded by nobody");
+  return sample.totalTokens;
+}
+
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
@@ -519,7 +541,8 @@ function resolvedCliRoute(): ResolvedRoute {
 const CLAUDE_LINES: readonly string[] = [
   JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
   JSON.stringify({ type: "assistant", message: { usage: { output_tokens: TOKENS } } }),
-  JSON.stringify({ type: "result", subtype: "turn_completed" }),
+  // The session's one usage report is the result's (P-15/D2, ADR 0105).
+  JSON.stringify({ type: "result", subtype: "turn_completed", session_id: "session-drill", usage: { input_tokens: 0, output_tokens: TOKENS, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
 ];
 
 /**
@@ -624,7 +647,7 @@ function cliPort(): ModelExecutionPort {
 /** The transport intersection, as this transport speaks it. */
 const API_SCENARIO: readonly ApiStreamChunk[] = [
   { kind: "started", resolvedModel: RESOLVED_MODEL, protocolVersion: "api/streaming-1" },
-  { kind: "usage", stepIndex: 1, tokensUsed: TOKENS },
+  usageReport(1, TOKENS),
   { kind: "state", toState: TERMINAL_STATE },
 ];
 
@@ -830,7 +853,7 @@ function normalized(trail: readonly ExecutionEvent[]): Record<string, unknown> {
   return {
     kinds: trail.map((event) => event.kind).filter((kind) => !PER_LEG_KINDS.includes(kind)),
     everyEventValid: trail.every((event) => ExecutionEvent.safeParse(event).success),
-    usageTotal: trail.reduce((sum, event) => (event.kind === "usage" ? sum + event.tokensUsed : sum), 0),
+    usageTotal: trail.reduce((sum, event) => (event.kind === "usage" && event.totalTokens !== null ? sum + event.totalTokens : sum), 0),
     completed: trail.filter((event) => event.kind === "completed").length,
     terminalState: trail.find((event) => event.kind === "state")?.kind === "state"
       ? (trail.find((event) => event.kind === "state") as { toState: string }).toState
@@ -1486,12 +1509,16 @@ describe("a restart over the real adapter performs no second execution", () => {
 const B7T_TOKENS_A = 4_321;
 const B7T_TOKENS_B = 765;
 
-/** A Claude turn that reports its spend twice, so "one event per entry" is visible. */
+/**
+ * A Claude turn with two assistant messages, whose spend arrives ONCE (P-15/D2, ADR
+ * 0105): the assistant records report nothing, and the result carries the session's
+ * own total. Before D2 each assistant record was a report and they were summed.
+ */
 const B7T_TWO_USAGE_LINES: readonly string[] = [
   JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
-  JSON.stringify({ type: "assistant", message: { usage: { output_tokens: B7T_TOKENS_A } } }),
-  JSON.stringify({ type: "assistant", message: { usage: { output_tokens: B7T_TOKENS_B } } }),
-  JSON.stringify({ type: "result", subtype: "turn_completed" }),
+  JSON.stringify({ type: "assistant", message: { id: "msg-a", usage: { output_tokens: B7T_TOKENS_A } } }),
+  JSON.stringify({ type: "assistant", message: { id: "msg-b", usage: { output_tokens: B7T_TOKENS_B } } }),
+  JSON.stringify({ type: "result", subtype: "turn_completed", session_id: "session-b7t", usage: { input_tokens: 0, output_tokens: B7T_TOKENS_A + B7T_TOKENS_B, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
 ];
 
 /**
@@ -1511,14 +1538,14 @@ const B7T_TWO_USAGE_LINES: readonly string[] = [
  */
 const B7T_OVER_CEILING_CHUNKS: readonly ApiStreamChunk[] = [
   { kind: "started", resolvedModel: RESOLVED_MODEL, protocolVersion: "api/streaming-1" },
-  { kind: "usage", stepIndex: 1, tokensUsed: USAGE_TOKENS_MAX + 1 },
+  usageReport(1, USAGE_TOKENS_MAX + 1),
   { kind: "state", toState: TERMINAL_STATE },
 ];
 
 /** The same leg, inside the ceiling, so the refusal below is about the number. */
 const B7T_UNDER_CEILING_CHUNKS: readonly ApiStreamChunk[] = [
   { kind: "started", resolvedModel: RESOLVED_MODEL, protocolVersion: "api/streaming-1" },
-  { kind: "usage", stepIndex: 1, tokensUsed: USAGE_TOKENS_MAX },
+  usageReport(1, USAGE_TOKENS_MAX),
   { kind: "state", toState: TERMINAL_STATE },
 ];
 
@@ -1580,7 +1607,7 @@ async function walkRecording(
           invocation: inv,
           kind: "USAGE",
           accountId: route.accountId,
-          tokens: sample.tokensUsed,
+          tokens: totalOf(sample),
           transitionId: usageTransitionId(0, sample.operationIndex, sample.stepIndex),
           emittedBy: EMITTED_BY,
         });
@@ -1641,12 +1668,14 @@ function trailUsageTotal(trail: readonly ExecutionEvent[]): number {
 }
 
 describe("V2-B7T: the walk records what it spends", () => {
-  it("P4/P5: one event per trail usage entry, summing to the port's own total", async () => {
+  it("P4/P5: one event per trail usage entry, and the session's one report is the port's own total (P-15/D2)", async () => {
     const walked = await walkRecording("b7t-usage-sum", B7T_TWO_USAGE_LINES);
     expect(walked.state).toBe("CHECKPOINTED");
 
+    // Two assistant messages, ONE usage report: the result's total (P-15/D2, ADR
+    // 0105). Before D2 each assistant record was an entry and they were summed.
     const entries = walked.trail.filter((event) => event.kind === "usage");
-    expect(entries.length).toBe(2);
+    expect(entries.length).toBe(1);
 
     // P5 — one appended event per trail entry. Not summed, not collapsed.
     expect(walked.usageEvents).toHaveLength(entries.length);
@@ -1730,7 +1759,7 @@ describe("V2-B7T: the walk records what it spends", () => {
           invocation: replayInvocation,
           kind: "USAGE" as const,
           accountId: route.accountId,
-          tokens: sample.tokensUsed,
+          tokens: totalOf(sample),
           transitionId: usageTransitionId(0, sample.operationIndex, sample.stepIndex),
           emittedBy: EMITTED_BY,
         };
@@ -1739,9 +1768,9 @@ describe("V2-B7T: the walk records what it spends", () => {
       },
     });
 
-    // First of each pair inserted, second of each pair an exact replay.
-    expect(results).toEqual([true, false, true, false]);
-    expect(walked.usageEvents).toHaveLength(2);
+    // Inserted once, then an exact replay — for the session's one report (P-15/D2).
+    expect(results).toEqual([true, false]);
+    expect(walked.usageEvents).toHaveLength(1);
     expect(walked.state).toBe("CHECKPOINTED");
   });
 
@@ -1751,7 +1780,8 @@ describe("V2-B7T: the walk records what it spends", () => {
     // offered to the sink a second time.
     const walked = await walkRecording("b7t-usage-resume", B7T_TWO_USAGE_LINES);
     const before = walked.ledger.status();
-    expect(walked.usageEvents).toHaveLength(2);
+    // The session's one report (P-15/D2).
+    expect(walked.usageEvents).toHaveLength(1);
 
     const route = resolvedCliRoute();
     const resumed = await new SqliteSupervisor({
@@ -1857,7 +1887,7 @@ describe("V2-B7T: the walk records what it spends", () => {
           failFirst = false;
           throw new Error("crash between the execution and the marker");
         }
-        recorded.push(sample.tokensUsed);
+        recorded.push(totalOf(sample));
       },
     });
 
@@ -1873,12 +1903,12 @@ describe("V2-B7T: the walk records what it spends", () => {
       request: executionRequest(),
       scenarioRoot: walked.root,
       recordUsage: (sample) => {
-        recorded.push(sample.tokensUsed);
+        recorded.push(totalOf(sample));
         recordTokenObservation(walked.ledger, {
           invocation: walked.inv,
           kind: "USAGE",
           accountId: route.accountId,
-          tokens: sample.tokensUsed,
+          tokens: totalOf(sample),
           transitionId: usageTransitionId(0, sample.operationIndex, sample.stepIndex),
           emittedBy: EMITTED_BY,
         });
@@ -1951,7 +1981,8 @@ describe("V2-B7T: the walk records what it spends", () => {
     await expect(again.probe(operationForStep(walked.inv, INTENT_STEP))).resolves.toBe("DONE");
     await again.apply(operationForStep(walked.inv, INTENT_STEP));
     expect(calls.starts).toBe(0);
-    expect(walked.usageEvents).toHaveLength(2);
+    // The session's one report (P-15/D2).
+    expect(walked.usageEvents).toHaveLength(1);
   });
 
   it("K3: an unsettled walk is not falsely terminal, and settles exactly once", async () => {
@@ -3119,7 +3150,7 @@ const F4_AUTH_LINES: readonly string[] = [
   JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
   JSON.stringify({ type: "system", subtype: "auth_required" }),
   JSON.stringify({ type: "assistant", message: { usage: { output_tokens: TOKENS } } }),
-  JSON.stringify({ type: "result", subtype: "turn_completed" }),
+  JSON.stringify({ type: "result", subtype: "turn_completed", session_id: "session-f4", usage: { input_tokens: 0, output_tokens: TOKENS, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
 ];
 
 describe("F4: the plane records the pressure a provider reports", () => {
@@ -3726,10 +3757,20 @@ const F5_DRILL_TASKS = [
   "f5dd0000-0000-4000-8000-00000000000b",
 ] as const;
 
-/** A subject that spends, then fails the contract in the port (V2-B1f/F4a-E). */
+/**
+ * A subject that spends, then fails the contract in the port (V2-B1f/F4a-E). Its
+ * spend is the result record's report (P-15/D2): the assistant record reports
+ * nothing, so the turn's result carries the count before the stream goes wrong.
+ */
 const F5_SPENDING_UNEXPRESSIBLE_LINES: readonly string[] = [
   JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
   JSON.stringify({ type: "assistant", message: { usage: { output_tokens: TOKENS } } }),
+  JSON.stringify({
+    type: "result",
+    subtype: "turn_completed",
+    session_id: "session-f5",
+    usage: { input_tokens: 0, output_tokens: TOKENS, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+  }),
   JSON.stringify({ type: "system", subtype: "auth_required" }),
   JSON.stringify({ type: "system", subtype: "init", model: "m".repeat(200) }),
 ];
@@ -5389,7 +5430,14 @@ function synLines(text: string, isError: boolean): readonly string[] {
   return [
     JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL, session_id: "00000000-0000-4000-8000-000000000001" }),
     JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text }], usage: { output_tokens: 1 } } }),
-    JSON.stringify({ type: "result", subtype: "success", is_error: isError, result: text }),
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: isError,
+      result: text,
+      session_id: "00000000-0000-4000-8000-000000000001",
+      usage: { input_tokens: 0, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    }),
   ];
 }
 

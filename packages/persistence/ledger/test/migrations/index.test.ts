@@ -15,6 +15,8 @@ import {
   REFERENCE_SCOPE_KINDS,
   RESULT_STATUSES,
   RETENTION_CLASSES,
+  USAGE_REPORT_KINDS,
+  USAGE_SOURCE_CLASSES,
 } from "@acp/contracts";
 
 import {
@@ -1912,6 +1914,14 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
       expect(statements, index).toContain(index);
     }
     expect(statements.match(/CREATE (UNIQUE )?INDEX/g)).toHaveLength(6);
+  });
+
+  it("P-15/D2 (C-D4): the two usage CHECKs hold exactly the words of the contract's vocabularies, in their order", () => {
+    // The CHECK text stays as migration 20 wrote it; the vocabularies moved to
+    // `@acp/contracts`. This is what holds the two declarations to each other.
+    const inList = (words: readonly string[]): string => words.map((word) => "'" + word + "'").join(",");
+    expect(statements).toContain("CHECK (source_class IN (" + inList(USAGE_SOURCE_CLASSES) + "))");
+    expect(statements).toContain("CHECK (report_kind IN (" + inList(USAGE_REPORT_KINDS) + "))");
   });
 
   it("N-P32B-5/17: carries the report shape and the five nullity checks in the dictionary's words", () => {

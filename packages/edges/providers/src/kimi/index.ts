@@ -12,7 +12,6 @@ import type {
 } from "../contract/index.js";
 import { unknownCapabilities } from "../contract/index.js";
 import { buildEnv } from "../config-root/index.js";
-import { isReportableTokenCount } from "../events/index.js";
 
 /**
  * The Kimi ACP descriptor and JSON-RPC parser.
@@ -211,14 +210,6 @@ function embeddedToolCallReason(params: unknown): string | null {
   return writeClassReason(toolCall, "tool_call_update");
 }
 
-/** Tokens reported by an update, when it reports any within bounds. */
-function updateTokens(update: Record<string, unknown>): number | null {
-  const meta = update["_meta"];
-  if (!isRecord(meta)) return null;
-  const tokens = meta["tokensUsed"];
-  return isReportableTokenCount(tokens) ? tokens : null;
-}
-
 type FrameOutcome =
   | { readonly ok: true; readonly signals: readonly ProviderSignal[] }
   | { readonly ok: false; readonly code: "UNKNOWN_EVENT" | "MALFORMED_EVENT" };
@@ -240,8 +231,9 @@ function readUpdate(params: unknown): FrameOutcome {
     return { ok: false, code: "UNKNOWN_EVENT" };
   }
 
-  const tokens = updateTokens(update);
-  if (tokens !== null) signals.push({ kind: "step", tokensUsed: tokens, stepIndex: 0 });
+  // No usage report until this adapter executes (P-15/D2, ADR 0105; ND-D2-1): no
+  // capture shows what an update's `_meta.tokensUsed` counts, so none is reported
+  // rather than one guessed. Absent is UNKNOWN, never a guess.
   return { ok: true, signals };
 }
 

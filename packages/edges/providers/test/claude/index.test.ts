@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -22,7 +22,7 @@ import type { NormalizedEvent } from "../../src/events/index.js";
 import { descriptorEnablesWrites, startSession } from "../../src/session/index.js";
 import { fakeProviderArgv } from "../testing/index.js";
 import type { FakeScript } from "../testing/index.js";
-import { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "../../src/claude/index.js";
+import { CLAUDE_STREAM_PROTOCOL, CLAUDE_USAGE_SOURCE, claudeAdapter } from "../../src/claude/index.js";
 import { CAPTURED_AUTH_FAILURE, CAPTURED_SUCCESS } from "../testing/claude-capture/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
@@ -122,7 +122,12 @@ const ASSISTANT = JSON.stringify({
   type: "assistant",
   message: { usage: { output_tokens: 1200 }, content: [{ type: "text", text: "hello" }] },
 });
-const RESULT = JSON.stringify({ type: "result", subtype: "success" });
+const RESULT = JSON.stringify({
+  type: "result",
+  subtype: "success",
+  session_id: "session-fixture",
+  usage: { input_tokens: 0, output_tokens: 1200, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+});
 
 describe("the descriptor is exactly what was authorized", () => {
   it("builds the observed headless argv, with the attempt's session name (ADR 0101)", () => {
@@ -278,7 +283,9 @@ describe("the parser reads the stream it declares, and refuses the rest", () => 
     ]);
     expect(events[0]?.payload["resolvedModel"]).toBe("claude-opus-5-20260401");
     expect(events[0]?.payload["protocolVersion"]).toBe(CLAUDE_STREAM_PROTOCOL);
-    expect(events[1]?.payload["tokensUsed"]).toBe(1200);
+    // The session's one usage report, from the result (P-15/D2): the assistant
+    // record's usage is not read.
+    expect(events[1]?.payload).toMatchObject({ outputTokens: 1200, totalTokens: 1200, reportKind: "CUMULATIVE", isFinal: true });
     expect(events[2]?.payload["toState"]).toBe("SUCCESS");
   });
 
@@ -356,7 +363,9 @@ describe("the parser reads the stream it declares, and refuses the rest", () => 
   it("survives a death mid-stream", async () => {
     const { events, failure } = await collect({ lines: [INIT, ASSISTANT], exitCode: 3 });
     expect(failure).toBeNull();
-    expect(events.map((event) => event.name)).toEqual(["session.started", "step.completed"]);
+    // No result, so no usage report: the session's usage is UNKNOWN, never a count
+    // assembled from the assistant records (P-15/D2).
+    expect(events.map((event) => event.name)).toEqual(["session.started"]);
   });
 
   it("is deterministic across repeated identical runs", () => {
@@ -624,7 +633,19 @@ describe("P-07 C: the captured Claude streams, parsed (OBS)", () => {
   it("OBS sample 1: started, a zero step, no output, SUCCESS as a token, and the operation FAILED — at every split", () => {
     const expected = [
       { kind: "started", resolvedModel: "claude-haiku-4-5-20251001", protocolVersion: CLAUDE_STREAM_PROTOCOL },
-      { kind: "step", tokensUsed: 0, stepIndex: 1 },
+      // The result's usage, every class a real zero, once (P-15/D2).
+      {
+        kind: "step",
+        stepIndex: 1,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheWriteTokens: 0,
+        cacheReadTokens: 0,
+        totalTokens: 0,
+        reportKind: "CUMULATIVE",
+        isFinal: true,
+        sourceObservationId: "00000000-0000-4000-8000-000000000001/result",
+      },
       { kind: "state", toState: "SUCCESS" },
       { kind: "operation", status: "FAILED" },
     ];
@@ -641,9 +662,23 @@ describe("P-07 C: the captured Claude streams, parsed (OBS)", () => {
     const signals = signalsOf(CAPTURED_SUCCESS);
     expect(signals).toEqual([
       { kind: "started", resolvedModel: "claude-haiku-4-5-20251001", protocolVersion: CLAUDE_STREAM_PROTOCOL },
-      { kind: "step", tokensUsed: 1, stepIndex: 2 },
-      { kind: "step", tokensUsed: 1, stepIndex: 3 },
       { kind: "output", text: "ok" },
+      // ONE report, from the result (P-15/D2, ADR 0105). The two assistant records
+      // repeat one message (one id, so one step) and each carried usage; before D2
+      // each was a report, and the settlement summed them. The CLI's own total is
+      // the one count.
+      {
+        kind: "step",
+        stepIndex: 1,
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheWriteTokens: 1,
+        cacheReadTokens: 1,
+        totalTokens: 4,
+        reportKind: "CUMULATIVE",
+        isFinal: true,
+        sourceObservationId: "00000000-0000-4000-8000-000000000001/result",
+      },
       { kind: "state", toState: "SUCCESS" },
       { kind: "operation", status: "SUCCEEDED" },
     ]);
@@ -656,7 +691,9 @@ describe("P-07 C: the captured Claude streams, parsed (OBS)", () => {
   it("positive control: the same result record without is_error says nothing about the operation", () => {
     const result = record(CAPTURED_AUTH_FAILURE[2]);
     delete result["is_error"];
-    expect(signalsOf([JSON.stringify(result)])).toEqual([{ kind: "state", toState: "SUCCESS" }]);
+    const signals = signalsOf([JSON.stringify(result)]);
+    // The usage report still arrives — no assistant record was seen, so no step.
+    expect(signals).toEqual([expect.objectContaining({ kind: "step", stepIndex: 0, totalTokens: 0 }), { kind: "state", toState: "SUCCESS" }]);
   });
 
   it("is_error present and not a boolean is refused, never read as absent (the NULL lesson, value by value)", () => {
@@ -741,5 +778,100 @@ describe("P-07 C: the captured Claude streams, parsed (OBS)", () => {
   it("any other system subtype or record type still fails closed", () => {
     expect(signalsOf([JSON.stringify({ type: "system", subtype: "unheard_of" })])).toEqual([{ refused: "UNKNOWN_EVENT" }]);
     expect(signalsOf([JSON.stringify({ type: "rate_limit_event_v2" })])).toEqual([{ refused: "UNKNOWN_EVENT" }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón D2 — the usage report, read once and never invented (ADR 0105)
+// ---------------------------------------------------------------------------
+
+describe("P-15/D2: Claude reports usage once, from the result, and invents no count", () => {
+  const usageOf = (usage: unknown, extra: Record<string, unknown> = {}): readonly unknown[] => {
+    const result = record(CAPTURED_SUCCESS[5]);
+    if (usage === undefined) delete result["usage"];
+    else result["usage"] = usage;
+    return signalsOf([JSON.stringify({ ...result, ...extra })]).filter((signal) => (signal as { kind: string }).kind === "step");
+  };
+  const full = { input_tokens: 3, output_tokens: 4, cache_creation_input_tokens: 5, cache_read_input_tokens: 6 };
+
+  it("N-D20: no usage on the result is no report, and a missing class is UNKNOWN with no total — never 0", () => {
+    expect(usageOf(undefined)).toEqual([]);
+    for (const key of Object.keys(full)) {
+      const partial: Record<string, number> = { ...full };
+      Reflect.deleteProperty(partial, key);
+      const [report] = usageOf(partial) as Record<string, unknown>[];
+      const name = Object.entries(CLAUDE_USAGE_SOURCE.normalizationPolicy["classes"] as Record<string, string>).find(
+        ([, raw]) => raw === key,
+      )?.[0];
+      expect({ key, class: report?.[name ?? ""], total: report?.["totalTokens"] }).toEqual({ key, class: null, total: null });
+    }
+    expect(usageOf(full)).toEqual([
+      expect.objectContaining({ inputTokens: 3, outputTokens: 4, cacheWriteTokens: 5, cacheReadTokens: 6, totalTokens: 18 }),
+    ]);
+  });
+
+  it("a class present with anything but a count, a usage that is not an object, or a report with no session id is refused", () => {
+    for (const value of [null, -1, 1.5, "3", {}, 10_000_001]) {
+      const result = record(CAPTURED_SUCCESS[5]);
+      result["usage"] = { ...full, input_tokens: value };
+      expect(signalsOf([JSON.stringify(result)]), JSON.stringify(value)).toEqual([{ refused: "MALFORMED_EVENT" }]);
+    }
+    for (const usage of [null, "usage", [1], 7]) {
+      const result = record(CAPTURED_SUCCESS[5]);
+      result["usage"] = usage;
+      expect(signalsOf([JSON.stringify(result)]), JSON.stringify(usage)).toEqual([{ refused: "MALFORMED_EVENT" }]);
+    }
+    for (const sessionId of [undefined, null, "", 7]) {
+      const result = record(CAPTURED_SUCCESS[5]);
+      if (sessionId === undefined) delete result["session_id"];
+      else result["session_id"] = sessionId;
+      expect(signalsOf([JSON.stringify(result)]), JSON.stringify(sessionId)).toEqual([{ refused: "MALFORMED_EVENT" }]);
+    }
+  });
+
+  it("an assistant message id present and not a non-empty string is refused, never read as absent", () => {
+    for (const id of [null, "", 7, {}]) {
+      const assistant = record(CAPTURED_SUCCESS[3]);
+      (assistant["message"] as Record<string, unknown>)["id"] = id;
+      expect(signalsOf([JSON.stringify(assistant)]), JSON.stringify(id)).toEqual([{ refused: "MALFORMED_EVENT" }]);
+    }
+  });
+
+  it("C-D5: the step count is the distinct assistant messages, carried across chunk splits", () => {
+    const assistant = (id: string): string => {
+      const value = record(CAPTURED_SUCCESS[3]);
+      (value["message"] as Record<string, unknown>)["id"] = id;
+      return JSON.stringify(value);
+    };
+    const lines = [assistant("m-1"), assistant("m-1"), assistant("m-2"), CAPTURED_SUCCESS[5] ?? ""];
+    const whole = signalsOf(lines).filter((signal) => (signal as { kind: string }).kind === "step");
+    expect(whole).toEqual([expect.objectContaining({ stepIndex: 2 })]);
+    const length = lines.map((line) => line + "\n").join("").length;
+    for (let at = 1; at < length; at += 97) {
+      expect(signalsOf(lines, at).filter((signal) => (signal as { kind: string }).kind === "step"), String(at)).toEqual(whole);
+    }
+  });
+
+  it("declares its source once: the provider's own count, under a policy whose digest is pinned and recomputed here", () => {
+    expect(CLAUDE_USAGE_SOURCE.source).toBe("claude-cli");
+    expect(CLAUDE_USAGE_SOURCE.sourceClass).toBe("PROVIDER_AUTHORITATIVE");
+    // Canonical JSON: keys sorted at every depth, no whitespace. Recomputed here with
+    // node:crypto, because src/ hashes nothing outside the session name (L-P15A-1).
+    const canonical = (value: unknown): unknown =>
+      Array.isArray(value)
+        ? value.map(canonical)
+        : value !== null && typeof value === "object"
+          ? Object.fromEntries(
+              Object.keys(value)
+                .sort()
+                .map((key) => [key, canonical((value as Record<string, unknown>)[key])]),
+            )
+          : value;
+    const digest = createHash("sha256")
+      .update(JSON.stringify(canonical(CLAUDE_USAGE_SOURCE.normalizationPolicy)), "utf8")
+      .digest("hex");
+    expect(CLAUDE_USAGE_SOURCE.normalizationPolicySha256).toBe(digest);
+    expect(CLAUDE_USAGE_SOURCE.normalizationPolicySha256).toBe("14cbb2a397762bfc4cfec2d00073bc26402d7c81123a2a8683fc007fa808fb0d");
+    expect(Object.isFrozen(CLAUDE_USAGE_SOURCE)).toBe(true);
   });
 });

@@ -226,7 +226,8 @@ function scenario(name: string): string {
 const FAKE_PROVIDER_LINES: readonly string[] = [
   JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-20260115" }),
   JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 1234 } } }),
-  JSON.stringify({ type: "result", subtype: "turn_completed" }),
+  // The session's one usage report is the result's (P-15/D2, ADR 0105).
+  JSON.stringify({ type: "result", subtype: "turn_completed", session_id: "session-fallback", usage: { input_tokens: 0, output_tokens: 1234, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
 ];
 
 let executionRoot: string | null = null;
@@ -372,7 +373,9 @@ describe("the runtime fallback gate: SQLite mode operates with Restate disabled"
       // V2-B7T: the plan's own trail is now interleaved with what the walk
       // SPENT. The daemon passes a usage sink to `createExecutionEffects`, so
       // every `{kind:"usage"}` entry the port reports becomes one
-      // `TOKEN_USAGE_RECORDED` event — appended from inside the INTENT beat's
+      // `TOKEN_USAGE_RECORDED` event. Since P-15/D2 Claude reports once per run,
+      // from the result record, so this walk spends exactly one row carrying the
+      // session's four-class total — appended from inside the INTENT beat's
       // effect, which is why it lands after `RUN_STARTED` and before the
       // outcome that closes that intent. The plan is unchanged; what changed is
       // that the log now records the cost of walking it.
@@ -390,7 +393,7 @@ describe("the runtime fallback gate: SQLite mode operates with Restate disabled"
       // rather than loosening the assertion to a subset check.
       const RIDERS = ["TOKEN_USAGE_RECORDED", "LEASE_ACQUIRED", "LEASE_REVOKED"];
       expect(trail.filter((type) => !RIDERS.includes(type))).toEqual(planTypes);
-      expect(trail.filter((type) => type === "TOKEN_USAGE_RECORDED").length).toBeGreaterThan(0);
+      expect(trail.filter((type) => type === "TOKEN_USAGE_RECORDED").length).toBe(1);
 
       const usageAt = trail.indexOf("TOKEN_USAGE_RECORDED");
       expect(usageAt).toBeGreaterThan(trail.indexOf("RUN_STARTED"));
@@ -405,7 +408,7 @@ describe("the runtime fallback gate: SQLite mode operates with Restate disabled"
       for (const record of spend) {
         expect(Object.keys(record.event.payload).sort()).toEqual(["accountId", "tokens"]);
         expect(record.event.payload["accountId"]).toBe(executionConfig().route.accountId);
-        expect(Number.isInteger(record.event.payload["tokens"])).toBe(true);
+        expect(record.event.payload["tokens"]).toBe(1234);
         expect(record.event.transitionId.startsWith("usage.")).toBe(true);
       }
 

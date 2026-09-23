@@ -106,9 +106,18 @@ export function toNormalized(
         protocolVersion: signal.protocolVersion,
       });
     case "step":
+      // The report's fields, carried as the adapter stated them: a `null` class is
+      // UNKNOWN and travels as `null`, never as 0 (P-15/D2, ADR 0105).
       return normalizedEvent("step.completed", provider, taskId, {
-        tokensUsed: signal.tokensUsed,
         stepIndex: signal.stepIndex,
+        inputTokens: signal.inputTokens,
+        outputTokens: signal.outputTokens,
+        cacheWriteTokens: signal.cacheWriteTokens,
+        cacheReadTokens: signal.cacheReadTokens,
+        totalTokens: signal.totalTokens,
+        reportKind: signal.reportKind,
+        isFinal: signal.isFinal,
+        sourceObservationId: signal.sourceObservationId,
       });
     case "checkpoint":
       return normalizedEvent("checkpoint.emitted", provider, taskId, { digest: signal.digest });

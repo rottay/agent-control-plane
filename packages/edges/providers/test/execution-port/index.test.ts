@@ -56,6 +56,25 @@ const REVIEWER = "anthropic/claude-fable/reviewer/01";
 const TASK = "00000000-0000-4000-8000-0000000008a2";
 const AT = "2026-08-30T15:00:00.000Z";
 const TOKENS = 1_234;
+
+/**
+ * One usage report in the port's own fields (P-15/D2, ADR 0105): the total the test
+ * names, the class split unknown, as an API or local leg reports it.
+ */
+function usageReport(stepIndex: number, total: number): Extract<ExecutionEvent, { kind: "usage" }> {
+  return {
+    kind: "usage",
+    stepIndex,
+    inputTokens: null,
+    outputTokens: null,
+    cacheWriteTokens: null,
+    cacheReadTokens: null,
+    totalTokens: total,
+    reportKind: "CUMULATIVE",
+    isFinal: true,
+    sourceObservationId: "obs-" + String(stepIndex),
+  };
+}
 /** The one terminal token all three providers can be scripted to report. */
 const TERMINAL_STATE = "TURN_COMPLETED";
 
@@ -146,8 +165,15 @@ async function drain(
 /** Claude headless stream JSON: `started`, a usage-bearing turn, a result. */
 const CLAUDE_LINES: readonly string[] = [
   JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-20260115" }),
-  JSON.stringify({ type: "assistant", message: { usage: { output_tokens: TOKENS } } }),
-  JSON.stringify({ type: "result", subtype: "turn_completed" }),
+  JSON.stringify({ type: "assistant", message: { id: "msg-1", usage: { output_tokens: TOKENS } } }),
+  // The session's one usage report is the result's (P-15/D2): the assistant record's
+  // usage above is not read.
+  JSON.stringify({
+    type: "result",
+    subtype: "turn_completed",
+    session_id: "session-p15d2",
+    usage: { input_tokens: 0, output_tokens: TOKENS, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+  }),
 ];
 
 /** Kimi ACP v1 NDJSON: the initialize result, an update carrying usage, a stop. */
@@ -262,10 +288,10 @@ function assertSharedTrail(leg: string, trail: readonly ExecutionEvent[], expect
   // carries the caller's route, it does not restate its own idea of it.
   expect({
     leg,
-    tokensUsed: usage?.kind === "usage" ? usage.tokensUsed : null,
+    totalTokens: usage?.kind === "usage" ? usage.totalTokens : null,
     toState: state?.kind === "state" ? state.toState : null,
     route: started?.kind === "started" ? started.route : null,
-  }).toEqual({ leg, tokensUsed: TOKENS, toState: TERMINAL_STATE, route: expected });
+  }).toEqual({ leg, totalTokens: TOKENS, toState: TERMINAL_STATE, route: expected });
 }
 
 describe("one scenario normalizes identically across the CLI adapters that take an instruction", () => {
@@ -377,7 +403,7 @@ const API_PROTOCOL = "api/streaming-1";
 /** The transport intersection, as this transport speaks it. */
 const API_SCENARIO: readonly ApiStreamChunk[] = [
   { kind: "started", resolvedModel: API_MODEL, protocolVersion: API_PROTOCOL },
-  { kind: "usage", stepIndex: 0, tokensUsed: TOKENS },
+  usageReport(0, TOKENS),
   { kind: "state", toState: TERMINAL_STATE },
 ];
 
@@ -443,7 +469,7 @@ describe("the same fixture runs through an API_KEY adapter", () => {
         { kind: "write", target: "packages/adapters/src/api-key/index.ts" },
         { kind: "checkpoint", digest: "a".repeat(64) },
         { kind: "authRequired", reason: "TOKEN_EXPIRED" },
-        { kind: "usage", stepIndex: 3, tokensUsed: 99 },
+        usageReport(3, 99),
       ]),
       apiRoute(),
       request(),
@@ -528,7 +554,7 @@ const LOCAL_PROTOCOL = "openai-compatible/chat-1";
 /** The transport intersection, as this transport speaks it. */
 const LOCAL_SCENARIO: readonly LocalChatChunk[] = [
   { kind: "started", resolvedModel: LOCAL_MODEL, protocolVersion: LOCAL_PROTOCOL },
-  { kind: "usage", stepIndex: 0, tokensUsed: TOKENS },
+  usageReport(0, TOKENS),
   { kind: "state", toState: TERMINAL_STATE },
 ];
 
@@ -674,7 +700,7 @@ describe("credentials are unrepresentable at this boundary", () => {
         [
           { kind: "started", resolvedModel: API_MODEL, protocolVersion: API_PROTOCOL },
           { kind: "text", delta: "a delta that does not name the key" },
-          { kind: "usage", stepIndex: 0, tokensUsed: TOKENS },
+          usageReport(0, TOKENS),
         ],
         secret,
       ),
@@ -708,7 +734,7 @@ describe("credentials are unrepresentable at this boundary", () => {
         [
           { kind: "started", resolvedModel: LOCAL_MODEL, protocolVersion: LOCAL_PROTOCOL },
           { kind: "text", delta: "a delta that does not name the token" },
-          { kind: "usage", stepIndex: 0, tokensUsed: TOKENS },
+          usageReport(0, TOKENS),
         ],
         secret,
       ),
@@ -900,17 +926,24 @@ describe("what this transport can and cannot say", () => {
     const port = portFor({
       "acct-primary": binding(claudeAdapter, [
         JSON.stringify({ type: "system", subtype: "init", model: "m" }),
-        JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 10 } } }),
-        JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 20 } } }),
+        JSON.stringify({ type: "assistant", message: { id: "msg-1", usage: { output_tokens: 10 } } }),
+        JSON.stringify({ type: "assistant", message: { id: "msg-2", usage: { output_tokens: 20 } } }),
+        JSON.stringify({
+          type: "result",
+          subtype: "turn_completed",
+          session_id: "session-steps",
+          usage: { input_tokens: 1, output_tokens: 30, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        }),
       ]),
     });
     const trail = await drain(port, route());
     const completions = trail.filter((event) => event.kind === "completed");
 
     expect(completions.length).toBe(1);
-    // The last step the transport reported: the second usage record sits at
-    // stream position 2, and `completed` carries it so usage can be reconciled
-    // against the count of steps that actually happened.
+    // The last step the transport reported (C-D5): the session's one report counts
+    // its steps as the two distinct assistant messages, and `completed` carries the
+    // same number, so usage reconciles against the steps that actually happened.
+    expect(trail.flatMap((event) => (event.kind === "usage" ? [event.stepIndex] : []))).toEqual([2]);
     expect(completions[0]).toEqual({ kind: "completed", stepIndex: 2 });
     expect(trail.some((event) => event.kind === "error")).toBe(false);
   });
@@ -923,7 +956,12 @@ describe("what this transport can and cannot say", () => {
           type: "assistant",
           message: { content: [{ type: "tool_use", name: "Edit" }], usage: { output_tokens: 7 } },
         }),
-        JSON.stringify({ type: "result", subtype: "turn_completed" }),
+        JSON.stringify({
+          type: "result",
+          subtype: "turn_completed",
+          session_id: "session-write",
+          usage: { input_tokens: 0, output_tokens: 7, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        }),
       ]),
     });
 
@@ -934,8 +972,8 @@ describe("what this transport can and cannot say", () => {
     // contract's `write` kind is reachable by other transports; on this one it
     // is unreported, and the enforcement plane must not rely on seeing it here.
     expect(trail.some((event) => event.kind === "write")).toBe(false);
-    // The rest of the trail is unaffected: the measurement on the same record
-    // still arrives, and the child's clean exit before the terminal (P-07 C).
+    // The rest of the trail is unaffected: the session's measurement, from its
+    // result (P-15/D2), and the child's clean exit before the terminal (P-07 C).
     expect(trail.map((event) => event.kind)).toEqual(["started", "usage", "state", "processExited", "completed"]);
   });
 
@@ -1473,15 +1511,30 @@ describe("P-07 C: a transport, a process and an operation are three facts", () =
   it("OBS sample 2: the sink receives exactly \"ok\", exit 0, operation SUCCEEDED, and the signature is nowhere", async () => {
     const sunk: string[] = [];
     const trail = await drain(captured({ lines: CAPTURED_SUCCESS, exitCode: 0 }), route(), request(), (delta) => sunk.push(delta));
+    // ONE usage report (P-15/D2, ADR 0105): the two assistant records repeat one
+    // message's usage and report nothing; the result's usage is the session's own
+    // count, read once. Before D2 the two records were two reports — the double count.
     expect(trail.map((event) => event.kind)).toEqual([
       "started",
-      "usage",
       "usage",
       "state",
       "processExited",
       "operationResult",
       "completed",
     ]);
+    expect(trail.find((event) => event.kind === "usage")).toEqual({
+      kind: "usage",
+      stepIndex: 1,
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheWriteTokens: 1,
+      cacheReadTokens: 1,
+      totalTokens: 4,
+      reportKind: "CUMULATIVE",
+      isFinal: true,
+      sourceObservationId: "00000000-0000-4000-8000-000000000001/result",
+    });
+    expect(trail.find((event) => event.kind === "completed")).toEqual({ kind: "completed", stepIndex: 1 });
     expect(trail.find((event) => event.kind === "started")).toMatchObject({ resolvedModel: "claude-haiku-4-5-20251001" });
     expect(trail.find((event) => event.kind === "processExited")).toEqual({ kind: "processExited", exitCode: 0, signal: null });
     expect(trail.find((event) => event.kind === "operationResult")).toEqual({ kind: "operationResult", status: "SUCCEEDED" });
@@ -1505,7 +1558,8 @@ describe("P-07 C: a transport, a process and an operation are three facts", () =
   it("SYN: a result with no is_error and exit 1 reports the exit, no verdict, and still completes — C does not decide", async () => {
     const lines = [CAPTURED_SUCCESS[1] ?? "", resultWith(undefined)];
     const trail = await drain(captured({ lines, exitCode: 1 }), route());
-    expect(trail.map((event) => event.kind)).toEqual(["started", "state", "processExited", "completed"]);
+    // The result still carries its usage, so its one report arrives (P-15/D2).
+    expect(trail.map((event) => event.kind)).toEqual(["started", "usage", "state", "processExited", "completed"]);
     expect(trail.find((event) => event.kind === "processExited")).toEqual({ kind: "processExited", exitCode: 1, signal: null });
     assertFactOrder(trail);
   });
@@ -1562,7 +1616,7 @@ describe("P-07 C: the API and local legs report the operation fact in order, and
         portWith([
           opening!,
           { kind: "operationResult", status: "SUCCEEDED" },
-          { kind: "usage", stepIndex: 0, tokensUsed: TOKENS },
+          usageReport(0, TOKENS),
         ]),
         legRoute(),
       );
@@ -1600,7 +1654,7 @@ describe("P-07 C: the API and local legs report the operation fact in order, and
       ];
       for (const chunk of foreign) {
         const trail = await drain(
-          portWith([opening!, chunk as unknown as ApiStreamChunk, { kind: "usage", stepIndex: 0, tokensUsed: TOKENS }]),
+          portWith([opening!, chunk as unknown as ApiStreamChunk, usageReport(0, TOKENS)]),
           legRoute(),
         );
         expect(trail.map((event) => event.kind), chunk.kind).toEqual(["started", "error"]);
@@ -1621,4 +1675,62 @@ describe("P-07 C: the API and local legs report the operation fact in order, and
       expect(trail.map((event) => event.kind)).toEqual(["started", "completed"]);
     });
   }
+});
+
+describe("P-15/D2: the port maps a usage report field for field, and refuses what the member refuses", () => {
+  const TASK_ID = "d2d2d2d2-0000-4000-8000-000000000001";
+  const report = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    stepIndex: 1,
+    inputTokens: null,
+    outputTokens: 5,
+    cacheWriteTokens: null,
+    cacheReadTokens: 0,
+    totalTokens: null,
+    reportKind: "CUMULATIVE",
+    isFinal: true,
+    sourceObservationId: "obs-1",
+    ...overrides,
+  });
+
+  it("carries a null class as null and a zero as zero — UNKNOWN is never read as 0", () => {
+    const mapped = toExecutionEvent(normalizedEvent("step.completed", "claude", TASK_ID, report()), route());
+    expect(mapped).toEqual({ kind: "EVENT", event: { kind: "usage", ...report() } });
+  });
+
+  it("N-D17 through the mapping: a key absent is not expressible; a present value the member refuses is not either", () => {
+    for (const key of Object.keys(report())) {
+      const payload = report();
+      Reflect.deleteProperty(payload, key);
+      expect(toExecutionEvent(normalizedEvent("step.completed", "claude", TASK_ID, payload), route())).toEqual({
+        kind: "UNEXPRESSIBLE",
+        detail: "step.completed lost " + key,
+      });
+    }
+    // v2: the total against the classes, through the mapping. `report()` knows two of
+    // four classes (5 and 0), so a stated total below 5 is refused; with all four
+    // known a null total is refused.
+    for (const overrides of [
+      { totalTokens: 4 },
+      { inputTokens: 1, cacheWriteTokens: 2, totalTokens: null },
+      { inputTokens: 1, cacheWriteTokens: 2, totalTokens: 9 },
+    ]) {
+      const mapped = toExecutionEvent(normalizedEvent("step.completed", "claude", TASK_ID, report(overrides)), route());
+      expect({ overrides, kind: mapped.kind }).toEqual({ overrides, kind: "UNEXPRESSIBLE" });
+    }
+    expect(
+      toExecutionEvent(normalizedEvent("step.completed", "claude", TASK_ID, report({ inputTokens: 1, cacheWriteTokens: 2, totalTokens: 8 })), route())
+        .kind,
+    ).toBe("EVENT");
+    for (const [key, value] of [
+      ["inputTokens", -1],
+      ["outputTokens", 1.5],
+      ["cacheReadTokens", "1"],
+      ["reportKind", "SNAPSHOT"],
+      ["isFinal", 1],
+      ["sourceObservationId", ""],
+    ] as const) {
+      const mapped = toExecutionEvent(normalizedEvent("step.completed", "claude", TASK_ID, report({ [key]: value })), route());
+      expect({ key, kind: mapped.kind }).toEqual({ key, kind: "UNEXPRESSIBLE" });
+    }
+  });
 });

@@ -256,7 +256,19 @@ function scriptedPort(scenarioRoot: ScenarioRoot): ModelExecutionPort {
       });
       const trail: ExecutionEvent[] = [
         { kind: "started", route: candidate, resolvedModel: "scripted-execution", protocolVersion: "drill-1" },
-        { kind: "usage", stepIndex: 0, tokensUsed: 1 },
+        // One report of one token, class split unknown (P-15/D2): the legacy sink records its total.
+        {
+          kind: "usage",
+          stepIndex: 0,
+          inputTokens: null,
+          outputTokens: null,
+          cacheWriteTokens: null,
+          cacheReadTokens: null,
+          totalTokens: 1,
+          reportKind: "CUMULATIVE",
+          isFinal: true,
+          sourceObservationId: request.taskId + "/usage",
+        },
         { kind: "state", toState: "TURN_COMPLETED" },
         { kind: "completed", stepIndex: 0 },
       ];

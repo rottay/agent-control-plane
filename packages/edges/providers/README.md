@@ -226,6 +226,36 @@ parser also reads `is_error` on the captured `result` record as the operation's
 verdict, a private `operation` signal the session holds once. Codex and Kimi
 claim neither.
 
+## Usage, reported once and never invented
+
+Since P-15 escalón D2 (ADR 0105; decisions 136-138) a usage signal is one report in
+the execution port's own fields: the four token classes and the total, each a count
+or `null` for UNKNOWN — never a 0 standing in for a count nobody reported — the
+report's kind from `USAGE_REPORT_KINDS`, whether it is final, and the source's own
+id for the observation. The port parses it through its `usage` member and refuses a
+report the member refuses.
+
+- **Claude** reports exactly one per run, from the `result` record's `usage`:
+  CUMULATIVE and final, the CLI's own total for the session, its id
+  `session_id + "/result"`. That total is proved only for single-run sessions, the
+  only ones captured: a `--resume` reuses the session id, so a resumed run yields a
+  second result with the same `sourceObservationId` and a usage scope — the whole
+  session or that run alone — nobody has observed. D3 must refuse or distinguish it.
+  The
+  assistant records report nothing — one message arrives as several records, each
+  repeating its usage, and summing them was ADR 0099's double count. A class the
+  record does not carry is `null`, and the total is the sum only when all four are
+  known; the port's `usage` member refuses four known classes beside an unknown or
+  different total, and a total below the known classes' sum. `stepIndex` is the number of distinct assistant message ids, and the port's
+  `completed` carries the same number.
+- **Codex and Kimi** report no usage until they execute. No capture shows whether
+  their counts are deltas or running totals, or which id would name one, and a report
+  built on that guess would be one invented.
+- **`CLAUDE_USAGE_SOURCE`** declares the Claude CLI's measurement stream once:
+  `claude-cli`, `PROVIDER_AUTHORITATIVE`, and its normalization policy with the
+  policy's digest. The digest is a pinned literal the suite recomputes, since this
+  package hashes nothing in `src/` outside the session name (L-P15A-1).
+
 ## Testing
 
 Every negative is driven by `test/testing/index.ts`: a scripted child

@@ -1,6 +1,7 @@
 import { ExecutionEvent } from "@acp/contracts";
 import type { ExecutionOutputSink, ExecutionRefused, ResolvedRoute, WorkerIdentityString } from "@acp/contracts";
 
+import type { UsageReportFields } from "../contract/index.js";
 import { AdapterError } from "../errors/index.js";
 
 /**
@@ -74,7 +75,8 @@ export type ApiStreamChunk =
   | { readonly kind: "toolUse"; readonly tool: string; readonly detail: string }
   | { readonly kind: "write"; readonly target: string }
   | { readonly kind: "state"; readonly toState: string }
-  | { readonly kind: "usage"; readonly stepIndex: number; readonly tokensUsed: number }
+  /** One usage report, in the port member's own fields (P-15/D2, ADR 0105). */
+  | ({ readonly kind: "usage" } & UsageReportFields)
   | { readonly kind: "checkpoint"; readonly digest: string }
   | { readonly kind: "authRequired"; readonly reason: string }
   /**

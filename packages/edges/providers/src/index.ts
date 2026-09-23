@@ -42,6 +42,7 @@ export type {
   SessionLimits,
   SessionRequest,
   SessionState,
+  UsageSourceDescriptor,
 } from "./contract/index.js";
 export {
   CAPABILITY_NAMES,
@@ -153,6 +154,11 @@ export { LOCAL_TRANSPORT_KIND, admitLocalRoute, localExecutionEvents } from "./l
 // warranty about the provider's protocol is what no authorized evidence could
 // establish.
 export { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "./claude/index.js";
+
+// P-15 escalón D2 (ADR 0105): the Claude CLI's usage source, declared once — its
+// name, its class and the normalization policy it applies, with that policy's
+// pinned digest. The composition declares a measurement stream from it (D3).
+export { CLAUDE_USAGE_SOURCE } from "./claude/index.js";
 
 // P-15 escalón A (ADR 0101): the Claude CLI's per-attempt session name, a version 5
 // UUID over the task and the attempt, from the one providers file admitted to

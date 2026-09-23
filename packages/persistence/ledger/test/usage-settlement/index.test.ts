@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  USAGE_REPORT_KINDS as CONTRACT_USAGE_REPORT_KINDS,
+  USAGE_SOURCE_CLASSES as CONTRACT_USAGE_SOURCE_CLASSES,
+} from "@acp/contracts";
+
+import {
+  USAGE_REPORT_KINDS,
+  USAGE_SOURCE_CLASSES,
   LedgerValidationError,
   USAGE_FOLD_VERSION_V1,
   USAGE_MEASUREMENT_STREAM_PREIMAGE_PREFIX_V1,
@@ -1074,5 +1081,19 @@ describe("closures over the whole suite", () => {
   it("the refusal vocabulary is sorted, closed, and every word in it was produced above", () => {
     expect([...USAGE_SETTLEMENT_REFUSALS].sort()).toEqual([...USAGE_SETTLEMENT_REFUSALS]);
     expect([...refusalsSeen].sort()).toEqual([...USAGE_SETTLEMENT_REFUSALS]);
+  });
+});
+
+describe("P-15/D2 (C-D4): the usage vocabularies are the contract's, re-exported, and the policy literal did not move", () => {
+  it("re-exports the very constants @acp/contracts declares, not a copy", () => {
+    expect(USAGE_SOURCE_CLASSES).toBe(CONTRACT_USAGE_SOURCE_CLASSES);
+    expect(USAGE_REPORT_KINDS).toBe(CONTRACT_USAGE_REPORT_KINDS);
+  });
+
+  it("keeps the attested precedence literal as written, equal to the set's order and not derived from it", () => {
+    expect([...USAGE_SOURCE_POLICY_V1.precedence]).toEqual([...USAGE_SOURCE_CLASSES]);
+    expect(USAGE_SOURCE_POLICY_V1.precedence).not.toBe(USAGE_SOURCE_CLASSES);
+    // The digest that attests the policy is pinned by value above, and did not move.
+    expect(USAGE_SOURCE_POLICY_SHA256_V1).toBe("ba36f058fd5e4c876b641a4656a2a16de29c35cfebf9cb9f174dde1675292c95");
   });
 });

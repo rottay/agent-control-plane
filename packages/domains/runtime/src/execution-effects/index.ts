@@ -11,6 +11,7 @@ import type {
   ModelExecutionPort,
   PROVIDER_PRESSURES,
   ResolvedRoute,
+  UsageReportKind,
 } from "@acp/contracts";
 import { canonicalJsonStringify } from "@acp/ledger";
 
@@ -167,7 +168,19 @@ export interface ExecutionEffectsInput {
 export interface UsageSample {
   readonly operationIndex: number;
   readonly stepIndex: number;
-  readonly tokensUsed: number;
+  /**
+   * The report's classes and total, each a count or `null` for UNKNOWN (P-15/D2,
+   * ADR 0105): the port's own fields, carried verbatim. A sink that needs one number
+   * reads `totalTokens`, and records nothing when it is `null` — never a 0.
+   */
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly cacheWriteTokens: number | null;
+  readonly cacheReadTokens: number | null;
+  readonly totalTokens: number | null;
+  readonly reportKind: UsageReportKind;
+  readonly isFinal: boolean;
+  readonly sourceObservationId: string;
 }
 
 /**
@@ -608,7 +621,14 @@ export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort
           recordUsage({
             operationIndex: operation.operationIndex,
             stepIndex: event.stepIndex,
-            tokensUsed: event.tokensUsed,
+            inputTokens: event.inputTokens,
+            outputTokens: event.outputTokens,
+            cacheWriteTokens: event.cacheWriteTokens,
+            cacheReadTokens: event.cacheReadTokens,
+            totalTokens: event.totalTokens,
+            reportKind: event.reportKind,
+            isFinal: event.isFinal,
+            sourceObservationId: event.sourceObservationId,
           });
         }
       }

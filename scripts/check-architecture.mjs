@@ -11312,6 +11312,77 @@ const P15D1_WRITE_SET = [
   "docs/architecture/0080-the-producer-speaks-the-v2-coordinate.md",
 ];
 
+/**
+ * P-15 escalón D, sub-cut D2: the usage widening and the vocabulary moves (adjudication
+ * v2 C9; C-D4, C-D5; ADR 0105, decisions 136-138).
+ *
+ * **What lands.** `ExecutionEvent`'s `usage` member carries the four token classes and
+ * the total, each a count or `null` for UNKNOWN, the report's kind, `isFinal` and the
+ * source's observation id; `tokensUsed` is gone. `USAGE_REPORT_KINDS` and
+ * `USAGE_SOURCE_CLASSES` move to `@acp/contracts` and the ledger re-exports them. The
+ * Claude adapter reports usage once, from the result record, and declares its source;
+ * Codex and Kimi report none until they execute. The legacy sink records the total or
+ * nothing, never a 0.
+ *
+ * **Pins that move.** `CONTRACTS_SCHEMA_EXPORTS` 161 -> **165**;
+ * `PROVIDERS_PUBLIC_EXPORTS` 91 -> **93**.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` (2.9.0: `ExecutionEvent` is a port
+ * shape, not a ledger event); `MIGRATIONS` (23); `API_CONTRACT_VERSION`;
+ * `RUNTIME_PUBLIC_EXPORTS`; `PATH_SCOPED_LAWS` (152 -- L-P32C-1 retires in D3, where
+ * the walk wires the recorders).
+ *
+ * **Forty-two paths; two are new to the fence** -- the contracts usage-measure module and
+ * its type leaf. The DT's widening added the ledger's usage-settlement type leaf, which
+ * re-exports the two unions from contracts so each is declared once, and then the two
+ * daemon suites whose fake Claude stream still reported from an assistant record: their
+ * result now carries the session's usage, and each pins exactly one spend row.
+ */
+const P15D2_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/usage-measure/index.ts",
+  "packages/kernel/contracts/src/schemas/usage-measure/types/index.ts",
+  "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/persistence/ledger/src/usage-settlement/index.ts",
+  "packages/persistence/ledger/src/usage-settlement/types/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/usage-settlement/index.test.ts",
+  "packages/edges/providers/src/contract/index.ts",
+  "packages/edges/providers/src/claude/index.ts",
+  "packages/edges/providers/src/codex/index.ts",
+  "packages/edges/providers/src/kimi/index.ts",
+  "packages/edges/providers/src/events/index.ts",
+  "packages/edges/providers/src/execution-port/index.ts",
+  "packages/edges/providers/src/api-key/index.ts",
+  "packages/edges/providers/src/local/index.ts",
+  "packages/edges/providers/src/index.ts",
+  "packages/edges/providers/README.md",
+  "packages/edges/providers/test/claude/index.test.ts",
+  "packages/edges/providers/test/codex/index.test.ts",
+  "packages/edges/providers/test/kimi/index.test.ts",
+  "packages/edges/providers/test/events/index.test.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/edges/providers/test/session/index.test.ts",
+  "packages/edges/providers/test/testing/index.ts",
+  "packages/domains/runtime/src/execution-effects/index.ts",
+  "packages/domains/runtime/test/execution-effects/index.test.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/entrypoints/daemon/src/composition/walk/index.ts",
+  "packages/entrypoints/daemon/test/composition/walk/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0105-the-daemon-consumes-a-recorded-task-and-appends-the-whole-chain.md",
+  "docs/audit/decisions/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11548,6 +11619,7 @@ const WRITE_SET = [
   ...P15C_WRITE_SET,
   ...P15R_WRITE_SET,
   ...P15D1_WRITE_SET,
+  ...P15D2_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -20594,6 +20666,12 @@ if (accountsIndex === null) {
   "ResultContractSchema",
   "ResultRefusal",
   "ResultStatus",
+  // P-15 escalón D2 (ADR 0105, C-D4): the two usage vocabularies moved down from the
+  // ledger, which re-exports them, and the two types their leaf derives. 161 -> 165.
+  "USAGE_REPORT_KINDS",
+  "USAGE_SOURCE_CLASSES",
+  "UsageReportKind",
+  "UsageSourceClass",
   "CHECKPOINT_MAX_BYTES",
   "CLI_SUBSCRIPTION_PROVIDERS",
   "CONTRACT_VERSION",
@@ -21108,6 +21186,7 @@ const PROVIDERS_PUBLIC_EXPORTS = [
   "SessionLimits",
   "SessionRequest",
   "SessionState",
+  "UsageSourceDescriptor",
   "CAPABILITY_NAMES",
   "EMPTY_CURSOR",
   "LEGAL_TRANSITIONS",
@@ -21183,6 +21262,8 @@ const PROVIDERS_PUBLIC_EXPORTS = [
   // P4B
   "CLAUDE_STREAM_PROTOCOL",
   "claudeAdapter",
+  // P-15 escalón D2 (ADR 0105): the Claude CLI's usage source, declared once. 91 -> 93.
+  "CLAUDE_USAGE_SOURCE",
   "CLAUDE_SESSION_UUID_NAMESPACE",
   "claudeSessionId",
   // P4C

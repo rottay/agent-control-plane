@@ -22,16 +22,15 @@
  * package exactly as before (§7.2).
  */
 
-import type {
-  USAGE_REPORT_KINDS,
-  USAGE_SETTLEMENT_REFUSALS,
-  USAGE_SETTLEMENT_STATUSES,
-  USAGE_SOURCE_CLASSES,
-} from "../index.js";
+import type { USAGE_SETTLEMENT_REFUSALS, USAGE_SETTLEMENT_STATUSES } from "../index.js";
 
-export type UsageSourceClass = (typeof USAGE_SOURCE_CLASSES)[number];
-
-export type UsageReportKind = (typeof USAGE_REPORT_KINDS)[number];
+/**
+ * The two usage unions are `@acp/contracts`' declarations, re-exported (P-15/D2, ADR
+ * 0105; decision 137): the vocabularies moved there, and their unions are declared
+ * once, beside them. The names do not move for any importer of this package.
+ */
+import type { UsageReportKind, UsageSourceClass } from "@acp/contracts";
+export type { UsageReportKind, UsageSourceClass };
 
 export type UsageSettlementStatus = (typeof USAGE_SETTLEMENT_STATUSES)[number];
 

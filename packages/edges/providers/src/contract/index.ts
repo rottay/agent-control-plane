@@ -1,5 +1,5 @@
 import { CLI_SUBSCRIPTION_PROVIDERS } from "@acp/contracts";
-import type { ExecutionEvent, PROVIDER_PRESSURES, WorkerIdentityString } from "@acp/contracts";
+import type { ExecutionEvent, PROVIDER_PRESSURES, UsageSourceClass, WorkerIdentityString } from "@acp/contracts";
 
 import { AdapterError } from "../errors/index.js";
 
@@ -281,6 +281,12 @@ export interface ParseCursor {
   /** Bytes of a record carried over from the previous chunk. */
   readonly partial: string;
   readonly recordIndex: number;
+  /**
+   * The distinct assistant message ids a parser has seen, in order, when its
+   * usage report counts steps by message (P-15/D2, C-D5). Carried across chunks
+   * because one message may arrive as several records; absent means none seen.
+   */
+  readonly stepMessageIds?: readonly string[];
 }
 
 export const EMPTY_CURSOR: ParseCursor = Object.freeze({ partial: "", recordIndex: 0 });
@@ -293,6 +299,27 @@ export type ParseOutcome =
     }
   | { readonly ok: false; readonly code: "UNKNOWN_EVENT" | "MALFORMED_EVENT"; readonly detail: string };
 
+/** The fields of one usage report, exactly the execution port's `usage` member without its kind. */
+export type UsageReportFields = Readonly<Omit<Extract<ExecutionEvent, { readonly kind: "usage" }>, "kind">>;
+
+/**
+ * What an adapter declares about the usage it reports, once, statically
+ * (P-15/D2, ADR 0105; C9).
+ *
+ * The measurement stream's facts are the adapter's, not an event's: the source's
+ * name, the class it is registered under, and the normalization policy it applies,
+ * with that policy's digest. The composition declares a stream from it. The digest
+ * is a pinned literal over the policy's canonical JSON, recomputed by the providers
+ * suite: this package computes no hash in `src/` outside the session name
+ * (L-P15A-1).
+ */
+export interface UsageSourceDescriptor {
+  readonly source: string;
+  readonly sourceClass: UsageSourceClass;
+  readonly normalizationPolicy: Readonly<Record<string, unknown>>;
+  readonly normalizationPolicySha256: string;
+}
+
 /**
  * What a provider said, before it becomes one of the frozen 21.
  *
@@ -301,7 +328,13 @@ export type ParseOutcome =
  */
 export type ProviderSignal =
   | { readonly kind: "started"; readonly resolvedModel: string; readonly protocolVersion: string }
-  | { readonly kind: "step"; readonly tokensUsed: number; readonly stepIndex: number }
+  /**
+   * One usage report, in the execution port's own fields (P-15/D2, ADR 0105): the
+   * four classes and the total as counts or `null` for UNKNOWN — never a 0 standing
+   * in for a count nobody reported — the report's kind, whether it is final, and the
+   * source's id for the observation. The port parses it unchanged.
+   */
+  | ({ readonly kind: "step" } & UsageReportFields)
   | { readonly kind: "checkpoint"; readonly digest: string }
   | { readonly kind: "authRequired"; readonly reason: string }
   | { readonly kind: "state"; readonly toState: string }

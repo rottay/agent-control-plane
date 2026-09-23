@@ -320,18 +320,9 @@ describe("the parser reads the claimed subset, and refuses the rest", () => {
       exitCode: 0,
     });
     expect(failure).toBeNull();
-    expect(events.map((event) => event.name)).toEqual([
-      "session.started",
-      "provider.state",
-      "step.completed",
-      "provider.state",
-    ]);
-    expect(events.map((event) => event.frozenType)).toEqual([
-      "RUN_STARTED",
-      "TASK_STATE_CHANGED",
-      "ATOMIC_STEP_COMPLETED",
-      "TASK_STATE_CHANGED",
-    ]);
+    // The token-usage frame is read and reports nothing (P-15/D2, ND-D2-1).
+    expect(events.map((event) => event.name)).toEqual(["session.started", "provider.state", "provider.state"]);
+    expect(events.map((event) => event.frozenType)).toEqual(["RUN_STARTED", "TASK_STATE_CHANGED", "TASK_STATE_CHANGED"]);
   });
 
   it("reports no model rather than reporting the vendor as one", async () => {
@@ -365,13 +356,17 @@ describe("the parser reads the claimed subset, and refuses the rest", () => {
     expect(failure).toBe("MALFORMED_EVENT");
   });
 
-  it("reports a bounded token count from the last turn, not the running total", async () => {
-    const { events } = await collect({ lines: [TOKEN_USAGE], exitCode: 0 });
-    expect(events).toHaveLength(1);
-    expect(events[0]?.payload).toEqual({ tokensUsed: 120, stepIndex: 0 });
+  it("P-15/D2 (ND-D2-1): a token-usage frame parses and reports no usage until this adapter executes", async () => {
+    // No capture shows whether the count is a delta or a running total, or which id
+    // would name it; a report built on that guess would be one invented. The frame
+    // is still held to its shape, and a malformed one still refuses.
+    const { events, failure } = await collect({ lines: [TOKEN_USAGE], exitCode: 0 });
+    expect({ failure, events: events.length }).toEqual({ failure: null, events: 0 });
+    const malformed = frame({ method: "thread/tokenUsage/updated", params: { threadId: "t", tokenUsage: { last: 7 } } });
+    expect((await collect({ lines: [malformed], exitCode: 0 })).failure).toBe("MALFORMED_EVENT");
   });
 
-  it("reports no measurement for an out-of-range token count", async () => {
+  it("P-15/D2 (ND-D2-1): a frame with an out-of-range count parses without refusal and, like every usage frame, reports nothing", async () => {
     const line = frame({
       method: "thread/tokenUsage/updated",
       params: {
@@ -380,8 +375,8 @@ describe("the parser reads the claimed subset, and refuses the rest", () => {
       },
     });
     const { events, failure } = await collect({ lines: [line], exitCode: 0 });
-    // No measurement at all rather than a clamped one: a clamped number is
-    // indistinguishable from a real one.
+    // No usage frame reports anything since D2, so what this still pins is that an
+    // out-of-range count is not a malformed frame.
     expect({ failure, events: events.length }).toEqual({ failure: null, events: 0 });
   });
 

@@ -46,6 +46,22 @@ import type { DaemonExecutionConfig } from "../../../src/daemon-child/index.js";
 import { buildWalkEffects, runComposedSqliteWalk } from "../../../src/composition/walk/index.js";
 import { instructionFor } from "../../../src/composition/index.js";
 
+/** One usage report of a known total, class split unknown (P-15/D2, ADR 0105). */
+function usageReport(stepIndex: number, total: number | null): Extract<ExecutionEvent, { kind: "usage" }> {
+  return {
+    kind: "usage",
+    stepIndex,
+    inputTokens: null,
+    outputTokens: null,
+    cacheWriteTokens: null,
+    cacheReadTokens: null,
+    totalTokens: total,
+    reportKind: "CUMULATIVE",
+    isFinal: true,
+    sourceObservationId: "obs-" + String(stepIndex),
+  };
+}
+
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
@@ -218,7 +234,7 @@ describe("the one walk construction, proven against a hand-written oracle", () =
       0,
       [
         { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
-        { kind: "usage", stepIndex: 1, tokensUsed: 55 },
+        usageReport(1, 55),
         { kind: "completed", stepIndex: 1 },
       ],
     );
@@ -244,6 +260,30 @@ describe("the one walk construction, proven against a hand-written oracle", () =
     expect(staged.requests.map((request) => request.instructions)).toEqual([INSTRUCTIONS]);
   });
 
+  it("P-15/D2: the legacy sink records a report's total, and nothing — never 0 — when the total is UNKNOWN", async () => {
+    const staged = stage(
+      "p15d2-walk-unknown-total",
+      "b1f00000-0000-4000-8000-0000000000d2",
+      0,
+      [
+        { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
+        usageReport(1, null),
+        usageReport(2, 0),
+        { kind: "completed", stepIndex: 2 },
+      ],
+    );
+
+    await staged.effects.apply(operationForStep(staged.invocation, INTENT_STEP));
+
+    // Step 1's total is UNKNOWN: no row. Step 2's is a real zero: its row.
+    const spend = staged.ledger
+      .listEvents({ limit: 50 })
+      .events.filter((record) => record.event.type === "TOKEN_USAGE_RECORDED");
+    expect(spend.map((record) => ({ transitionId: record.event.transitionId, payload: record.event.payload }))).toEqual([
+      { transitionId: "usage.0.4.2", payload: { accountId: "acct-walk-equivalence", tokens: 0 } },
+    ]);
+  });
+
   it("agendado: the scheduled form records the same walk under the landing generation", async () => {
     const staged = stage(
       "p13-walk-scheduled",
@@ -251,7 +291,7 @@ describe("the one walk construction, proven against a hand-written oracle", () =
       1,
       [
         { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
-        { kind: "usage", stepIndex: 1, tokensUsed: 55 },
+        usageReport(1, 55),
         { kind: "completed", stepIndex: 1 },
       ],
     );
@@ -452,7 +492,7 @@ async function leaseOver(
 /** The trail a walk that reaches its checkpoint speaks, in order. */
 const COMPLETING_TRAIL: readonly ExecutionEvent[] = Object.freeze([
   { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
-  { kind: "usage", stepIndex: 1, tokensUsed: 55 },
+  usageReport(1, 55),
   { kind: "completed", stepIndex: 1 },
 ]);
 

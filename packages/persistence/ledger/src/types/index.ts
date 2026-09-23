@@ -16,6 +16,8 @@ import type {
   RoadmapVersionKind,
   TaskState,
   TransportKind,
+  UsageReportKind,
+  UsageSourceClass,
   WorkerRole,
 } from "@acp/contracts";
 import type { OUTBOX_FAILURE_CODES } from "@acp/contracts";
@@ -827,7 +829,8 @@ export interface UsageMeasurementStreamReadModel {
   readonly accountId: string;
   readonly routeSegmentId: string;
   readonly sourceEpoch: number;
-  readonly sourceClass: "PROVIDER_AUTHORITATIVE" | "WRAPPER_MEASURED" | "ESTIMATE";
+  /** Derived from `USAGE_SOURCE_CLASSES` (P-15/D2): a class added to the set is a class of this type. */
+  readonly sourceClass: UsageSourceClass;
   readonly normalizationPolicySha256: string;
   readonly sequence: number;
 }
@@ -845,7 +848,8 @@ export interface UsageObservationReadModel {
   readonly measurementStreamId: string;
   readonly ordinal: number;
   readonly sourceObservationId: string;
-  readonly reportKind: "DELTA" | "CUMULATIVE" | "CORRECTION";
+  /** Derived from `USAGE_REPORT_KINDS` (P-15/D2). */
+  readonly reportKind: UsageReportKind;
   readonly rangeFromCounter: number | null;
   readonly rangeToCounter: number | null;
   readonly correctsObservationId: string | null;

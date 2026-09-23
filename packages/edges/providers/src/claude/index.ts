@@ -9,6 +9,7 @@ import type {
   ProviderSignal,
   SessionDescriptor,
   SessionRequest,
+  UsageSourceDescriptor,
 } from "../contract/index.js";
 import { unknownCapabilities } from "../contract/index.js";
 import { buildEnv } from "../config-root/index.js";
@@ -147,13 +148,101 @@ function buildArgv(request: SessionRequest): readonly string[] {
   return Object.freeze(argv);
 }
 
-/** One assistant message's reported output tokens, if it reported any. */
-function outputTokens(message: unknown): number | null {
-  if (!isRecord(message)) return null;
-  const usage = message["usage"];
-  if (!isRecord(usage)) return null;
-  const tokens = usage["output_tokens"];
-  return isReportableTokenCount(tokens) ? tokens : null;
+/**
+ * How this adapter normalizes usage, stated once (P-15/D2, ADR 0105; decision 138).
+ *
+ * Exactly one report per run, from the `result` record's `usage`, CUMULATIVE and
+ * final: the CLI's own total for the session as far as the captures show, and they
+ * show only single-run sessions. A `--resume` reuses the session id, so a resumed run
+ * yields a second result with the same `sourceObservationId` whose usage scope (the
+ * whole session or that run alone) is unobserved; D3 must refuse or distinguish it,
+ * and this policy does not claim it. Assistant records report nothing
+ * — one message arrives as several records, each repeating the message's usage, and
+ * summing them was ADR 0099's double count. The four classes are read by name; a
+ * class the record does not carry is `null` (UNKNOWN), never 0, and the total is the
+ * sum only when all four are known. `stepIndex` is the number of distinct assistant
+ * message ids the session produced (C-D5).
+ */
+const CLAUDE_USAGE_NORMALIZATION_POLICY = Object.freeze({
+  policyVersion: 1,
+  adapter: "claude",
+  record: "result",
+  field: "usage",
+  classes: Object.freeze({
+    inputTokens: "input_tokens",
+    outputTokens: "output_tokens",
+    cacheWriteTokens: "cache_creation_input_tokens",
+    cacheReadTokens: "cache_read_input_tokens",
+  }),
+  absentClass: "UNKNOWN",
+  totalTokens: "SUM_WHEN_ALL_KNOWN",
+  reportKind: "CUMULATIVE",
+  isFinal: true,
+  sourceObservationId: "SESSION_ID/result",
+  stepIndex: "DISTINCT_ASSISTANT_MESSAGE_IDS",
+  assistantRecords: "NO_REPORT",
+});
+
+/**
+ * The Claude CLI's usage source, declared once: the provider's own count of the
+ * session (`PROVIDER_AUTHORITATIVE`), under the policy above. The digest is a pinned
+ * literal over the policy's canonical JSON; the providers suite recomputes it, since
+ * this package hashes nothing in `src/` outside the session name (L-P15A-1).
+ */
+export const CLAUDE_USAGE_SOURCE: UsageSourceDescriptor = Object.freeze({
+  source: "claude-cli",
+  sourceClass: "PROVIDER_AUTHORITATIVE",
+  normalizationPolicy: CLAUDE_USAGE_NORMALIZATION_POLICY,
+  normalizationPolicySha256: "14cbb2a397762bfc4cfec2d00073bc26402d7c81123a2a8683fc007fa808fb0d",
+});
+
+/** The result record's usage keys, by the port's class name. */
+const CLAUDE_USAGE_CLASSES = CLAUDE_USAGE_NORMALIZATION_POLICY.classes;
+
+/**
+ * The one usage report of a `result` record, or `"MALFORMED"`, or null when the
+ * record carries no `usage` at all (no report: settlement stays UNKNOWN, never 0).
+ *
+ * Present-invalid is refused, never read as absent (ADR 0079): a `usage` that is not
+ * an object, a class present with anything but a reportable count, or a report with
+ * no session id to name it by.
+ */
+function resultUsage(
+  record: Record<string, unknown>,
+  stepIndex: number,
+): ProviderSignal | "MALFORMED" | null {
+  const usage = record["usage"];
+  if (usage === undefined) return null;
+  if (!isRecord(usage)) return "MALFORMED";
+  const classes: Record<string, number | null> = {};
+  for (const [name, key] of Object.entries(CLAUDE_USAGE_CLASSES)) {
+    const value = usage[key];
+    if (value === undefined) {
+      classes[name] = null;
+    } else if (isReportableTokenCount(value)) {
+      classes[name] = value;
+    } else {
+      return "MALFORMED";
+    }
+  }
+  const sessionId = record["session_id"];
+  if (typeof sessionId !== "string" || sessionId === "") return "MALFORMED";
+  const known = Object.values(classes);
+  const totalTokens = known.every((count) => count !== null)
+    ? known.reduce<number>((sum, count) => sum + count, 0)
+    : null;
+  return {
+    kind: "step",
+    stepIndex,
+    inputTokens: classes["inputTokens"] ?? null,
+    outputTokens: classes["outputTokens"] ?? null,
+    cacheWriteTokens: classes["cacheWriteTokens"] ?? null,
+    cacheReadTokens: classes["cacheReadTokens"] ?? null,
+    totalTokens,
+    reportKind: "CUMULATIVE",
+    isFinal: true,
+    sourceObservationId: sessionId + "/result",
+  };
 }
 
 /**
@@ -210,7 +299,11 @@ type RecordOutcome =
  * session rather than being skipped: a stream we did not understand is not a
  * stream we may claim to have read.
  */
-function readRecord(raw: string, stepIndex: number): RecordOutcome {
+/**
+ * `stepMessageIds` is the parse's running list of distinct assistant message ids,
+ * extended here in place: it is what the result's report counts as its steps.
+ */
+function readRecord(raw: string, stepMessageIds: string[]): RecordOutcome {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw) as unknown;
@@ -259,10 +352,14 @@ function readRecord(raw: string, stepIndex: number): RecordOutcome {
       const target = writeToolTarget(message);
       if (target !== null) signals.push({ kind: "write", target });
 
-      const tokens = outputTokens(message);
-      if (tokens !== null) signals.push({ kind: "step", tokensUsed: tokens, stepIndex });
-      // An assistant message that reports no usage is not an error and not a
-      // step; it simply carries no measurement.
+      // No usage from an assistant record (P-15/D2, ADR 0105): one message arrives as
+      // several records, each repeating its usage, and the session's one report is
+      // the result's. The record's message id is counted once, as a step.
+      const messageId = message["id"];
+      if (messageId !== undefined) {
+        if (typeof messageId !== "string" || messageId === "") return { ok: false, code: "MALFORMED_EVENT" };
+        if (!stepMessageIds.includes(messageId)) stepMessageIds.push(messageId);
+      }
 
       // Output text (P-07 escalón C, ADR 0099): the `text` blocks of the message,
       // in stream order, for the caller's private sink. Not a `thinking` block —
@@ -313,7 +410,12 @@ function readRecord(raw: string, stepIndex: number): RecordOutcome {
       //   - anything else → MALFORMED_EVENT, never read as absent (ADR 0079).
       // The crossed pairs — `true` with exit 0, `false` with exit 1 — were not
       // observed; the exit is a separate fact the session reports.
-      const signals: ProviderSignal[] = [{ kind: "state", toState: subtype.toUpperCase() }];
+      // The session's one usage report, from the CLI's own total (P-15/D2), ahead of
+      // the state the record reports, in the transports' shared order.
+      const report = resultUsage(parsed, stepMessageIds.length);
+      if (report === "MALFORMED") return { ok: false, code: "MALFORMED_EVENT" };
+      const signals: ProviderSignal[] = report === null ? [] : [report];
+      signals.push({ kind: "state", toState: subtype.toUpperCase() });
       const isError = parsed["is_error"];
       if (isError !== undefined && typeof isError !== "boolean") return { ok: false, code: "MALFORMED_EVENT" };
       if (isError === true) signals.push({ kind: "operation", status: "FAILED" });
@@ -376,17 +478,18 @@ export const claudeAdapter: ProviderAdapter = {
     const partial = parts.pop() ?? "";
     const events: ProviderSignal[] = [];
     let index = cursor.recordIndex;
+    const stepMessageIds = [...(cursor.stepMessageIds ?? [])];
 
     for (const line of parts) {
       if (line.trim() === "") continue;
-      const outcome = readRecord(line, index);
+      const outcome = readRecord(line, stepMessageIds);
       if (!outcome.ok) {
         return { ok: false, code: outcome.code, detail: "record " + String(index) };
       }
       events.push(...outcome.signals);
       index += 1;
     }
-    return { ok: true, events, cursor: { partial, recordIndex: index } };
+    return { ok: true, events, cursor: { partial, recordIndex: index, stepMessageIds } };
   },
 
   /**

@@ -51,6 +51,7 @@ this table against the barrel.
 | `initiatives` | the initiative stream: registration, status, roadmap versions |
 | `account-record` | an account and its actions, with the refusal vocabulary |
 | `usage-limits` | the bounds a quota estimate is computed against |
+| `usage-measure` | the usage measurement vocabularies — source classes by precedence and report kinds — which the execution port's usage report names and the ledger re-exports |
 | `exit-codes` | the process exit convention, declared here because it is shared |
 | `bounded-identifier` | the one grammar a configured name must satisfy, shared by the tool edge and the recorder |
 | `artifact-record` | artifacts §2's vocabularies and the six strict shapes of an artifact event in the registry stream |

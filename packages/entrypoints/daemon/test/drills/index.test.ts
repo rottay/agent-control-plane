@@ -586,7 +586,8 @@ function scenario(name: string): string {
 const FAKE_PROVIDER_LINES: readonly string[] = [
   JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-20260115" }),
   JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 1234 } } }),
-  JSON.stringify({ type: "result", subtype: "turn_completed" }),
+  // The session's one usage report is the result's (P-15/D2, ADR 0105).
+  JSON.stringify({ type: "result", subtype: "turn_completed", session_id: "session-drills", usage: { input_tokens: 0, output_tokens: 1234, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
 ];
 
 let executionRoot: string | null = null;
@@ -1177,7 +1178,9 @@ describe("the Restate mode", () => {
       // The spend is recorded once per entry too, under a derived name — an
       // attach that re-ran the effect would replay the same key rather than
       // append a second row, and either failure would show up as a duplicate
-      // key in the check below.
+      // key in the check below. Exactly one row, the result's (P-15/D2): with none
+      // the loop below would check nothing.
+      expect(spend.length).toBe(1);
       for (const record of spend) {
         expect(Object.keys(record.event.payload).sort()).toEqual(["accountId", "tokens"]);
         expect(record.event.transitionId.startsWith("usage.")).toBe(true);

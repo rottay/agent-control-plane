@@ -239,9 +239,18 @@ function text(value: unknown): string | null {
   return typeof value === "string" && value !== "" ? value : null;
 }
 
-function count(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
-}
+/** The keys of one usage report, every one required, in the port member's order. */
+const USAGE_REPORT_KEYS = [
+  "stepIndex",
+  "inputTokens",
+  "outputTokens",
+  "cacheWriteTokens",
+  "cacheReadTokens",
+  "totalTokens",
+  "reportKind",
+  "isFinal",
+  "sourceObservationId",
+] as const;
 
 /**
  * The classified member, or nothing.
@@ -283,12 +292,22 @@ export function toExecutionEvent(normalized: NormalizedEvent, route: ResolvedRou
       return { kind: "EVENT", event: { kind: "started", route, resolvedModel, protocolVersion } };
     }
     case "step.completed": {
-      const stepIndex = count(payload["stepIndex"]);
-      const tokensUsed = count(payload["tokensUsed"]);
-      if (stepIndex === null || tokensUsed === null) {
-        return { kind: "UNEXPRESSIBLE", detail: "step.completed lost stepIndex or tokensUsed" };
+      // The usage report, field for field, held to the port's own member: every key
+      // present, a class a count or `null` (UNKNOWN), never a 0 read into an absent
+      // or malformed one (P-15/D2, ADR 0105). A report the member refuses is not
+      // expressible, and is said so rather than carried.
+      const candidate: Record<string, unknown> = { kind: "usage" };
+      for (const key of USAGE_REPORT_KEYS) {
+        if (!(key in payload)) {
+          return { kind: "UNEXPRESSIBLE", detail: "step.completed lost " + key };
+        }
+        candidate[key] = payload[key];
       }
-      return { kind: "EVENT", event: { kind: "usage", stepIndex, tokensUsed } };
+      const report = ExecutionEvent.safeParse(candidate);
+      if (!report.success || report.data.kind !== "usage") {
+        return { kind: "UNEXPRESSIBLE", detail: "step.completed carries a usage report the port refuses" };
+      }
+      return { kind: "EVENT", event: report.data };
     }
     case "checkpoint.emitted": {
       const digest = text(payload["digest"]);

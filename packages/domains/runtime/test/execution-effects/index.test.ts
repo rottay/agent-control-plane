@@ -42,6 +42,22 @@ import {
 } from "../../src/toy/repository/index.js";
 import type { ScenarioRoot } from "../../src/toy/repository/index.js";
 
+/** One usage report of a known total, class split unknown (P-15/D2, ADR 0105). */
+function usageReport(stepIndex: number, total: number): Extract<ExecutionEvent, { kind: "usage" }> {
+  return {
+    kind: "usage",
+    stepIndex,
+    inputTokens: null,
+    outputTokens: null,
+    cacheWriteTokens: null,
+    cacheReadTokens: null,
+    totalTokens: total,
+    reportKind: "CUMULATIVE",
+    isFinal: true,
+    sourceObservationId: "obs-" + String(stepIndex),
+  };
+}
+
 
 /**
  * One admitted route for every fixture in this file (V2-B1c).
@@ -112,7 +128,7 @@ function requestFor(invocation: DurableInvocation): ExecutionRequest {
 /** The intersection trail every transport can produce, terminal included. */
 const COMPLETED_TRAIL: readonly ExecutionEvent[] = [
   { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
-  { kind: "usage", stepIndex: 1, tokensUsed: TOKENS },
+  usageReport(1, TOKENS),
   { kind: "state", toState: "TURN_COMPLETED" },
   { kind: "completed", stepIndex: 1 },
 ];
@@ -417,13 +433,30 @@ const B7T_TASKS = [
 
 const MULTI_USAGE_TRAIL: readonly ExecutionEvent[] = [
   { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
-  { kind: "usage", stepIndex: 1, tokensUsed: 11 },
-  { kind: "usage", stepIndex: 2, tokensUsed: 22 },
+  usageReport(1, 11),
+  usageReport(2, 22),
   { kind: "state", toState: "TURN_COMPLETED" },
   { kind: "completed", stepIndex: 2 },
 ];
 
 describe("the usage sink (V2-B7T)", () => {
+  it("P-15/D2: hands the sink every field of the report verbatim, a null class as null", async () => {
+    const seen: UsageSample[] = [];
+    const report = { ...usageReport(1, 0), inputTokens: 0, outputTokens: null, totalTokens: null, reportKind: "DELTA" as const, isFinal: false };
+    const trail: readonly ExecutionEvent[] = [
+      { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
+      report,
+      { kind: "state", toState: "TURN_COMPLETED" },
+      { kind: "completed", stepIndex: 1 },
+    ];
+    const staged = effectsFor("p15d2-sink-verbatim", "b7700000-0000-4000-8000-0000000000d2", { events: trail }, (sample) => {
+      seen.push(sample);
+    });
+    await staged.effects.apply(staged.operation);
+    const fields = Object.fromEntries(Object.entries(report).filter(([key]) => key !== "kind"));
+    expect(seen).toEqual([{ operationIndex: staged.operation.operationIndex, ...fields }]);
+  });
+
   it("is called once per trail usage entry, carrying the step's own index (D-B7T-1)", async () => {
     const seen: UsageSample[] = [];
     const staged = effectsFor("b7t-sink-per-entry", B7T_TASKS[0], { events: MULTI_USAGE_TRAIL }, (sample) => {
@@ -435,7 +468,7 @@ describe("the usage sink (V2-B7T)", () => {
     // One per `usage` entry — not summed, not collapsed.
     expect(seen).toHaveLength(2);
     expect(seen.map((sample) => sample.stepIndex)).toEqual([1, 2]);
-    expect(seen.map((sample) => sample.tokensUsed)).toEqual([11, 22]);
+    expect(seen.map((sample) => sample.totalTokens)).toEqual([11, 22]);
     // Every sample carries the operation's own plan index, so the identity the
     // recorder derives is unique within the attempt without a counter.
     expect(new Set(seen.map((sample) => sample.operationIndex))).toEqual(new Set([staged.operation.operationIndex]));
@@ -564,7 +597,7 @@ const API_ROUTE: ResolvedRoute = {
 const PRESSURE_TRAIL: readonly ExecutionEvent[] = [
   { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
   { kind: "authRequired", reason: "LOGIN_REQUIRED" },
-  { kind: "usage", stepIndex: 1, tokensUsed: TOKENS },
+  usageReport(1, TOKENS),
   { kind: "pressure", provider: "codex", pressure: "QUOTA_EXHAUSTED" },
   { kind: "state", toState: "TURN_COMPLETED" },
   { kind: "completed", stepIndex: 1 },
@@ -817,7 +850,7 @@ const F4E_TASKS = [
 const FAILED_TRAIL: readonly ExecutionEvent[] = [
   { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
   { kind: "pressure", provider: "codex", pressure: "QUOTA_EXHAUSTED" },
-  { kind: "usage", stepIndex: 3, tokensUsed: TOKENS },
+  usageReport(3, TOKENS),
   { kind: "authRequired", reason: "LOGIN_REQUIRED" },
   { kind: "error", refusal: "CAPABILITY_UNSUPPORTED", detail: "the fake ended in error" },
 ];
@@ -826,7 +859,7 @@ const FAILED_TRAIL: readonly ExecutionEvent[] = [
 const NO_TERMINAL_TRAIL: readonly ExecutionEvent[] = [
   { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
   { kind: "pressure", provider: "codex", pressure: "QUOTA_EXHAUSTED" },
-  { kind: "usage", stepIndex: 3, tokensUsed: TOKENS },
+  usageReport(3, TOKENS),
 ];
 
 /** A port with every sink and the gate, so one case can watch all of them. */
@@ -889,7 +922,7 @@ describe("F4a-E P1/P2: a failed execution records what its trail already said", 
     ]);
     // P2: and the spend, on the ruling that the tokens were reported and the
     // ledger may under-report but never over-report.
-    expect(usage.map((sample) => sample.tokensUsed)).toEqual([TOKENS]);
+    expect(usage.map((sample) => sample.totalTokens)).toEqual([TOKENS]);
 
     // And nothing else moved.
     expect(markerFiles(staged.root)).toEqual([]);

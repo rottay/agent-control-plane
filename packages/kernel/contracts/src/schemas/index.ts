@@ -90,6 +90,11 @@ export {
   TOKENS_USED_MAX,
 } from "./usage-limits/index.js";
 export {
+  USAGE_REPORT_KINDS,
+  USAGE_SOURCE_CLASSES,
+} from "./usage-measure/index.js";
+export type { UsageReportKind, UsageSourceClass } from "./usage-measure/index.js";
+export {
   findCredentialViolations,
   findTranscriptViolations,
   serializedByteLength,

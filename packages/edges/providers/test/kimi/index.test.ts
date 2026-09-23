@@ -239,7 +239,7 @@ describe("the parser reads ACP v1 NDJSON, and refuses the rest", () => {
     expect(joined).not.toContain("�");
   });
 
-  it("reports a bounded token count when an update carries one", async () => {
+  it("P-15/D2 (ND-D2-1): an update carrying a token count parses and reports no usage until this adapter executes", async () => {
     const withTokens = rpc({
       method: "session/update",
       params: {
@@ -249,11 +249,12 @@ describe("the parser reads ACP v1 NDJSON, and refuses the rest", () => {
     });
     const { events, failure } = await collect({ lines: [INITIALIZE, withTokens], exitCode: 0 });
     expect(failure).toBeNull();
-    expect(events.map((event) => event.name)).toEqual(["session.started", "step.completed"]);
-    expect(events[1]?.payload["tokensUsed"]).toBe(1200);
+    // No capture shows what `_meta.tokensUsed` counts, so none is reported rather
+    // than one guessed.
+    expect(events.map((event) => event.name)).toEqual(["session.started"]);
   });
 
-  it("reports no measurement for an out-of-range token count", async () => {
+  it("P-15/D2 (ND-D2-1): an update with an out-of-range count parses without refusal and, like every update, reports no usage", async () => {
     const overLimit = rpc({
       method: "session/update",
       params: {

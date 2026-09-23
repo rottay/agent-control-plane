@@ -74,11 +74,14 @@ export function buildWalkEffects(input: WalkEffectsInput): EffectPort {
     // account's, read from the same `route` the port executes — the value the
     // config door already admitted, never a second reading of it.
     recordUsage: (sample) => {
+      // The legacy sink takes one number: the report's total, or nothing when the
+      // source did not say (P-15/D2, ADR 0105). Never a 0 standing in for UNKNOWN.
+      if (sample.totalTokens === null) return;
       recordTokenObservation(input.ledger, {
         invocation: input.invocation,
         kind: "USAGE",
         accountId: input.route.accountId,
-        tokens: sample.tokensUsed,
+        tokens: sample.totalTokens,
         // The landing generation leads the name (V2-B1f/F5). A destination
         // re-executes the same operation at the same step indices, so
         // without it the second walk's first usage row would collide with

@@ -25,6 +25,7 @@ import { ControlPlaneEventType } from "../control-plane-event/index.js";
 // contract; the port's `operationResult` reads it rather than restating it
 // (P-07 escalón C, ADR 0099, L-P07A-1 amended).
 import { RESULT_STATUSES } from "../result/index.js";
+import { USAGE_REPORT_KINDS } from "../usage-measure/index.js";
 import { WorkerIdentityString } from "../worker-identity/index.js";
 import type { HealthProbe } from "../worker-slot/index.js";
 
@@ -278,6 +279,16 @@ export type ResolvedRoute = z.infer<typeof ResolvedRoute>;
  * to the caller's private `ExecutionOutputSink`, and whatever the sink receives
  * enters no event.
  */
+/**
+ * One token class of a usage report: a count, or `null` when the source did not say
+ * (P-15/D2, ADR 0105). `null` is UNKNOWN and never 0; a zero is a real zero. There
+ * is no default: an absent key is a malformed report, refused by the strict object.
+ */
+const UsageTokenCount = z.number().int().nonnegative().max(100_000_000).nullable();
+
+/** The four token classes a usage report carries, in their economy §1 order. */
+const USAGE_TOKEN_CLASSES = ["inputTokens", "outputTokens", "cacheWriteTokens", "cacheReadTokens"] as const;
+
 export const ExecutionEvent = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("started"),
@@ -306,12 +317,55 @@ export const ExecutionEvent = z.discriminatedUnion("kind", [
     kind: z.literal("state"),
     toState: z.string().min(1).max(40),
   }),
-  z.strictObject({
-    kind: z.literal("usage"),
-    /** Step ordering is carried, so usage can be folded in the order it happened. */
-    stepIndex: z.number().int().nonnegative().max(100_000),
-    tokensUsed: z.number().int().nonnegative().max(100_000_000),
-  }),
+  /**
+   * One usage report, as the source made it (P-15/D2, ADR 0105; decision 136).
+   *
+   * The four classes and the total, each a count or `null` for UNKNOWN — never a 0
+   * standing in for a count nobody reported; the report's kind, from the usage
+   * vocabulary; whether the source called it final; and the source's own id for the
+   * observation, which is what makes a replay of one report the same report. When
+   * all four classes are known the total is required and is their sum, as the
+   * settlement fold requires, or the report is refused; beside an unknown class a
+   * stated total below the known classes' sum is refused. `tokensUsed`, one number for every class, is gone: it was the shape
+   * that let a per-record count and a final count be summed into a double count
+   * (ADR 0099).
+   */
+  z
+    .strictObject({
+      kind: z.literal("usage"),
+      /** Step ordering is carried, so usage can be folded in the order it happened. */
+      stepIndex: z.number().int().nonnegative().max(100_000),
+      inputTokens: UsageTokenCount,
+      outputTokens: UsageTokenCount,
+      cacheWriteTokens: UsageTokenCount,
+      cacheReadTokens: UsageTokenCount,
+      totalTokens: UsageTokenCount,
+      reportKind: z.enum(USAGE_REPORT_KINDS),
+      isFinal: z.boolean(),
+      sourceObservationId: z.string().min(1).max(512),
+    })
+    .superRefine((value, ctx) => {
+      // The total against the classes (P-15/D2 v2): with all four known it is
+      // required and is their sum — a known split with an unknown total is a total
+      // the source did know; with any class unknown it may be unknown, and when
+      // stated it is at least the sum of the classes that are known.
+      const classes = USAGE_TOKEN_CLASSES.map((key) => value[key]);
+      const known = classes.filter((count): count is number => count !== null);
+      const sum = known.reduce((total, count) => total + count, 0);
+      if (known.length === classes.length && value.totalTokens !== sum) {
+        ctx.addIssue({
+          code: "custom",
+          message: "when every class is known, the total is required and is their sum",
+          path: ["totalTokens"],
+        });
+      } else if (known.length < classes.length && value.totalTokens !== null && value.totalTokens < sum) {
+        ctx.addIssue({
+          code: "custom",
+          message: "a total stated beside an unknown class is at least the sum of the classes that are known",
+          path: ["totalTokens"],
+        });
+      }
+    }),
   z.strictObject({
     kind: z.literal("checkpoint"),
     digest: Sha256Hex,
