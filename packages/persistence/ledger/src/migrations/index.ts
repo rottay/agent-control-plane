@@ -2823,6 +2823,107 @@ SELECT
   '1970-01-01T00:00:00.000Z';
 `,
   },
+  {
+    version: 22,
+    name: "effect_result_reference",
+    sql: `
+-- An effect records its result by reference, with its outcome (P-07 escalón B,
+-- ADR 0098).
+--
+-- Contratos §4.2: SUCCEEDED demands a valid, recoverable result. The result is a
+-- document whose bytes a \`RESPONSE\` artifact holds, so the effect row names it by
+-- that artifact's registered reference and its conserved digest, written in the
+-- same event as the outcome, and records which contract version recorded the
+-- outcome, because the rule is keyed on a cohort of that version.
+--
+-- **Additive, and the table is not rebuilt.** Three nullable columns with no
+-- default: every row already there reads NULL in each, which is the correct value
+-- for the result pair, so no row is rewritten and no index moves. The recording
+-- version of a row that already holds an outcome is written from that outcome's
+-- own event by code, in this same transaction, after this text runs.
+--
+-- **What is a CHECK and what is a trigger** (datos §3.7, invariant 13).
+-- Version-independent row law is a CHECK: the pair is both NULL or both present,
+-- the digest has the common shape, a result exists only on SUCCEEDED or FAILED
+-- (spelled with IS NOT NULL, because a CHECK whose predicate is NULL passes and
+-- \`NULL IN (...)\` is NULL), and a version implies an outcome. The other half of that last rule — an outcome
+-- implies a version — cannot be a CHECK here: SQLite tests a CHECK added by ADD
+-- COLUMN against the rows already there, and it would abort on any ledger that
+-- holds an outcome before the backfill runs. So it is the triggers' first
+-- statement, beside the cohort rule.
+ALTER TABLE effect_read_model ADD COLUMN outcome_contract_version TEXT
+  CONSTRAINT ck_effect_read_model__outcome_contract_version
+    CHECK (outcome_contract_version IS NULL
+      OR (outcome_status IS NOT NULL AND length(outcome_contract_version) > 0));
+
+ALTER TABLE effect_read_model ADD COLUMN result_artifact_reference_id TEXT
+  CONSTRAINT ck_effect_read_model__result_artifact_reference_id
+    CHECK (result_artifact_reference_id IS NULL OR length(result_artifact_reference_id) > 0);
+
+ALTER TABLE effect_read_model ADD COLUMN result_sha256 TEXT
+  CONSTRAINT ck_effect_read_model__result_sha256_shape
+    CHECK (result_sha256 IS NULL
+      OR (length(result_sha256) = 64 AND result_sha256 NOT GLOB '*[^0-9a-f]*'))
+  CONSTRAINT ck_effect_read_model__result_pair
+    CHECK ((result_sha256 IS NULL) = (result_artifact_reference_id IS NULL))
+  CONSTRAINT ck_effect_read_model__result_status
+    CHECK (result_sha256 IS NULL
+      OR (outcome_status IS NOT NULL AND outcome_status IN ('SUCCEEDED', 'FAILED')));
+
+-- The cohort, by trigger, on both paths a row arrives by.
+--
+-- The cohort before is a CLOSED list frozen here, never a comparison of version
+-- strings: the six are every version a build before this migration could stamp,
+-- a migration is immutable, and a version bumped later falls into the cohort
+-- after without touching this text. The fold's
+-- \`PRE_RESULT_REFERENCE_CONTRACT_VERSIONS\` spells the same six, and the suite
+-- holds the two spellings equal. An outcome of the cohort before names no result;
+-- a SUCCEEDED of the cohort after always names one. \`x NOT IN (...)\` is NULL when
+-- \`x\` is NULL, so a status without a version is caught by the first statement
+-- and never let through by the third.
+--
+-- Two triggers, because a rebuild INSERTs a row that already holds its outcome
+-- and the door UPDATEs one, and the UPDATE trigger names all four columns so a
+-- raw write to the result columns alone is held to the same rule.
+--
+-- **Existence is not checked here, and cannot be.** Whether the reference names
+-- this task's RESPONSE with this digest is a question about a projection of the
+-- registry stream; this row is a projection of the task stream, and a rebuild
+-- folds one chain at a time. The append door asks it, by name, before it writes.
+CREATE TRIGGER tr_effect_read_model__validate_result_on_insert
+BEFORE INSERT ON effect_read_model
+BEGIN
+  SELECT RAISE(ABORT, 'effect_read_model.outcome_contract_version is required on a row that holds an outcome')
+  WHERE NEW.outcome_status IS NOT NULL AND NEW.outcome_contract_version IS NULL;
+
+  SELECT RAISE(ABORT, 'effect_read_model.result_artifact_reference_id and result_sha256 must be NULL on an outcome of contract version 2.2.0, 2.3.0, 2.4.0, 2.5.0, 2.6.0 or 2.7.0')
+  WHERE NEW.outcome_contract_version IN ('2.2.0', '2.3.0', '2.4.0', '2.5.0', '2.6.0', '2.7.0')
+    AND NEW.result_sha256 IS NOT NULL;
+
+  SELECT RAISE(ABORT, 'effect_read_model.result_artifact_reference_id and result_sha256 are required on a SUCCEEDED outcome of every later contract version')
+  WHERE NEW.outcome_status = 'SUCCEEDED'
+    AND NEW.outcome_contract_version NOT IN ('2.2.0', '2.3.0', '2.4.0', '2.5.0', '2.6.0', '2.7.0')
+    AND NEW.result_sha256 IS NULL;
+END;
+
+CREATE TRIGGER tr_effect_read_model__validate_result_on_update
+BEFORE UPDATE OF outcome_status, outcome_contract_version, result_artifact_reference_id, result_sha256
+ON effect_read_model
+BEGIN
+  SELECT RAISE(ABORT, 'effect_read_model.outcome_contract_version is required on a row that holds an outcome')
+  WHERE NEW.outcome_status IS NOT NULL AND NEW.outcome_contract_version IS NULL;
+
+  SELECT RAISE(ABORT, 'effect_read_model.result_artifact_reference_id and result_sha256 must be NULL on an outcome of contract version 2.2.0, 2.3.0, 2.4.0, 2.5.0, 2.6.0 or 2.7.0')
+  WHERE NEW.outcome_contract_version IN ('2.2.0', '2.3.0', '2.4.0', '2.5.0', '2.6.0', '2.7.0')
+    AND NEW.result_sha256 IS NOT NULL;
+
+  SELECT RAISE(ABORT, 'effect_read_model.result_artifact_reference_id and result_sha256 are required on a SUCCEEDED outcome of every later contract version')
+  WHERE NEW.outcome_status = 'SUCCEEDED'
+    AND NEW.outcome_contract_version NOT IN ('2.2.0', '2.3.0', '2.4.0', '2.5.0', '2.6.0', '2.7.0')
+    AND NEW.result_sha256 IS NULL;
+END;
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -3151,6 +3252,15 @@ export const PRICE_INTERVAL_PROJECTION = "price_interval_read_model";
 export const PRICE_INTERVAL_CATALOG_MIGRATION = 21;
 
 /**
+ * The migration that gives an effect its result reference (P-07 escalón B, ADR 0098).
+ *
+ * Named for `PRICE_INTERVAL_CATALOG_MIGRATION`'s reasons: the suite and the rewind
+ * fixtures hold the number against where the SQL sits, and the ledger hangs the
+ * backfill of every recorded outcome's version off this exact version.
+ */
+export const EFFECT_RESULT_REFERENCE_MIGRATION = 22;
+
+/**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
  * Named rather than written as a literal at the two sites that need it, because
@@ -3469,6 +3579,12 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   // this inventory excludes (adjudication Q5), and the rule spanning rows is the
   // door's and the fold's.
   { type: "table", name: "price_interval_read_model" },
+  // P-07 escalón B. Two triggers and nothing else: migration 22 adds three columns,
+  // and a column is not a schema object here. Inventoried for the reason every `tr_`
+  // is — dropping either leaves `schema_migrations` intact while the table quietly
+  // admits a SUCCEEDED with no result, or a result on an outcome of the cohort before.
+  { type: "trigger", name: "tr_effect_read_model__validate_result_on_insert" },
+  { type: "trigger", name: "tr_effect_read_model__validate_result_on_update" },
 ];
 
 export interface MigrationConformance {

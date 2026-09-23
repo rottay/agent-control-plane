@@ -185,7 +185,7 @@ fifteenth class cannot arrive without appearing here.
 | `task_revision_read_model` | derived | one row per `(task, revision)`: the revision's stable handle, its envelope digest, the registered reference its envelope's bytes are read by (`NULL` before contract version `2.5.0`, since migration 16) and what it restored |
 | `task_attempt_read_model` | derived | one row per `(task, revision, attempt)`: the flat assignment that goes in the legacy `attempt` column, and the invocation the attempt is in bijection with |
 | `execution_route_segment_read_model` | derived | one row per stretch of one attempt's route, with explicit lineage back to the segment that handed off to it |
-| `effect_read_model` | derived | one row per logical operation of a run, found by its logical key rather than by a physical coordinate |
+| `effect_read_model` | derived | one row per logical operation of a run, found by its logical key rather than by a physical coordinate; since migration 22, the contract version that recorded its outcome and, with the outcome, the registered `RESPONSE` reference and digest of its result |
 | `dispatch_attempt_read_model` | derived | one row per concrete external delivery of one effect, in the five states of execution §7 |
 | `prompt_occurrence_read_model` | derived | one row per prompt a delivery sent: digests and counts, the effective segment and account, never the bytes |
 | `response_occurrence_read_model` | derived | the one answer to one prompt occurrence, attributed through that prompt and nothing else |
@@ -683,8 +683,8 @@ was written, and the fold does not restate them.
 
 A `DISPATCH_OUTCOME_RECORDED` is refused when its payload does not constitute a
 resolution, when its delivery does not exist or belongs to another attempt, when
-its state is not a forward move of the five, or when it names an outcome other
-than the one the effect already recorded. And **a present-invalid value is never
+its state is not a forward move of the five, or when it names an outcome — or a
+result — other than the one the effect already recorded. And **a present-invalid value is never
 read as absence** (CORR-2): each of the four optional fields —
 `effectOutcomeStatus`, `acceptedAt`, `externalHandle`, `providerIdempotencyKey`
 — is either absent, lawful (a word of `EFFECT_OUTCOME_STATUSES`, or non-empty
@@ -693,6 +693,44 @@ number, an object, an empty string and an explicit `null` are all refused, and
 the refusal shows a string only when it is shaped like an identifier. The door
 and `applyEventToSnapshot` read through one function and throw the same issue,
 so `rebuildReadModel` refuses a stored history holding one in the door's words.
+
+### The result reference, by cohort (migration 22)
+
+P-07 escalón B (ADR 0098, decisions 108-109). An effect's result is a document
+whose bytes a `RESPONSE` artifact holds, so the outcome names it by that
+artifact's registered reference and its conserved digest, in the same event —
+`payload.outcome.resultArtifactReferenceId` and `payload.outcome.resultSha256`.
+Migration 22 adds three nullable columns by `ADD COLUMN` —
+`outcome_contract_version`, `result_artifact_reference_id` and `result_sha256` —
+and two triggers, one per path a row arrives by (a rebuild inserts, the door
+updates), that hold the cohort:
+
+| `outcome_contract_version` | result pair |
+| --- | --- |
+| `2.2.0` … `2.7.0` — a closed list frozen in the migration | must be `NULL` |
+| anything else — `2.8.0` today | required on `SUCCEEDED`; optional on `FAILED` |
+
+Version-independent row law is a CHECK: the pair is both `NULL` or both present,
+the digest has the common shape, a result exists only on `SUCCEEDED` or `FAILED`,
+and a version implies an outcome. The other half — an outcome implies a version
+— is in the triggers, because a CHECK added by `ADD COLUMN` is tested against the
+rows already there. On upgrade, code in the migration's transaction writes each
+recorded outcome's version (and pair) from its own event, through the reader the
+door and the fold use.
+
+**The reader checks form and cohort**, present-invalid, and refuses by name: a
+key that is not text (or not 64 lowercase hex), half a pair, a pair with no
+outcome, a pair on `CANCELLED` or `OUTCOME_UNKNOWN`, a pair on a version of the
+cohort before, and a `SUCCEEDED` of a later version without one. The statuses
+that may carry a result are the result contract's own `RESULT_STATUSES`,
+imported. **The door checks existence**: the reference must be this task's
+registered `RESPONSE` and its `content_sha256` must equal the digest — published
+before referenced (datos §11 step 7). The base checks presence, never existence.
+Replay and conflict are decided on the status and the pair together, by one
+function the door and the fold share.
+
+The cohort is keyed on the version, so the version moved: P-07 escalón B moved
+`CONTRACT_VERSION` to `"2.8.0"`, a cohort and not an identity (ADR 0084's reason).
 
 ### What this escalón does not write
 

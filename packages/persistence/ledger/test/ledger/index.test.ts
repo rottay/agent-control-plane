@@ -66,6 +66,7 @@ import {
   TASK_SUBMISSION_MIGRATION,
   USAGE_CAPTURE_MIGRATION,
   PRICE_INTERVAL_CATALOG_MIGRATION,
+  EFFECT_RESULT_REFERENCE_MIGRATION,
   MIGRATIONS,
   MODEL_VERSION_REGISTRY_MIGRATION,
   TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
@@ -338,7 +339,7 @@ describe("open", () => {
     // coordinate, P-08's sidecar and the registry stream, typed causal triple and
     // watermark table of P-09.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1363,8 +1364,30 @@ function dropUsageCapture(raw: Database.Database): void {
  * re-applied 21 folds every `PRICE_TABLE` the stream holds back into the same rows.
  */
 function dropPriceIntervalCatalog(raw: Database.Database): void {
+  // Twenty-two first (P-07 escalón B): rewinding past 21 means rewinding past
+  // everything applied after it, and a re-applied 22 over its own columns aborts.
+  dropEffectResultReference(raw);
   raw.exec("DROP TABLE price_interval_read_model;");
   raw.prepare("DELETE FROM projection_watermark WHERE projection_name = ?").run("price_interval_read_model");
+}
+
+/**
+ * Migration 22 undone: the effect's result reference (P-07 escalón B, ADR 0098).
+ *
+ * In the one order SQLite admits: both triggers first, because a column a trigger
+ * names cannot be dropped; then `result_sha256` before `result_artifact_reference_id`,
+ * because the former's CHECKs name the latter; then `outcome_contract_version`. No
+ * watermark and no row moves: the re-applied 22 writes each recorded outcome's
+ * version back from its event.
+ */
+function dropEffectResultReference(raw: Database.Database): void {
+  raw.exec(
+    "DROP TRIGGER tr_effect_read_model__validate_result_on_update; " +
+      "DROP TRIGGER tr_effect_read_model__validate_result_on_insert; " +
+      "ALTER TABLE effect_read_model DROP COLUMN result_sha256; " +
+      "ALTER TABLE effect_read_model DROP COLUMN result_artifact_reference_id; " +
+      "ALTER TABLE effect_read_model DROP COLUMN outcome_contract_version;",
+  );
 }
 
 /** The five projections migration 20 adds, in the order it seeds their watermarks. */
@@ -3092,7 +3115,7 @@ describe("the recorded execution route", () => {
     // The upgrade: the pending tail applies on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3528,7 +3551,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -5729,7 +5752,7 @@ describe("the account sidecar is activated once, over everything, atomically", (
     // The upgrade: migration 10 applies on open and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((m) => m.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
@@ -6551,6 +6574,42 @@ function plantEnvelopeReference(
   ledger.appendArtifactEvent(
     referenceRecorded({ content: ENVELOPE_CONTENT, reference: envelope }),
   );
+}
+
+/** The result reference and the digest of its bytes, as the drills name them (ADR 0098). */
+const RESULT_REFERENCE = "ref-response-1";
+const RESULT_DIGEST = "5".repeat(64);
+
+/**
+ * Register a `RESPONSE` reference scoped to `taskId` through the artifact door,
+ * once, and return the pair an outcome names it by (P-07 escalón B, ADR 0098).
+ *
+ * `plantEnvelopeReference`'s shape: a fixture, not a publication — the plane that
+ * would write the result document's bytes is escalón D's, and the outcome door asks
+ * only that the reference exist as this task's `RESPONSE` with this digest. The
+ * first reference on `content` publishes it; any other is recorded against the same
+ * generation. Idempotent.
+ */
+function plantResponseReference(
+  ledger: Ledger,
+  taskId: string,
+  artifactReferenceId = RESULT_REFERENCE,
+  content = RESULT_DIGEST,
+): { readonly resultArtifactReferenceId: string; readonly resultSha256: string } {
+  const pair = { resultArtifactReferenceId: artifactReferenceId, resultSha256: content };
+  if (ledger.getArtifactReference(artifactReferenceId) !== null) return pair;
+  const reference = referenceRecord({ artifactReferenceId, artifactClass: "RESPONSE", scopeKind: "TASK", scopeId: taskId });
+  if (ledger.getArtifactBlob(content, 1) === null) {
+    ledger.appendArtifactEvent(
+      publicationIntended({ content, commandId: "cmd-" + artifactReferenceId, pinId: "pin-" + artifactReferenceId }),
+    );
+    ledger.appendArtifactEvent(
+      publicationSucceeded({ content, commandId: "cmd-" + artifactReferenceId, pinId: "pin-" + artifactReferenceId, reference }),
+    );
+    return pair;
+  }
+  ledger.appendArtifactEvent(referenceRecorded({ content, reference }));
+  return pair;
 }
 
 /**
@@ -7642,9 +7701,10 @@ describe("a version this build does not read is refused, by name", () => {
     // P-36/local D moved it once more (ADR 0084), for a cohort rather than an
     // identity: three supported-but-not-current members, four in the loop.
     // P-32/captura B moved it again (ADR 0089), for an identity: four
-    // supported-but-not-current members, five in the loop.
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", CONTRACT_VERSION]);
-    expect(CONTRACT_VERSION).toBe("2.7.0");
+    // supported-but-not-current members, five in the loop. P-06/B and P-07
+    // escalón B (ADR 0098, a cohort again) moved it twice more.
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", CONTRACT_VERSION]);
+    expect(CONTRACT_VERSION).toBe("2.8.0");
 
     // The history is fabricated with `restampVersion` rather than taken from a
     // fixture, and the correction matters: there is no recorded `"2.2.0"`
@@ -7716,7 +7776,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7775,7 +7835,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -7793,7 +7853,7 @@ describe("a version this build does not read is refused, by name", () => {
     migrated.append(
       responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }),
     );
-    expect(CONTRACT_VERSION).toBe("2.7.0");
+    expect(CONTRACT_VERSION).toBe("2.8.0");
     expect(migrated.listEvents().events.at(-1)?.event.contractVersion).toBe(CONTRACT_VERSION);
     expect(migrated.getResponseOccurrenceForPrompt("po-1")?.occurrenceId).toBe("ro-1");
     expect(migrated.rebuildReadModel().replayedEvents).toBe(6);
@@ -7826,7 +7886,7 @@ describe("a version this build does not read is refused, by name", () => {
 
       const migrated = open(path);
       expect(migrated.status().migrations.map((migration) => migration.version), version).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
       ]);
       expect(
         migrated.listEvents().events.map((record) => record.event.contractVersion),
@@ -7976,7 +8036,7 @@ describe("migration 11 applies whole, over a ledger that already has a history",
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
     ]);
 
     // Reads still answer, with the same rows and the same head.
@@ -9173,6 +9233,9 @@ interface OutcomeInput {
   readonly acceptedAt?: string;
   readonly externalHandle?: string;
   readonly effectOutcomeStatus?: string;
+  /** The result pair (P-07 escalón B, ADR 0098), each written only when given. */
+  readonly resultArtifactReferenceId?: string;
+  readonly resultSha256?: string;
   readonly revisionNumber?: number;
   readonly attemptNumber?: number;
   readonly attempt?: number;
@@ -9203,6 +9266,10 @@ function dispatchOutcome(input: OutcomeInput): Record<string, unknown> {
         ...(input.effectOutcomeStatus === undefined
           ? {}
           : { effectOutcomeStatus: input.effectOutcomeStatus }),
+        ...(input.resultArtifactReferenceId === undefined
+          ? {}
+          : { resultArtifactReferenceId: input.resultArtifactReferenceId }),
+        ...(input.resultSha256 === undefined ? {} : { resultSha256: input.resultSha256 }),
         ...(input.overrides ?? {}),
       },
     },
@@ -9502,6 +9569,7 @@ describe("the logical effect is looked up by its logical key (execution §6.1)",
         dispatchState: "SETTLED",
         terminalAt: EFFECT_AT,
         effectOutcomeStatus: "SUCCEEDED",
+        ...plantResponseReference(second, other),
       }),
     );
     expect(
@@ -9892,6 +9960,7 @@ describe("one delivery of one effect, in five states and no more (execution §7)
         dispatchState: "SETTLED",
         terminalAt: "2026-09-12T09:10:00.000Z",
         effectOutcomeStatus: "SUCCEEDED",
+        ...plantResponseReference(ledger, taskId),
       }),
     );
 
@@ -10004,6 +10073,10 @@ describe("one delivery of one effect, in five states and no more (execution §7)
         dispatchState: "SETTLED",
         terminalAt: "2026-09-12T09:10:00.000Z",
         effectOutcomeStatus: "SUCCEEDED",
+        // A SUCCEEDED of the version in force names its result; every case here is
+        // refused at the anchor, before the door asks whether the reference exists.
+        resultArtifactReferenceId: RESULT_REFERENCE,
+        resultSha256: RESULT_DIGEST,
         ...coordinate,
       });
 
@@ -10034,6 +10107,7 @@ describe("one delivery of one effect, in five states and no more (execution §7)
     expect(ledger.verifyIntegrity().ok).toBe(true);
 
     // The owner's own coordinate still resolves it, and the rebuild agrees.
+    plantResponseReference(ledger, owner);
     ledger.append(settle(owner, "settle-own"));
     expect(ledger.listDispatchAttempts(effectId)[0]?.dispatchState).toBe("SETTLED");
     expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("SUCCEEDED");
@@ -10096,9 +10170,12 @@ describe("one delivery of one effect, in five states and no more (execution §7)
 
     withRawDatabase(path, (raw) => {
       // An effect outcome without its instant, and an instant without an
-      // outcome.
+      // outcome. The status carries a version of the cohort before, so migration
+      // 22's trigger admits it and the pair CHECK is what bites (ADR 0098).
       expect(() =>
-        raw.prepare("UPDATE effect_read_model SET outcome_status = ?").run("SUCCEEDED"),
+        raw
+          .prepare("UPDATE effect_read_model SET outcome_status = ?, outcome_contract_version = ?")
+          .run("SUCCEEDED", "2.7.0"),
       ).toThrow(/CHECK constraint failed/);
       expect(() =>
         raw.prepare("UPDATE effect_read_model SET outcome_recorded_at = ?").run(EFFECT_AT),
@@ -10107,9 +10184,9 @@ describe("one delivery of one effect, in five states and no more (execution §7)
       expect(() =>
         raw
           .prepare(
-            "UPDATE effect_read_model SET outcome_status = ?, outcome_recorded_at = ?",
+            "UPDATE effect_read_model SET outcome_status = ?, outcome_recorded_at = ?, outcome_contract_version = ?",
           )
-          .run("MAYBE", EFFECT_AT),
+          .run("MAYBE", EFFECT_AT, "2.8.0"),
       ).toThrow(/CHECK constraint failed/);
 
       // A terminal state without its instant, and a terminal instant on a
@@ -10441,6 +10518,7 @@ describe("migration 13 lands whole, and its rows rebuild deterministically", () 
         dispatchState: "SETTLED",
         terminalAt: "2026-09-12T09:20:00.000Z",
         effectOutcomeStatus: "SUCCEEDED",
+        ...plantResponseReference(ledger, taskId),
       }),
     );
 
@@ -11390,6 +11468,7 @@ describe("migration 14 lands whole, and its rows rebuild deterministically", () 
         dispatchState: "SETTLED",
         terminalAt: EFFECT_AT,
         effectOutcomeStatus: "SUCCEEDED",
+        ...plantResponseReference(ledger, taskId),
       }),
     );
     expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("SUCCEEDED");
@@ -12218,6 +12297,9 @@ describe("a known outcome is reused, never redelivered (execution §6.1, CORR-2)
           dispatchState: "SETTLED",
           terminalAt: EFFECT_AT,
           effectOutcomeStatus: status,
+          // SUCCEEDED names its result; FAILED and CANCELLED here name none, which
+          // is lawful for both (ADR 0098).
+          ...(status === "SUCCEEDED" ? plantResponseReference(ledger, taskId) : {}),
         }),
       );
       const before = ledger.listEvents({ limit: 1000 }).events.length;
@@ -12258,6 +12340,7 @@ describe("a known outcome is reused, never redelivered (execution §6.1, CORR-2)
         dispatchState: "SETTLED",
         terminalAt: EFFECT_AT,
         effectOutcomeStatus: "SUCCEEDED",
+        ...plantResponseReference(ledger, taskId),
       }),
     );
 
@@ -12368,6 +12451,7 @@ describe("a present-invalid word is refused by name, never read as absent (CORR-
         dispatchState: "SETTLED",
         terminalAt: EFFECT_AT,
         effectOutcomeStatus: "SUCCEEDED",
+        ...plantResponseReference(ledger, taskId),
       }),
     );
     expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("SUCCEEDED");
@@ -12492,6 +12576,7 @@ describe("a present-invalid word is refused by name, never read as absent (CORR-
     }
     expect(ledger.listDispatchAttempts(effectId)[0]?.externalHandle).toBe("handle-1");
 
+    const result = plantResponseReference(ledger, taskId);
     ledger.append(
       dispatchOutcome({
         taskId,
@@ -12500,6 +12585,7 @@ describe("a present-invalid word is refused by name, never read as absent (CORR-
         dispatchState: "SETTLED",
         terminalAt: EFFECT_AT,
         effectOutcomeStatus: "SUCCEEDED",
+        ...result,
       }),
     );
     // The same answer again, later, is a replay of the pair: the first instant stands.
@@ -12511,6 +12597,7 @@ describe("a present-invalid word is refused by name, never read as absent (CORR-
         dispatchState: "SETTLED",
         terminalAt: LATER,
         effectOutcomeStatus: "SUCCEEDED",
+        ...result,
         occurredAt: LATER,
       }),
     );
@@ -13165,7 +13252,7 @@ describe("migration 15 rebuilds the registry stream and changes no row (N-P36A-1
     const migrated = open(path);
     // Fifteen applies over the history at fourteen, and sixteen through nineteen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(ARTIFACT_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
     const report = migrated.verifyIntegrity();
     expect(report.problems).toEqual([]);
     expect(report.coverage.find((entry) => entry.sourceStream === "registry_events")?.checkedThroughSequence).toBe(3);
@@ -14348,7 +14435,7 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
       expect(migrated.status().migrations.map((migration) => migration.version), version).toContain(
         TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
       );
-      expect(migrated.status().migrations.at(-1)?.version, version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
+      expect(migrated.status().migrations.at(-1)?.version, version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
       expect(readRevisions(path).map((row) => [row.contract_version, row.envelope_artifact_reference_id]), version).toEqual([
         [version, null],
         [version, null],
@@ -14383,8 +14470,8 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
     expect(stale.message).toContain("2.4.0");
     // P-32/captura B moved the version in force on to 2.6.0 (ADR 0089); the
     // cohort's rule reads every version after the closed list the same way.
-    expect(CONTRACT_VERSION).toBe("2.7.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0"]);
+    expect(CONTRACT_VERSION).toBe("2.8.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0"]);
     ledger.close();
   });
 });
@@ -14800,7 +14887,7 @@ describe("migration 17 lands whole over a registry that already holds model vers
     const migrated = open(path);
     // Seventeen re-applies, and eighteen and nineteen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(MODEL_VERSION_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
 
@@ -14938,7 +15025,7 @@ describe("migration 18 gives the initiative projection its registration columns 
 
     const migrated = open(path);
     // Nineteen re-applied after it (P-14 C): the rewind undid both.
-    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     expect(readInitiativeColumns(path)).toEqual(before.rows);
@@ -15183,7 +15270,7 @@ describe("a task's client key has one home, folded from its intake (P-14 C)", ()
     });
 
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
     expect(readSubmissionRows(path)).toEqual(rows);
     expect(migrated.getTask(taskId)).toEqual(task);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
@@ -16082,7 +16169,7 @@ describe("usage is a declared stream and a measured observation, and the door se
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(USAGE_CAPTURE_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
     expect(usageDump(path)).toBe(live);
     expect(settlementsOf(path, secondEffect)).toEqual([
       expect.objectContaining({ revision: 1, status: "UNKNOWN", sequence: dispatch.sequence, computedAt: dispatch.event.recordedAt }),
@@ -16119,9 +16206,9 @@ describe("usage is a declared stream and a measured observation, and the door se
       reopened.append({ ...usageStream({ taskId: randomUUID(), transitionId: "stale" }), contractVersion: "2.5.0" }),
     );
     expect(stale.path).toBe("contractVersion");
-    expect(stale.message).toContain("2.7.0");
+    expect(stale.message).toContain("2.8.0");
     expect(stale.message).toContain("2.5.0");
-    expect(CONTRACT_VERSION).toBe("2.7.0");
+    expect(CONTRACT_VERSION).toBe("2.8.0");
     expect(settlementsOf(path, effectId)).toHaveLength(1);
     expect(reopened.verifyIntegrity().ok).toBe(true);
   });
@@ -16755,7 +16842,7 @@ describe("migration 21 lands whole over a registry that already holds price cata
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(PRICE_INTERVAL_CATALOG_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
 
@@ -16840,7 +16927,7 @@ describe("migration 21 lands whole over a registry that already holds price cata
     });
 
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(PRICE_INTERVAL_CATALOG_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
     expect(migrated.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 2 })).toEqual([]);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     expect(migrated.rebuildReadModel().priceIntervalRows).toBe(3);
@@ -16848,5 +16935,452 @@ describe("migration 21 lands whole over a registry that already holds price cata
     migrated.close();
     expect(readPriceTable(path)).toEqual(versionOne);
     expect(readWatermarks(path).find((row) => row.projection_name === "price_interval_read_model")?.applied_sequence).toBe(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-07 escalón B — an effect records its result by reference, with its outcome
+// (migration 22, ADR 0098)
+// ---------------------------------------------------------------------------
+
+/** Every column of every effect row, in effect order, as the base holds it. */
+function effectRows(path: string): readonly Record<string, unknown>[] {
+  const raw = new Database(path, { readonly: true });
+  try {
+    return raw.prepare("SELECT * FROM effect_read_model ORDER BY effect_id").all() as Record<string, unknown>[];
+  } finally {
+    raw.close();
+  }
+}
+
+/** Settle `dsp-1` of `taskId` with `status`, and whatever result keys the caller names. */
+function settleWith(
+  taskId: string,
+  transitionId: string,
+  status: string,
+  result: { readonly resultArtifactReferenceId?: string; readonly resultSha256?: string } = {},
+): Record<string, unknown> {
+  return dispatchOutcome({
+    taskId,
+    transitionId,
+    dispatchAttemptId: "dsp-1",
+    dispatchState: "SETTLED",
+    terminalAt: EFFECT_AT,
+    effectOutcomeStatus: status,
+    ...result,
+  });
+}
+
+/**
+ * Rewrite a seeded ledger into the shape a build before migration 22 left it:
+ * `demoteEnvelopeCohort`'s method, for the result cohort.
+ *
+ * Every task event stamped with the version in force is restamped `version`, and
+ * the two result keys are stripped from every `payload.outcome`; the chain is
+ * recomputed from genesis and the head and the task watermarks follow it. The
+ * append-only triggers are captured and put back verbatim. The registry is left
+ * alone: a `2.7.0` revision still names its envelope, and a planted RESPONSE
+ * reference that nothing names any more is harmless. The caller rebuilds.
+ */
+function demoteResultCohort(path: string, version = "2.7.0"): void {
+  withRawDatabase(path, (raw) => {
+    const anchored = raw
+      .prepare("SELECT COUNT(*) AS n FROM control_plane_events WHERE causation_sha256 IS NOT NULL")
+      .get() as { readonly n: number };
+    if (anchored.n !== 0) {
+      throw new Error("a task stream with typed causal references cannot be rechained by this fixture");
+    }
+    const streamTriggers = (
+      raw
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name IN " +
+            "('control_plane_events_deny_update', 'control_plane_events_deny_delete')",
+        )
+        .all() as { readonly sql: string }[]
+    ).map((row) => row.sql);
+    expect(streamTriggers).toHaveLength(2);
+    raw.exec("DROP TRIGGER control_plane_events_deny_update; DROP TRIGGER control_plane_events_deny_delete;");
+    const rows = raw
+      .prepare("SELECT sequence, event_json FROM control_plane_events ORDER BY sequence")
+      .all() as { readonly sequence: number; readonly event_json: string }[];
+    const rewrite = raw.prepare(
+      "UPDATE control_plane_events SET event_json = ?, contract_version = ?, previous_sha256 = ?, event_sha256 = ? " +
+        "WHERE sequence = ?",
+    );
+    let previous = GENESIS_SHA256;
+    for (const row of rows) {
+      const decoded = JSON.parse(row.event_json) as Record<string, unknown>;
+      if (decoded["contractVersion"] === CONTRACT_VERSION) decoded["contractVersion"] = version;
+      const outcome = (decoded["payload"] as Record<string, unknown>)["outcome"];
+      if (typeof outcome === "object" && outcome !== null) {
+        delete (outcome as Record<string, unknown>)["resultArtifactReferenceId"];
+        delete (outcome as Record<string, unknown>)["resultSha256"];
+      }
+      const rewritten = canonicalJsonStringify(decoded);
+      const digest = chainDigest(previous, rewritten);
+      rewrite.run(rewritten, decoded["contractVersion"], previous, digest, row.sequence);
+      previous = digest;
+    }
+    raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = ?").run(previous, "head_event_sha256");
+    raw
+      .prepare("UPDATE projection_watermark SET source_head_sha256 = ? WHERE source_stream = ?")
+      .run(previous, "control_plane_events");
+    for (const sql of streamTriggers) raw.exec(sql);
+  });
+}
+
+/** A ledger whose one effect ended FAILED naming a result (P-P07B-2). */
+function seedFailedWithResult(): { readonly path: string; readonly taskId: string; readonly effectId: string } {
+  const ledger = open(temporaryDatabase());
+  const taskId = randomUUID();
+  const effectId = seedDelivery(ledger, taskId);
+  ledger.append(settleWith(taskId, "settle-1", "FAILED", plantResponseReference(ledger, taskId, "ref-response-failed")));
+  const path = ledger.path;
+  ledger.close();
+  return { path, taskId, effectId };
+}
+
+/** A ledger whose one effect ended SUCCEEDED with its result, at the version in force (P-P07B-1). */
+function seedSucceededWithResult(): { readonly path: string; readonly taskId: string; readonly effectId: string } {
+  const ledger = open(temporaryDatabase());
+  const taskId = randomUUID();
+  const effectId = seedDelivery(ledger, taskId);
+  ledger.append(settleWith(taskId, "settle-1", "SUCCEEDED", plantResponseReference(ledger, taskId)));
+  const path = ledger.path;
+  ledger.close();
+  return { path, taskId, effectId };
+}
+
+describe("an effect records its result by reference, with its outcome (P-07 escalón B, ADR 0098)", () => {
+  it("P-P07B-1: a SUCCEEDED with its published RESPONSE lands with the version and the pair", () => {
+    const { path, effectId } = seedSucceededWithResult();
+    const ledger = open(path);
+    expect(ledger.getEffect(effectId)).toMatchObject({
+      outcomeStatus: "SUCCEEDED",
+      outcomeContractVersion: CONTRACT_VERSION,
+      resultArtifactReferenceId: RESULT_REFERENCE,
+      resultSha256: RESULT_DIGEST,
+    });
+    expect(CONTRACT_VERSION).toBe("2.8.0");
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+  });
+
+  it("P-P07B-2: FAILED is admitted without a result and with one", () => {
+    const ledger = open(temporaryDatabase());
+    const bare = randomUUID();
+    const bareEffect = seedDelivery(ledger, bare);
+    ledger.append(settleWith(bare, "settle-1", "FAILED"));
+    expect(ledger.getEffect(bareEffect)).toMatchObject({
+      outcomeStatus: "FAILED",
+      outcomeContractVersion: CONTRACT_VERSION,
+      resultArtifactReferenceId: null,
+      resultSha256: null,
+    });
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+    const paired = seedFailedWithResult();
+    const reopened = open(paired.path);
+    expect(reopened.getEffect(paired.effectId)?.resultArtifactReferenceId).toBe("ref-response-failed");
+    expect(reopened.verifyIntegrity().ok).toBe(true);
+    reopened.close();
+  });
+
+  it("P-P07B-3: rebuilding twice gives the same rows the door wrote", () => {
+    for (const { path } of [seedSucceededWithResult(), seedFailedWithResult()]) {
+      const live = effectRows(path);
+      const rebuilt = open(path);
+      rebuilt.rebuildReadModel();
+      const once = effectRows(path);
+      rebuilt.rebuildReadModel();
+      expect(effectRows(path)).toEqual(once);
+      expect(once).toEqual(live);
+      expect(live.map((row) => row["result_sha256"])).toEqual([RESULT_DIGEST]);
+      expect(rebuilt.verifyIntegrity().ok).toBe(true);
+      rebuilt.close();
+    }
+  });
+
+  it("P-P07B-4: a SUCCEEDED of the cohort before, with no result, still rebuilds and verifies", () => {
+    const { path, effectId } = seedSucceededWithResult();
+    demoteResultCohort(path, "2.7.0");
+    const ledger = open(path);
+    ledger.rebuildReadModel();
+    expect(ledger.getEffect(effectId)).toMatchObject({
+      outcomeStatus: "SUCCEEDED",
+      outcomeContractVersion: "2.7.0",
+      resultArtifactReferenceId: null,
+      resultSha256: null,
+    });
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+  });
+
+  it("P-P07B-5: migration 22 over outcomes it finds writes each one's version from its event, and the control fails without it", () => {
+    const { path, effectId } = seedSucceededWithResult();
+    demoteResultCohort(path, "2.7.0");
+    const demoted = open(path);
+    demoted.rebuildReadModel();
+    demoted.close();
+    const control = temporaryDatabase();
+    copyFileSync(path, control);
+
+    // Rewound past 22 and reopened: the migration applies over a row that already
+    // holds an outcome, and the backfill writes its version in the same transaction.
+    withRawDatabase(path, (raw) => {
+      dropEffectResultReference(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(EFFECT_RESULT_REFERENCE_MIGRATION);
+    });
+    const migrated = open(path);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
+    expect(migrated.getEffect(effectId)?.outcomeContractVersion).toBe("2.7.0");
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+    migrated.close();
+
+    // The control of the control: the same SQL applied without the backfill leaves
+    // the version NULL on a row that holds an outcome, and the integrity replay says so.
+    withRawDatabase(control, (raw) => {
+      dropEffectResultReference(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(EFFECT_RESULT_REFERENCE_MIGRATION);
+      const twentySecond = MIGRATIONS.filter((migration) => migration.version === EFFECT_RESULT_REFERENCE_MIGRATION);
+      raw.transaction((): void => {
+        applyMigrations(raw, twentySecond, EFFECT_AT, {});
+      }).immediate();
+    });
+    const unbackfilled = open(control);
+    expect(unbackfilled.getEffect(effectId)?.outcomeContractVersion).toBeNull();
+    expect(unbackfilled.verifyIntegrity().ok).toBe(false);
+    unbackfilled.close();
+  });
+
+  it("N-P07B-1: the same outcome and pair again is a replay: the row keeps its first instant", () => {
+    const { path, taskId, effectId } = seedSucceededWithResult();
+    const ledger = open(path);
+    const first = ledger.getEffect(effectId);
+    const again = dispatchOutcome({
+      taskId,
+      transitionId: "settle-again",
+      dispatchAttemptId: "dsp-1",
+      dispatchState: "SETTLED",
+      terminalAt: EFFECT_AT,
+      effectOutcomeStatus: "SUCCEEDED",
+      resultArtifactReferenceId: RESULT_REFERENCE,
+      resultSha256: RESULT_DIGEST,
+      occurredAt: "2026-09-12T09:30:00.000Z",
+    });
+    expect(ledger.append(again).inserted).toBe(true);
+    expect(ledger.append(again).inserted).toBe(false);
+    expect(ledger.getEffect(effectId)).toEqual(first);
+    ledger.rebuildReadModel();
+    expect(ledger.getEffect(effectId)).toEqual(first);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+  });
+
+  it("N-P07B-2/3: another digest or another reference for the same outcome is refused, and nothing moves", () => {
+    const { path, taskId, effectId } = seedSucceededWithResult();
+    const ledger = open(path);
+    const before = ledger.listEvents({ limit: 1000 }).events.length;
+    // Another reference to the same bytes: registered, so only the comparison refuses it.
+    const otherReference = plantResponseReference(ledger, taskId, "ref-response-2");
+    const byReference = refusalOf(() => ledger.append(settleWith(taskId, "settle-ref", "SUCCEEDED", otherReference)));
+    expect(byReference.path).toBe("payload.outcome.resultArtifactReferenceId");
+    expect(byReference.message).toContain("already ended SUCCEEDED under another result reference");
+    // Another digest under another registered reference of this task.
+    const otherBytes = plantResponseReference(ledger, taskId, "ref-response-3", "6".repeat(64));
+    const byDigest = refusalOf(() =>
+      ledger.append(settleWith(taskId, "settle-digest", "SUCCEEDED", { ...otherBytes, resultArtifactReferenceId: RESULT_REFERENCE })),
+    );
+    // The existence check runs first: RESULT_REFERENCE holds other bytes than these.
+    expect(byDigest.path).toBe("payload.outcome.resultSha256");
+    const byDigestUnder = refusalOf(() => ledger.append(settleWith(taskId, "settle-digest-2", "SUCCEEDED", otherBytes)));
+    expect(byDigestUnder.path).toBe("payload.outcome.resultArtifactReferenceId");
+    expect(byDigestUnder.message).toContain("recorded once rather than amended");
+    expect(ledger.listEvents({ limit: 1000 }).events.length).toBe(before);
+    expect(ledger.getEffect(effectId)?.resultSha256).toBe(RESULT_DIGEST);
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+    ledger.close();
+  });
+
+  it("N-P07B-4: a SUCCEEDED of the version in force without a result is refused by name, and nothing moves", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    const before = ledger.listEvents({ limit: 1000 }).events.length;
+    const refused = refusalOf(() => ledger.append(settleWith(taskId, "settle-1", "SUCCEEDED")));
+    expect(refused.path).toBe("payload.outcome.resultArtifactReferenceId");
+    expect(refused.message).toContain("a SUCCEEDED outcome of contract version 2.8.0 names its result");
+    expect(ledger.listEvents({ limit: 1000 }).events.length).toBe(before);
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBeNull();
+    ledger.close();
+  });
+
+  it("N-P07B-6: a result on CANCELLED or OUTCOME_UNKNOWN is refused by name at the door", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedDelivery(ledger, taskId);
+    const pair = plantResponseReference(ledger, taskId);
+    for (const status of ["CANCELLED", "OUTCOME_UNKNOWN"]) {
+      const refused = refusalOf(() => ledger.append(settleWith(taskId, "settle-" + status, status, pair)));
+      expect(refused.message, status).toContain("effect outcome " + status + " carries no result");
+    }
+    ledger.close();
+  });
+
+  it("N-P07B-8: the reference must be this task's published RESPONSE, holding exactly these bytes", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    plantResponseReference(ledger, taskId);
+    const other = randomUUID();
+    plantResponseReference(ledger, other, "ref-response-other");
+    ledger.appendArtifactEvent(
+      referenceRecorded({
+        content: RESULT_DIGEST,
+        reference: referenceRecord({ artifactReferenceId: "ref-evidence", artifactClass: "EVIDENCE", scopeId: taskId }),
+      }),
+    );
+    // A publication only intended registers no reference.
+    ledger.appendArtifactEvent(publicationIntended({ content: "4".repeat(64), commandId: "cmd-intended", pinId: "pin-intended" }));
+    const before = ledger.listEvents({ limit: 1000 }).events.length;
+
+    const cases: readonly (readonly [string, Record<string, string>, string, string])[] = [
+      ["unregistered", { resultArtifactReferenceId: "ref-nobody", resultSha256: RESULT_DIGEST }, "resultArtifactReferenceId", "the registry does not hold"],
+      ["only intended", { resultArtifactReferenceId: "ref-intended", resultSha256: "4".repeat(64) }, "resultArtifactReferenceId", "the registry does not hold"],
+      ["another class", { resultArtifactReferenceId: "ref-evidence", resultSha256: RESULT_DIGEST }, "resultArtifactReferenceId", "of class EVIDENCE"],
+      ["another task", { resultArtifactReferenceId: "ref-response-other", resultSha256: RESULT_DIGEST }, "resultArtifactReferenceId", "scoped to another task"],
+      ["other bytes", { resultArtifactReferenceId: RESULT_REFERENCE, resultSha256: "6".repeat(64) }, "resultSha256", "other than the bytes its reference holds"],
+    ];
+    for (const [label, pair, key, words] of cases) {
+      const refused = refusalOf(() => ledger.append(settleWith(taskId, "settle-" + label.replace(" ", "-"), "SUCCEEDED", pair)));
+      expect(refused.path, label).toBe("payload.outcome." + key);
+      expect(refused.message, label).toContain(words);
+      // The producer's text is never echoed: neither the reference nor the digest.
+      expect(refused.message, label).not.toContain(String(pair["resultArtifactReferenceId"]));
+      expect(refused.message, label).not.toContain(String(pair["resultSha256"]));
+    }
+    expect(ledger.listEvents({ limit: 1000 }).events.length).toBe(before);
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBeNull();
+    ledger.close();
+  });
+
+  it("N-P07B-9: the base holds the cohort and the pair against raw SQL that bypasses the door", () => {
+    const { path, effectId } = seedSucceededWithResult();
+    const failed = seedFailedWithResult();
+    const failedEffect = failed.effectId;
+
+    withRawDatabase(path, (raw) => {
+      const update = (sql: string, ...values: unknown[]): (() => unknown) => () =>
+        raw.prepare("UPDATE effect_read_model SET " + sql + " WHERE effect_id = ?").run(...values, effectId);
+      // A raw strip of the pair from a 2.8.0 SUCCEEDED: the UPDATE trigger names all four columns.
+      expect(update("result_sha256 = NULL, result_artifact_reference_id = NULL")).toThrow(/required on a SUCCEEDED outcome/);
+      // A status with no version.
+      expect(update("outcome_contract_version = NULL")).toThrow(/outcome_contract_version is required/);
+      // A version of the cohort before keeping its pair.
+      expect(update("outcome_contract_version = '2.7.0'")).toThrow(/must be NULL on an outcome of contract version/);
+
+      // The INSERT path — the one a rebuild takes: a 2.8.0 SUCCEEDED with no pair.
+      const insert = (reference: string | null, digest: string | null, status: string | null = "SUCCEEDED"): (() => unknown) => () =>
+        raw
+          .prepare(
+            "INSERT INTO effect_read_model (effect_id, task_id, revision_number, attempt_number, route_segment_id, " +
+              "operation_ordinal, effect_kind, semantic_scope_key, local_operation_key, logical_operation_sha256, " +
+              "request_contract_version, request_sha256, idempotency_key, intended_at, outcome_status, " +
+              "outcome_recorded_at, outcome_contract_version, result_artifact_reference_id, result_sha256, sequence) " +
+              "SELECT ?, task_id, revision_number, attempt_number, route_segment_id, operation_ordinal + 7, " +
+              "effect_kind, semantic_scope_key, local_operation_key, ?, request_contract_version, request_sha256, ?, " +
+              "intended_at, ?, ?, ?, ?, ?, sequence FROM effect_read_model WHERE effect_id = ?",
+          )
+          .run(
+            "1".repeat(64),
+            "2".repeat(64),
+            "3".repeat(64),
+            status,
+            status === null ? null : EFFECT_AT,
+            status === null ? null : "2.8.0",
+            reference,
+            digest,
+            effectId,
+          );
+      expect(insert(null, null)).toThrow(/required on a SUCCEEDED outcome/);
+      // A pair on a row with no outcome at all: the status CHECK spells IS NOT NULL,
+      // because a CHECK whose predicate is NULL passes.
+      expect(insert(RESULT_REFERENCE, RESULT_DIGEST, null)).toThrow(
+        /CHECK constraint failed: ck_effect_read_model__result_status/,
+      );
+      // Positive control: the same INSERT with a pair is admitted, so the trigger is what refused.
+      expect(insert(RESULT_REFERENCE, RESULT_DIGEST)).not.toThrow();
+      raw.prepare("DELETE FROM effect_read_model WHERE effect_id = ?").run("1".repeat(64));
+    });
+
+    // The UPDATE form of the same hole: a pair added to a pending row.
+    const pending = open(temporaryDatabase());
+    const pendingEffect = seedDelivery(pending, randomUUID());
+    const pendingPath = pending.path;
+    pending.close();
+    withRawDatabase(pendingPath, (raw) => {
+      const addPair = (): unknown =>
+        raw
+          .prepare("UPDATE effect_read_model SET result_artifact_reference_id = ?, result_sha256 = ? WHERE effect_id = ?")
+          .run(RESULT_REFERENCE, RESULT_DIGEST, pendingEffect);
+      expect(addPair).toThrow(/CHECK constraint failed: ck_effect_read_model__result_status/);
+      // Positive control: the pending row itself is untouched and lawful.
+      expect(
+        raw.prepare("SELECT outcome_status, result_sha256 FROM effect_read_model WHERE effect_id = ?").get(pendingEffect),
+      ).toEqual({ outcome_status: null, result_sha256: null });
+    });
+
+    withRawDatabase(failed.path, (raw) => {
+      const onFailed = (sql: string): (() => unknown) => () =>
+        raw.prepare("UPDATE effect_read_model SET " + sql + " WHERE effect_id = ?").run(failedEffect);
+      // Half a pair on a FAILED, where no trigger statement applies: the CHECK bites.
+      expect(onFailed("result_sha256 = NULL")).toThrow(/CHECK constraint failed: ck_effect_read_model__result_pair/);
+      // A pair on CANCELLED.
+      expect(onFailed("outcome_status = 'CANCELLED'")).toThrow(/CHECK constraint failed: ck_effect_read_model__result_status/);
+      // A digest of another shape.
+      expect(onFailed("result_sha256 = '" + "Z".repeat(64) + "'")).toThrow(/CHECK constraint failed: ck_effect_read_model__result_sha256_shape/);
+      // The declared cost: the base checks presence, not existence. A reference no
+      // one registered is admitted past the door; the door is what refuses it.
+      expect(onFailed("result_artifact_reference_id = 'ref-never-registered'")).not.toThrow();
+    });
+  });
+
+  it("N-P07B-10: the rewind order is the one SQLite admits, and 22 re-applies to the rows the events say", () => {
+    const { path } = seedSucceededWithResult();
+    withRawDatabase(path, (raw) => {
+      // A column a trigger names cannot be dropped first.
+      expect(() => raw.exec("ALTER TABLE effect_read_model DROP COLUMN result_sha256")).toThrow();
+      raw.exec(
+        "DROP TRIGGER tr_effect_read_model__validate_result_on_update; " +
+          "DROP TRIGGER tr_effect_read_model__validate_result_on_insert;",
+      );
+      // The reference column is named by the digest column's CHECK.
+      expect(() => raw.exec("ALTER TABLE effect_read_model DROP COLUMN result_artifact_reference_id")).toThrow();
+    });
+    const again = temporaryDatabase();
+    copyFileSync(seedSucceededWithResult().path, again);
+    withRawDatabase(again, (raw) => {
+      dropEffectResultReference(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(EFFECT_RESULT_REFERENCE_MIGRATION);
+    });
+    const reopened = open(again);
+    expect(reopened.status().migrations.at(-1)?.version).toBe(EFFECT_RESULT_REFERENCE_MIGRATION);
+    // A 2.8.0 SUCCEEDED gets its version AND its pair back from its own event,
+    // so the rows equal what the fold computes and the replay agrees.
+    expect(effectRows(again).map((row) => [row["outcome_contract_version"], row["result_sha256"]])).toEqual([
+      [CONTRACT_VERSION, RESULT_DIGEST],
+    ]);
+    expect(reopened.verifyIntegrity().problems).toEqual([]);
+    reopened.close();
+  });
+
+  it("N-P07B-11: an outcome stamped 2.7.0 is refused by the door as stale", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedDelivery(ledger, taskId);
+    const stale = refusalOf(() => ledger.append({ ...settleWith(taskId, "settle-1", "FAILED"), contractVersion: "2.7.0" }));
+    expect(stale.path).toBe("contractVersion");
+    expect(stale.message).toContain("2.8.0");
+    ledger.close();
   });
 });

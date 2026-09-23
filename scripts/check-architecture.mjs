@@ -10859,6 +10859,68 @@ const P07A_WRITE_SET = [
   "docs/audit/implementation/packets/index.md",
 ];
 
+/**
+ * P-07 escalón B: the ledger records an effect's result by reference, with its
+ * outcome; SUCCEEDED requires it (contratos §4.2, datos §11 step 7, ADR 0098).
+ *
+ * **What lands.** Migration 22 `effect_result_reference`: three nullable columns on
+ * `effect_read_model` -- `outcome_contract_version`, `result_artifact_reference_id`,
+ * `result_sha256` -- with named CHECKs for the version-independent row law, and two
+ * triggers (`BEFORE INSERT`, `BEFORE UPDATE OF` the four columns) for the cohort,
+ * keyed on a closed list of the six versions before; an `afterSql` backfill writes
+ * each recorded outcome's version (and pair) from its own event through
+ * `dispatchOutcomeRecord`. The reader reads the pair present-invalid and refuses a
+ * pair on CANCELLED/OUTCOME_UNKNOWN, a pair on the cohort before and a SUCCEEDED of a
+ * later version without one; the door checks the reference is this task's
+ * registered RESPONSE holding exactly the digest; `effectOutcomeArrival` is the one
+ * replay/conflict comparison, on the status and the pair, for the door and the fold.
+ *
+ * **The bump, and its measured drag.** `CONTRACT_VERSION` 2.7.0 -> 2.8.0, for a
+ * cohort (ADR 0084 Two's reason). The three envelope-identity vectors recomputed
+ * twice (by `envelopeSha256` and by `node:crypto` over the preimage).
+ * `LEDGER_CONTRACT_VERSION` moves by alias; one literal pin. Every SUCCEEDED a test
+ * appends at the version in force now names a planted RESPONSE reference.
+ *
+ * **Pins that move.** `CONTRACT_VERSION` 2.7.0 -> 2.8.0; `SUPPORTED_CONTRACT_VERSIONS`
+ * 6 -> 7; `MIGRATIONS` 21 -> 22; `EXPECTED_SCHEMA_OBJECTS` +2 triggers (`tr_` 9 ->
+ * 11); three envelope-identity vectors; `LEDGER_CONTRACT_VERSION`, by alias; the ADR
+ * corpus 97 -> 98; the decision register 107 -> 109. L-P07A-1 is amended IN ITS OWN
+ * ROW: `ledger/src/projection/index.ts` is admitted for `RESULT_STATUSES` alone.
+ *
+ * **Pins that do NOT move.** `API_CONTRACT_VERSION` 0.18.0; `CONTROL_PLANE_EVENT_TYPES`
+ * 35; `PROJECTION_NAMES` 16, `PROJECTION_SOURCES` 26 and `DERIVED_TABLES`;
+ * `PROJECTOR_VERSION` 1; `PATH_SCOPED_LAWS` 147 (the amendment adds no row);
+ * `CONTRACTS_SCHEMA_EXPORTS` 160; every `*_PUBLIC_EXPORTS` (the ledger barrel gains no
+ * name); L-P06A-1, L-P06C-1 and L-P06C-2.
+ *
+ * **Twenty-three paths; one is new to the fence** -- ADR 0098.
+ */
+const P07B_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/projection/types/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/envelope-identity/index.test.ts",
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "docs/audit/architecture/database/execution/index.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0098-an-effect-records-its-result-by-reference-with-its-outcome.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11087,6 +11149,7 @@ const WRITE_SET = [
   ...P06C_WRITE_SET,
   ...P06CORR_WRITE_SET,
   ...P07A_WRITE_SET,
+  ...P07B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -27157,12 +27220,38 @@ const CONTENT_CONTRACT_CALLERS = [
 //
 // The path match is anchored on a quote and a `/` before `result/`, so a
 // `tool-result/index.js`-style path does not bite.
+//
+// AMENDED by P-07 escalón B (ADR 0098), in this row: the ledger's outcome grammar
+// reads the two result-bearing statuses from the contract, never a copy. So
+// `ledger/src/projection/index.ts` joins the sites below -- and the admission is ONE
+// NAME wide: for that file the law still fails on any other result-contract name and
+// on an import of the module's path, a separate check inside this same block so the
+// admission cannot widen silently. Same row, same `requireScope`: `PATH_SCOPED_LAWS`
+// does not move.
 const RESULT_CONTRACT_SITES = [
   "packages/kernel/contracts/src/schemas/result/index.ts",
   "packages/kernel/contracts/src/schemas/result/types/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
 ];
+const RESULT_STATUS_READER = "packages/persistence/ledger/src/projection/index.ts";
 {
   let resultScanned = 0;
+  {
+    const code = stripComments(readIfPresent(RESULT_STATUS_READER) ?? "");
+    if (!/\bRESULT_STATUSES\b/.test(code)) {
+      fail(RESULT_STATUS_READER + " no longer reads RESULT_STATUSES; its admission to L-P07A-1 is stale");
+    }
+    if (
+      /["'](?:[^"'\n]*\/)?result\/index\.js["']/.test(code) ||
+      /\b(?:ResultContractSchema|ResultContract|RESULT_CONTRACT_VERSION|RESULT_REFUSALS)\b/.test(code)
+    ) {
+      fail(
+        RESULT_STATUS_READER +
+          " is admitted to the result contract for RESULT_STATUSES alone, and names more of it; the outcome" +
+          " grammar reads the two result-bearing statuses and nothing else",
+      );
+    }
+  }
   if (tracked.status === 0) {
     const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
     for (const relativePath of present) {
@@ -27180,8 +27269,9 @@ const RESULT_CONTRACT_SITES = [
       ) {
         fail(
           relativePath +
-            " names the result contract; it is exported by the contracts barrels and consumed by nothing yet," +
-            " because no door records a result until escalon B and no assembler builds one until D",
+            " names the result contract; it is exported by the contracts barrels and read by one grammar only --" +
+            " escalon B's door records a result by reference, the ledger's outcome grammar alone names its" +
+            " statuses, and no assembler builds one until D",
         );
       }
     }
@@ -27190,7 +27280,11 @@ const RESULT_CONTRACT_SITES = [
     "the result contract is named by its own concept and the contracts barrels, and by nothing else",
     resultScanned,
   );
-  notes.push("no production source outside the result concept and the contracts barrels names the result contract");
+  notes.push(
+    "no production source outside the result concept and the contracts barrels names the result contract, and " +
+      RESULT_STATUS_READER +
+      " is admitted for RESULT_STATUSES alone",
+  );
 }
 
 // L-P06C-1 -- a content block reaches no record, not even as a digest (P-06/C,

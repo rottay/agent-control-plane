@@ -597,6 +597,13 @@ export interface ExecutionRouteSegmentReadModel {
  * `outcomeStatus` and `outcomeRecordedAt` are `null` together until a real
  * outcome is recorded. The pair is never half written, and `null` is not
  * `OUTCOME_UNKNOWN`.
+ *
+ * `outcomeContractVersion` is the contract version of the event that recorded
+ * the outcome, `null` exactly when `outcomeStatus` is (P-07 escalón B, migration
+ * 22). The result pair is `null`/`null` without a result — no outcome,
+ * `CANCELLED`, `OUTCOME_UNKNOWN`, a `FAILED` that named none, or a `SUCCEEDED`
+ * of the cohort before — and otherwise names the registered `RESPONSE` artifact
+ * and its conserved digest.
  */
 export interface EffectReadModel {
   readonly effectId: string;
@@ -616,6 +623,9 @@ export interface EffectReadModel {
   readonly intendedAt: string;
   readonly outcomeStatus: EffectOutcomeStatus | null;
   readonly outcomeRecordedAt: string | null;
+  readonly outcomeContractVersion: string | null;
+  readonly resultArtifactReferenceId: string | null;
+  readonly resultSha256: string | null;
   readonly sequence: number;
 }
 

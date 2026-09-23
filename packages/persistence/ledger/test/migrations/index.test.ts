@@ -8,6 +8,7 @@ import {
   ENCRYPTION_STATUSES,
   PIN_HOLDER_KINDS,
   REFERENCE_SCOPE_KINDS,
+  RESULT_STATUSES,
   RETENTION_CLASSES,
 } from "@acp/contracts";
 
@@ -48,10 +49,14 @@ import {
   USAGE_SETTLEMENT_SOURCE_HEAD_PROJECTION,
   PRICE_INTERVAL_CATALOG_MIGRATION,
   PRICE_INTERVAL_PROJECTION,
+  EFFECT_RESULT_REFERENCE_MIGRATION,
   TASK_STREAM,
   checkMigrationConformance,
 } from "../../src/migrations/index.js";
-import { PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS } from "../../src/projection/index.js";
+import {
+  PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS,
+  PRE_RESULT_REFERENCE_CONTRACT_VERSIONS,
+} from "../../src/projection/index.js";
 import { DOCUMENT_KINDS } from "../../src/types/index.js";
 import type { AppliedMigration } from "../../src/types/index.js";
 import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
@@ -191,7 +196,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -215,6 +220,7 @@ describe("migration 7 appends the watermark table without touching the applied s
       "task_submission",
       "usage_capture",
       "price_interval_catalog",
+      "effect_result_reference",
     ]);
   });
 
@@ -446,7 +452,7 @@ describe("migration 8 types causality without touching the applied seven", () =>
     expect(EIGHTH?.sql ?? "").not.toContain("validate_v2_coordinate");
   });
 
-  it("inventories every trigger named by the §3.2 convention, and there are nine", () => {
+  it("inventories every trigger named by the §3.2 convention, and there are eleven", () => {
     // Without the inventory, dropping a trigger would leave `schema_migrations`
     // untouched and no check would notice. Migration 9 recreates the first two
     // under the same names, so the inventory does not move for them; the other
@@ -474,6 +480,11 @@ describe("migration 8 types causality without touching the applied seven", () =>
       // insert for the reason the one above is — SQLite cannot add a CHECK to
       // an applied table, and migration 16 adds a column to one.
       { type: "trigger", name: "tr_task_revision_read_model__validate_envelope_reference" },
+      // P-07 escalón B: the result cohort's pair, one per path a row arrives by —
+      // the rebuild inserts a row that already holds its outcome, and the door
+      // updates one (ADR 0098).
+      { type: "trigger", name: "tr_effect_read_model__validate_result_on_insert" },
+      { type: "trigger", name: "tr_effect_read_model__validate_result_on_update" },
     ]);
     // And the legacy prefix still names exactly the three streams that coined
     // it, so the rename did not quietly move one of theirs.
@@ -534,7 +545,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
     ]);
   });
 
@@ -978,7 +989,8 @@ describe("migration 12 adds the attempt's own record without touching the applie
     // the ninth is migration 16's, which is another table's rule.
     expect(statements).not.toContain("CREATE TRIGGER");
     const triggers = EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"));
-    expect(triggers).toHaveLength(9);
+    // Nine until migration 22 added its two (P-07 escalón B).
+    expect(triggers).toHaveLength(11);
     expect(triggers.filter((object) => object.name.startsWith("tr_task_attempt"))).toEqual([]);
   });
 
@@ -1058,8 +1070,9 @@ describe("migration 14 adds the occurrences without touching the applied thirtee
     // No trigger: every rule of §8 that one row can carry is a CHECK, and the
     // equality between a prompt and its delivery is the fold's and the door's.
     expect(statements).not.toContain("CREATE TRIGGER");
-    // Eight when this migration landed; migration 16 adds the ninth.
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
+    // Eight when this migration landed; migration 16 adds the ninth, and
+    // migration 22 the tenth and eleventh.
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(11);
   });
 
   it("names both tables' constraints by the §3.2 convention, and §8's pair verbatim", () => {
@@ -1478,8 +1491,9 @@ describe("migration 15 rebuilds the registry stream and adds the artifact plane"
       { type: "index", name: "ux_artifact_pin_read_model__content_sha256_holder__live" },
       { type: "table", name: "artifact_tombstone_read_model" },
     ]);
-    // Eight when this migration landed; the ninth is migration 16's.
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
+    // Eight when this migration landed; the ninth is migration 16's, the tenth
+    // and eleventh migration 22's.
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(11);
     expect(statements).not.toMatch(/CREATE TRIGGER tr_artifact/);
   });
 });
@@ -1512,8 +1526,8 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
     );
     // Sixteen when this migration landed; the seventeenth is P-14 A's, the
     // eighteenth P-14 B's, the nineteenth P-14 C's, the twentieth P-32/captura B's
-    // and the twenty-first P-33/catálogo A's.
-    expect(MIGRATIONS).toHaveLength(21);
+    // the twenty-first P-33/catálogo A's and the twenty-second P-07 B's.
+    expect(MIGRATIONS).toHaveLength(22);
     expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION]?.name).toBe("model_version_registry");
   });
 
@@ -1558,7 +1572,7 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
       type: "trigger",
       name: "tr_task_revision_read_model__validate_envelope_reference",
     });
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(11);
   });
 
   it("freezes the cohort as a closed list, spelled as the fold spells it, and never compares versions", () => {
@@ -1610,8 +1624,8 @@ describe("migration 17 folds the model version registry from the registry stream
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION - 1]?.name).toBe("model_version_registry");
     // Seventeen when this migration landed; the eighteenth is P-14 B's, the
     // nineteenth P-14 C's, the twentieth P-32/captura B's and the twenty-first
-    // P-33/catálogo A's.
-    expect(MIGRATIONS).toHaveLength(21);
+    // P-33/catálogo A's, and the twenty-second P-07 B's.
+    expect(MIGRATIONS).toHaveLength(22);
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION]?.name).toBe("initiative_registration_detail");
   });
 
@@ -1707,7 +1721,7 @@ describe("migration 17 folds the model version registry from the registry stream
       { type: "table", name: "model_version_transport" },
       { type: "index", name: "ux_model_version_transport__transport" },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(11);
   });
 });
 
@@ -1734,8 +1748,9 @@ describe("migration 18 adds the initiative projection's three columns and nothin
     expect(INITIATIVE_REGISTRATION_MIGRATION).toBe(18);
     expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION - 1]?.name).toBe("initiative_registration_detail");
     // Eighteen when this migration landed; the nineteenth is P-14 C's, the
-    // twentieth P-32/captura B's and the twenty-first P-33/catálogo A's.
-    expect(MIGRATIONS).toHaveLength(21);
+    // twentieth P-32/captura B's, the twenty-first P-33/catálogo A's and the
+    // twenty-second P-07 B's.
+    expect(MIGRATIONS).toHaveLength(22);
     expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION]?.name).toBe("task_submission");
   });
 
@@ -1784,8 +1799,8 @@ describe("migration 19 gives a task's client key its one home", () => {
     expect(TASK_SUBMISSION_MIGRATION).toBe(19);
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION - 1]?.name).toBe("task_submission");
     // Nineteen when this migration landed; the twentieth is P-32/captura B's and
-    // the twenty-first P-33/catálogo A's.
-    expect(MIGRATIONS).toHaveLength(21);
+    // the twenty-first P-33/catálogo A's, and the twenty-second P-07 B's.
+    expect(MIGRATIONS).toHaveLength(22);
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION]?.name).toBe("usage_capture");
   });
 
@@ -1860,8 +1875,9 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
     expect(TWENTIETH?.name).toBe("usage_capture");
     expect(USAGE_CAPTURE_MIGRATION).toBe(20);
     expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION - 1]?.name).toBe("usage_capture");
-    // Twenty when this migration landed; the twenty-first is P-33/catálogo A's.
-    expect(MIGRATIONS).toHaveLength(21);
+    // Twenty when this migration landed; the twenty-first is P-33/catálogo A's
+    // and the twenty-second P-07 B's.
+    expect(MIGRATIONS).toHaveLength(22);
     expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION]?.name).toBe("price_interval_catalog");
   });
 
@@ -1990,7 +2006,7 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
       { type: "table", name: "usage_settlement_source_head_read_model" },
       { type: "table", name: "usage_settlement_observation_read_model" },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(11);
   });
 });
 
@@ -2011,12 +2027,13 @@ describe("migration 21 gives a price catalog version its one table", () => {
     .filter((line) => !line.trimStart().startsWith("--"))
     .join("\n");
 
-  it("sits at the tail of a set whose order is fixed", () => {
+  it("sits at the position a set whose order is fixed gave it", () => {
     expect(TWENTY_FIRST?.version).toBe(21);
     expect(TWENTY_FIRST?.name).toBe("price_interval_catalog");
     expect(PRICE_INTERVAL_CATALOG_MIGRATION).toBe(21);
     expect(MIGRATIONS[PRICE_INTERVAL_CATALOG_MIGRATION - 1]?.name).toBe("price_interval_catalog");
-    expect(MIGRATIONS).toHaveLength(21);
+    // Twenty-one when this migration landed; the twenty-second is P-07 B's.
+    expect(MIGRATIONS).toHaveLength(22);
   });
 
   it("H-1: creates economy's table under economy's name, STRICT, and nothing else is created, altered or dropped", () => {
@@ -2095,8 +2112,89 @@ describe("migration 21 gives a price catalog version its one table", () => {
     expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("price_"))).toEqual([
       { type: "table", name: PRICE_INTERVAL_PROJECTION },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(9);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(11);
     // No kind is added: the stream has carried PRICE_TABLE since migration 9.
     expect(DOCUMENT_KINDS).toContain("PRICE_TABLE");
+  });
+});
+
+/**
+ * Migration 22, the effect's result reference by cohort (P-07 escalón B, ADR 0098).
+ *
+ * The text: three nullable columns added in place with their named CHECKs, two
+ * triggers with one body, and nothing created, dropped, updated or seeded.
+ * `test/ledger` asserts what the door, the fold, the rebuild, the backfill and the
+ * base do with it.
+ */
+describe("migration 22 names an effect's result by reference, with its outcome, by cohort", () => {
+  const TWENTY_SECOND = MIGRATIONS[21];
+
+  const statements = (TWENTY_SECOND?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+
+  it("sits at the tail of a set whose order is fixed", () => {
+    expect(TWENTY_SECOND?.version).toBe(22);
+    expect(TWENTY_SECOND?.name).toBe("effect_result_reference");
+    expect(EFFECT_RESULT_REFERENCE_MIGRATION).toBe(22);
+    expect(MIGRATIONS[EFFECT_RESULT_REFERENCE_MIGRATION - 1]?.name).toBe("effect_result_reference");
+    expect(MIGRATIONS).toHaveLength(22);
+  });
+
+  it("adds three columns in place and two triggers, and creates, drops, updates and seeds nothing else", () => {
+    expect([...statements.matchAll(/ALTER TABLE (\w+) ADD COLUMN (\w+) TEXT/g)].map((match) => [match[1], match[2]])).toEqual([
+      ["effect_read_model", "outcome_contract_version"],
+      ["effect_read_model", "result_artifact_reference_id"],
+      ["effect_read_model", "result_sha256"],
+    ]);
+    expect([...statements.matchAll(/CREATE TRIGGER (\w+)/g)].map((match) => match[1])).toEqual([
+      "tr_effect_read_model__validate_result_on_insert",
+      "tr_effect_read_model__validate_result_on_update",
+    ]);
+    expect(statements).not.toMatch(/CREATE TABLE|CREATE INDEX|DROP |^\s*UPDATE |INSERT INTO|ON CONFLICT/m);
+    expect(TWENTY_SECOND?.sql ?? "").not.toContain("projection_watermark");
+  });
+
+  it("names every CHECK and trigger by the §3.2 convention, and the triggers share one body", () => {
+    for (const name of [
+      "ck_effect_read_model__outcome_contract_version",
+      "ck_effect_read_model__result_artifact_reference_id",
+      "ck_effect_read_model__result_sha256_shape",
+      "ck_effect_read_model__result_pair",
+      "ck_effect_read_model__result_status",
+    ]) {
+      expect(statements, name).toContain("CONSTRAINT " + name + "\n");
+    }
+    // IS NOT NULL is load-bearing: a CHECK whose predicate is NULL passes, and
+    // `NULL IN (...)` is NULL, so without it a pair would land on a row with no outcome.
+    expect(statements).toContain(
+      "CHECK (result_sha256 IS NULL\n      OR (outcome_status IS NOT NULL AND outcome_status IN ('SUCCEEDED', 'FAILED')))",
+    );
+    expect(statements).toContain("BEFORE INSERT ON effect_read_model");
+    expect(statements).toContain(
+      "BEFORE UPDATE OF outcome_status, outcome_contract_version, result_artifact_reference_id, result_sha256",
+    );
+    const bodies = [...statements.matchAll(/BEGIN\n([\s\S]*?)\nEND;/g)].map((match) => match[1]);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toBe(bodies[1]);
+  });
+
+  it("spells the cohort before as the fold does, a closed list and never a comparison", () => {
+    const lists = [...statements.matchAll(/(?:NOT )?IN \(('2\.[^)]*)\)/g)].map((match) =>
+      (match[1] ?? "").split(", ").map((version) => version.replaceAll("'", "")),
+    );
+    // Two statements per trigger name the cohort, and both triggers carry them.
+    expect(lists).toHaveLength(4);
+    for (const list of lists) expect(list).toEqual([...PRE_RESULT_REFERENCE_CONTRACT_VERSIONS]);
+    expect(PRE_RESULT_REFERENCE_CONTRACT_VERSIONS).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0"]);
+    expect(statements).not.toMatch(/contract_version\s*[<>]/);
+  });
+
+  it("holds the statuses that may carry a result equal to the result contract's own", () => {
+    // Migration text cannot import, so this is the one restatement, forced by
+    // migration immutability; the suite holds it equal to the contract (ADR 0098).
+    const listed = /outcome_status IN \(([^)]*)\)\)/.exec(statements)?.[1] ?? "";
+    expect(listed.split(", ").map((word) => word.replaceAll("'", ""))).toEqual([...RESULT_STATUSES]);
   });
 });

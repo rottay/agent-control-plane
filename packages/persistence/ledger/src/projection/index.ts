@@ -1,5 +1,6 @@
 import {
   ARTIFACT_EVENT_KINDS,
+  RESULT_STATUSES,
   ResolvedRoute,
   RoadmapVersion,
   TERMINAL_STATES,
@@ -64,6 +65,7 @@ import type {
   CausationRef,
   DispatchAttemptReadModel,
   DispatchState,
+  EffectOutcomeStatus,
   EffectReadModel,
   ExecutionRouteSegmentReadModel,
   ExecutionRouteReadModel,
@@ -121,6 +123,7 @@ import {
 import type {
   DispatchOutcomeReading,
   DispatchOutcomeRecord,
+  EffectOutcomeArrival,
   OccurrenceOwner,
   OccurrenceReading,
   OccurrenceRefusal,
@@ -140,6 +143,7 @@ import type {
 export type {
   DispatchOutcomeReading,
   DispatchOutcomeRecord,
+  EffectOutcomeArrival,
   OccurrenceOwner,
   OccurrenceReading,
   OccurrenceRefusal,
@@ -236,6 +240,27 @@ export const PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS: readonly string[] = [
   "2.3.0",
   "2.4.0",
 ];
+
+/**
+ * The contract versions whose outcomes carry no result (P-07 escalón B, ADR 0098).
+ *
+ * `PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS`' rule, for migration 22: a closed list
+ * of every version a build before that migration could stamp, spelled identically
+ * in its two triggers, never a comparison of version strings. An outcome of one of
+ * these six names no result; a `SUCCEEDED` of any later version names one.
+ */
+export const PRE_RESULT_REFERENCE_CONTRACT_VERSIONS: readonly string[] = [
+  "2.2.0",
+  "2.3.0",
+  "2.4.0",
+  "2.5.0",
+  "2.6.0",
+  "2.7.0",
+];
+
+/** The two keys inside `payload.outcome` that name an effect's result (ADR 0098). */
+export const RESULT_ARTIFACT_REFERENCE_KEY = "resultArtifactReferenceId";
+export const RESULT_SHA256_KEY = "resultSha256";
 
 /**
  * The two payload keys only an attempt's opening may state (P-18/protocolo B).
@@ -1448,6 +1473,9 @@ export function nextEffectProjection(
     intendedAt: event.occurredAt,
     outcomeStatus: null,
     outcomeRecordedAt: null,
+    outcomeContractVersion: null,
+    resultArtifactReferenceId: null,
+    resultSha256: null,
     sequence,
   };
 }
@@ -1597,6 +1625,9 @@ export function dispatchOutcomeRecord(
     };
   }
 
+  const result = resultPairReading(record, effectOutcomeStatus, event.contractVersion);
+  if (result.kind === "refused") return result;
+
   return {
     kind: "record",
     record: {
@@ -1607,10 +1638,155 @@ export function dispatchOutcomeRecord(
       externalHandle: recordText(record, "externalHandle"),
       providerIdempotencyKey: recordText(record, "providerIdempotencyKey"),
       effectOutcomeStatus,
+      resultArtifactReferenceId: result.referenceId,
+      resultSha256: result.sha256,
       recordedAt: event.occurredAt,
       sequence,
     },
   };
+}
+
+/**
+ * The result pair of one resolution, read present-invalid (P-07 escalón B,
+ * ADR 0098; decision 56's rule for the two new keys).
+ *
+ * In order, each refusal at its own path and never echoing the value:
+ *
+ * 1. a key present with a value that is not non-empty text — or, for the digest,
+ *    not 64 lowercase hex — is refused rather than read as absent;
+ * 2. half a pair is refused at the key that is missing;
+ * 3. a pair with no outcome status is refused: a result is recorded with the
+ *    effect's outcome, in the same event;
+ * 4. a pair on `CANCELLED` or `OUTCOME_UNKNOWN` is refused by name: a result
+ *    exists only for the two statuses the result contract names (contracts §4.2);
+ * 5. a pair on a version of the cohort before is refused: no build of that
+ *    contract produced one;
+ * 6. a `SUCCEEDED` of a later version without a pair is refused by name.
+ *
+ * `FAILED` is admitted with a pair or without one.
+ */
+function resultPairReading(
+  record: Record<string, unknown>,
+  effectOutcomeStatus: EffectOutcomeStatus | null,
+  contractVersion: string,
+):
+  | { readonly kind: "pair"; readonly referenceId: string | null; readonly sha256: string | null }
+  | { readonly kind: "refused"; readonly path: string; readonly message: string } {
+  const at = (key: string): string => "payload." + OUTCOME_KEY + "." + key;
+  const rawReference = record[RESULT_ARTIFACT_REFERENCE_KEY];
+  const rawSha256 = record[RESULT_SHA256_KEY];
+  const referenceId = recordText(record, RESULT_ARTIFACT_REFERENCE_KEY);
+  if (rawReference !== undefined && referenceId === null) {
+    return {
+      kind: "refused",
+      path: at(RESULT_ARTIFACT_REFERENCE_KEY),
+      message:
+        RESULT_ARTIFACT_REFERENCE_KEY +
+        ", when present, is non-empty text; this event says " +
+        shownValue(rawReference) +
+        ", and a value that is not one is refused rather than read as absent",
+    };
+  }
+  const sha256 = typeof rawSha256 === "string" && SHA256_HEX_PATTERN.test(rawSha256) ? rawSha256 : null;
+  if (rawSha256 !== undefined && sha256 === null) {
+    return {
+      kind: "refused",
+      path: at(RESULT_SHA256_KEY),
+      message:
+        RESULT_SHA256_KEY +
+        ", when present, is 64 lowercase hex characters; this event says " +
+        (typeof rawSha256 === "string" && rawSha256.length > 0 ? "text of another shape" : shownValue(rawSha256)) +
+        ", and a value that is not one is refused rather than read as absent",
+    };
+  }
+  if ((referenceId === null) !== (sha256 === null)) {
+    const missing = referenceId === null ? RESULT_ARTIFACT_REFERENCE_KEY : RESULT_SHA256_KEY;
+    return {
+      kind: "refused",
+      path: at(missing),
+      message:
+        "a result is named by its artifact reference and its digest together, and this event carries one without the other",
+    };
+  }
+  const paired = referenceId !== null;
+  if (paired && effectOutcomeStatus === null) {
+    return {
+      kind: "refused",
+      path: at(RESULT_ARTIFACT_REFERENCE_KEY),
+      message: "a result is recorded with the effect's outcome, and this event names a result and no outcome",
+    };
+  }
+  if (paired && effectOutcomeStatus !== null && !(RESULT_STATUSES as readonly string[]).includes(effectOutcomeStatus)) {
+    return {
+      kind: "refused",
+      path: at(RESULT_ARTIFACT_REFERENCE_KEY),
+      message:
+        "effect outcome " +
+        effectOutcomeStatus +
+        " carries no result; a result is recorded with " +
+        RESULT_STATUSES.join(" or ") +
+        " (contracts §4.2, §10)",
+    };
+  }
+  const priorCohort = PRE_RESULT_REFERENCE_CONTRACT_VERSIONS.includes(contractVersion);
+  if (paired && priorCohort) {
+    return {
+      kind: "refused",
+      path: at(RESULT_ARTIFACT_REFERENCE_KEY),
+      message:
+        "an outcome of contract version " +
+        contractVersion +
+        " names no result, because no build of that contract recorded one (migration 22)",
+    };
+  }
+  if (!paired && effectOutcomeStatus === "SUCCEEDED" && !priorCohort) {
+    return {
+      kind: "refused",
+      path: at(RESULT_ARTIFACT_REFERENCE_KEY),
+      message:
+        "a SUCCEEDED outcome of contract version " +
+        contractVersion +
+        " names its result by artifact reference and digest (contracts §4.2), and this payload names none",
+    };
+  }
+  return { kind: "pair", referenceId, sha256 };
+}
+
+/**
+ * What an arriving outcome is to the effect row it names: the one comparison the
+ * append door and the fold both ask (P-07 escalón B, ADR 0098; ADR 0084 Five).
+ *
+ * The pair is compared with the status, so the same status under another digest
+ * or another reference is a conflict, not a replay. A row of the cohort before,
+ * holding no pair, meeting an arrival with one is refused too: C2 of the P-07
+ * adjudication decides every combination that is not identical as a conflict. An
+ * outcome is recorded once, and a second answer to the same question is neither
+ * written nor silently dropped.
+ */
+export function effectOutcomeArrival(
+  stored: EffectReadModel,
+  arriving: DispatchOutcomeRecord,
+): EffectOutcomeArrival {
+  const ended = stored.outcomeStatus;
+  if (ended === null) return { kind: "write" };
+  const refused = (key: string, what: string): EffectOutcomeArrival => ({
+    kind: "refused",
+    path: "payload." + OUTCOME_KEY + "." + key,
+    message:
+      "effect " +
+      stored.effectId +
+      " already ended " +
+      ended +
+      what +
+      ", and an outcome is recorded once rather than amended; this event says " +
+      String(arriving.effectOutcomeStatus),
+  });
+  if (ended !== arriving.effectOutcomeStatus) return refused("effectOutcomeStatus", "");
+  if (stored.resultArtifactReferenceId !== arriving.resultArtifactReferenceId) {
+    return refused(RESULT_ARTIFACT_REFERENCE_KEY, " under another result reference");
+  }
+  if (stored.resultSha256 !== arriving.resultSha256) return refused(RESULT_SHA256_KEY, " under another result digest");
+  return { kind: "replay" };
 }
 
 /**
@@ -3562,31 +3738,22 @@ export function applyEventToSnapshot(
     }
 
     if (outcome.effectOutcomeStatus !== null) {
-      if (
-        owner.outcomeStatus !== null &&
-        owner.outcomeStatus !== outcome.effectOutcomeStatus
-      ) {
-        // §6 `:252`: an outcome is recorded, not amended. A terminal one is
-        // reused and an uncertain one demands reconciliation — neither is
-        // overwritten by a second answer to the same question.
-        throw new LedgerValidationError([
-          {
-            path: "payload." + OUTCOME_KEY + ".effectOutcomeStatus",
-            message:
-              "effect " +
-              current.effectId +
-              " already ended " +
-              owner.outcomeStatus +
-              ", and an outcome is recorded once; this event says " +
-              outcome.effectOutcomeStatus,
-          },
-        ]);
+      // §6 `:252`: an outcome is recorded, not amended. A terminal one is
+      // reused and an uncertain one demands reconciliation — neither is
+      // overwritten by a second answer to the same question. The comparison,
+      // result pair included, is the door's own (ADR 0098).
+      const arrival = effectOutcomeArrival(owner, outcome);
+      if (arrival.kind === "refused") {
+        throw new LedgerValidationError([{ path: arrival.path, message: arrival.message }]);
       }
-      if (owner.outcomeStatus === null) {
+      if (arrival.kind === "write") {
         snapshot.effects.set(current.effectId, {
           ...owner,
           outcomeStatus: outcome.effectOutcomeStatus,
           outcomeRecordedAt: outcome.recordedAt,
+          outcomeContractVersion: event.contractVersion,
+          resultArtifactReferenceId: outcome.resultArtifactReferenceId,
+          resultSha256: outcome.resultSha256,
         });
       }
     }

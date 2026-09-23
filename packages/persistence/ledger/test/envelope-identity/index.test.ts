@@ -97,8 +97,14 @@ function fixtureContent(text: string): Record<string, unknown> {
  * declared — and for no other: the usage types B adds are task events, never
  * fields of the envelope, and the schema, the prefix and the encoding did not
  * move. Computed twice, the same two ways, and the two agree on all three.
+ *
+ * P-07 escalón B moved the version to `"2.8.0"` (ADR 0098), for the result cohort
+ * of migration 22, and the three vectors moved with it once more — and for no other
+ * reason: the result pair is a key of an outcome's payload, never a field of the
+ * envelope. Recomputed twice, by `envelopeSha256` and by `node:crypto` over the
+ * preimage, and the two agree on all three.
  */
-const CONTRACT = "2.7.0";
+const CONTRACT = "2.8.0";
 const ISSUER = "kimi/k3/coordinator/01";
 const AT = "2026-09-11T09:00:00.000Z";
 const TASK_ID = "6f1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d";
@@ -476,10 +482,10 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
     // encoding changes while staying internally consistent — every other test
     // here would compute the new bytes the new way and agree with itself.
     const vectors: readonly (readonly [Record<string, unknown>, string])[] = [
-      [envelope(), "f3720698721d0603bcf0a39529f3e1ff95f8f2e50b0979c817b0cb0243756a93"],
+      [envelope(), "70d265f1a4faccef67ad42fed334d81ee11cae7528a96bbfe3ea7075ad216659"],
       [
         withObjective("Delete the production ledger."),
-        "a9c358e4be82866424f777279ee61f4a28c8c6545865446a44f3cf4bf637f1c8",
+        "2b58cc006a94b547a0556f0a31a119678d5f84d0df778d6d63b259c1fb54aca4",
       ],
       [
         envelope({
@@ -489,7 +495,7 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
           visualEvidenceRequired: true,
           eligibility: { roles: ["reviewer"], providers: ["anthropic"], requiredCapabilities: [] },
         }),
-        "f52ae8041d356ee41a98913d4da2edf774b3202dddb15ed5fa9468ac87c43e17",
+        "17ab800891c1989eb45ff7f737922edbdc107038539c02e2b0332070e70b7d25",
       ],
     ];
 

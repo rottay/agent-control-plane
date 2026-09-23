@@ -1366,7 +1366,22 @@ describe("integrity", () => {
     ).toHaveLength(1);
     expect(
       (reapplied.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v,
-    ).toBe(21);
+    ).toBe(22);
+    // P-07 escalón B: and it re-applied 22 over the table 13 recreated, without
+    // aborting — the three result columns and both triggers are back.
+    expect(
+      reapplied
+        .prepare("SELECT name FROM pragma_table_info('effect_read_model') WHERE name IN (?, ?, ?) ORDER BY name")
+        .all("outcome_contract_version", "result_artifact_reference_id", "result_sha256"),
+    ).toHaveLength(3);
+    expect(
+      reapplied
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE ? ORDER BY name")
+        .all("tr_effect_read_model__validate_result_%"),
+    ).toEqual([
+      { name: "tr_effect_read_model__validate_result_on_insert" },
+      { name: "tr_effect_read_model__validate_result_on_update" },
+    ]);
     // P-14 C: and it re-applied 19 without aborting — the client key table is back.
     expect(
       reapplied.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").all("task_submission_read_model"),

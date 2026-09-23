@@ -33,6 +33,8 @@ import {
   createProjectionSnapshot,
   dispatchOutcomeRecord,
   dispatchTransitionAdmitted,
+  effectOutcomeArrival,
+  PRE_RESULT_REFERENCE_CONTRACT_VERSIONS,
   effectIdPreimageV1,
   effectIdV1,
   effectIdempotencyKeyV1,
@@ -2307,6 +2309,9 @@ describe("the three P-18/protocolo C folds are gated and total (execution §4, �
         dispatchState: "SETTLED",
         terminalAt: "2026-09-12T09:10:00.000Z",
         effectOutcomeStatus: "SUCCEEDED",
+        // A SUCCEEDED of the version in force names its result (ADR 0098); the
+        // reader is pure, so the pair needs no registered artifact here.
+        ...RESULT_PAIR,
       },
     });
     const foreignTask = "8c8c8c8c-8c8c-4c8c-8c8c-8c8c8c8c8c02";
@@ -2653,6 +2658,7 @@ describe("the occurrence folds refuse what the door refuses (execution §8)", ()
           dispatchState: "SETTLED",
           terminalAt: "2026-09-12T09:10:00.000Z",
           effectOutcomeStatus: "SUCCEEDED",
+          ...RESULT_PAIR,
         },
       }),
       3,
@@ -3027,6 +3033,9 @@ function outcomeEvent(record: Record<string, unknown>): ControlPlaneEvent {
 
 const SETTLED_AT = "2026-09-12T09:00:00.000Z";
 
+/** A result pair: a RESPONSE reference and its digest (P-07 escalón B, ADR 0098). */
+const RESULT_PAIR = { resultArtifactReferenceId: "ref-response-1", resultSha256: "d".repeat(64) } as const;
+
 /** Every present-invalid value the four optional fields are drilled with, per field. */
 const PRESENT_INVALID: readonly (readonly [string, unknown])[] = [
   ["effectOutcomeStatus", "INVALID_STATUS"],
@@ -3102,6 +3111,8 @@ describe("a resolution reads three ways, and present-invalid is not absent (CORR
           externalHandle: "handle-1",
           providerIdempotencyKey: "provider-key-1",
           effectOutcomeStatus: status,
+          // Only a SUCCEEDED of the version in force must name its result.
+          ...(status === "SUCCEEDED" ? RESULT_PAIR : {}),
         }),
         4,
       );
@@ -3144,7 +3155,7 @@ describe("a resolution reads three ways, and present-invalid is not absent (CORR
     const snapshot = snapshotWithDelivery();
     applyEventToSnapshot(
       snapshot,
-      outcomeEvent({ dispatchState: "SETTLED", terminalAt: SETTLED_AT, effectOutcomeStatus: "SUCCEEDED" }),
+      outcomeEvent({ dispatchState: "SETTLED", terminalAt: SETTLED_AT, effectOutcomeStatus: "SUCCEEDED", ...RESULT_PAIR }),
       3,
       EVENT_SHA256,
     );
@@ -3160,6 +3171,7 @@ describe("the P-18 value types of the projection live in a pure type leaf (CORR-
     expect(declared).toEqual([
       "DispatchOutcomeRecord",
       "DispatchOutcomeReading",
+      "EffectOutcomeArrival",
       "OccurrenceReading",
       "OccurrenceRefusal",
       "OccurrenceOwner",
@@ -3858,5 +3870,189 @@ describe("one capture function folds usage for the door, the rebuild and the mig
     expect(usageRowText({ total: 9007199254740993n, sequence: 4 })).toBe(usageRowText({ total: 9007199254740993n, sequence: 4n }));
     expect(usageRowText({ total: 9007199254740993n })).not.toBe(usageRowText({ total: 9007199254740992n }));
     expect(usageRowText({ total: null })).toBe('{"total":null}');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-07 escalón B — the result pair is read present-invalid, and compared once
+// (ADR 0098)
+// ---------------------------------------------------------------------------
+
+/** A resolution that settles `dsp-1` with `status`, stamped `contractVersion`. */
+function resultOutcomeEvent(
+  record: Record<string, unknown>,
+  contractVersion: string = CONTRACT_VERSION,
+): ControlPlaneEvent {
+  return executionEvent(
+    "DISPATCH_OUTCOME_RECORDED",
+    { revisionNumber: 1, attemptNumber: 1, outcome: { dispatchAttemptId: "dsp-1", dispatchState: "SETTLED", terminalAt: SETTLED_AT, ...record } },
+    { contractVersion } as Partial<ControlPlaneEvent>,
+  );
+}
+
+function refusalOf(reading: ReturnType<typeof dispatchOutcomeRecord>): { path: string; message: string } | null {
+  return reading?.kind === "refused" ? { path: reading.path, message: reading.message } : null;
+}
+
+describe("P-07 B: a resolution names its result by reference and digest, by cohort", () => {
+  it("P-P07B-6: the cohort before is the six versions no earlier build could stamp with a result", () => {
+    expect([...PRE_RESULT_REFERENCE_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0"]);
+    expect(PRE_RESULT_REFERENCE_CONTRACT_VERSIONS).not.toContain(CONTRACT_VERSION);
+  });
+
+  it("reads the pair into the record, and null/null where there is none", () => {
+    const succeeded = dispatchOutcomeRecord(resultOutcomeEvent({ effectOutcomeStatus: "SUCCEEDED", ...RESULT_PAIR }), 4);
+    expect(succeeded?.kind === "record" ? succeeded.record : null).toMatchObject({
+      effectOutcomeStatus: "SUCCEEDED",
+      resultArtifactReferenceId: RESULT_PAIR.resultArtifactReferenceId,
+      resultSha256: RESULT_PAIR.resultSha256,
+    });
+    // FAILED is admitted with a pair and without one.
+    const failedBare = dispatchOutcomeRecord(resultOutcomeEvent({ effectOutcomeStatus: "FAILED" }), 4);
+    expect(failedBare?.kind === "record" ? [failedBare.record.resultArtifactReferenceId, failedBare.record.resultSha256] : null).toEqual([null, null]);
+    expect(dispatchOutcomeRecord(resultOutcomeEvent({ effectOutcomeStatus: "FAILED", ...RESULT_PAIR }), 4)?.kind).toBe("record");
+    // A SUCCEEDED of the cohort before still reads without one.
+    expect(dispatchOutcomeRecord(resultOutcomeEvent({ effectOutcomeStatus: "SUCCEEDED" }, "2.7.0"), 4)?.kind).toBe("record");
+  });
+
+  it("N-P07B-4: a SUCCEEDED of a later version without a result is refused by name", () => {
+    const refused = refusalOf(dispatchOutcomeRecord(resultOutcomeEvent({ effectOutcomeStatus: "SUCCEEDED" }), 4));
+    expect(refused?.path).toBe("payload.outcome.resultArtifactReferenceId");
+    expect(refused?.message).toContain("a SUCCEEDED outcome of contract version " + CONTRACT_VERSION);
+    expect(refused?.message).toContain("names none");
+  });
+
+  it("N-P07B-5: a pair on an outcome of the cohort before is refused", () => {
+    for (const version of PRE_RESULT_REFERENCE_CONTRACT_VERSIONS) {
+      const refused = refusalOf(
+        dispatchOutcomeRecord(resultOutcomeEvent({ effectOutcomeStatus: "SUCCEEDED", ...RESULT_PAIR }, version), 4),
+      );
+      expect(refused?.path, version).toBe("payload.outcome.resultArtifactReferenceId");
+      expect(refused?.message, version).toContain("contract version " + version + " names no result");
+    }
+  });
+
+  it("N-P07B-6: a result on CANCELLED, on OUTCOME_UNKNOWN, or with no outcome is refused", () => {
+    for (const status of ["CANCELLED", "OUTCOME_UNKNOWN"]) {
+      const refused = refusalOf(dispatchOutcomeRecord(resultOutcomeEvent({ effectOutcomeStatus: status, ...RESULT_PAIR }), 4));
+      expect(refused?.path, status).toBe("payload.outcome.resultArtifactReferenceId");
+      expect(refused?.message, status).toContain("effect outcome " + status + " carries no result");
+    }
+    const bare = refusalOf(dispatchOutcomeRecord(resultOutcomeEvent({ ...RESULT_PAIR }), 4));
+    expect(bare?.message).toContain("a result is recorded with the effect's outcome");
+    // And each of the two may carry one.
+    for (const status of ["SUCCEEDED", "FAILED"]) {
+      expect(dispatchOutcomeRecord(resultOutcomeEvent({ effectOutcomeStatus: status, ...RESULT_PAIR }), 4)?.kind, status).toBe("record");
+    }
+  });
+
+  it("N-P07B-7: each key present-invalid is refused at its own path, never read as absent, never echoed", () => {
+    const cases: readonly (readonly [string, unknown])[] = [
+      ["resultArtifactReferenceId", null],
+      ["resultArtifactReferenceId", ""],
+      ["resultArtifactReferenceId", 42],
+      ["resultArtifactReferenceId", {}],
+      ["resultSha256", null],
+      ["resultSha256", ""],
+      ["resultSha256", 42],
+      ["resultSha256", {}],
+      ["resultSha256", "d".repeat(63)],
+      ["resultSha256", "D".repeat(64)],
+    ];
+    for (const [key, value] of cases) {
+      const refused = refusalOf(
+        dispatchOutcomeRecord(resultOutcomeEvent({ effectOutcomeStatus: "SUCCEEDED", ...RESULT_PAIR, [key]: value }), 4),
+      );
+      const label = key + " = " + JSON.stringify(value);
+      expect(refused?.path, label).toBe("payload.outcome." + key);
+      expect(refused?.message, label).toContain(key + ", when present,");
+      if (typeof value === "string" && value.length > 0) expect(refused?.message, label).not.toContain(value);
+    }
+    // Half a pair is refused at the key that is missing.
+    const noDigest = refusalOf(
+      dispatchOutcomeRecord(resultOutcomeEvent({ effectOutcomeStatus: "FAILED", resultArtifactReferenceId: "ref-response-1" }), 4),
+    );
+    expect(noDigest?.path).toBe("payload.outcome.resultSha256");
+    const noReference = refusalOf(
+      dispatchOutcomeRecord(resultOutcomeEvent({ effectOutcomeStatus: "FAILED", resultSha256: "d".repeat(64) }), 4),
+    );
+    expect(noReference?.path).toBe("payload.outcome.resultArtifactReferenceId");
+  });
+
+  it("the pair is compared once: write, replay, and a conflict under another digest or reference", () => {
+    const snapshot = snapshotWithDelivery();
+    const stored = snapshot.effects.get(OCCURRENCE_EFFECT);
+    if (stored === undefined) throw new Error("the fixture holds its effect");
+    const arriving = (record: Record<string, unknown>, version?: string) => {
+      const reading = dispatchOutcomeRecord(resultOutcomeEvent(record, version), 4);
+      if (reading?.kind !== "record") throw new Error("expected a record");
+      return reading.record;
+    };
+    const first = arriving({ effectOutcomeStatus: "SUCCEEDED", ...RESULT_PAIR });
+    expect(effectOutcomeArrival(stored, first)).toEqual({ kind: "write" });
+    const ended = {
+      ...stored,
+      outcomeStatus: "SUCCEEDED" as const,
+      outcomeRecordedAt: SETTLED_AT,
+      outcomeContractVersion: CONTRACT_VERSION,
+      resultArtifactReferenceId: RESULT_PAIR.resultArtifactReferenceId,
+      resultSha256: RESULT_PAIR.resultSha256,
+    };
+    expect(effectOutcomeArrival(ended, first)).toEqual({ kind: "replay" });
+
+    const otherDigest = effectOutcomeArrival(ended, arriving({ effectOutcomeStatus: "SUCCEEDED", ...RESULT_PAIR, resultSha256: "e".repeat(64) }));
+    expect(otherDigest.kind === "refused" ? otherDigest.path : null).toBe("payload.outcome.resultSha256");
+    const otherReference = effectOutcomeArrival(
+      ended,
+      arriving({ effectOutcomeStatus: "SUCCEEDED", ...RESULT_PAIR, resultArtifactReferenceId: "ref-response-2" }),
+    );
+    expect(otherReference.kind === "refused" ? otherReference.path : null).toBe("payload.outcome.resultArtifactReferenceId");
+    const otherStatus = effectOutcomeArrival(ended, arriving({ effectOutcomeStatus: "FAILED" }));
+    expect(otherStatus.kind === "refused" ? otherStatus.message : "").toContain("already ended SUCCEEDED");
+    for (const refused of [otherDigest, otherReference, otherStatus]) {
+      expect(refused.kind === "refused" ? refused.message : "").toContain("an outcome is recorded once rather than amended");
+    }
+
+    // A row of the cohort before, holding no pair, meeting a pair is refused too
+    // (adjudication v2, C2): not identical is not a replay.
+    const priorCohort = { ...ended, outcomeContractVersion: "2.7.0", resultArtifactReferenceId: null, resultSha256: null };
+    expect(effectOutcomeArrival(priorCohort, first).kind).toBe("refused");
+    expect(effectOutcomeArrival(priorCohort, arriving({ effectOutcomeStatus: "SUCCEEDED" }, "2.7.0"))).toEqual({ kind: "replay" });
+  });
+
+  it("the fold writes the version and the pair with the outcome, and refuses a conflict in the door's words", () => {
+    const snapshot = snapshotWithDelivery();
+    applyEventToSnapshot(snapshot, resultOutcomeEvent({ effectOutcomeStatus: "SUCCEEDED", ...RESULT_PAIR }), 3, EVENT_SHA256);
+    expect(snapshot.effects.get(OCCURRENCE_EFFECT)).toMatchObject({
+      outcomeStatus: "SUCCEEDED",
+      outcomeContractVersion: CONTRACT_VERSION,
+      resultArtifactReferenceId: RESULT_PAIR.resultArtifactReferenceId,
+      resultSha256: RESULT_PAIR.resultSha256,
+    });
+    // The same outcome again is a replay: nothing moves.
+    applyEventToSnapshot(snapshot, resultOutcomeEvent({ effectOutcomeStatus: "SUCCEEDED", ...RESULT_PAIR }), 4, EVENT_SHA256);
+    expect(snapshot.effects.get(OCCURRENCE_EFFECT)?.resultSha256).toBe(RESULT_PAIR.resultSha256);
+    let issue: { path: string; message: string } | undefined;
+    try {
+      applyEventToSnapshot(
+        snapshot,
+        resultOutcomeEvent({ effectOutcomeStatus: "SUCCEEDED", ...RESULT_PAIR, resultSha256: "e".repeat(64) }),
+        5,
+        EVENT_SHA256,
+      );
+    } catch (error) {
+      issue = (error as LedgerValidationError).issues[0];
+    }
+    expect(issue?.path).toBe("payload.outcome.resultSha256");
+    expect(issue?.message).toContain("already ended SUCCEEDED under another result digest");
+    // A resolution that leaves the effect open writes none of the three.
+    const open = snapshotWithDelivery();
+    applyEventToSnapshot(open, outcomeEvent({ dispatchState: "CLAIMED" }), 3, EVENT_SHA256);
+    expect(open.effects.get(OCCURRENCE_EFFECT)).toMatchObject({
+      outcomeStatus: null,
+      outcomeContractVersion: null,
+      resultArtifactReferenceId: null,
+      resultSha256: null,
+    });
   });
 });

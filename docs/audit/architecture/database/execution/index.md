@@ -290,9 +290,25 @@ scope semántico y paso lógico de §6.1, antes de asignar su coordenada física
 | `intended_at` | TEXT | NOT NULL | Instante del `BEGIN IMMEDIATE` que registró la intención (§11 canónico paso 1). |
 | `outcome_status` | TEXT | NULL | `CHECK (outcome_status IS NULL OR outcome_status IN ('SUCCEEDED','FAILED','CANCELLED','OUTCOME_UNKNOWN'))`. `NULL` antes de todo desenlace — una intención nunca despachada no es `OUTCOME_UNKNOWN`, es ausencia de dato. `OUTCOME_UNKNOWN` sólo se escribe cuando efectivamente se registra una exposición incierta (p. ej. tras agotar reconciliación de un `INFLIGHT` vencido), nunca como default de creación. No es fallo y no habilita reintento ciego (invariante 9 canónica). |
 | `outcome_recorded_at` | TEXT | NULL | Igual nulidad que `outcome_status`: `NULL` sii `outcome_status IS NULL`. |
+| `outcome_contract_version` | TEXT | NULL | Versión de contrato del `DISPATCH_OUTCOME_RECORDED` que registró el desenlace. `NULL` sii `outcome_status IS NULL`. Discrimina la cohorte de resultado: `('2.2.0','2.3.0','2.4.0','2.5.0','2.6.0','2.7.0')` —lista cerrada congelada en la migración 22, nunca comparación de versiones— no lleva resultado; toda versión posterior lo exige en `SUCCEEDED`. Las filas anteriores a la migración 22 se completan desde su evento en la misma transacción. |
+| `result_artifact_reference_id` | TEXT | NULL | Referencia registrada del artefacto `RESPONSE` (scope `TASK` = `task_id`) cuyos bytes son el documento resultado v1 ([contratos §4.2](../../contracts/index.md)). `NULL` sin resultado: sin desenlace, `CANCELLED`, `OUTCOME_UNKNOWN`, `FAILED` sin resultado, o `SUCCEEDED` de la cohorte anterior. La puerta verifica existencia, clase, scope y digest (datos §11 paso 7: publicado antes de referenciado); la base verifica presencia. Nunca se deriva de `result_sha256`. |
+| `result_sha256` | TEXT | NULL | `content_sha256` del artefacto referenciado; conservado, nunca recalculado. CHECK SHA común. Misma nulidad que `result_artifact_reference_id`. |
 | `sequence` | INTEGER | NOT NULL | — |
 
 `ck_effect_read_model__outcome_pair`: `CHECK ((outcome_status IS NULL) = (outcome_recorded_at IS NULL))`.
+
+- `ck_effect_read_model__outcome_contract_version`: `CHECK (outcome_contract_version IS NULL OR (outcome_status IS NOT NULL AND length(outcome_contract_version) > 0))`.
+  La mitad inversa (desenlace ⇒ versión) no es expresible como CHECK añadido
+  sobre filas existentes y la impone el trigger.
+- `ck_effect_read_model__result_artifact_reference_id`: no vacía cuando está presente.
+- `ck_effect_read_model__result_sha256_shape`: CHECK SHA común.
+- `ck_effect_read_model__result_pair`: `CHECK ((result_sha256 IS NULL) = (result_artifact_reference_id IS NULL))`.
+- `ck_effect_read_model__result_status`: `CHECK (result_sha256 IS NULL OR (outcome_status IS NOT NULL AND outcome_status IN ('SUCCEEDED','FAILED')))`. El `IS NOT NULL` es necesario: un CHECK cuyo predicado es NULL pasa, y `NULL IN (...)` es NULL.
+- `tr_effect_read_model__validate_result_on_insert` / `__validate_result_on_update`
+  (`BEFORE INSERT`; `BEFORE UPDATE OF outcome_status, outcome_contract_version, result_artifact_reference_id, result_sha256`):
+  desenlace ⇒ versión; cohorte anterior ⇒ sin par; `SUCCEEDED` de cohorte
+  posterior ⇒ par. Dos disparadores porque el rebuild inserta la fila ya resuelta
+  y la puerta la actualiza.
 
 ### Índices / OCC / transacción / rebuild
 
@@ -302,8 +318,8 @@ scope semántico y paso lógico de §6.1, antes de asignar su coordenada física
 | `ux_effect_read_model__idempotency_key` | `UNIQUE INDEX (idempotency_key)` |
 | `ux_effect_read_model__logical_operation_sha256` | `UNIQUE INDEX (logical_operation_sha256)` |
 | `ix_effect_read_model__segment` | `INDEX (route_segment_id, operation_ordinal)` |
-| Transacción | Fold del paso 1 (intención) y del paso 6 (desenlace) de §11 canónico; cada uno en la transacción del `appendBatch` correspondiente. |
-| Rebuild | Determinista desde `control_plane_events`. |
+| Transacción | Fold del paso 1 (intención) y del paso 6 (desenlace) de §11 canónico; cada uno en la transacción del `appendBatch` correspondiente. El par de resultado se escribe con el desenlace, en el mismo evento. |
+| Rebuild | Determinista desde `control_plane_events`. La existencia de la referencia no se reverifica en rebuild (stream de registro independiente); replay/conflicto sobre el par (referencia, digest), una sola comparación para puerta y fold. |
 
 ---
 

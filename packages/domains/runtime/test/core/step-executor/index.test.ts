@@ -1429,11 +1429,14 @@ describe("N-G-10: losing an acknowledgement, handing off and replaying, on the w
     ledger.append(effectIntention(context, "effect-1", 1, 0, "acct-1"));
     const delivery = dispatchIntention(context, "dispatch-1", effectId, 1, 1, "acct-1");
     const delivered = ledger.append(delivery);
+    // FAILED rather than SUCCEEDED: this drill is about the reuse law, which has no
+    // FAILED exception, and since 2.8.0 a SUCCEEDED must name a published RESPONSE
+    // artifact this harness has no fixture for (P-07 escalón B, ADR 0098).
     ledger.append(
       dispatchOutcome(context, "settle-1", "dsp-1", {
         dispatchState: "SETTLED",
         terminalAt: EFFECT_AT,
-        effectOutcomeStatus: "SUCCEEDED",
+        effectOutcomeStatus: "FAILED",
       }),
     );
     const settled = ledger.status();
@@ -1442,7 +1445,7 @@ describe("N-G-10: losing an acknowledgement, handing off and replaying, on the w
     // refused on `payload.dispatch.effectId`, with the words that say reuse.
     const refusal = refusalOf(() => ledger.append(dispatchIntention(context, "dispatch-2", effectId, 2, 2, "acct-2")));
     expect(refusal.path).toBe("payload.dispatch.effectId");
-    expect(refusal.message).toContain("already ended SUCCEEDED at " + EFFECT_AT);
+    expect(refusal.message).toContain("already ended FAILED at " + EFFECT_AT);
     expect(refusal.message).toContain("a known outcome is reused, never redelivered");
     expect(refusal.message).not.toContain("CONFLICT");
 
@@ -1451,7 +1454,7 @@ describe("N-G-10: losing an acknowledgement, handing off and replaying, on the w
     expect(replay.record.sequence).toBe(delivered.record.sequence);
     expect(ledger.status().eventCount).toBe(settled.eventCount);
     expect(ledger.listDispatchAttempts(effectId).map((row) => row.dispatchAttemptId)).toEqual(["dsp-1"]);
-    expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("SUCCEEDED");
+    expect(ledger.getEffect(effectId)?.outcomeStatus).toBe("FAILED");
     expect(ledger.verifyIntegrity().ok).toBe(true);
   });
 });

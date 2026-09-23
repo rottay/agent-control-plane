@@ -594,8 +594,9 @@ describe("the V2 idempotency key", () => {
     // turn, when P-18/protocolo F put it in force (ADR 0078). `"2.5.0"` stood
     // here after F and moved above when P-36/local D put it in force (ADR 0084).
     // `"2.6.0"` stood here after D and moved above when P-32/captura B put it in
-    // force (ADR 0089).
-    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "2.8.0" })).success).toBe(false);
+    // force (ADR 0089). `"2.8.0"` stood here until P-07 escalón B put it in force
+    // (ADR 0098).
+    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "2.9.0" })).success).toBe(false);
     expect(ControlPlaneEvent.safeParse(event({ contractVersion: "1.0.0" })).success).toBe(false);
   });
 
@@ -2716,8 +2717,8 @@ describe("only the version in force is emitted (ADR 0072's debt, ADR 0076)", () 
     // nobody can predict.
     // F moved the literal again (ADR 0078), P-36/local D once more (ADR 0084)
     // and P-32/captura B once more (ADR 0089); the pair's shape did not move.
-    expect(CONTRACT_VERSION).toBe("2.7.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0"]);
+    expect(CONTRACT_VERSION).toBe("2.8.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0"]);
     expect(SUPPORTED_CONTRACT_VERSIONS).toContain(CONTRACT_VERSION);
 
     expect(AdmittedContractVersion.safeParse(CONTRACT_VERSION).success).toBe(true);
@@ -2728,8 +2729,9 @@ describe("only the version in force is emitted (ADR 0072's debt, ADR 0076)", () 
     expect(AdmittedContractVersion.safeParse("2.4.0").success).toBe(false);
     expect(AdmittedContractVersion.safeParse("2.5.0").success).toBe(false);
     // And a version nobody put in force yet. `"2.6.0"` stood here until
-    // P-32/captura B put it in force (ADR 0089).
-    expect(AdmittedContractVersion.safeParse("2.8.0").success).toBe(false);
+    // P-32/captura B put it in force (ADR 0089), and `"2.8.0"` until P-07
+    // escalón B did (ADR 0098).
+    expect(AdmittedContractVersion.safeParse("2.9.0").success).toBe(false);
   });
 
   it("holds the three admission shapes to the version in force, and not the event", () => {
@@ -2931,8 +2933,8 @@ describe("three outbox types, a command id grammar and a bump (P-18/protocolo F,
     // `outboxContractVersion`. That is C's class, not D's. P-36/local D moved
     // the literal on to 2.5.0 (ADR 0084), and 2.4.0 joined the readable set;
     // P-32/captura B moved it on to 2.6.0 (ADR 0089), and 2.5.0 joined it.
-    expect(CONTRACT_VERSION).toBe("2.7.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0"]);
+    expect(CONTRACT_VERSION).toBe("2.8.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0"]);
     for (const version of ["2.2.0", "2.3.0", "2.4.0"]) {
       expect(ControlPlaneEvent.safeParse(event({ contractVersion: version })).success, version).toBe(true);
       expect(AdmittedContractVersion.safeParse(version).success, version).toBe(false);
@@ -2966,8 +2968,8 @@ describe("the artifact record lands without a bump (P-36/local A, ADR 0081)", ()
     // (ADR 0084): the event vocabulary did not move with it. And again in
     // P-32/captura B, for an identity, with two usage types (ADR 0089).
     expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(35);
-    expect(CONTRACT_VERSION).toBe("2.7.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0"]);
+    expect(CONTRACT_VERSION).toBe("2.8.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0"]);
   });
 });
 
@@ -2981,7 +2983,7 @@ describe("the version moves for a cohort, not an identity (P-36/local D, ADR 008
     // a payload key the ledger's fold reads by name. P-32/captura B moved the
     // literal on to 2.6.0 (ADR 0089): 2.5.0 is now read and no longer issued, as
     // the three before it are.
-    expect(CONTRACT_VERSION).toBe("2.7.0");
+    expect(CONTRACT_VERSION).toBe("2.8.0");
     expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(35);
     for (const version of ["2.2.0", "2.3.0", "2.4.0", "2.5.0"]) {
       expect(ControlPlaneEvent.safeParse(event({ contractVersion: version })).success, version).toBe(true);
@@ -3015,13 +3017,14 @@ describe("usage is a declared stream and a measured observation, and the version
     // ADR 0076's criterion, read for B: the door recomputes `measurement_stream_id`
     // from a versioned preimage of the stream's coordinate, and every declaration
     // carries `normalizationPolicySha256`, the adapter's own version. C's class.
-    expect(CONTRACT_VERSION).toBe("2.7.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0"]);
+    expect(CONTRACT_VERSION).toBe("2.8.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0"]);
     for (const version of ["2.2.0", "2.3.0", "2.4.0", "2.5.0"]) {
       expect(ControlPlaneEvent.safeParse(event({ contractVersion: version })).success, version).toBe(true);
       expect(AdmittedContractVersion.safeParse(version).success, version).toBe(false);
     }
-    expect(AdmittedContractVersion.safeParse("2.7.0").success).toBe(true);
+    // Read, and no longer issued, since P-07 escalón B put 2.8.0 in force (ADR 0098).
+    expect(AdmittedContractVersion.safeParse("2.7.0").success).toBe(false);
     expect(TaskEnvelope.safeParse(envelope({ contractVersion: "2.5.0" })).success).toBe(false);
   });
 
@@ -3042,5 +3045,23 @@ describe("usage is a declared stream and a measured observation, and the version
         type,
       ).toBe(false);
     }
+  });
+});
+
+describe("the version moves for the result cohort (P-07 escalón B, ADR 0098)", () => {
+  it("puts 2.8.0 in force, keeps 2.2.0 through 2.7.0 readable and refuses to issue them", () => {
+    // ADR 0084's reason: a cohort, not an identity. Migration 22 keys the effect's
+    // result reference on a closed list of the versions no earlier build could stamp
+    // with a result, so the literal has to move for the cohort to exist. No event
+    // type and no preimage moves with it.
+    expect(CONTRACT_VERSION).toBe("2.8.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0"]);
+    expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(35);
+    for (const version of ["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0"]) {
+      expect(ControlPlaneEvent.safeParse(event({ contractVersion: version })).success, version).toBe(true);
+      expect(AdmittedContractVersion.safeParse(version).success, version).toBe(false);
+    }
+    expect(AdmittedContractVersion.safeParse("2.8.0").success).toBe(true);
+    expect(TaskEnvelope.safeParse(envelope({ contractVersion: "2.7.0" })).success).toBe(false);
   });
 });

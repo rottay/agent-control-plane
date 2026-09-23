@@ -57,6 +57,15 @@ export interface DispatchOutcomeRecord {
   readonly externalHandle: string | null;
   readonly providerIdempotencyKey: string | null;
   readonly effectOutcomeStatus: EffectOutcomeStatus | null;
+  /**
+   * The effect's result, by reference and digest (P-07 escalón B, ADR 0098):
+   * the registered `RESPONSE` artifact whose bytes are the result document, and
+   * that artifact's `content_sha256`, conserved. Both `null` or both text, and
+   * only with an outcome of `SUCCEEDED` or `FAILED`; a `SUCCEEDED` of a version
+   * after the cohort the migration froze always carries them.
+   */
+  readonly resultArtifactReferenceId: string | null;
+  readonly resultSha256: string | null;
   readonly recordedAt: string;
   readonly sequence: number;
 }
@@ -73,6 +82,21 @@ export interface DispatchOutcomeRecord {
  */
 export type DispatchOutcomeReading =
   | { readonly kind: "record"; readonly record: DispatchOutcomeRecord }
+  | { readonly kind: "refused"; readonly path: string; readonly message: string };
+
+/**
+ * What an arriving outcome is to the effect row it names (P-07 escalón B,
+ * ADR 0098; ADR 0084 Five's single comparison).
+ *
+ * `write` when the row holds no outcome yet; `replay` when it holds the same
+ * status, reference and digest, so nothing is written and the event still lands;
+ * `refused` for any other combination, because an outcome is recorded once and
+ * never amended. The door and the fold both ask this one function, so the two
+ * cannot disagree about what counts as the same outcome.
+ */
+export type EffectOutcomeArrival =
+  | { readonly kind: "write" }
+  | { readonly kind: "replay" }
   | { readonly kind: "refused"; readonly path: string; readonly message: string };
 
 /**

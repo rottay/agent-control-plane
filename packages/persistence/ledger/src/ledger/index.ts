@@ -43,6 +43,7 @@ import {
 } from "../errors/index.js";
 import {
   ACCOUNT_INTEGRITY_MIGRATION,
+  EFFECT_RESULT_REFERENCE_MIGRATION,
   MODEL_VERSION_PROJECTION,
   PRICE_INTERVAL_PROJECTION,
   INITIATIVE_REGISTRATION_MIGRATION,
@@ -91,6 +92,8 @@ import {
   LEGACY_ATTEMPT_NUMBER_KEY,
   LOCAL_KEY_PATTERN,
   OUTCOME_KEY,
+  RESULT_ARTIFACT_REFERENCE_KEY,
+  RESULT_SHA256_KEY,
   REVISION_ID_KEY,
   SEGMENT_KEY,
   SEMANTIC_SCOPE_KEYS,
@@ -102,6 +105,7 @@ import {
   canonicalSegment,
   dispatchOutcomeRecord,
   dispatchTransitionAdmitted,
+  effectOutcomeArrival,
   effectIdV1,
   effectIdempotencyKeyV1,
   logicalOperationSha256,
@@ -1380,6 +1384,9 @@ interface EffectRow {
   readonly intended_at: string;
   readonly outcome_status: string | null;
   readonly outcome_recorded_at: string | null;
+  readonly outcome_contract_version: string | null;
+  readonly result_artifact_reference_id: string | null;
+  readonly result_sha256: string | null;
   readonly sequence: number;
 }
 
@@ -1637,6 +1644,9 @@ function effectRowToModel(row: EffectRow): EffectReadModel {
     intendedAt: row.intended_at,
     outcomeStatus: row.outcome_status as EffectOutcomeStatus | null,
     outcomeRecordedAt: row.outcome_recorded_at,
+    outcomeContractVersion: row.outcome_contract_version,
+    resultArtifactReferenceId: row.result_artifact_reference_id,
+    resultSha256: row.result_sha256,
     sequence: row.sequence,
   };
 }
@@ -2682,6 +2692,58 @@ function foldUsageCaptureAtMigration(db: Database.Database): void {
   }
 }
 
+/**
+ * Write the recording version of every outcome a ledger already holds, once, as
+ * migration 22 lands (P-07 escalón B, ADR 0098).
+ *
+ * `foldInitiativesAtMigration`'s shape. The migration adds
+ * `outcome_contract_version` as NULL on every row, and a row that already holds
+ * an outcome would then be one the integrity replay refuses, because the fold
+ * writes the version of the event that recorded it. So the resolutions are read
+ * again, in sequence order, through `dispatchOutcomeRecord` — the reader the door
+ * and the fold use, never a second one in SQL — and each outcome's row gets its
+ * event's version, and the result pair that event names, first event wins. On a
+ * ledger this migration first meets, every such version is in the cohort before
+ * and the pair is NULL; the pair is written too so that a ledger rewound past 22
+ * after it held later outcomes re-applies to the rows its events say, as every
+ * other `afterSql` fold does. The UPDATE trigger holds both cases. A row that no
+ * longer reads as an event, or as a resolution, is skipped rather than refused,
+ * for `foldModelVersionsAtMigration`'s reason.
+ */
+function foldEffectOutcomeCohortAtMigration(db: Database.Database): void {
+  const rows = db
+    .prepare(
+      "SELECT sequence, event_json FROM control_plane_events WHERE type = 'DISPATCH_OUTCOME_RECORDED' " +
+        "ORDER BY sequence ASC",
+    )
+    .all() as { readonly sequence: number; readonly event_json: string }[];
+  const effectOf = db.prepare("SELECT effect_id FROM dispatch_attempt_read_model WHERE dispatch_attempt_id = ?");
+  const update = db.prepare(
+    "UPDATE effect_read_model SET outcome_contract_version = ?, result_artifact_reference_id = ?, result_sha256 = ? " +
+      "WHERE effect_id = ? AND outcome_status IS NOT NULL AND outcome_contract_version IS NULL",
+  );
+  for (const row of rows) {
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(row.event_json);
+    } catch {
+      continue;
+    }
+    const parsed = ControlPlaneEvent.safeParse(decoded);
+    if (!parsed.success) continue;
+    const reading = dispatchOutcomeRecord(parsed.data, row.sequence);
+    if (reading?.kind !== "record" || reading.record.effectOutcomeStatus === null) continue;
+    const delivery = effectOf.get(reading.record.dispatchAttemptId) as { readonly effect_id: string } | undefined;
+    if (delivery === undefined) continue;
+    update.run(
+      parsed.data.contractVersion,
+      reading.record.resultArtifactReferenceId,
+      reading.record.resultSha256,
+      delivery.effect_id,
+    );
+  }
+}
+
 function activateAccountIntegrity(db: Database.Database, activatedAt: string): void {
   const rows = db
     .prepare("SELECT " + ACCOUNT_EVENT_COLUMNS + " FROM account_events ORDER BY sequence ASC")
@@ -2967,6 +3029,11 @@ export class Ledger {
               // writes every price catalog version already published, level with it.
               if (migration.version === PRICE_INTERVAL_CATALOG_MIGRATION) {
                 foldPriceIntervalsAtMigration(db);
+              }
+              // Migration 22 added the recording version to rows that already
+              // hold an outcome; this writes it from each outcome's own event.
+              if (migration.version === EFFECT_RESULT_REFERENCE_MIGRATION) {
+                foldEffectOutcomeCohortAtMigration(db);
               }
             },
           });
@@ -5031,20 +5098,95 @@ export class Ledger {
 
     if (outcome.effectOutcomeStatus === null) return;
 
-    if (
-      effectRow.outcome_status !== null &&
-      effectRow.outcome_status !== outcome.effectOutcomeStatus
-    ) {
+    // A result pair names a published artifact, checked here on every arrival,
+    // replay included (ADR 0098; 0084 Four's "one path is simpler than two").
+    if (outcome.resultArtifactReferenceId !== null && outcome.resultSha256 !== null) {
+      this.#assertResultReference(event.taskId, outcome.resultArtifactReferenceId, outcome.resultSha256);
+    }
+
+    // The fold's own comparison, result pair included, so a rebuild refuses the
+    // histories this door refuses in these words (ADR 0084 Five, ADR 0098).
+    const arrival = effectOutcomeArrival(effectRowToModel(effectRow), outcome);
+    if (arrival.kind === "refused") {
+      throw new LedgerValidationError([{ path: arrival.path, message: arrival.message }]);
+    }
+  }
+
+  /**
+   * Refuse a result pair whose reference the registry does not hold as this
+   * task's published `RESPONSE`, or whose digest is not that artifact's (P-07
+   * escalón B, ADR 0098; datos §11 step 7: published before referenced).
+   *
+   * `#assertEnvelopeReference`'s reasons, for the result: a reference row exists
+   * only once a publication succeeded or a reference was recorded, so an intended
+   * or abandoned publication is refused here; the question is about a projection
+   * of the registry stream, so it is asked at the door and never by a trigger a
+   * rebuild would have to satisfy in fold order. The digest is conserved, never
+   * recomputed. No refusal echoes the producer's text.
+   *
+   * Not checked, declared: retention, tombstone and blob lifecycle — nothing in
+   * this build tombstones a reference or reclaims a blob.
+   */
+  #assertResultReference(taskId: string, referenceId: string, resultSha256: string): void {
+    const at = "payload." + OUTCOME_KEY + ".";
+    const reference = this.#stmt(
+      "SELECT artifact_class, content_sha256, scope_kind, scope_id FROM artifact_reference_read_model " +
+        "WHERE artifact_reference_id = ?",
+    ).get(referenceId) as
+      | {
+          readonly artifact_class: string;
+          readonly content_sha256: string;
+          readonly scope_kind: string;
+          readonly scope_id: string | null;
+        }
+      | undefined;
+    if (reference === undefined) {
       throw new LedgerValidationError([
         {
-          path: "payload." + OUTCOME_KEY + ".effectOutcomeStatus",
+          path: at + RESULT_ARTIFACT_REFERENCE_KEY,
           message:
-            "effect " +
-            effectRow.effect_id +
-            " already ended " +
-            effectRow.outcome_status +
-            ", and an outcome is recorded once rather than amended; this event says " +
-            outcome.effectOutcomeStatus,
+            "task " +
+            taskId +
+            " names its result by an artifact reference the registry does not hold; a result is published" +
+            " before it is referenced (datos §11 step 7)",
+        },
+      ]);
+    }
+    if (reference.artifact_class !== "RESPONSE") {
+      throw new LedgerValidationError([
+        {
+          path: at + RESULT_ARTIFACT_REFERENCE_KEY,
+          message:
+            "task " +
+            taskId +
+            " names a result by an artifact reference of class " +
+            reference.artifact_class +
+            "; an effect's result is a RESPONSE",
+        },
+      ]);
+    }
+    if (reference.scope_kind !== "TASK" || reference.scope_id !== taskId) {
+      throw new LedgerValidationError([
+        {
+          path: at + RESULT_ARTIFACT_REFERENCE_KEY,
+          message:
+            "task " +
+            taskId +
+            " names a result by an artifact reference scoped to " +
+            (reference.scope_kind === "TASK" ? "another task" : reference.scope_kind) +
+            "; an effect's result belongs to the task that ran it",
+        },
+      ]);
+    }
+    if (reference.content_sha256 !== resultSha256) {
+      throw new LedgerValidationError([
+        {
+          path: at + RESULT_SHA256_KEY,
+          message:
+            "task " +
+            taskId +
+            " names a result digest other than the bytes its reference holds; the digest is conserved," +
+            " never recomputed",
         },
       ]);
     }
@@ -5514,7 +5656,7 @@ export class Ledger {
     if (outcome?.kind === "refused") {
       throw new LedgerValidationError([{ path: outcome.path, message: outcome.message }]);
     }
-    if (outcome !== null) this.#applyDispatchOutcome(outcome.record);
+    if (outcome !== null) this.#applyDispatchOutcome(outcome.record, event.contractVersion);
 
     // The P-18/protocolo D pair, last, for `applyEventToSnapshot`'s order: an
     // answer names a prompt and a prompt names a delivery.
@@ -5925,8 +6067,9 @@ export class Ledger {
         "effect_id, task_id, revision_number, attempt_number, route_segment_id, " +
         "operation_ordinal, effect_kind, semantic_scope_key, local_operation_key, " +
         "logical_operation_sha256, request_contract_version, request_sha256, " +
-        "idempotency_key, intended_at, outcome_status, outcome_recorded_at, sequence" +
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "idempotency_key, intended_at, outcome_status, outcome_recorded_at, outcome_contract_version, " +
+        "result_artifact_reference_id, result_sha256, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       effect.effectId,
       effect.taskId,
@@ -5944,6 +6087,9 @@ export class Ledger {
       effect.intendedAt,
       effect.outcomeStatus,
       effect.outcomeRecordedAt,
+      effect.outcomeContractVersion,
+      effect.resultArtifactReferenceId,
+      effect.resultSha256,
       effect.sequence,
     );
   }
@@ -6006,7 +6152,7 @@ export class Ledger {
    * plus the two comparisons that make it safe on the **rebuild** path where
    * there is no door.
    */
-  #applyDispatchOutcome(outcome: DispatchOutcomeRecord): void {
+  #applyDispatchOutcome(outcome: DispatchOutcomeRecord, contractVersion: string): void {
     const row = this.#stmt(
       "SELECT * FROM dispatch_attempt_read_model WHERE dispatch_attempt_id = ?",
     ).get(outcome.dispatchAttemptId) as DispatchAttemptRow | undefined;
@@ -6057,11 +6203,19 @@ export class Ledger {
 
     // `WHERE outcome_status IS NULL` is the write's own guard, not decoration:
     // an outcome is recorded once, and a second arrival saying the same thing
-    // is a replay that must leave the first instant alone.
+    // is a replay that must leave the first instant alone. The result pair and
+    // the recording version travel with the status, in the one event (ADR 0098).
     this.#stmt(
-      "UPDATE effect_read_model SET outcome_status = ?, outcome_recorded_at = ? " +
-        "WHERE effect_id = ? AND outcome_status IS NULL",
-    ).run(outcome.effectOutcomeStatus, outcome.recordedAt, row.effect_id);
+      "UPDATE effect_read_model SET outcome_status = ?, outcome_recorded_at = ?, outcome_contract_version = ?, " +
+        "result_artifact_reference_id = ?, result_sha256 = ? WHERE effect_id = ? AND outcome_status IS NULL",
+    ).run(
+      outcome.effectOutcomeStatus,
+      outcome.recordedAt,
+      contractVersion,
+      outcome.resultArtifactReferenceId,
+      outcome.resultSha256,
+      row.effect_id,
+    );
   }
 
   /**
