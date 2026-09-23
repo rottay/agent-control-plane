@@ -20,7 +20,9 @@ import { INTENT_STEP, READ_ONLY_PLAN, planStep } from "../../src/core/lifecycle/
 import { appendPlanStep, assertInvocationContinuity, currentState } from "../../src/core/step-executor/index.js";
 import type { BeatContext, EffectPort } from "../../src/core/step-executor/index.js";
 import {
+  DispatchRefusedError,
   LifecyclePlanError,
+  OperationFailedError,
   PostconditionUnknownError,
   ReconciliationError,
   SupervisorError,
@@ -438,6 +440,19 @@ describe("classifyFailure (V2-B7R)", () => {
         expect(FAILURE_REASONS).toContain(decision.reason);
       }
     }
+  });
+
+  it("P-15/D3: settles a delivery refused before any spend and an operation that failed, both EXECUTION_FAILED", () => {
+    // Two definitive answers, not uncertainties (decision 141), and a drill tells
+    // them apart by class: "no catalog covers the model" and "the model failed".
+    for (const error of [
+      new DispatchRefusedError("catalogVersion", "no catalog version in force covers the segment"),
+      new OperationFailedError("OPERATION_FAILED", "the model said it failed"),
+    ]) {
+      expect(classifyFailure(error)).toEqual({ settle: true, reason: "EXECUTION_FAILED" });
+    }
+    expect(new DispatchRefusedError("catalogVersion", "x").code).toBe("DISPATCH_REFUSED");
+    expect(new OperationFailedError("NO_OUTPUT", "x").code).toBe("OPERATION_FAILED");
   });
 
   it("never returns a decision carrying a message", () => {

@@ -174,6 +174,10 @@ export {
   LifecyclePlanError,
   ToyBoundaryError,
 } from "./errors/index.js";
+// P-15 escalón D3 (ADR 0105, decision 141): a delivery refused before any spend,
+// and an effect whose recorded outcome is a failure. Both settle EXECUTION_FAILED,
+// and a drill tells them apart by class.
+export { DispatchRefusedError, OperationFailedError } from "./errors/index.js";
 export type { RuntimeErrorCode } from "./errors/index.js";
 
 export {
@@ -528,3 +532,18 @@ export type {
   TaskIntakeTestFaults,
   TaskIntakeWriteRefusal,
 } from "./intake/index.js";
+
+// P-15 escalón D3 (ADR 0105, decisions 139 and 140): what the daemon's recorded
+// form composes. The recorded-task reader (D1's, exported now that a caller
+// exists), the evidence root minted from the operator ledger's path, and the
+// execution chain the walk's effect port records through — the daemon wires it,
+// and orders nothing itself.
+export { RECORDED_TASK_REFUSALS, readRecordedTask } from "./recorded-task/index.js";
+export type { RecordedTask, RecordedTaskOutcome } from "./recorded-task/index.js";
+export { EVIDENCE_ROOT_REFUSALS, evidenceRootFor } from "./evidence-root/index.js";
+export { createExecutionChain } from "./execution-chain/index.js";
+// P-15/B kept the payload coordinate off the barrel (a module export only); the
+// daemon imports the barrel alone, and its lease and conformance events now need
+// the one helper under a revision, so D3 exports it rather than restating it.
+export { payloadCoordinate } from "./core/coordinates/index.js";
+export type { ExecutionChainInput } from "./execution-chain/index.js";

@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import {
   CONTENT_REQUEST_AGGREGATE_MAX_BYTES,
@@ -79,6 +80,7 @@ import {
   utf8ByteLength,
   USAGE_REPORT_KINDS,
   USAGE_SOURCE_CLASSES,
+  PRODUCT_PATH_MARKERS,
 } from "../../src/index.js";
 import type { DriverAccepted, DriverOutcome } from "../../src/index.js";
 
@@ -2114,6 +2116,64 @@ describe("ExecutionEvent", () => {
   it("P-15/D2: the usage vocabularies are the ones the ledger's CHECKs hold, in precedence order", () => {
     expect([...USAGE_SOURCE_CLASSES]).toEqual(["PROVIDER_AUTHORITATIVE", "WRAPPER_MEASURED", "ESTIMATE"]);
     expect([...USAGE_REPORT_KINDS]).toEqual(["DELTA", "CUMULATIVE", "CORRECTION"]);
+  });
+
+  it("P-15/D3: the product-path markers are the providers' five, frozen, as data only", () => {
+    // The set the providers' admission carried before it moved here (decision 139,
+    // C-D1), restated by value: the two admissions that read it cannot drift apart
+    // from each other, and this holds the one declaration to what they both refused.
+    expect([...PRODUCT_PATH_MARKERS]).toEqual(["/Rottay/app-", "/Rottay/dm-", "/Rottay/svc-", "/Rottay/ui-", "/Rottay/platform"]);
+    expect(Object.isFrozen(PRODUCT_PATH_MARKERS)).toBe(true);
+    for (const marker of PRODUCT_PATH_MARKERS) expect(marker.startsWith("/")).toBe(true);
+  });
+
+  it("P-15/D3: the shared product-path vector table parses strictly and names every marker once", () => {
+    // The one table the providers' admission and the runtime's evidence root both run
+    // (decision 139, C-D1). JSON, read from disk: a TS leaf another package imports is
+    // outside its test project's rootDir (TS6059). Strict: no extra key, closed words.
+    const Vector = z.strictObject({
+      condition: z.enum([
+        "ADMITTED",
+        "RELATIVE",
+        "ABSENT",
+        "SYMLINK",
+        "FILE",
+        "GROUP_WRITABLE",
+        "WORLD_WRITABLE",
+        "PRODUCT_PATH",
+        "NEAR_MISS",
+      ]),
+      marker: z.string().min(1).nullable(),
+      verdict: z.enum(["ADMITTED", "REFUSED"]),
+      refusal: z
+        .enum(["ABSENT", "NOT_ABSOLUTE", "NOT_A_DIRECTORY", "NOT_CANONICAL", "PERMISSIONS_TOO_OPEN", "PRODUCT_PATH"])
+        .nullable(),
+    });
+    const Table = z.strictObject({ vectorTableVersion: z.literal(1), vectors: z.array(Vector).min(1) });
+    const path = resolve(dirname(fileURLToPath(import.meta.url)), "..", "testing", "product-path-vectors", "index.json");
+    const table = Table.parse(JSON.parse(readFileSync(path, "utf8")));
+    for (const vector of table.vectors) {
+      // A marker exactly on the path rows; a refusal exactly on REFUSED rows.
+      expect(vector.marker !== null, vector.condition).toBe(vector.condition === "PRODUCT_PATH" || vector.condition === "NEAR_MISS");
+      expect(vector.refusal !== null, vector.condition).toBe(vector.verdict === "REFUSED");
+      expect(vector.verdict === "ADMITTED", vector.condition).toBe(vector.condition === "ADMITTED" || vector.condition === "NEAR_MISS");
+    }
+    const folded = PRODUCT_PATH_MARKERS.map((marker) => marker.toLowerCase());
+    const productMarkers = table.vectors.flatMap((vector) => (vector.condition === "PRODUCT_PATH" && vector.marker !== null ? [vector.marker] : []));
+    // Every marker in its declared spelling, in order; then the case variants
+    // (P-15/D3 v2: macOS filesystems are case-insensitive), each one marker folded.
+    expect(productMarkers.filter((marker) => PRODUCT_PATH_MARKERS.includes(marker))).toEqual([...PRODUCT_PATH_MARKERS]);
+    const variants = productMarkers.filter((marker) => !PRODUCT_PATH_MARKERS.includes(marker));
+    expect(variants.some((marker) => marker === marker.toLowerCase())).toBe(true);
+    expect(variants.some((marker) => marker !== marker.toLowerCase() && marker !== marker.toUpperCase())).toBe(true);
+    for (const marker of variants) expect(folded).toContain(marker.toLowerCase());
+    // The positive control shares a prefix with a marker and contains none of them.
+    for (const vector of table.vectors.filter((row) => row.condition === "NEAR_MISS")) {
+      const near = (vector.marker ?? "").toLowerCase();
+      expect(folded.some((marker) => near.includes(marker))).toBe(false);
+    }
+    // Every condition the schema names is exercised.
+    expect(new Set(table.vectors.map((vector) => vector.condition)).size).toBe(Vector.shape.condition.options.length);
   });
 
   it("accepts the rest of the normalized vocabulary", () => {

@@ -1,0 +1,21 @@
+{
+  "vectorTableVersion": 1,
+  "vectors": [
+    { "condition": "ADMITTED", "marker": null, "verdict": "ADMITTED", "refusal": null },
+    { "condition": "RELATIVE", "marker": null, "verdict": "REFUSED", "refusal": "NOT_ABSOLUTE" },
+    { "condition": "ABSENT", "marker": null, "verdict": "REFUSED", "refusal": "ABSENT" },
+    { "condition": "SYMLINK", "marker": null, "verdict": "REFUSED", "refusal": "NOT_CANONICAL" },
+    { "condition": "FILE", "marker": null, "verdict": "REFUSED", "refusal": "NOT_A_DIRECTORY" },
+    { "condition": "GROUP_WRITABLE", "marker": null, "verdict": "REFUSED", "refusal": "PERMISSIONS_TOO_OPEN" },
+    { "condition": "WORLD_WRITABLE", "marker": null, "verdict": "REFUSED", "refusal": "PERMISSIONS_TOO_OPEN" },
+    { "condition": "PRODUCT_PATH", "marker": "/Rottay/app-", "verdict": "REFUSED", "refusal": "PRODUCT_PATH" },
+    { "condition": "PRODUCT_PATH", "marker": "/Rottay/dm-", "verdict": "REFUSED", "refusal": "PRODUCT_PATH" },
+    { "condition": "PRODUCT_PATH", "marker": "/Rottay/svc-", "verdict": "REFUSED", "refusal": "PRODUCT_PATH" },
+    { "condition": "PRODUCT_PATH", "marker": "/Rottay/ui-", "verdict": "REFUSED", "refusal": "PRODUCT_PATH" },
+    { "condition": "PRODUCT_PATH", "marker": "/Rottay/platform", "verdict": "REFUSED", "refusal": "PRODUCT_PATH" },
+    { "condition": "PRODUCT_PATH", "marker": "/rottay/app-", "verdict": "REFUSED", "refusal": "PRODUCT_PATH" },
+    { "condition": "PRODUCT_PATH", "marker": "/ROTTAY/Platform", "verdict": "REFUSED", "refusal": "PRODUCT_PATH" },
+    { "condition": "PRODUCT_PATH", "marker": "/Rottay/DM-", "verdict": "REFUSED", "refusal": "PRODUCT_PATH" },
+    { "condition": "NEAR_MISS", "marker": "/rottay/application", "verdict": "ADMITTED", "refusal": null }
+  ]
+}

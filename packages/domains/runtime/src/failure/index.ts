@@ -8,12 +8,15 @@ import { INTENT_STEP, OUTCOME_STEP } from "../core/lifecycle/index.js";
 import { appendPlanStep, assertAttemptOpened, currentState } from "../core/step-executor/index.js";
 import type { BeatContext } from "../core/step-executor/index.js";
 import {
+  DispatchRefusedError,
   LifecyclePlanError,
+  OperationFailedError,
   PostconditionUnknownError,
   ReconciliationError,
   SupervisorError,
   ToyBoundaryError,
 } from "../errors/index.js";
+import { deliveryIsOpen } from "../execution-chain/index.js";
 import { ExecutionEffectError } from "../execution-effects/index.js";
 
 /**
@@ -145,9 +148,15 @@ export type FailureDecision =
  *   second terminal claim. Settling it where it is genuinely a failure needs its
  *   own evidence and is owed to a later packet.
  *
- * And the one that settles: `ExecutionEffectError`. The port classified the
+ * And the ones that settle: `ExecutionEffectError`. The port classified the
  * failure itself — a refused start, or a stream that ended in `error` — so the
  * work either never ran or ran and failed, and the log is entitled to say so.
+ * P-15 escalón D3 (ADR 0105, decision 141) adds two, both `EXECUTION_FAILED`:
+ * `DispatchRefusedError`, a delivery refused before any spend because no catalog
+ * version in force covers the segment, and `OperationFailedError`, an effect whose
+ * recorded outcome is a failure. Each is a definitive "this cannot run" or "this
+ * ran and failed", not an uncertainty, and both are tested first, before
+ * `LedgerError` and the rest, so no broader class can claim them.
  *
  * **The "probe first" row of the design table is not a third disposition.**
  * `settleFailure` already probes an open intent unconditionally and refuses on
@@ -159,6 +168,8 @@ export type FailureDecision =
 export function classifyFailure(error: unknown): FailureDecision {
   // Order matters only where the hierarchy overlaps: every class below extends
   // `RuntimeError`, so the specific ones are tested before anything broader.
+  if (error instanceof DispatchRefusedError) return { settle: true, reason: "EXECUTION_FAILED" };
+  if (error instanceof OperationFailedError) return { settle: true, reason: "EXECUTION_FAILED" };
   if (error instanceof PostconditionUnknownError) {
     return { settle: false, refusal: "POSTCONDITION_UNKNOWN" };
   }
@@ -282,6 +293,22 @@ export async function settleFailure(
       // without the repair `closeIntent`'s NOT_DONE branch performs.
       appendPlanStep(context, OUTCOME_STEP);
       closedIntent = true;
+    }
+  }
+
+  // P-15 escalón D3 (C-D3): under a revision the effect's delivery is part of
+  // what the log says. One left open — INTENDED or INFLIGHT, since an intention on
+  // record does not prove nothing was sent — may still act, so the settlement
+  // appends nothing and refuses, exactly as an UNKNOWN probe does.
+  if (context.invocation.revision !== undefined && effect !== "DONE") {
+    if (deliveryIsOpen(context.ledger, context.invocation)) {
+      return {
+        verdict: "POSTCONDITION_UNKNOWN",
+        state: precheck.state,
+        effect: null,
+        closedIntent,
+        failed: null,
+      };
     }
   }
 

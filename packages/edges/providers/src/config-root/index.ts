@@ -1,6 +1,8 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
+import { PRODUCT_PATH_MARKERS } from "@acp/contracts";
+
 import type { AdmittedConfigRoot, AdmittedWorkdir, ProviderName } from "../contract/index.js";
 import { AdapterError } from "../errors/index.js";
 
@@ -17,21 +19,6 @@ import { AdapterError } from "../errors/index.js";
  * is pointed at can be aimed anywhere and will report, truthfully and
  * uselessly, that it found nothing.
  */
-
-/**
- * Path fragments that mean "this is somebody's product checkout".
- *
- * A config root or working directory inside one of these is refused outright,
- * whatever else is true about it. P4 adapters read; they do not go near real
- * work.
- */
-const PRODUCT_PATH_MARKERS: readonly string[] = Object.freeze([
-  "/Rottay/app-",
-  "/Rottay/dm-",
-  "/Rottay/svc-",
-  "/Rottay/ui-",
-  "/Rottay/platform",
-]);
 
 /** Exactly the configuration variable each provider is permitted. */
 export const PROVIDER_CONFIG_ENV: Readonly<Record<ProviderName, string>> = Object.freeze({
@@ -66,6 +53,16 @@ export function allowedEnvKeys(provider: ProviderName): readonly string[] {
   );
 }
 
+/**
+ * Admit a directory a caller owns, or refuse it.
+ *
+ * A config root or working directory inside a product checkout is refused
+ * outright, whatever else is true about it: P4 adapters read; they do not go near
+ * real work. The markers are `@acp/contracts`' `PRODUCT_PATH_MARKERS` since P-15
+ * escalón D3 (ADR 0105, decision 139), because the runtime's evidence root is
+ * refused by the same set; these checks stay here, and a shared vector table holds
+ * them and the runtime's copy to one answer.
+ */
 function admitDirectory(
   candidate: string,
   context: { readonly provider: string; readonly taskId: string },
@@ -91,8 +88,11 @@ function admitDirectory(
   if ((stats.mode & 0o022) !== 0) {
     throw new AdapterError("CONFIG_ROOT_REFUSED", context);
   }
+  // Case-insensitive (P-15 escalón D3 v2): macOS filesystems are, so a lowercase
+  // spelling of a product checkout is the same checkout.
+  const folded = candidate.toLowerCase();
   for (const marker of PRODUCT_PATH_MARKERS) {
-    if (candidate.includes(marker)) {
+    if (folded.includes(marker.toLowerCase())) {
       throw new AdapterError("CONFIG_ROOT_REFUSED", context);
     }
   }

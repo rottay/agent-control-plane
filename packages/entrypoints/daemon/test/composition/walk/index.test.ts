@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -13,11 +13,12 @@ import type {
   SwitchAuthorization,
   TaskEnvelope,
 } from "@acp/contracts";
-import { CONTRACT_VERSION } from "@acp/contracts";
+import { CONTRACT_VERSION, buildInitiativeIdempotencyKey } from "@acp/contracts";
 import {
   ARTIFACT_ACCESS_POLICY_IDS,
   artifactBlobLeaseStorePath,
   artifactRootFor,
+  canonicalJsonStringify,
   openArtifactBlobLeaseStore,
   openArtifactPlane,
   openLeaseStore,
@@ -25,16 +26,21 @@ import {
   readArtifact,
 } from "@acp/ledger";
 import type { ArtifactBlobLeaseStore, ArtifactPlane, Ledger, LeaseStore } from "@acp/ledger";
+import { CLAUDE_USAGE_SOURCE } from "@acp/providers";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { BeatContext, DurableInvocation, ScenarioRoot } from "@acp/runtime";
+import type { BeatContext, DurableInvocation, RecordedTask, ScenarioRoot } from "@acp/runtime";
 import {
   INTENT_STEP,
   LIFECYCLE_PLAN,
   appendPlanStep,
   deriveInvocation,
   deterministicUuid,
+  evidenceRootFor,
+  intakeTask,
+  nextStep,
   operationForStep,
+  readRecordedTask,
   removeScenarioRoot,
   resolveScenarioRoot,
   scenarioLedgerPath,
@@ -44,6 +50,7 @@ import { createArbiter } from "../../../src/arbiter/index.js";
 import type { LeaseHold } from "../../../src/arbiter/index.js";
 import type { DaemonExecutionConfig } from "../../../src/daemon-child/index.js";
 import { buildWalkEffects, runComposedSqliteWalk } from "../../../src/composition/walk/index.js";
+import { conformanceGateFor } from "../../../src/composition/ports/index.js";
 import { instructionFor } from "../../../src/composition/index.js";
 
 /** One usage report of a known total, class split unknown (P-15/D2, ADR 0105). */
@@ -125,6 +132,8 @@ const AT = "2026-08-30T15:00:00.000Z";
 const EMITTED_BY = "kimi/k3/implementer/01";
 const INITIATIVE_ID = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a13";
 const INSTRUCTIONS = "compose the walk the fixture asked for, written by hand";
+/** The instruction's digest, computed by the test alone (P-15/D3). */
+const INSTRUCTIONS_SHA256 = createHash("sha256").update(INSTRUCTIONS, "utf8").digest("hex");
 
 /**
  * One admitted route for every scenario (V2-B1c). A route is required, never
@@ -198,6 +207,9 @@ function stage(name: string, taskId: string, generation: number, events: readonl
     gate: (operationIndex) => {
       gateCalls.push(operationIndex);
     },
+    promptSha256: INSTRUCTIONS_SHA256,
+    promptBytes: Buffer.byteLength(INSTRUCTIONS, "utf8"),
+    chain: null,
   });
   // The walk records against history; it never opens a task (N1). Opening this
   // fixture's task with the plan's own discovered step is the fixture's hand,
@@ -560,6 +572,7 @@ function walkOf(
 ): ReturnType<typeof runComposedSqliteWalk> {
   return runComposedSqliteWalk({
     ledger: composed.ledger,
+    ledgerPath: scenarioLedgerPath(composed.root),
     invocation: composed.invocation,
     execution: composed.execution,
     envelope: envelopeFor(composed.invocation.taskId),
@@ -579,6 +592,9 @@ function walkOf(
     attempt: composed.invocation.attempt,
     emittedBy: EMITTED_BY,
     initiativeId: INITIATIVE_ID,
+    promptSha256: INSTRUCTIONS_SHA256,
+    promptBytes: Buffer.byteLength(INSTRUCTIONS, "utf8"),
+    chain: null,
   });
 }
 
@@ -1113,6 +1129,352 @@ describe("the instruction is composed from the envelope's content (P-06/C)", () 
     // Distinct, so two text blocks report one class; and the classes are all the
     // adapter ever sees of the content (§4.1 `:199-201`).
     expect(composed.modalities).toEqual(["text"]);
-    expect(Object.keys(composed).sort()).toEqual(["instructions", "modalities"]);
+    // P-15/D3: and the composed instruction's digest and length, which the prompt
+    // occurrence records — a digest of the instruction, never of a block.
+    expect(Object.keys(composed).sort()).toEqual(["instructions", "modalities", "promptBytes", "promptSha256"]);
+    expect(composed.instructions).toBe("first\n\nsecond");
+    expect(composed.promptSha256).toBe(createHash("sha256").update("first\n\nsecond", "utf8").digest("hex"));
+    expect(composed.promptBytes).toBe(Buffer.byteLength("first\n\nsecond", "utf8"));
+    for (const block of ["first", "second"]) {
+      expect(composed.promptSha256).not.toBe(createHash("sha256").update(block, "utf8").digest("hex"));
+    }
   });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón D3: a revision-bearing walk records its chain (ADR 0105)
+// ---------------------------------------------------------------------------
+
+describe("P-15/D3: the recorded walk records its chain, and never the legacy row", () => {
+  const V2_INITIATIVE = "44444444-4444-4444-8444-4444444444d3";
+  const V2_TASK = "d3d3d3d3-0000-4000-8000-0000000000d3";
+  const REGISTRY_AT = "2026-08-01T00:00:00.000Z";
+  const V2_MODEL = "claude-opus-5@2026-06-01";
+  const V2_CATALOG = "catalog-walk-d3";
+  const V2_ROUTE: ResolvedRoute = { ...ROUTE, model: "claude-opus-5" };
+  const V2_SESSION = "5e551011-0000-4000-8000-0000000000d3";
+  const USAGE_SOURCE = {
+    source: "claude-cli",
+    sourceClass: "PROVIDER_AUTHORITATIVE" as const,
+    normalizationPolicySha256: "14cbb2a397762bfc4cfec2d00073bc26402d7c81123a2a8683fc007fa808fb0d",
+  };
+  const closers: (() => void)[] = [];
+
+  afterEach(() => {
+    for (const close of closers.splice(0).reverse()) close();
+  });
+
+  function digestOf(text: string): string {
+    return createHash("sha256").update(text, "utf8").digest("hex");
+  }
+
+  /** An operator ledger with its registry, one catalog, and one task entered through the real intake. */
+  function recordedWorld(): { readonly ledger: Ledger; readonly plane: ArtifactPlane; readonly ledgerPath: string; readonly task: RecordedTask; readonly root: ScenarioRoot } {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), "acp-d3-walk-")));
+    worktrees.push(directory);
+    const ledgerPath = join(directory, "control-plane.sqlite");
+    const ledger = openLedger(ledgerPath);
+    const leaseStore = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(ledgerPath), {
+      incarnationId: "11111111-1111-4111-8111-1111111111d3",
+      createdAt: REGISTRY_AT,
+    });
+    const plane = openArtifactPlane({ ledger, leaseStore, ledgerPath });
+    closers.push(() => {
+      leaseStore.close();
+      ledger.close();
+    });
+    ledger.appendInitiativeEvent({
+      contractVersion: CONTRACT_VERSION,
+      eventId: randomUUID(),
+      initiativeId: V2_INITIATIVE,
+      transitionId: "initiative.registered",
+      idempotencyKey: buildInitiativeIdempotencyKey({ initiativeId: V2_INITIATIVE, transitionId: "initiative.registered" }),
+      type: "INITIATIVE_REGISTERED",
+      fromStatus: null,
+      toStatus: "ACTIVE",
+      emittedBy: EMITTED_BY,
+      occurredAt: REGISTRY_AT,
+      recordedAt: REGISTRY_AT,
+      payload: {},
+    });
+    const document = (documentKind: string, documentId: string, payload: Record<string, unknown>): Record<string, unknown> => ({
+      contractVersion: CONTRACT_VERSION,
+      eventId: randomUUID(),
+      idempotencyKey: documentId + "/1",
+      documentKind,
+      documentId,
+      documentVersion: 1,
+      parentDocumentVersion: null,
+      contentDigest: digestOf(canonicalJsonStringify(payload)),
+      recordedBy: "kimi/k3/coordinator/01",
+      effectiveFrom: REGISTRY_AT,
+      occurredAt: REGISTRY_AT,
+      recordedAt: REGISTRY_AT,
+      payload,
+    });
+    ledger.appendRegistryEvent(
+      document("MODEL_VERSION", V2_MODEL, {
+        provider: "claude",
+        model: "claude-opus-5",
+        release: "2026-06-01",
+        status: "ACTIVE",
+        contextTokens: 200000,
+        policyVersion: "2026.09.0",
+        deprecatedAt: null,
+        eligibleRoles: ["implementer"],
+        transports: ["CLI_SUBSCRIPTION"],
+      }),
+    );
+    ledger.appendRegistryEvent(
+      document("ROUTING_ASSIGNMENT_GLOBAL", "routing:GLOBAL:implementer:0", {
+        role: "implementer",
+        slot: 0,
+        provider: "claude",
+        modelVersionId: V2_MODEL,
+        fallbacks: [],
+      }),
+    );
+    ledger.appendRegistryEvent(
+      document("PRICE_TABLE", V2_CATALOG, {
+        intervals: [
+          {
+            provider: "claude",
+            modelVersionId: V2_MODEL,
+            transportKind: "CLI_SUBSCRIPTION",
+            tokenClass: "output",
+            currency: "USD",
+            effectiveFrom: REGISTRY_AT,
+            effectiveTo: null,
+            pricePerMillionNanos: 75_000_000_000,
+          },
+        ],
+      }),
+    );
+    const envelope = { ...envelopeFor(V2_TASK), initiativeId: V2_INITIATIVE, readSet: [DECLARED_PATH] };
+    const intake = intakeTask({
+      ledger,
+      plane,
+      request: {
+        envelope,
+        clientScope: EMITTED_BY,
+        clientRequestKey: "walk-d3-0001",
+        roadmapVersionId: null,
+        stepId: null,
+        role: "implementer",
+        slot: 0,
+        transportKind: "CLI_SUBSCRIPTION",
+        recordedBy: EMITTED_BY,
+      },
+      recordedAt: WALK_AT,
+      holderPid: 5151,
+      identities: {
+        eventId: randomUUID(),
+        revisionId: randomUUID(),
+        commandId: randomUUID(),
+        artifactPinId: randomUUID(),
+        artifactReferenceId: randomUUID(),
+        intentionEventId: randomUUID(),
+        terminalEventId: randomUUID(),
+      },
+    });
+    if (!intake.ok) throw new Error("the fixture's intake was refused: " + intake.reason);
+    const read = readRecordedTask({ ledger, plane, taskId: V2_TASK, route: V2_ROUTE });
+    if (!read.ok) throw new Error("the fixture's task could not be read back: " + read.refusal);
+    mkdirSync(join(directory, "executions"), { mode: 0o700 });
+    const admitted = evidenceRootFor(ledgerPath);
+    if (!admitted.ok) throw new Error("the fixture's evidence root was refused: " + admitted.refusal);
+    return { ledger, plane, ledgerPath, task: read.task, root: admitted.root };
+  }
+
+  /** A port that echoes the instruction through the private sink, then completes with one usage report. */
+  function echoPort(seen: ExecutionRequest[]): ModelExecutionPort {
+    return {
+      start: (...args: unknown[]) => {
+        const [route, request, sink] = args as [ResolvedRoute, ExecutionRequest, ((delta: string) => void) | undefined];
+        seen.push(request);
+        const session: ExecutionSession = {
+          ok: true,
+          sessionId: V2_SESSION,
+          route,
+          // eslint-disable-next-line @typescript-eslint/require-await
+          events: async function* (): AsyncIterable<ExecutionEvent> {
+            sink?.(request.instructions);
+            yield { kind: "started", route, resolvedModel: "claude-opus-5-20260601", protocolVersion: "stream-json/1" };
+            yield {
+              kind: "usage",
+              stepIndex: 1,
+              inputTokens: 1,
+              outputTokens: 1,
+              cacheWriteTokens: 1,
+              cacheReadTokens: 1,
+              totalTokens: 4,
+              reportKind: "CUMULATIVE",
+              isFinal: true,
+              sourceObservationId: V2_SESSION + "/result",
+            };
+            yield { kind: "processExited", exitCode: 0, signal: null };
+            yield { kind: "operationResult", status: "SUCCEEDED" };
+            yield { kind: "completed", stepIndex: 1 };
+          },
+        };
+        return Promise.resolve(session);
+      },
+      interrupt: () => Promise.resolve(),
+      healthProbe: () =>
+        Promise.resolve({ status: "UNKNOWN" as const, checkedAt: AT, latencyMs: null, classifiedError: null }),
+    };
+  }
+
+  it("Fable N3: the ledger's one canonical encoder yields the Claude descriptor's pinned policy digest", () => {
+    // The chain records `normalizationPolicySha256` into the ledger, whose encoder is
+    // `canonicalJsonStringify`; the providers suite recomputes the pin with its own.
+    // This is the one suite that reads both packages, so it is where the two
+    // encoders are held to one digest.
+    expect(digestOf(canonicalJsonStringify(CLAUDE_USAGE_SOURCE.normalizationPolicy))).toBe(
+      CLAUDE_USAGE_SOURCE.normalizationPolicySha256,
+    );
+    expect(USAGE_SOURCE.normalizationPolicySha256).toBe(CLAUDE_USAGE_SOURCE.normalizationPolicySha256);
+  });
+
+  it("refuses a revision-bearing walk without chain facts, and an inline walk with them", () => {
+    const on = recordedWorld();
+    const base = {
+      port: echoPort([]),
+      route: V2_ROUTE,
+      ledger: on.ledger,
+      taskId: V2_TASK,
+      attempt: on.task.attempt,
+      emittedBy: EMITTED_BY,
+      instructions: INSTRUCTIONS,
+      modalities: ["text"] as const,
+      scenarioRoot: on.root,
+      generation: 0,
+      gate: (): void => undefined,
+      promptSha256: INSTRUCTIONS_SHA256,
+      promptBytes: Buffer.byteLength(INSTRUCTIONS, "utf8"),
+    };
+    expect(() => buildWalkEffects({ ...base, invocation: on.task.invocation, chain: null })).toThrow(
+      "refusing to build a revision-bearing walk without its chain facts",
+    );
+    const inline = deriveInvocation(V2_TASK, 1, WALK_AT, "e".repeat(64));
+    const facts = {
+      plane: on.plane,
+      modelVersionId: V2_MODEL,
+      routingAssignmentId: null,
+      catalogDocumentId: V2_CATALOG,
+      usageSource: USAGE_SOURCE,
+      holderPid: 5151,
+    };
+    expect(() => buildWalkEffects({ ...base, invocation: inline, chain: facts })).toThrow(
+      "refusing to build an inline walk with chain facts",
+    );
+  });
+
+  it("the conformance gate records a violation under the revision's coordinate", async () => {
+    const on = recordedWorld();
+    const worktreePath = worktree();
+    const hold = await leaseOver(on.ledger, on.task.invocation, worktreePath);
+    const context: BeatContext = {
+      ledger: on.ledger,
+      effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("NOT_DONE" as const) },
+      invocation: on.task.invocation,
+      emittedBy: EMITTED_BY,
+      initiativeId: on.task.initiativeId,
+      plan: LIFECYCLE_PLAN,
+      route: V2_ROUTE,
+    };
+    // The walk's own navigation: the intake-first opening, then the plan to its INTENT.
+    for (;;) {
+      const state = on.ledger.getTask(V2_TASK)?.currentState ?? null;
+      const step = nextStep(context, state);
+      appendPlanStep(context, step);
+      if (step.index === INTENT_STEP.index) break;
+    }
+    writeFileSync(join(worktreePath, "undeclared.txt"), "outside the write-set\n", "utf8");
+    let released = 0;
+    const gate = conformanceGateFor({
+      ledger: on.ledger,
+      invocation: on.task.invocation,
+      worktreePath,
+      declaredWriteSet: on.task.envelope.writeSet,
+      lease: hold.lease,
+      emittedBy: EMITTED_BY,
+      onViolation: () => {
+        released += 1;
+      },
+    });
+    expect(() => {
+      gate(INTENT_STEP.index);
+    }).toThrow("WRITE_SET_VIOLATION_DETECTED");
+    expect(released).toBe(1);
+    const recorded = on.ledger
+      .listEvents({ taskId: V2_TASK, limit: 200 })
+      .events.filter((record) => record.event.transitionId.startsWith("conformance."));
+    expect(recorded.map((record) => record.event.type)).toContain("WRITE_SET_VIOLATION_DETECTED");
+    for (const record of recorded) {
+      expect(record.event.payload).toMatchObject({ revisionNumber: 1, attemptNumber: 1 });
+    }
+  }, 60_000);
+
+  it("walks a recorded task to its checkpoint, the chain between its INTENT and OUTCOME and no TOKEN_USAGE_RECORDED", async () => {
+    const on = recordedWorld();
+    const worktreePath = worktree();
+    const hold = await leaseOver(on.ledger, on.task.invocation, worktreePath);
+    const requests: ExecutionRequest[] = [];
+    const gateCalls: number[] = [];
+    const composed = instructionFor(on.ledger, on.task.envelope);
+    expect(composed.promptSha256).toBe(digestOf(composed.instructions));
+    expect(composed.promptBytes).toBe(Buffer.byteLength(composed.instructions, "utf8"));
+
+    const result = await runComposedSqliteWalk({
+      ledger: on.ledger,
+      ledgerPath: on.ledgerPath,
+      invocation: on.task.invocation,
+      execution: { ...executionFor(worktreePath), route: V2_ROUTE },
+      envelope: on.task.envelope,
+      scenarioRoot: on.root,
+      worktreePath,
+      port: echoPort(requests),
+      route: V2_ROUTE,
+      generation: 0,
+      landed: false,
+      hold,
+      gate: (operationIndex) => {
+        gateCalls.push(operationIndex);
+      },
+      ...composed,
+      taskId: V2_TASK,
+      attempt: on.task.attempt,
+      emittedBy: EMITTED_BY,
+      initiativeId: on.task.initiativeId,
+      chain: {
+        plane: on.plane,
+        modelVersionId: on.task.resolution.modelVersionId,
+        routingAssignmentId: on.task.resolution.assignmentId,
+        catalogDocumentId: V2_CATALOG,
+        usageSource: USAGE_SOURCE,
+        holderPid: 5151,
+      },
+    });
+
+    expect(result.finalState).toBe("CHECKPOINTED");
+    const types = on.ledger.listEvents({ taskId: V2_TASK, limit: 200 }).events.map((record) => record.event.type);
+    const intentAt = types.indexOf("RUN_STARTED");
+    const chainTypes = [
+      "EFFECT_INTENDED",
+      "DISPATCH_INTENDED",
+      "DISPATCH_OUTCOME_RECORDED",
+      "PROMPT_OCCURRENCE_RECORDED",
+      "USAGE_STREAM_DECLARED",
+      "USAGE_OBSERVATION_RECORDED",
+      "DISPATCH_OUTCOME_RECORDED",
+      "RESPONSE_OCCURRENCE_RECORDED",
+    ];
+    expect(types.slice(intentAt + 1, intentAt + 1 + chainTypes.length)).toEqual(chainTypes);
+    expect(types).not.toContain("TOKEN_USAGE_RECORDED");
+    expect(types[types.length - 1]).toBe("CHECKPOINT_WRITTEN");
+    expect(gateCalls).toEqual([INTENT_STEP.index]);
+    expect(requests.map((request) => request.instructions)).toEqual([composed.instructions]);
+    expect(on.ledger.verifyIntegrity().problems).toEqual([]);
+  }, 60_000);
 });

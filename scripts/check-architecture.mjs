@@ -11383,6 +11383,73 @@ const P15D2_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-15 escalón D3 -- the chain in the walk, the recorded config form and the
+ * non-toy root (ADR 0105; decisions 139-142).
+ *
+ * The daemon runs a task the intake recorded: a config form `{databasePath, taskId,
+ * execution.catalogDocumentId}` exclusive with every inline coordinate, the
+ * operator's ledger, an evidence root beside it (created 0700 if absent, then
+ * admitted), and the recorded-task reader. The walk's one execution records its
+ * chain through a runtime concept, `execution-chain`, which the daemon only wires:
+ * the price pin before the effect is intended, the effect and its delivery,
+ * INFLIGHT or ABANDONED around the start, the prompt, the usage stream and its
+ * observations, the result and the response, and the coupling that keeps a failed
+ * effect from reaching CHECKPOINTED. "Never emits" is refused at runtime: a
+ * construction with part of the chain is a SupervisorError. `PRODUCT_PATH_MARKERS`
+ * moves to `@acp/contracts` for the providers' admission and the runtime's.
+ *
+ * **Pins that move.** `RUNTIME_PUBLIC_EXPORTS` 285 -> **296**;
+ * `CONTRACTS_SCHEMA_EXPORTS` 165 -> **166**; `PATH_SCOPED_LAWS` 152 -> **153**
+ * (L-P32C-1 retired, L-P15D-1 and L-P15D-2 added).
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` (2.9.0), `MIGRATIONS` (23),
+ * `API_CONTRACT_VERSION`, `PROVIDERS_PUBLIC_EXPORTS` (93).
+ *
+ * **Thirty-six paths; nine are new to the fence.** The DT's widenings: the shared
+ * vector table is a JSON file (TS6059 keeps a foreign `.ts` out of the test
+ * projects' `rootDir`), and the lease arbiter and its suite join, because under a
+ * revision its lease events carry the payload coordinate and wait for the opening.
+ */
+const P15D3_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/operator-paths/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/test/testing/product-path-vectors/index.json",
+  "packages/edges/providers/src/config-root/index.ts",
+  "packages/edges/providers/test/config-root/index.test.ts",
+  "packages/domains/runtime/src/evidence-root/index.ts",
+  "packages/domains/runtime/src/evidence-root/types/index.ts",
+  "packages/domains/runtime/test/evidence-root/index.test.ts",
+  "packages/domains/runtime/src/execution-chain/index.ts",
+  "packages/domains/runtime/src/execution-chain/types/index.ts",
+  "packages/domains/runtime/test/execution-chain/index.test.ts",
+  "packages/domains/runtime/src/execution-effects/index.ts",
+  "packages/domains/runtime/src/execution-effects/types/index.ts",
+  "packages/domains/runtime/src/failure/index.ts",
+  "packages/domains/runtime/src/errors/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/README.md",
+  "packages/domains/runtime/test/execution-effects/index.test.ts",
+  "packages/domains/runtime/test/failure/index.test.ts",
+  "packages/entrypoints/daemon/src/composition/index.ts",
+  "packages/entrypoints/daemon/src/composition/types/index.ts",
+  "packages/entrypoints/daemon/src/composition/walk/index.ts",
+  "packages/entrypoints/daemon/src/composition/ports/index.ts",
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/src/arbiter/index.ts",
+  "packages/entrypoints/daemon/test/arbiter/index.test.ts",
+  "packages/entrypoints/daemon/test/composition/walk/index.test.ts",
+  "packages/entrypoints/daemon/test/composition/ports/index.test.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0105-the-daemon-consumes-a-recorded-task-and-appends-the-whole-chain.md",
+  "docs/audit/decisions/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11620,6 +11687,7 @@ const WRITE_SET = [
   ...P15R_WRITE_SET,
   ...P15D1_WRITE_SET,
   ...P15D2_WRITE_SET,
+  ...P15D3_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13006,9 +13074,10 @@ const PATH_SCOPED_LAWS = [
   // P-32/captura C. L-P32B-1 is amended in its own row (the identity admits the
   // runtime's usage recorder; the fold does not), and one new path-shaped surface
   // adds one row: the register and the `requireScope` call sites both move
-  // 142 -> 143 for L-P32C-1.
+  // 142 -> 143 for L-P32C-1. P-15 escalón D3 retires L-P32C-1 and puts L-P15D-1 in
+  // its row: the recorders are wired now, by the execution chain alone.
   {
-    law: "the usage recorders stay unwired until a normalizing adapter binds them",
+    law: "the usage recorders are reached by the execution chain alone, and the production walk wires it",
     scope: "packages/*/*/src/**",
   },
   // P-33/catálogo B. One new path-shaped surface, so one new row: the register and
@@ -13072,6 +13141,14 @@ const PATH_SCOPED_LAWS = [
   {
     law: "only the registry publication calls appendRegistryEvent in src",
     scope: "packages/*/*/src/**",
+  },
+  // P-15 escalón D3. L-P32C-1 is retired into L-P15D-1's row above, and one new
+  // path-shaped surface adds one row: the register and the `requireScope` call sites
+  // both move 152 -> 153 for L-P15D-2. L-B7T-2 and L-P06C-1 are amended in their own
+  // rows and add none.
+  {
+    law: "the production walk records the result through the execution chain",
+    scope: "packages/entrypoints/daemon/src/composition/walk/index.ts, packages/domains/runtime/src/execution-chain/index.ts",
   },
 ];
 
@@ -18187,8 +18264,16 @@ if (tracked.status === 0) {
       );
     } else if (!source.includes("recordTokenObservation(")) {
       fail(SPEND_HOME + " passes a usage sink that does not reach the recorder");
+    } else if (!source.includes("recordStream:")) {
+      // AMENDED by P-15 escalón D3 (ADR 0105), in this row: a revision-bearing walk
+      // records its spend as a declared stream, through the execution chain's stream
+      // hook, and never the legacy row (C1). The V1 literal keeps the legacy sink.
+      fail(SPEND_HOME + " builds the revision-bearing walk without the chain's stream hook; a V2 walk would record no spend");
     } else {
-      notes.push("the production walk passes a usage sink that reaches the recorder, in " + SPEND_HOME);
+      notes.push(
+        "the production walk passes a usage sink that reaches the legacy recorder on V1 and the chain's stream on V2, in " +
+          SPEND_HOME,
+      );
     }
   }
 
@@ -20332,6 +20417,23 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "TaskIntakeOutcome",
   "TaskIntakeTestFaults",
   "TaskIntakeWriteRefusal",
+  // P-15 escalón D3 (ADR 0105, decisions 139-141): what the daemon's recorded form
+  // composes, appended as a group. The recorded-task reader and its vocabulary and
+  // two types, the evidence root and its vocabulary, the execution chain and its
+  // input, and the two errors a drill tells apart; and `payloadCoordinate`, which
+  // P-15/B kept off the barrel and the daemon's lease and conformance events now
+  // need (no inline restatement). 285 -> 296.
+  "RECORDED_TASK_REFUSALS",
+  "readRecordedTask",
+  "RecordedTask",
+  "RecordedTaskOutcome",
+  "EVIDENCE_ROOT_REFUSALS",
+  "evidenceRootFor",
+  "createExecutionChain",
+  "ExecutionChainInput",
+  "DispatchRefusedError",
+  "OperationFailedError",
+  "payloadCoordinate",
 ];
 
 /**
@@ -20672,6 +20774,10 @@ if (accountsIndex === null) {
   "USAGE_SOURCE_CLASSES",
   "UsageReportKind",
   "UsageSourceClass",
+  // P-15 escalón D3 (ADR 0105, C-D1): the product-path markers, moved down from the
+  // providers' config-root admission so the runtime's evidence root reads the same
+  // set. Data only. 165 -> 166.
+  "PRODUCT_PATH_MARKERS",
   "CHECKPOINT_MAX_BYTES",
   "CLI_SUBSCRIPTION_PROVIDERS",
   "CONTRACT_VERSION",
@@ -28191,6 +28297,13 @@ const RESULT_STATUS_READERS = {
 //   3. The prose the mould carries stays where it is. A ban nobody can read is a
 //      ban that gets deleted by the next person who tidies the docblock.
 //
+// AMENDED by P-15 escalón D3 (ADR 0105), in this row: `instructionFor` returns the
+// SHA-256 and the length of the COMPOSED INSTRUCTION, which the prompt occurrence
+// records (execution §8.1, `promptSha256`). The composed string is not a block; it is
+// the instruction, and its digest is recorded by design. No block, and no digest of
+// one, leaves the function, and it still names no recorder — so a reader does not
+// take the prompt digest for a leak, and the containment below is unchanged.
+//
 // AMENDED by P-07 escalón D (ADR 0100), in this row: the runtime's
 // `operation-result/index.ts` joins the sites as the one PRODUCER of output blocks.
 // It writes `artifactRefId` in the block literals it builds from model output, and
@@ -28785,18 +28898,22 @@ const RESULT_SINK_HOME = "packages/domains/runtime/src/execution-effects/index.t
   }
 }
 
-// L-P32C-1 -- the usage recorders stay unwired until P-15 (P-32/captura C, Q5,
-// H-6, ADR 0090).
+// L-P15D-1 -- the usage recorders are reached by the execution chain alone, and the
+// production walk wires it (P-15 escalón D3, ADR 0105; retires L-P32C-1).
 //
-// The walk reports one total and emits no effect, so wiring either recorder today
-// would invent classes or effects (the DT's Q5). L-P32A-1 held A's fold inert
-// until B called it; this holds C's recorders the same way: no tracked
-// `packages/*/*/src/` file other than the usage module and the runtime barrel
-// names `recordUsageStreamDeclaration` or `recordUsageObservation` after comments
-// are stripped. P-15 retires it in the packet that binds a normalizing adapter,
-// and names the retirement. The suites are outside `src/` and outside the law.
+// L-P32C-1 held C's recorders unwired until a normalizing adapter bound them, because
+// wiring either one before would invent classes or an effect. D2 bound the adapter and
+// D3 built the effect, so the recorders are wired now, in exactly one place: the
+// runtime's execution chain, which declares the stream and records each report whose
+// classes are known. No other tracked `packages/*/*/src/` file than the usage module,
+// the runtime barrel and the chain names `recordUsageStreamDeclaration` or
+// `recordUsageObservation` after comments are stripped; the chain names both; and the
+// production walk builds the chain and passes its stream hook. The suites are outside
+// `src/` and outside the law.
 const USAGE_RECORDER_SITE = "packages/domains/runtime/src/usage/index.ts";
 const USAGE_RECORDER_BARREL = "packages/domains/runtime/src/index.ts";
+const EXECUTION_CHAIN_SITE = "packages/domains/runtime/src/execution-chain/index.ts";
+const CHAIN_WALK_SITE = "packages/entrypoints/daemon/src/composition/walk/index.ts";
 {
   let recorderScanned = 0;
   if (tracked.status === 0) {
@@ -28804,21 +28921,77 @@ const USAGE_RECORDER_BARREL = "packages/domains/runtime/src/index.ts";
     for (const relativePath of present) {
       if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
       if (!/\.tsx?$/.test(relativePath)) continue;
-      if (relativePath === USAGE_RECORDER_SITE || relativePath === USAGE_RECORDER_BARREL) continue;
+      if (
+        relativePath === USAGE_RECORDER_SITE ||
+        relativePath === USAGE_RECORDER_BARREL ||
+        relativePath === EXECUTION_CHAIN_SITE
+      ) {
+        continue;
+      }
       const content = readIfPresent(relativePath);
       if (content === null) continue;
       recorderScanned += 1;
       if (/\b(?:recordUsageStreamDeclaration|recordUsageObservation)\b/.test(stripComments(content))) {
         fail(
           relativePath +
-            " names a usage recorder; they stay unwired until P-15 binds a normalizing adapter, and a caller" +
-            " today would invent the classes or the effect a report needs",
+            " names a usage recorder; the execution chain is their one caller, and a second would declare a" +
+            " stream or record a report the chain's order does not govern",
         );
       }
     }
   }
-  requireScope("the usage recorders stay unwired until a normalizing adapter binds them", recorderScanned);
-  notes.push("no production source outside the usage module and the runtime barrel names a usage recorder");
+  const chain = stripComments(readIfPresent(EXECUTION_CHAIN_SITE) ?? "");
+  const walk = stripComments(readIfPresent(CHAIN_WALK_SITE) ?? "");
+  if (chain.length === 0) {
+    fail(EXECUTION_CHAIN_SITE + " is missing; the usage recorders would have no caller");
+  } else if (!chain.includes("recordUsageStreamDeclaration(") || !chain.includes("recordUsageObservation(")) {
+    fail(EXECUTION_CHAIN_SITE + " no longer reaches both usage recorders; a V2 walk's spend would be recorded by nothing");
+  }
+  if (walk.length === 0) {
+    fail(CHAIN_WALK_SITE + " is missing; the execution chain would have no production wiring");
+  } else if (!walk.includes("createExecutionChain(") || !walk.includes("recordStream: chain.recordStream")) {
+    fail(
+      CHAIN_WALK_SITE +
+        " no longer builds the execution chain and passes its stream hook; a V2 walk would record no spend",
+    );
+  }
+  requireScope(
+    "the usage recorders are reached by the execution chain alone, and the production walk wires it",
+    recorderScanned,
+  );
+  notes.push(
+    "the usage recorders are named by the execution chain alone among production sources, and the production walk wires it",
+  );
+}
+
+// L-P15D-2 -- the production walk records the result through the execution chain
+// (P-15 escalón D3, ADR 0105).
+//
+// L-B7T-2's shape over the result: the revision-bearing walk passes the chain's
+// result hook, and the chain reaches the publication, the delivery's move and the
+// response occurrence. Without it the result hook could stay optional in production,
+// and a V2 walk would checkpoint an effect whose outcome and answer nothing recorded
+// — the chain's own confirmation refuses that at runtime, and this keeps the wiring
+// from being removed without a fence edit.
+{
+  const chain = stripComments(readIfPresent(EXECUTION_CHAIN_SITE) ?? "");
+  const walk = stripComments(readIfPresent(CHAIN_WALK_SITE) ?? "");
+  requireScope(
+    "the production walk records the result through the execution chain",
+    (chain.length === 0 ? 0 : 1) + (walk.length === 0 ? 0 : 1),
+  );
+  if (!walk.includes("recordResult: chain.recordResult")) {
+    fail(CHAIN_WALK_SITE + " no longer passes the execution chain's result hook; a V2 walk would record no result");
+  }
+  if (!walk.includes("confirmChain: chain.confirmChain")) {
+    fail(CHAIN_WALK_SITE + " no longer passes the chain's confirmation; a marker could be written over a gap");
+  }
+  for (const reach of ["publishResult(", "buildDispatchTransitionEvent(", "buildResponseOccurrenceEvent("]) {
+    if (!chain.includes(reach)) {
+      fail(EXECUTION_CHAIN_SITE + " no longer calls " + reach + "; the result it records would be incomplete");
+    }
+  }
+  notes.push("the production walk records the result, the delivery's settlement and the response through the execution chain");
 }
 
 // L-P32A-2 -- the settlement fold reads no clock, no environment and no

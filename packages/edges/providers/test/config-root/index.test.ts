@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { PRODUCT_PATH_MARKERS } from "@acp/contracts";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -184,5 +187,107 @@ describe("the environment is built, never inherited", () => {
     } finally {
       delete process.env["ACP_P4A_SHOULD_NOT_TRAVEL"];
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón D3: the shared product-path vector table (ADR 0105, decision 139)
+// ---------------------------------------------------------------------------
+
+/** The table `@acp/contracts` holds for both admissions: data, read from disk. */
+const VECTOR_TABLE = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../../kernel/contracts/test/testing/product-path-vectors/index.json",
+);
+
+interface PathVector {
+  readonly condition: string;
+  readonly marker: string | null;
+  readonly verdict: "ADMITTED" | "REFUSED";
+}
+
+/** Read the table, or fail loudly: an absent or malformed table is a broken fixture, never an empty one. */
+function readVectors(path: string): readonly PathVector[] {
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const vectors = (parsed as { readonly vectors?: unknown }).vectors;
+  if (!Array.isArray(vectors) || vectors.length === 0) throw new Error("the vector table carries no vectors");
+  return vectors.map((entry: unknown, index) => {
+    const vector = entry as Record<string, unknown>;
+    const { condition, marker, verdict } = vector;
+    if (
+      typeof condition !== "string" ||
+      (marker !== null && typeof marker !== "string") ||
+      (verdict !== "ADMITTED" && verdict !== "REFUSED")
+    ) {
+      throw new Error("the vector table's row " + String(index) + " is malformed");
+    }
+    return { condition, marker, verdict };
+  });
+}
+
+/** The candidate one condition names, built in a fresh owned root. */
+function candidateFor(vector: PathVector): string {
+  switch (vector.condition) {
+    case "ADMITTED":
+      return drillRoot();
+    case "RELATIVE":
+      return "relative/config-root";
+    case "ABSENT":
+      return join(TMP_ROOT, "acp-p4a-absent-" + randomUUID());
+    case "SYMLINK": {
+      const link = join(TMP_ROOT, "acp-p4a-link-" + randomUUID());
+      symlinkSync(drillRoot(), link);
+      created.push(link);
+      return link;
+    }
+    case "FILE": {
+      const file = join(drillRoot(), "not-a-dir");
+      writeFileSync(file, "x");
+      return file;
+    }
+    case "GROUP_WRITABLE":
+      return drillRoot(0o770);
+    case "WORLD_WRITABLE":
+      return drillRoot(0o707);
+    case "PRODUCT_PATH": {
+      const path = drillRoot() + (vector.marker ?? "") + "x";
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+      return path;
+    }
+    case "NEAR_MISS": {
+      const path = drillRoot() + (vector.marker ?? "");
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+      return path;
+    }
+    default:
+      throw new Error("the vector table names a condition this suite cannot build: " + vector.condition);
+  }
+}
+
+describe("the shared vector table holds the providers' admission to one answer (P-15/D3)", () => {
+  it("admits and refuses every row as the table says, and names every contracts marker", () => {
+    const vectors = readVectors(VECTOR_TABLE);
+    for (const vector of vectors) {
+      const candidate = candidateFor(vector);
+      const label = vector.condition + (vector.marker ?? "");
+      if (vector.verdict === "ADMITTED") {
+        expect(admitConfigRoot(candidate, CONTEXT), label).toBe(candidate);
+      } else {
+        expect(() => admitConfigRoot(candidate, CONTEXT), label).toThrow(/CONFIG_ROOT_REFUSED/);
+      }
+    }
+    // Every declared marker is exercised in its own spelling; the case variants and the
+    // near miss ride beside them (P-15/D3 v2).
+    const exercised = vectors.flatMap((vector) => (vector.marker === null ? [] : [vector.marker]));
+    expect(exercised.filter((marker) => PRODUCT_PATH_MARKERS.includes(marker))).toEqual([...PRODUCT_PATH_MARKERS]);
+    expect(exercised.length).toBeGreaterThan(PRODUCT_PATH_MARKERS.length);
+  });
+
+  it("fails loudly on a malformed copy of the table, and on an absent one", () => {
+    const root = drillRoot();
+    const copy = join(root, "index.json");
+    writeFileSync(copy, JSON.stringify({ vectors: [{ condition: "ADMITTED", marker: null, verdict: "MAYBE" }] }));
+    expect(() => readVectors(copy)).toThrow("the vector table's row 0 is malformed");
+    expect(() => readVectors(join(root, "absent.json"))).toThrow(/ENOENT/);
   });
 });

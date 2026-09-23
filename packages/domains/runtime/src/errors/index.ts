@@ -11,7 +11,9 @@ export type RuntimeErrorCode =
   | "POSTCONDITION_UNKNOWN"
   | "LIFECYCLE_PLAN"
   | "SUPERVISOR"
-  | "RECONCILIATION";
+  | "RECONCILIATION"
+  | "DISPATCH_REFUSED"
+  | "OPERATION_FAILED";
 
 export class RuntimeError extends Error {
   readonly code: RuntimeErrorCode;
@@ -77,5 +79,45 @@ export class ReconciliationError extends RuntimeError {
   constructor(message: string) {
     super("RECONCILIATION", message);
     this.name = "ReconciliationError";
+  }
+}
+
+/**
+ * A delivery was refused before any spend (P-15 escalón D3, ADR 0105; decision 141).
+ *
+ * The recorded walk resolves the price pin before it intends the effect: no
+ * catalog version in force at the walk's instant, or one that does not cover the
+ * segment's provider, model version and transport, and nothing is intended, no
+ * process is started and no call is made. The walk settles `FAILED` on it, because
+ * "no catalog prices this model" is a definitive answer rather than an uncertainty.
+ * `at` names the fact that refused, never a value.
+ */
+export class DispatchRefusedError extends RuntimeError {
+  readonly at: string;
+
+  constructor(at: string, message: string) {
+    super("DISPATCH_REFUSED", message);
+    this.name = "DispatchRefusedError";
+    this.at = at;
+  }
+}
+
+/**
+ * The model answered, and its answer was a failure (P-15 escalón D3, ADR 0105;
+ * decision 141).
+ *
+ * Raised after the effect's outcome and the response occurrence are durable, and
+ * before the evidence marker: a task never reaches `CHECKPOINTED` on an effect that
+ * did not succeed with a result (P-07 C10). Distinct from `DispatchRefusedError`,
+ * so a drill can tell "no catalog covers the model" from "the model said it
+ * failed". `reason` is the decider's closed word, never provider output.
+ */
+export class OperationFailedError extends RuntimeError {
+  readonly reason: string;
+
+  constructor(reason: string, message: string) {
+    super("OPERATION_FAILED", message);
+    this.name = "OperationFailedError";
+    this.reason = reason;
   }
 }

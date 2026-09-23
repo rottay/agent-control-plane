@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { Checkpoint, Lease, ModelExecutionPort, TaskEnvelope } from "@acp/contracts";
-import { CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
+import { CONTRACT_VERSION } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
 import { createCheckpointStore } from "@acp/ledger";
 import type { AgentHarness, ApiKeyBinding, ApiStreamingClient, CliBinding, ProviderAdapter } from "@acp/providers";
@@ -43,7 +43,14 @@ import type {
   SwitchPort,
   WorktreeObservation,
 } from "@acp/runtime";
-import { OUTCOME_STEP, checkWriteSetConformance, considerSwitch, deriveEventCoordinate, deterministicUuid } from "@acp/runtime";
+import {
+  OUTCOME_STEP,
+  checkWriteSetConformance,
+  considerSwitch,
+  deriveEventCoordinate,
+  deterministicUuid,
+  payloadCoordinate,
+} from "@acp/runtime";
 
 import type { DaemonExecutionBinding, DaemonExecutionConfig } from "../../daemon-child/index.js";
 import { StartupError } from "../../errors/index.js";
@@ -286,12 +293,10 @@ function checkpointSourceFor(input: {
       const branchName = branch.stdout.trim();
       if (branchName === "") return refuse("GIT_UNOBSERVABLE", "git.branch");
 
+      // The OUTCOME's key as the walk derived it: V1's for an inline walk, the V2
+      // key under a revision (P-15 escalón D3), from the one coordinate producer.
       const recorded = input.ledger.getEventByIdempotencyKey(
-        buildIdempotencyKey({
-          taskId: input.invocation.taskId,
-          attempt: input.invocation.attempt,
-          transitionId: OUTCOME_STEP.transitionId,
-        }),
+        deriveEventCoordinate(input.invocation, OUTCOME_STEP.transitionId, OUTCOME_STEP.index).idempotencyKey,
       );
       if (recorded === null) return refuse("CHECKPOINT_INVALID", "lastAtomicStep");
       const parsed: unknown = JSON.parse(recorded.canonicalJson);
@@ -487,7 +492,10 @@ export function conformanceGateFor(input: {
           recordedAt: coordinate.recordedAt,
           correlationId: input.invocation.invocationId,
           causationId: null,
-          payload,
+          // Under a revision the key is V2 and the payload carries the coordinate
+          // it names (P-15 escalón D3); under V1 the coordinate is empty and the
+          // payload is exactly what it was.
+          payload: { ...payload, ...payloadCoordinate(input.invocation) },
         });
       };
 

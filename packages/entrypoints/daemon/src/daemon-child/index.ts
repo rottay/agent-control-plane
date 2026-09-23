@@ -17,6 +17,7 @@ import { isDaemonMode } from "../lifecycle/index.js";
 import type { DaemonMode } from "../lifecycle/index.js";
 import { installSignalHandlers } from "../signals/index.js";
 import { startDaemon, stopDaemon, terminateDaemon } from "../index.js";
+import { startRecordedDaemon } from "../composition/index.js";
 
 /**
  * The daemon, hosted in its own process so a drill can signal it for real.
@@ -213,7 +214,14 @@ export function bindingForRoute(execution: DaemonExecutionConfig): DaemonExecuti
   return found;
 }
 
-export interface DaemonChildConfig {
+/**
+ * The inline form: the walk's coordinates, stated in the config (P2D onwards).
+ *
+ * The two arms of `DaemonChildConfig` are not exported by name, on
+ * `DaemonExecutionBinding`'s precedent: the union widens the published name
+ * without adding one.
+ */
+interface InlineDaemonChildConfig {
   readonly mode: DaemonMode;
   readonly scenarioId: string;
   readonly emittedBy: string;
@@ -247,7 +255,38 @@ export interface DaemonChildConfig {
    * the one-walk case is literally the same config either way.
    */
   readonly walks: readonly ScheduledWalk[] | null;
+  /** Null: the inline form states its coordinates and runs on a scenario ledger. */
+  readonly recorded: null;
 }
+
+/**
+ * The recorded form: a task the intake already recorded, named by its operator
+ * ledger and its id (P-15 escalón D3, ADR 0105; decision 139, C6).
+ *
+ * **Exclusive with every inline coordinate**: `envelope`, `walks`, `scenarioId`,
+ * `attempt`, `submittedAt`, `submissionDigest` and `initiativeId` are refused by
+ * name beside `databasePath`, because the recorded form reads them back from the
+ * ledger and a config that also stated them would carry two answers. One walk,
+ * under `SQLITE_SUPERVISOR`, and the price catalog it is pinned against is named
+ * in `execution.catalogDocumentId`, never defaulted (ND-D3-2).
+ */
+interface RecordedDaemonChildConfig {
+  readonly mode: DaemonMode;
+  readonly emittedBy: string;
+  readonly taskId: string;
+  readonly holdOpen: boolean;
+  readonly checkPorts: boolean;
+  readonly execution: DaemonExecutionConfig;
+  readonly walks: null;
+  readonly recorded: {
+    /** The operator ledger: absolute, canonical, present. */
+    readonly databasePath: string;
+    readonly catalogDocumentId: string;
+  };
+}
+
+/** What the child is asked to run: an inline walk, or a recorded one. */
+export type DaemonChildConfig = InlineDaemonChildConfig | RecordedDaemonChildConfig;
 
 /**
  * The submission, its preimage and its digest -- declared in `@acp/runtime`,
@@ -684,6 +723,7 @@ function parseWalks(raw: unknown, mode: DaemonMode): readonly ScheduledWalk[] {
     }
 
     const execution = parseExecutionSection(value["execution"]);
+    refuseInlineCatalog(value["execution"], at + ".execution");
     // V2-B1f/F4d. A switch is played by the SQLite supervisor's own catch, and
     // the Restate lane has no such fork. Silence would let an operator write an
     // authorization, see the daemon start, and believe a switch was armed in a
@@ -757,6 +797,11 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
   const mode = value["mode"];
   if (!isDaemonMode(mode)) throw new ModeError("mode must be an explicit daemon mode");
 
+  // P-15 escalón D3: the recorded form, decided by the presence of its one key.
+  // A present `databasePath` — null and empty included, which are refused below
+  // by name — is never read as the inline form.
+  if (value["databasePath"] !== undefined) return parseRecordedForm(value, mode);
+
   // V2 concurrency C3. Exactly one of the two forms. Both is refused because a
   // config that states its coordinates twice has two answers to what runs here,
   // and nothing in the daemon decides between them.
@@ -796,6 +841,7 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
       execution: first.spec.execution,
       envelope: first.envelope,
       walks,
+      recorded: null,
     };
   }
 
@@ -831,6 +877,7 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
   // Required, never defaulted (V2-B1b, D4/D5): a config that does not say
   // which route it executes, and through which admitted binding, gets no daemon.
   const execution = parseExecutionSection(value["execution"]);
+  refuseInlineCatalog(value["execution"], "execution");
 
   // The same deferral, on the singular form of the config.
   if (mode === "RESTATE" && execution.switchAuthorization !== undefined) {
@@ -903,27 +950,121 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
     execution,
     envelope: singularEnvelope.data,
     walks: null,
+    recorded: null,
+  };
+}
+
+/**
+ * The inline forms name no price catalog: a pin belongs to a revision's delivery,
+ * and an inline walk has no revision. Refused by name rather than ignored, so an
+ * operator who wrote one learns the form it belongs to (P-15 escalón D3).
+ */
+function refuseInlineCatalog(raw: unknown, at: string): void {
+  if (typeof raw === "object" && raw !== null && (raw as Record<string, unknown>)["catalogDocumentId"] !== undefined) {
+    throw new ModeError(at + ".catalogDocumentId belongs to the recorded form; an inline walk pins no price catalog");
+  }
+}
+
+/** The inline coordinates the recorded form reads back from the ledger, and refuses beside it. */
+const INLINE_ONLY_FIELDS = [
+  "envelope",
+  "walks",
+  "scenarioId",
+  "attempt",
+  "submittedAt",
+  "submissionDigest",
+  "initiativeId",
+] as const;
+
+/**
+ * The recorded form's door (P-15 escalón D3, ADR 0105; decision 139).
+ *
+ * Every field is refused by name, never by value: the exclusivity with each inline
+ * coordinate first, then the mode, the operator ledger (absolute, canonical,
+ * present — the config-file manner, with no default), the task id, the emitter,
+ * the execution section and its price catalog. Admitting the ledger's directory,
+ * the evidence root beside it and the task itself is the start's, after the
+ * config is whole.
+ */
+function parseRecordedForm(value: Record<string, unknown>, mode: DaemonMode): DaemonChildConfig {
+  for (const field of INLINE_ONLY_FIELDS) {
+    if (value[field] !== undefined) {
+      throw new ModeError(
+        "config.databasePath and config." +
+          field +
+          " are exclusive; the recorded form reads the task's coordinates back from its ledger",
+      );
+    }
+  }
+  if (mode !== "SQLITE_SUPERVISOR") {
+    throw new ModeError("config.mode " + mode + " does not run the recorded form; it runs under SQLITE_SUPERVISOR");
+  }
+  const databasePath = admittedPath(value["databasePath"], "config.databasePath");
+  const taskId = value["taskId"];
+  if (typeof taskId !== "string" || !UUID.test(taskId)) throw new ModeError("config.taskId must be a uuid");
+  const emittedBy = value["emittedBy"];
+  if (typeof emittedBy !== "string" || emittedBy === "") throw new ModeError("config.emittedBy must be a non-empty string");
+  const holdOpen = value["holdOpen"] ?? true;
+  const checkPorts = value["checkPorts"] ?? true;
+  if (typeof holdOpen !== "boolean") throw new ModeError("holdOpen must be a boolean");
+  if (typeof checkPorts !== "boolean") throw new ModeError("checkPorts must be a boolean");
+  const execution = parseExecutionSection(value["execution"]);
+  const catalogDocumentId = (value["execution"] as Record<string, unknown>)["catalogDocumentId"];
+  if (typeof catalogDocumentId !== "string" || catalogDocumentId === "") {
+    throw new ModeError(
+      "config.execution.catalogDocumentId must be a non-empty string; the recorded form names the price catalog" +
+        " its delivery is pinned against, and there is no default",
+    );
+  }
+  // A switch is played through a landing the recorded chain does not yet compose:
+  // refused by name, never armed silently.
+  if (execution.switchAuthorization !== undefined) {
+    throw new ModeError("config.execution.switchAuthorization is not admitted in the recorded form");
+  }
+  return {
+    mode,
+    emittedBy,
+    taskId,
+    holdOpen,
+    checkPorts,
+    execution,
+    walks: null,
+    recorded: { databasePath, catalogDocumentId },
   };
 }
 
 /** Run the daemon until a signal, or until the server dies under it. */
 export async function runDaemonChild(config: DaemonChildConfig): Promise<number> {
-  const run = await startDaemon({
-    mode: config.mode,
-    scenarioId: config.scenarioId,
-    emittedBy: config.emittedBy,
-    taskId: config.taskId,
-    attempt: config.attempt,
-    submittedAt: config.submittedAt,
-    submissionDigest: config.submissionDigest,
-    initiativeId: config.initiativeId,
-    checkPorts: config.checkPorts,
-    execution: config.execution,
-    envelope: config.envelope,
-    // Undefined, not null: the option is additive, and a caller that never
-    // heard of C3 must produce exactly the object it always produced.
-    ...(config.walks === null ? {} : { walks: config.walks }),
-  });
+  const run =
+    config.recorded === null
+      ? await startDaemon({
+          mode: config.mode,
+          scenarioId: config.scenarioId,
+          emittedBy: config.emittedBy,
+          taskId: config.taskId,
+          attempt: config.attempt,
+          submittedAt: config.submittedAt,
+          submissionDigest: config.submissionDigest,
+          initiativeId: config.initiativeId,
+          checkPorts: config.checkPorts,
+          execution: config.execution,
+          envelope: config.envelope,
+          // Undefined, not null: the option is additive, and a caller that never
+          // heard of C3 must produce exactly the object it always produced.
+          ...(config.walks === null ? {} : { walks: config.walks }),
+        })
+      : // P-15 escalón D3: the recorded form, through its own entry.
+        await startRecordedDaemon({
+          mode: config.mode,
+          emittedBy: config.emittedBy,
+          checkPorts: config.checkPorts,
+          execution: config.execution,
+          recorded: {
+            databasePath: config.recorded.databasePath,
+            taskId: config.taskId,
+            catalogDocumentId: config.recorded.catalogDocumentId,
+          },
+        });
 
   const announce = (): void => {
     process.stdout.write(

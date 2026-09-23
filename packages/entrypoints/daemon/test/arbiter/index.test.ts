@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { openLeaseStore } from "@acp/ledger";
 import type { LeaseStore } from "@acp/ledger";
-import { deriveInvocation, deterministicUuid } from "@acp/runtime";
+import { ATTEMPT_OPENING_STEP, deriveEventCoordinate, deriveInvocation, deterministicUuid } from "@acp/runtime";
 import type { DurableInvocation, LedgerPort } from "@acp/runtime";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -551,5 +551,85 @@ describe("every instant handed to the store is canonical UTC", () => {
       if (lexical !== byInstant) disagreements.push(expiresAt);
     }
     expect(disagreements).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón D3: a revision's lease events wait for the opening (ADR 0105)
+// ---------------------------------------------------------------------------
+
+describe("under a revision, lease events carry the coordinate and wait for the attempt's opening (P-15/D3)", () => {
+  const REVISION = {
+    revisionId: deterministicUuid("revision/task-c2/3"),
+    revisionNumber: 3,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+    envelopeArtifactReferenceId: "ref-envelope-task-c2",
+  };
+
+  function v2Invocation(): DurableInvocation {
+    return deriveInvocation("task-c2", 1, T0, "a".repeat(64), REVISION);
+  }
+
+  /** The real ledger's rule, restated for the fake: the opening is on record once `opened` says so. */
+  function openingLedger(opened: { value: boolean }): ReturnType<typeof fakeLedger> {
+    const base = fakeLedger();
+    const openingKey = deriveEventCoordinate(v2Invocation(), ATTEMPT_OPENING_STEP.transitionId, ATTEMPT_OPENING_STEP.index).idempotencyKey;
+    return {
+      ...base,
+      getEventByIdempotencyKey: (key: string) => (opened.value && key === openingKey ? { canonicalJson: "{}" } : null),
+    };
+  }
+
+  it("appends nothing before the opening, then each queued event once, with the V2 coordinate and key", async () => {
+    const opened = { value: false };
+    const ledger = openingLedger(opened);
+    const arbiter = arbiterOn(temporaryStore(), { ledger, invocation: v2Invocation() });
+    const outcome = await arbiter.acquire();
+    if (!outcome.ok) throw new Error("expected a grant");
+    // The task exists (the intake recorded it) and the attempt is not opened: queued.
+    expect(ledger.appended).toEqual([]);
+    expect(arbiter.flush()).toBe(0);
+
+    opened.value = true;
+    outcome.hold.release("RELEASED");
+    const appended = ledger.appended as { idempotencyKey: string; type: string; payload: Record<string, unknown> }[];
+    expect(appended.map((event) => event.type)).toEqual(["LEASE_ACQUIRED", "LEASE_REVOKED"]);
+    for (const event of appended) {
+      expect(event.payload).toMatchObject({ revisionNumber: 3, attemptNumber: 1 });
+      expect(event.idempotencyKey.startsWith("v2/")).toBe(true);
+    }
+
+    // Exactly once: the violation path's flush, and a second one, append nothing more.
+    expect(arbiter.flush()).toBe(0);
+    expect(arbiter.flush()).toBe(0);
+    expect(ledger.appended).toHaveLength(2);
+  });
+
+  it("a walk refused before its opening releases the lock and leaves no orphan lease event", async () => {
+    const opened = { value: false };
+    const ledger = openingLedger(opened);
+    const store = temporaryStore();
+    const arbiter = arbiterOn(store, { ledger, invocation: v2Invocation() });
+    const outcome = await arbiter.acquire();
+    if (!outcome.ok) throw new Error("expected a grant");
+
+    // The walk stops before it opens the attempt (a refused start, a refused read).
+    outcome.hold.release("RELEASED");
+    expect(arbiter.flush()).toBe(0);
+    expect(ledger.appended).toEqual([]);
+    // The lock is free: the store row holds no lease, and a successor is granted.
+    expect(store.read(WORKTREE)?.leaseId).toBeNull();
+    const successor = await arbiterOn(store, { ledger: fakeLedger() }).acquire();
+    expect(successor.ok).toBe(true);
+  });
+
+  it("V1 is unchanged: no coordinate in the payload, the V1 key, appended at acquire", async () => {
+    const ledger = fakeLedger();
+    const outcome = await arbiterOn(temporaryStore(), { ledger }).acquire();
+    if (!outcome.ok) throw new Error("expected a grant");
+    const [acquired] = ledger.appended as { idempotencyKey: string; payload: Record<string, unknown> }[];
+    expect(Object.keys(acquired?.payload ?? {}).sort()).toEqual(["acquiredAt", "expiresAt", "holder", "leaseId", "worktreePath"]);
+    expect(acquired?.idempotencyKey.startsWith("v2/")).toBe(false);
   });
 });

@@ -298,9 +298,9 @@ normalized:
   epoch, or declares it plus one after a counter reset, and chooses `0` only on
   `null`.
 
-Neither recorder is wired: the walk reports one total and emits no effect, so a
-caller today would invent classes or effects. The fence holds it (L-P32C-1) until
-P-15 binds a normalizing adapter.
+Since P-15 escalón D3 (ADR 0105) both recorders are wired, by one caller: the
+execution chain below. L-P32C-1, which held them unwired until an adapter could
+normalize a report, is retired into L-P15D-1: no other production source names them.
 
 ### The result recorder
 
@@ -329,11 +329,45 @@ P-07 escalón D (ADR 0100) gives an effect its answer, in three pieces.
   are the published `RESPONSE`'s own, against the prompt it answers. It builds its
   record as one literal of the ledger's five keys.
 
-The recorder is not wired. No production construction site passes
-`recordResult`, the daemon appends no outcome or occurrence, there is no read
-verb, and the task's terminal state is not coupled to the effect's outcome. All
-of that is P-15's. The runtime barrel exports nothing new, and the suites import
-the concept relatively.
+Since P-15 escalón D3 the recorder is wired, through the execution chain below,
+and the task's terminal state is coupled to the effect's outcome there.
+
+### The execution chain
+
+P-15 escalón D3 (ADR 0105, decisions 139 to 142) runs a task the intake recorded.
+`execution-chain/` is the one behaviour authority for what a revision's walk
+records around its one execution; the daemon builds it and hands its hooks to
+`createExecutionEffects`, and orders nothing itself.
+
+- **Before the start:** the `PRICE_TABLE` version in force at the walk's instant and
+  covering the segment, or `DispatchRefusedError` with nothing intended and nothing
+  spent; then `EFFECT_INTENDED` and `DISPATCH_INTENDED` with the pin. A delivery
+  already on record is never started again: its session would answer under the same
+  id (D2's resumed-run obligation), and reconciling it is P-18's.
+- **Around the start:** `INFLIGHT` and the prompt occurrence when the port accepts,
+  `ABANDONED` with the effect `FAILED` and no prompt when it refuses.
+- **The spend:** one declared stream and one observation per report whose four
+  classes are known; a class the source did not state records nothing, never 0.
+  **No `TOKEN_USAGE_RECORDED` under a revision** (C1): `accounts/quota` and the
+  rollups do not see a V2 walk's spend until P-19 folds settlements.
+- **The result:** published before it is referenced, `SETTLED` with the pair, the
+  response occurrence; a failed effect throws `OperationFailedError` after its
+  appends, so no marker is written and the walk settles `TASK_FAILED`.
+- **Before the marker:** the chain confirms the outcome is `SUCCEEDED` and the
+  response is recorded, or the marker is refused.
+
+Every identity is derived under the invocation and every instant is its
+`submittedAt`; a delivery's `acceptedAt` therefore records the submission, not the
+provider's acceptance. `createExecutionEffects` refuses part of a chain, and the
+chain beside the legacy usage sink, at construction: "never emits" is refused at
+runtime, not only by the fence. `settleFailure` settles nothing over a delivery left
+open, `INTENDED` or `INFLIGHT`: an intention on record does not prove nothing was
+sent, and the one sound `ABANDONED` is the chain's own, recorded where the port
+refused the start.
+
+`evidence-root/` admits the evidence directory beside an operator ledger —
+`dirname(L)/executions`, the providers' six checks restated, the product-path
+markers from `@acp/contracts` — and mints it as a `ScenarioRoot`.
 
 ### Loopback and data roots
 

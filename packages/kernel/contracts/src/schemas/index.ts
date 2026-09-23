@@ -95,6 +95,9 @@ export {
 } from "./usage-measure/index.js";
 export type { UsageReportKind, UsageSourceClass } from "./usage-measure/index.js";
 export {
+  PRODUCT_PATH_MARKERS,
+} from "./operator-paths/index.js";
+export {
   findCredentialViolations,
   findTranscriptViolations,
   serializedByteLength,

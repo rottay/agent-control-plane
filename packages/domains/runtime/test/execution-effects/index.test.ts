@@ -1367,3 +1367,59 @@ describe("P-07 escalón D: the result recorder", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// P-15 escalón D3: the recorded walk's chain, all of it or none of it (N-D14, N-D16)
+// ---------------------------------------------------------------------------
+
+describe("a construction that records a chain records all of it (P-15/D3, N-D14)", () => {
+  /** Every member a chained construction must pass, each a no-op. */
+  function fullChain(): Record<string, unknown> {
+    return {
+      recordIntentions: () => undefined,
+      recordDelivery: () => undefined,
+      recordStream: () => undefined,
+      recordResult: () => undefined,
+      confirmChain: () => undefined,
+      recordPressure: () => undefined,
+      checkConformance: () => undefined,
+    };
+  }
+
+  function construct(members: Record<string, unknown>): () => unknown {
+    const invocation = invocationFor("d3000000-0000-4000-8000-000000000001");
+    return () =>
+      createExecutionEffects({
+        port: fakePort({}, { starts: 0 }),
+        route: ROUTE,
+        request: requestFor(invocation),
+        scenarioRoot: resolveScenarioRoot("p15d3-chain-guard"),
+        ...members,
+      });
+  }
+
+  afterEach(() => {
+    removeScenarioRoot("p15d3-chain-guard");
+  });
+
+  it("admits the whole chain beside the result, pressure and conformance sinks", () => {
+    expect(construct(fullChain())).not.toThrow();
+  });
+
+  it("refuses the chain with any one of its seven members missing, naming the member", () => {
+    for (const name of Object.keys(fullChain())) {
+      const members = fullChain();
+      members[name] = undefined;
+      expect(construct(members), name).toThrow(SupervisorError);
+      expect(construct(members), name).toThrow(new RegExp("without " + name + ";"));
+    }
+  });
+
+  it("N-D16: refuses the chain beside the legacy usage sink, so no TOKEN_USAGE_RECORDED is reachable under a revision", () => {
+    expect(construct({ ...fullChain(), recordUsage: () => undefined })).toThrow(/beside the legacy usage sink/);
+  });
+
+  it("a construction with no chain member is the inline one, and is admitted as before", () => {
+    expect(construct({ recordUsage: () => undefined, recordPressure: () => undefined })).not.toThrow();
+  });
+});

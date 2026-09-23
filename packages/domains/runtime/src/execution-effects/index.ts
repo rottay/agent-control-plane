@@ -21,6 +21,8 @@ import type { EffectPort } from "../core/step-executor/index.js";
 import { PostconditionUnknownError, SupervisorError } from "../errors/index.js";
 import { operationFactsOf } from "../operation-result/index.js";
 import type { OutputCondition, ResultSink } from "../operation-result/index.js";
+
+import type { ChainConfirmation, DeliverySink, IntentionSink, StreamSink } from "./types/index.js";
 // The scenario-root brand is taken type-only through this package's own entry
 // point rather than from `toy/repository` by path. The brand is the toy
 // module's, but the module's *specifier* is what the toy-binding law counts,
@@ -154,7 +156,37 @@ export interface ExecutionEffectsInput {
    * and the effect re-executes, as a throwing usage sink does.
    */
   readonly recordResult?: ResultSink | undefined;
+  /**
+   * The recorded walk's chain (P-15 escalón D3, ADR 0105; decision 140): the
+   * effect and its delivery before the start, the delivery's move and the prompt
+   * after it, the usage stream, and the confirmation before the marker. The fifth
+   * to eighth uses of the idiom, and the first that come as a set.
+   *
+   * **All or none, refused at construction.** A walk that records its chain records
+   * all of it, with the result, pressure and conformance sinks beside it, and never
+   * through the legacy usage sink — a chain with a gap would be a V2 walk quietly
+   * running the V1 branch by omission, which is the defect "never emits" names. So
+   * `createExecutionEffects` refuses a construction that passes some and not all,
+   * and one that passes the chain beside `recordUsage`.
+   */
+  readonly recordIntentions?: IntentionSink | undefined;
+  readonly recordDelivery?: DeliverySink | undefined;
+  readonly recordStream?: StreamSink | undefined;
+  readonly confirmChain?: ChainConfirmation | undefined;
 }
+
+/**
+ * The recorded walk's hooks, declared in this concept's leaf and re-exported here
+ * unchanged so every importer reads them from this module (owner law §7).
+ */
+export type {
+  ChainConfirmation,
+  DeliverySample,
+  DeliverySink,
+  IntentionSink,
+  StreamSample,
+  StreamSink,
+} from "./types/index.js";
 
 /**
  * One `usage` entry from the port's trail, as the sink receives it.
@@ -447,9 +479,11 @@ function writeMarker(target: string, marker: EvidenceMarker): void {
  * lived on the success path.
  */
 type ExecutionOutcome =
-  | { readonly ok: true; readonly trail: readonly ExecutionEvent[] }
+  | { readonly ok: true; readonly accepted: true; readonly trail: readonly ExecutionEvent[] }
   | {
       readonly ok: false;
+      /** Whether the port accepted the start: a stream existed, whatever it then said. */
+      readonly accepted: boolean;
       readonly refusal: ExecutionRefusal;
       readonly at: string;
       /**
@@ -482,7 +516,11 @@ type ExecutionOutcome =
  * lets the caller drain first and refuse afterwards, without any reader ever
  * parsing a message or re-deriving a classification an adapter already made.
  */
-async function execute(input: ExecutionEffectsInput, sink?: ExecutionOutputSink): Promise<ExecutionOutcome> {
+async function execute(
+  input: ExecutionEffectsInput,
+  sink: ExecutionOutputSink | undefined,
+  onStarted: ((sessionId: string | null) => void) | null,
+): Promise<ExecutionOutcome> {
   // Two literal call forms, never `start(route, request, undefined)`: without a
   // result recorder the port is asked exactly what it was asked before P-07 D.
   const started =
@@ -492,7 +530,24 @@ async function execute(input: ExecutionEffectsInput, sink?: ExecutionOutputSink)
   // No stream existed, so nothing was observed and nothing is carried. The
   // empty trail here is not an observation of silence; it is the absence of an
   // observation, and the drains below are no-ops over it.
-  if (!started.ok) return { ok: false, refusal: started.refusal, at: started.at, trail: [] };
+  if (!started.ok) {
+    // P-15 escalón D3: a refused start is a delivery that was never accepted.
+    // Recorded here, before the refusal travels, and never followed by a prompt.
+    if (onStarted !== null) onStarted(null);
+    return { ok: false, accepted: false, refusal: started.refusal, at: started.at, trail: [] };
+  }
+  // P-15 escalón D3: the delivery is INFLIGHT and the prompt was sent, recorded
+  // after the start and before a single event is read. A recorder that throws here
+  // leaves a live session nobody will drain, so the session is asked to stop first
+  // and the throw travels after it.
+  if (onStarted !== null) {
+    try {
+      onStarted(started.sessionId);
+    } catch (error: unknown) {
+      await input.port.interrupt(started.sessionId);
+      throw error;
+    }
+  }
 
   const trail: ExecutionEvent[] = [];
   let terminal: ExecutionEvent | null = null;
@@ -502,12 +557,12 @@ async function execute(input: ExecutionEffectsInput, sink?: ExecutionOutputSink)
   }
 
   if (terminal === null) {
-    return { ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "events.terminal", trail };
+    return { ok: false, accepted: true, refusal: "TRANSPORT_UNAVAILABLE", at: "events.terminal", trail };
   }
   if (terminal.kind === "error") {
-    return { ok: false, refusal: terminal.refusal, at: "events.error", trail };
+    return { ok: false, accepted: true, refusal: terminal.refusal, at: "events.error", trail };
   }
-  return { ok: true, trail };
+  return { ok: true, accepted: true, trail };
 }
 
 /** What the collector holds: its sink, and a read of the output once the execution ends. */
@@ -562,6 +617,63 @@ function collectOutput(): OutputCollector {
   return { sink, read: () => ({ output: condition === "HELD" ? chunks.join("") : "", condition }) };
 }
 
+/** The recorded walk's hooks, all present: what `chainOf` hands `apply`. */
+interface ChainHooks {
+  readonly recordIntentions: IntentionSink;
+  readonly recordDelivery: DeliverySink;
+  readonly recordStream: StreamSink;
+  readonly confirmChain: ChainConfirmation;
+}
+
+/**
+ * The chain a construction passes, all of it or none of it (P-15 escalón D3, N-D14).
+ *
+ * "Never emits" refused at runtime rather than left to the fence: a construction
+ * that passes one chain hook passes the four, and the result, pressure and
+ * conformance sinks beside them, and not the legacy usage sink, whose row a
+ * revision never writes (C1). Anything else is a `SupervisorError` naming the
+ * member, before any effect can run.
+ */
+function chainOf(input: ExecutionEffectsInput): ChainHooks | null {
+  const { recordIntentions, recordDelivery, recordStream, confirmChain } = input;
+  if (
+    recordIntentions === undefined &&
+    recordDelivery === undefined &&
+    recordStream === undefined &&
+    confirmChain === undefined
+  ) {
+    return null;
+  }
+  const members: readonly (readonly [string, unknown])[] = [
+    ["recordIntentions", recordIntentions],
+    ["recordDelivery", recordDelivery],
+    ["recordStream", recordStream],
+    ["confirmChain", confirmChain],
+    ["recordResult", input.recordResult],
+    ["recordPressure", input.recordPressure],
+    ["checkConformance", input.checkConformance],
+  ];
+  for (const [name, member] of members) {
+    if (typeof member !== "function") {
+      throw new SupervisorError(
+        "refusing to build execution effects that record a chain without " +
+          name +
+          "; a recorded walk records all of its chain, and a gap would be the legacy branch taken by omission",
+      );
+    }
+  }
+  if (input.recordUsage !== undefined) {
+    throw new SupervisorError(
+      "refusing to build execution effects that record a chain beside the legacy usage sink; a revision's" +
+        " spend is a declared stream and its observations, never a TOKEN_USAGE_RECORDED row",
+    );
+  }
+  if (recordIntentions === undefined || recordDelivery === undefined || recordStream === undefined || confirmChain === undefined) {
+    return null;
+  }
+  return { recordIntentions, recordDelivery, recordStream, confirmChain };
+}
+
 /**
  * Build the effect port over one execution.
  *
@@ -572,6 +684,7 @@ function collectOutput(): OutputCollector {
  */
 export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort {
   const { scenarioRoot } = input;
+  const chained = chainOf(input);
 
   return {
     async apply(operation: OperationCoordinate): Promise<void> {
@@ -594,7 +707,21 @@ export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort
 
       // P-07 escalón D: a collector exists only when a result recorder does.
       const collector = input.recordResult === undefined ? null : collectOutput();
-      const outcome = await execute(input, collector?.sink);
+      // P-15 escalón D3: the effect and its delivery are recorded before any
+      // process exists, and a refusal here — no price in force, a delivery
+      // already on record — stops the effect before anything is sent.
+      if (chained !== null) chained.recordIntentions(operation.operationIndex);
+      const onStarted =
+        chained === null
+          ? null
+          : (sessionId: string | null): void => {
+              chained.recordDelivery(
+                sessionId === null
+                  ? { operationIndex: operation.operationIndex, kind: "REFUSED" }
+                  : { operationIndex: operation.operationIndex, kind: "ACCEPTED", sessionId },
+              );
+            };
+      const outcome = await execute(input, collector?.sink, onStarted);
       const trail = outcome.trail;
 
       // V2-B7T. The sink runs BEFORE the marker, and the ordering is the whole
@@ -631,6 +758,29 @@ export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort
             sourceObservationId: event.sourceObservationId,
           });
         }
+      }
+      // P-15 escalón D3: under a revision the spend is a declared stream and its
+      // observations, never the legacy row (C1). Same window, same reason: before
+      // the refusal below and before the marker. An execution that was never
+      // accepted opened no stream, so it declares none.
+      if (chained !== null && outcome.accepted) {
+        const reports: UsageSample[] = [];
+        for (const event of trail) {
+          if (event.kind !== "usage") continue;
+          reports.push({
+            operationIndex: operation.operationIndex,
+            stepIndex: event.stepIndex,
+            inputTokens: event.inputTokens,
+            outputTokens: event.outputTokens,
+            cacheWriteTokens: event.cacheWriteTokens,
+            cacheReadTokens: event.cacheReadTokens,
+            totalTokens: event.totalTokens,
+            reportKind: event.reportKind,
+            isFinal: event.isFinal,
+            sourceObservationId: event.sourceObservationId,
+          });
+        }
+        chained.recordStream({ operationIndex: operation.operationIndex, reports });
       }
 
       // V2-B1f. In the same window, and before the marker, for the same
@@ -690,6 +840,12 @@ export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort
       // nothing. That is the rule the success path already follows and the
       // fail-closed direction — an unsettled walk is visible, where a silently
       // discarded observation was not.
+      // P-15 escalón D3: an accepted delivery whose session failed settles with the
+      // effect FAILED and no result, before the refusal travels. A refused start was
+      // already recorded ABANDONED when it was refused.
+      if (!outcome.ok && outcome.accepted && chained !== null) {
+        chained.recordDelivery({ operationIndex: operation.operationIndex, kind: "FAILED" });
+      }
       if (!outcome.ok) throw new ExecutionEffectError(outcome.refusal, outcome.at);
 
       // P-07 escalón D. The result, on the `completed` terminal only — the throw
@@ -712,6 +868,10 @@ export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort
       // and this walk is about to be settled rather than resumed. The gate
       // records and revokes before it throws, so what reaches here is a throw
       // whose evidence is already durable.
+      // P-15 escalón D3: the chain landed — the effect's outcome and the response
+      // occurrence are durable — or no marker is written.
+      if (chained !== null) chained.confirmChain(operation.operationIndex);
+
       const checkConformance = input.checkConformance;
       if (checkConformance !== undefined) checkConformance(operation.operationIndex);
 

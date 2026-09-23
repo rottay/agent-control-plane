@@ -22,8 +22,8 @@
  */
 
 import type { ModelExecutionPort, ResolvedRoute, TaskEnvelope } from "@acp/contracts";
-import type { Ledger } from "@acp/ledger";
-import type { DurableInvocation, ScenarioRoot } from "@acp/runtime";
+import type { ArtifactPlane, Ledger } from "@acp/ledger";
+import type { DurableInvocation, ExecutionChainInput, ScenarioRoot } from "@acp/runtime";
 
 import type { LeaseHold } from "../../arbiter/index.js";
 import type { DaemonExecutionConfig } from "../../daemon-child/index.js";
@@ -72,6 +72,50 @@ export interface WalkEffectsInput {
   readonly generation: number;
   /** The one gate per seam, whoever asks it (V2-B1f/F5). */
   readonly gate: (operationIndex: number) => void;
+  /** The composed instruction's digest and length (P-15 escalón D3): what a prompt occurrence records. */
+  readonly promptSha256: string;
+  readonly promptBytes: number;
+  /**
+   * The recorded walk's chain facts (P-15 escalón D3, ADR 0105), or null for an
+   * inline walk. Present exactly when the invocation carries a revision: a
+   * revision-bearing walk records its chain and never the legacy usage row, and
+   * `buildWalkEffects` refuses either half without the other.
+   */
+  readonly chain: WalkChainFacts | null;
+}
+
+/**
+ * The one walk a singular daemon runs, whichever form named it (P-15 escalón D3,
+ * ADR 0105).
+ *
+ * The inline form states these; the recorded form reads them back from the
+ * operator's ledger, and brings the chain's facts with them. Everything after S3
+ * reads the walk from here, so the two forms share every later step.
+ */
+export interface WalkSubject {
+  readonly invocation: DurableInvocation;
+  readonly envelope: TaskEnvelope;
+  readonly taskId: string;
+  readonly attempt: number;
+  readonly initiativeId: string;
+  readonly chain: WalkChainFacts | null;
+}
+
+/**
+ * What a recorded walk's chain needs beyond what every walk already carries
+ * (P-15 escalón D3, ADR 0105; decision 140).
+ *
+ * The plane the result is published through, the intake's resolution of the
+ * model version and routing assignment, the price catalog the config names, the
+ * adapter's usage source, and the process that holds the publication's lease.
+ */
+export interface WalkChainFacts {
+  readonly plane: ArtifactPlane;
+  readonly modelVersionId: string;
+  readonly routingAssignmentId: string | null;
+  readonly catalogDocumentId: string;
+  readonly usageSource: ExecutionChainInput["usageSource"];
+  readonly holderPid: number;
 }
 
 /**
@@ -85,6 +129,12 @@ export interface WalkEffectsInput {
  */
 export interface ComposedSqliteWalkInput {
   readonly ledger: Ledger;
+  /**
+   * The path the ledger was opened at (P-15 escalón D3): a scenario's for an
+   * inline walk, the operator's for a recorded one. The checkpoint store resolves
+   * beside it.
+   */
+  readonly ledgerPath: string;
   readonly invocation: DurableInvocation;
   readonly execution: DaemonExecutionConfig;
   readonly envelope: TaskEnvelope;
@@ -108,6 +158,11 @@ export interface ComposedSqliteWalkInput {
   readonly attempt: number;
   readonly emittedBy: string;
   readonly initiativeId: string;
+  /** The composed instruction's digest and length (P-15 escalón D3). */
+  readonly promptSha256: string;
+  readonly promptBytes: number;
+  /** The recorded walk's chain facts, or null for an inline walk (P-15 escalón D3). */
+  readonly chain: WalkChainFacts | null;
 }
 
 /**
@@ -117,4 +172,12 @@ export interface ComposedSqliteWalkInput {
 export interface ComposedInstruction {
   readonly instructions: string;
   readonly modalities: readonly ContentBlockKind[];
+  /**
+   * The SHA-256 of the composed instruction's UTF-8 bytes, and their length (P-15
+   * escalón D3, ADR 0105): what the prompt occurrence records, computed inside the
+   * one composer so nothing downstream holds the bytes to hash them. A digest of
+   * the instruction, never of a block.
+   */
+  readonly promptSha256: string;
+  readonly promptBytes: number;
 }

@@ -1,6 +1,6 @@
 # ADR 0105 — The daemon consumes a recorded task and appends the whole chain
 
-- Status: accepted in part (P-15 escalón D, sub-cut D1, recorded 2026-09-23). D is
+- Status: accepted in part (P-15 escalón D, sub-cuts D1 to D3, recorded 2026-09-23). D is
   landed in four commits, D1 to D4; each adds its own section below, and this record
   is complete when D4 lands.
 - Supersedes: none.
@@ -258,7 +258,230 @@ quota sees changes now, not in D3:
   fallback gate and the daemon drills, whose streams were the same, now carry the
   result's usage and each pin exactly one spend row.
 
-## D3 — to be recorded with D3
+## D3 — decisions 139 to 142
+
+### Eight — the recorded form, the operator ledger and the evidence root (decision 139; C6, C-D1)
+
+The daemon runs a task the intake recorded. The config door gains a **recorded form**,
+decided by the presence of `databasePath`:
+
+- `{mode, databasePath, taskId, emittedBy, execution, holdOpen, checkPorts}`, with the
+  price catalog named in `execution.catalogDocumentId` and never defaulted (ND-D3-2).
+- **Exclusive** with every inline coordinate: `envelope`, `walks`, `scenarioId`,
+  `attempt`, `submittedAt`, `submissionDigest` and `initiativeId` are each refused by
+  name beside `databasePath`, because the recorded form reads them back from the
+  ledger and a config stating them too would carry two answers. The inline forms name
+  no catalog, and one that does is refused.
+- Field by field, never by value: `databasePath` absolute, without a `..` segment,
+  present and canonical (the config-file manner, no default); `taskId` a uuid;
+  `emittedBy` non-empty; `catalogDocumentId` non-empty.
+- One walk, under `SQLITE_SUPERVISOR`. Restate is refused at the door and at the start
+  (`startRecordedDaemon`, the recorded form's own entry): its endpoint does not compose
+  the chain. A switch authorization is refused in this form too.
+- **No landing before the opening** (v2, the verifier's C1). The start asks the landing
+  whether a played switch is owed, and the landing asserts the attempt is opened. A
+  recorded task is still unopened when its daemon starts — its walk opens it — so under a
+  revision whose opening is not on record the landing is not asked: nothing can have
+  landed before the attempt exists, and the walk runs on the admitted route, unlanded, at
+  generation zero. An opened attempt is landed as before. The bin suite now runs a fresh
+  recorded task through `runDaemonChild` to `CHECKPOINTED`; before v2 no suite drove the
+  recorded start end to end, and every fresh recorded task was refused there.
+
+The start then opens the **operator ledger** at `databasePath`, not a scenario's. Its
+evidence root is **derived from the ledger's path**, in `artifactRootFor`'s mould:
+`dirname(L)/executions`. The daemon's recorded-form startup is its **one creator**: it
+creates the directory with mode 0700 only when nothing is there, and never re-modes or
+re-owns an existing one. A ledger under a product checkout is refused **before** that
+mkdir, so nothing is created there (v2, the verifier's C2). The runtime's
+`evidenceRootFor` then admits it — absolute,
+present, canonical, a directory, owned by this user, neither group- nor world-writable,
+under no product checkout — and refuses by a closed, sorted word
+(`EVIDENCE_ROOT_REFUSALS`). What it admits is minted as the same opaque `ScenarioRoot`
+brand, so `createExecutionEffects` still refuses a plain string. The daemon's spelling
+of the directory and the runtime's must name the same path, or the start is refused.
+
+`PRODUCT_PATH_MARKERS` moves to `@acp/contracts` as data only (a new capability module,
+`operator-paths`). The providers' config-root admission imports it, and its filesystem
+checks stay where they are; the runtime's evidence root restates the six checks as a
+**declared second copy**, because the runtime may not import the providers. One shared
+vector table (path condition × verdict × refusal word,
+`contracts/test/testing/product-path-vectors/index.json`) runs against both: the
+contracts suite parses it strictly and checks it names every marker, and the providers
+and runtime suites read it from disk and fail loudly when it is absent or malformed. It
+is **JSON, not a TS leaf**: the DT's ND-D5 ruling asked for a TS literal, and it is
+reversed here because a TS file another package's suite imports falls outside that test
+project's `rootDir` (TS6059), which the fence already records as an observed failure.
+`NOT_OWNED` is the one condition no fixture can build without a second user, and it is
+covered by reading, not by the table.
+
+**The markers are compared case-insensitively** (v2, the verifier's note N2), in all three
+places that read them — the providers' admission, the runtime's evidence root and the
+daemon's check before it creates the evidence directory. macOS filesystems are
+case-insensitive, so `…/rottay/app-…` is the same checkout as `…/Rottay/app-…`, and the
+case-sensitive comparison let it through. That gap predates D3 (the providers' admission
+had it since P4); D3 closes it because it moved that code. The shared table carries
+lowercase and mixed-case product paths, refused, and a near miss (`/rottay/application`),
+admitted, as the positive control.
+
+**The lease under a revision.** The daemon holds a fenced worktree lease before either
+walk form starts (V2 concurrency C2). Its `LEASE_ACQUIRED` and `LEASE_REVOKED` events ride
+the task's thread, and under a revision they carry the payload coordinate their V2 key
+names. But a recorded task exists before its walk opens the attempt, and nothing of a V2
+coordinate may reach the ledger before its opening, so under a revision the arbiter
+**queues** its lease events until the opening is on record — found by its own derived
+key — and the first flush after it appends each of them once. That flush is the first
+renewal after the opening, or the release, or the violation path, whichever comes
+first: renewals flush too. V1 is byte-identical: its events append at acquire, as before.
+**What a crash leaves**, stated: between the acquire and that first flush the grant lives
+in the lease store's row — durable, the operational fact, naming the holder's pid and
+start token — and the queued events live only in memory, so the ledger holds no lease
+event for it. A restarted daemon finds the dead holder, reclaims at the next fence and
+queues a `LEASE_REVOKED` naming that lease, which lands once the **successor's** attempt
+is opened: lopsided, not absent — **but only then**. If the successor is itself refused
+before its opening, its revocation is dropped with its release, and the store's one row
+per worktree has already been overwritten by the takeover and cleared: the crashed grant
+leaves no evidence anywhere. That frontier is P-18's. P-18 sees the walk's delivery, if
+the chain made it `INFLIGHT`, through `listOverdueDispatchAttempts`, and no lease row
+beside it. A walk refused before its opening releases the lock with no lease
+event at all, since there is no opened coordinate to record it under. The conformance
+gate's appends carry the coordinate the same way, and the checkpoint source reads the
+OUTCOME under the walk's own derived key, V1 or V2.
+
+The recorded task is read by `readRecordedTask` (D1), now on the runtime barrel: the
+envelope by reference from the private plane opened over the operator ledger, the
+revision, the submission and the V2 invocation, or a refusal by name that stops the
+start before anything is appended.
+
+### Nine — the chain in the walk (decision 140; C1, C9, C10, C-D2)
+
+A runtime concept, `execution-chain` (ND-D3-1 (b)), is the one behaviour authority for
+what a revision's walk records around its one execution. The daemon only wires it:
+`buildWalkEffects` builds the chain from the recorded task's facts and hands its hooks to
+`createExecutionEffects`. The order is the design:
+
+1. **The pin, first.** `getVigentCatalogPin(catalogDocumentId, submittedAt)`, and
+   `pinCovers` over that version's intervals for the segment's provider, model version
+   and transport. None in force, or one that does not cover, is `DispatchRefusedError`
+   **before** `EFFECT_INTENDED`: no intent is left open, no process starts, nothing is
+   spent.
+2. **The effect, then its delivery**, before the start: `EFFECT_INTENDED` and
+   `DISPATCH_INTENDED` with the pin, through C's builders.
+3. **The start's answer.** Accepted: `INFLIGHT`, then `PROMPT_OCCURRENCE_RECORDED` —
+   before a single event is read. Refused: `ABANDONED` with the effect `FAILED`, and no
+   prompt, because nothing was sent.
+4. **The usage stream.** Declared once, at the lineage's latest generation or 0, then one
+   `USAGE_OBSERVATION_RECORDED` per report whose four classes are all known. A report
+   with a class the source did not state is recorded as nothing — UNKNOWN, never 0 —
+   and that segment's settlement stays unknown. **Never `TOKEN_USAGE_RECORDED`** (C1).
+   The counter a one-shot process exposes is the report's position in its stream: a
+   `CUMULATIVE` covers `[0, n+1)`.
+5. **The result**, on a completed session: assembled, published before it is
+   referenced, `SETTLED` with the effect's status and the pair, then
+   `RESPONSE_OCCURRENCE_RECORDED` naming step 3's prompt. A session that ended in
+   `error`, or without a terminal, settles with the effect `FAILED` and no result.
+6. **The coupling** (P-07 C10). An effect that did not succeed throws
+   `OperationFailedError` after its appends, before the gate and the marker: the task
+   never reaches `CHECKPOINTED` on a failure.
+7. **The confirmation**, before the marker: the effect's outcome is `SUCCEEDED` and the
+   response occurrence exists, or the marker is not written.
+
+**Every identity is derived, every instant is the invocation's.** The segment, the
+delivery, the two occurrences, the observations and the publication's identities are
+version-5 names under the invocation; every instant is `submittedAt`, the intake door's.
+So a replay rebuilds the same bytes and no clock is read. **The cost, stated
+(ND-D3-3):** a delivery's `acceptedAt` records the submission instant, not the provider's
+acceptance, and its `terminalAt` the same. The column the overdue sweep reads is
+`requested_at`, which folds from the intention's `occurredAt` — also `submittedAt` — so a
+V2 `INFLIGHT` delivery is overdue from its first instant (Fable C4). P-18 needs a V2-aware
+predicate before it reads that sweep as a timeout. The handle is the execution
+session's id (ND-D3-4).
+
+**The resumed run (D2's obligation, Fable C2): refused.** A `--resume` reuses the Claude
+session id, so a second run would answer with the same `sourceObservationId` and an
+unobserved usage scope. The chain never starts a delivery that is already on record: a
+walk that comes back to an effect whose delivery exists — after a crash between the
+intention and the marker — is refused by `SupervisorError` before any process starts,
+and settles nothing. So no second result under one source id can reach the ledger from
+this walk; if one ever did, the observation door refuses it as a conflict. Reconciling
+such a delivery is P-18's.
+
+**The prompt digest.** `instructionFor`, the one composer, now returns the SHA-256 and
+the length of the composed instruction. L-P06C-1's containment is unchanged: the
+composed string is the instruction, not a block, and its digest is what execution §8.1
+records. L-P06C-1's row says so.
+
+**The descriptor digest (Fable N3).** The chain records the Claude descriptor's
+`normalizationPolicySha256`; the daemon's walk suite, the one that reads both packages,
+proves the ledger's `canonicalJsonStringify` yields that pinned digest from the policy
+object.
+
+### Ten — the failure branches under a revision (decision 141; C-D3, ND-D2)
+
+- `DispatchRefusedError` (the pin) and `OperationFailedError` (the model's verdict) are
+  new runtime errors, both classified `EXECUTION_FAILED` and tested first, so no broader
+  class claims them. A drill tells "no catalog covers the model" from "the model said it
+  failed" by class. `FAILURE_REASONS` does not move.
+- `settleFailure` under a revision reads the chain's delivery, by the keys the chain
+  records it under, and never closes it (v2, Fable C2): one left open — `INTENDED` or
+  `INFLIGHT` — may still act, so the settlement appends nothing and answers
+  `POSTCONDITION_UNKNOWN`, exactly as an unknown probe does. An `INTENDED` found in the
+  ledger does not prove that nothing was sent: `INFLIGHT` is appended only after
+  `port.start` resolves, so a process may be running whose acceptance was never recorded
+  (execution §7.6: unknown). The one sound `ABANDONED` is the chain's own, recorded in the
+  same process that saw the port refuse the start; that walk settles `FAILED`.
+- A pin refused before any intention settles `TASK_FAILED` with no execution record.
+
+### Eleven — "never emits" refused at runtime, the laws, and quota blindness (decision 142; C1)
+
+- `createExecutionEffects` refuses a construction that passes part of the chain: all four
+  chain hooks with the result, pressure and conformance sinks, or none. It refuses the
+  chain beside the legacy usage sink, so no `TOKEN_USAGE_RECORDED` is reachable under a
+  revision. `buildWalkEffects` refuses a revision without chain facts and an inline walk
+  with them.
+- **L-P32C-1 is retired** into **L-P15D-1**: the usage recorders are named by the
+  execution chain alone among production sources, and the production walk builds the
+  chain and passes its stream hook. **L-P15D-2**: the production walk passes the chain's
+  result hook and confirmation, and the chain reaches the publication, the delivery's
+  move and the response occurrence. **L-B7T-2** is amended in its row (the legacy sink
+  on V1, the chain's stream on V2); **L-P06C-1** in its row (the prompt digest).
+  `PATH_SCOPED_LAWS` 152 → 153.
+- **Quota blindness, declared.** `accounts/quota` folds `TOKEN_USAGE_RECORDED`, and a V2
+  walk writes none: a recorded walk's spend is invisible to V1 quota and to the rollups
+  until P-19 folds settlements. The smoke's spend bound is the owner's written limit and
+  the provider's pressure.
+- Pins: `RUNTIME_PUBLIC_EXPORTS` 285 → 296 (the reader and its vocabulary and two types,
+  the evidence root and its vocabulary, the chain and its input, the two errors, and
+  `payloadCoordinate`);
+  `CONTRACTS_SCHEMA_EXPORTS` 165 → 166 (`PRODUCT_PATH_MARKERS`). `payloadCoordinate` joins
+  the barrel too (296): P-15/B kept it a module export only, and the daemon — which imports
+  the runtime barrel alone — now needs the one helper for its lease and conformance events
+  under a revision, so it is exported rather than restated.
+
+### What D3 does not do
+
+- **The door-to-result drill** — the compiled `acp registry` and `acp intake`, the
+  recorded form through the packaged entry, an echo child, the chain read back — is D4's.
+- **L-P07C-1's limit family** and the **P-19 packets row** are D4's (ND-D3-5).
+- **A crash inside the chain** leaves the task unsettled: a walk that comes back to it
+  is refused a second start (`SupervisorError`, a continuity refusal that settles
+  nothing). Three sub-cases, and only one reaches a reader today (Fable C1):
+  - **`INTENDED`** — a crash between `DISPATCH_INTENDED` and `INFLIGHT`: no reader lists
+    it, and the task stays `RUNNING`;
+  - **`INFLIGHT`** — `listOverdueDispatchAttempts` lists it (overdue at once; see the
+    ND-D3-3 cost above);
+  - **`SETTLED` without the marker** — a recorded `SUCCEEDED` result never checkpointed:
+    no reader lists it.
+
+  The first and the third are registered as **P-18 obligations**: a reader over open
+  `INTENDED` deliveries and over settled deliveries of unterminated tasks. The P-18
+  packets row carries them as D4's bookkeeping. `INTENDED` is not settled to fix this:
+  that would claim a non-start the ledger cannot prove.
+- **The markers' path.** The evidence root is `dirname(L)/executions`, and
+  `createExecutionEffects` writes its markers under `<root>/executions/`, so a recorded
+  walk's marker is `dirname(L)/executions/executions/<operationId>.json`. Stated, not
+  renamed.
+- **Codex and Kimi** declare no usage source (ND-D2-1 (b)), so a recorded walk on them is
+  refused at the start; an API or local route is refused at the port as today.
 
 ## D4 — to be recorded with D4
 

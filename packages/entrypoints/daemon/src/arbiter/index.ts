@@ -5,9 +5,11 @@ import { CONTRACT_VERSION } from "@acp/contracts";
 import type { LeaseDecision, LeaseRow, LeaseStore } from "@acp/ledger";
 import type { DurableInvocation, EnforcementEvent, LedgerPort } from "@acp/runtime";
 import {
+  ATTEMPT_OPENING_STEP,
   acquireLease,
   deriveEventCoordinate,
   deterministicUuid,
+  payloadCoordinate,
   renewLease,
   revokeLease,
 } from "@acp/runtime";
@@ -274,6 +276,15 @@ export function createArbiter(options: ArbiterOptions): Arbiter {
   const flush = (): number => {
     const task = ledger.getTask(invocation.taskId);
     if (task === null) return 0;
+    // P-15 escalón D3 (ADR 0105, decision 139). Under a revision nothing of the
+    // coordinate may reach the ledger before its opening, and a recorded task
+    // exists before its walk opens the attempt. So the events stay queued until the
+    // opening is on record, found by its own derived key, and a later flush — the
+    // release, or the violation path — appends them, once.
+    if (invocation.revision !== undefined) {
+      const opening = deriveEventCoordinate(invocation, ATTEMPT_OPENING_STEP.transitionId, ATTEMPT_OPENING_STEP.index);
+      if (ledger.getEventByIdempotencyKey(opening.idempotencyKey) === null) return 0;
+    }
     let appended = 0;
     while (pending.length > 0) {
       const next = pending[0];
@@ -298,7 +309,8 @@ export function createArbiter(options: ArbiterOptions): Arbiter {
         recordedAt: coordinate.recordedAt,
         correlationId: invocation.invocationId,
         causationId: null,
-        payload: next.event.payload,
+        // The coordinate a V2 key names; empty under V1, so V1 bytes are unchanged.
+        payload: { ...next.event.payload, ...payloadCoordinate(invocation) },
       });
       pending.shift();
       appended += 1;

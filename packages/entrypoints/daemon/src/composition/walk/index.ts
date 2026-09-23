@@ -23,15 +23,22 @@
  * adjudication V11.2): they are the contract between the composition root and
  * this module, so both sides read them from one leaf rather than one side
  * reading the other's signature.
+ *
+ * P-15 escalón D3 (ADR 0105) gives the one builder two literals, one per
+ * coordinate: a revision-bearing walk records its chain through the runtime's
+ * `createExecutionChain`, and an inline walk keeps the legacy usage sink. Still
+ * one builder and one decision, read off the invocation, and every literal passes
+ * the pressure sink and the gate the per-literal laws read.
  */
 
 import type { EffectPort } from "@acp/runtime";
 import {
+  SupervisorError,
+  createExecutionChain,
   createExecutionEffects,
   pressureTransitionId,
   recordProviderPressure,
   recordTokenObservation,
-  scenarioLedgerPath,
   usageTransitionId,
 } from "@acp/runtime";
 
@@ -49,6 +56,70 @@ import type { ComposedSqliteWalkInput, WalkEffectsInput } from "../types/index.j
  * pass exactly the values their inline copy used.
  */
 export function buildWalkEffects(input: WalkEffectsInput): EffectPort {
+  // P-15 escalón D3 (ADR 0105, decision 140). A revision-bearing walk records its
+  // chain — the effect, the delivery, the prompt, the usage stream, the result and
+  // the response — through the runtime's execution chain, and never the legacy
+  // usage row (C1). The chain facts and the revision come together or not at all:
+  // either half alone is the legacy branch taken by omission, refused by name.
+  if (input.invocation.revision !== undefined) {
+    const facts = input.chain;
+    if (facts === null) {
+      throw new SupervisorError(
+        "refusing to build a revision-bearing walk without its chain facts; a V2 walk records its chain and" +
+          " never the legacy usage row",
+      );
+    }
+    const chain = createExecutionChain({
+      ledger: input.ledger,
+      plane: facts.plane,
+      invocation: input.invocation,
+      route: input.route,
+      modelVersionId: facts.modelVersionId,
+      routingAssignmentId: facts.routingAssignmentId,
+      catalogDocumentId: facts.catalogDocumentId,
+      usageSource: facts.usageSource,
+      prompt: { promptSha256: input.promptSha256, promptBytes: input.promptBytes },
+      emittedBy: input.emittedBy,
+      holderPid: facts.holderPid,
+    });
+    return createExecutionEffects({
+      port: input.port,
+      route: input.route,
+      request: {
+        taskId: input.taskId,
+        attempt: input.attempt,
+        identity: input.emittedBy,
+        instructions: input.instructions,
+        modalities: [...input.modalities],
+        reattach: null,
+      },
+      scenarioRoot: input.scenarioRoot,
+      recordIntentions: chain.recordIntentions,
+      recordDelivery: chain.recordDelivery,
+      recordStream: chain.recordStream,
+      recordResult: chain.recordResult,
+      confirmChain: chain.confirmChain,
+      // The same pressure recorder and the same gate as the inline walk below,
+      // for their reasons there.
+      recordPressure: (sample) => {
+        recordProviderPressure(input.ledger, {
+          invocation: input.invocation,
+          accountId: input.route.accountId,
+          provider: sample.provider,
+          pressure: sample.pressure,
+          transitionId: pressureTransitionId(sample.operationIndex, sample.trailIndex),
+          emittedBy: input.emittedBy,
+        });
+      },
+      checkConformance: input.gate,
+    });
+  }
+  if (input.chain !== null) {
+    throw new SupervisorError(
+      "refusing to build an inline walk with chain facts; a chain carries the V2 coordinate, and a V1 invocation" +
+        " names no revision to record it under",
+    );
+  }
   return createExecutionEffects({
     port: input.port,
     route: input.route,
@@ -153,6 +224,9 @@ export async function runComposedSqliteWalk(input: ComposedSqliteWalkInput): Pro
     scenarioRoot: input.scenarioRoot,
     generation: input.generation,
     gate: input.gate,
+    promptSha256: input.promptSha256,
+    promptBytes: input.promptBytes,
+    chain: input.chain,
   });
 
   // V2-B1f/F3. A factory per invocation, not one port: the SQLite leg walks
@@ -165,7 +239,7 @@ export async function runComposedSqliteWalk(input: ComposedSqliteWalkInput): Pro
     effects,
     checkpoints: checkpointsFor({
       ledger: input.ledger,
-      ledgerPath: scenarioLedgerPath(input.scenarioRoot),
+      ledgerPath: input.ledgerPath,
       invocation: input.invocation,
       emittedBy: input.emittedBy,
       envelope: input.envelope,

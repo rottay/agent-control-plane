@@ -35,17 +35,35 @@
  * seam lives in during the same packet, so no law ever reads an empty site.
  */
 
-import { findCredentialViolations } from "@acp/contracts";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+import { PRODUCT_PATH_MARKERS, findCredentialViolations } from "@acp/contracts";
 import type { ModelExecutionPort, ResolvedRoute, TaskEnvelope } from "@acp/contracts";
 import type { Ledger, LeaseStore } from "@acp/ledger";
-import { openArtifactPlane, openLeaseStore, openLedger } from "@acp/ledger";
+import {
+  artifactBlobLeaseStorePath,
+  openArtifactBlobLeaseStore,
+  openArtifactPlane,
+  openLeaseStore,
+  openLedger,
+} from "@acp/ledger";
 import type { ArtifactBlobLeaseStore, ArtifactPlane } from "@acp/ledger";
 import { deriveInvocation } from "@acp/durability";
 import type { AgentHarness, ApiStreamingClient } from "@acp/providers";
-import { createAgentHarness, executionSessionId } from "@acp/providers";
+import { CLAUDE_USAGE_SOURCE, createAgentHarness, executionSessionId } from "@acp/providers";
 import type { CheckpointPort, DurableInvocation, ScenarioRoot } from "@acp/runtime";
 import type { WalkOutcome } from "../scheduler/index.js";
-import { landAccountSwitch, resolveScenarioRoot, scenarioLedgerPath } from "@acp/runtime";
+import {
+  ATTEMPT_OPENING_STEP,
+  deriveEventCoordinate,
+  evidenceRootFor,
+  landAccountSwitch,
+  readRecordedTask,
+  resolveScenarioRoot,
+  scenarioLedgerPath,
+} from "@acp/runtime";
 
 import { createArbiter, leaseStorePath } from "../arbiter/index.js";
 import type { Arbiter, ArbiterRenewal, LeaseHold } from "../arbiter/index.js";
@@ -68,7 +86,13 @@ import type { DaemonPhase, DaemonStatusDocument } from "../status/index.js";
 import { clearStatus, readStatusFrom, writeStatus } from "../status/index.js";
 
 import { bindingForRoute, checkpointsFor, cliBindingsOf, conformanceGateFor, executionPortFor } from "./ports/index.js";
-import type { ComposedInstruction, ComposedSqliteWalkInput, WalkEffectsInput } from "./types/index.js";
+import type {
+  ComposedInstruction,
+  ComposedSqliteWalkInput,
+  WalkChainFacts,
+  WalkEffectsInput,
+  WalkSubject,
+} from "./types/index.js";
 import { buildWalkEffects, runComposedSqliteWalk } from "./walk/index.js";
 import { lockResource } from "./usecases/index.js";
 
@@ -185,6 +209,8 @@ export interface DaemonOptions {
    * the ledger or the marker.
    */
   readonly apiClientFor?: ((accountId: string) => ApiStreamingClient | undefined) | undefined;
+  /** Absent: the inline form states its coordinates and runs on a scenario ledger. */
+  readonly recorded?: undefined;
 }
 
 export interface StopResult {
@@ -378,7 +404,18 @@ export function instructionFor(ledger: Ledger, envelope: TaskEnvelope): Composed
       parts.push(resolved);
     });
   }
-  return { instructions: parts.join(BLOCK_SEPARATOR), modalities };
+  const instructions = parts.join(BLOCK_SEPARATOR);
+  // P-15 escalón D3 (ADR 0105): the instruction's digest and length, taken here so
+  // nothing downstream holds the bytes to hash them. A digest of the composed
+  // instruction, never of a block, and it enters the prompt occurrence and nothing
+  // else.
+  const bytes = Buffer.from(instructions, "utf8");
+  return {
+    instructions,
+    modalities,
+    promptSha256: createHash("sha256").update(bytes).digest("hex"),
+    promptBytes: bytes.byteLength,
+  };
 }
 
 export function recoverOwnStaleLock(options: {
@@ -466,6 +503,17 @@ async function landingFor(input: {
   readonly attempt: number;
   readonly emittedBy: string;
 }): Promise<WalkLanding> {
+  // P-15 escalón D3: under a revision nothing can have landed before the attempt
+  // is opened — a switch is played inside an opened attempt — and a recorded task
+  // is still unopened when its daemon starts: its walk opens it. So the landing is
+  // not asked, and the walk runs on the admitted route, unlanded, at generation
+  // zero. An opened attempt is landed exactly as before.
+  if (input.invocation.revision !== undefined) {
+    const opening = deriveEventCoordinate(input.invocation, ATTEMPT_OPENING_STEP.transitionId, ATTEMPT_OPENING_STEP.index);
+    if (input.ledger.getEventByIdempotencyKey(opening.idempotencyKey) === null) {
+      return { route: input.execution.route, generation: 0, landed: false };
+    }
+  }
   const outcome = await landAccountSwitch({
     ledger: input.ledger,
     invocation: input.invocation,
@@ -504,16 +552,172 @@ async function landingFor(input: {
 }
 
 /**
+ * The evidence root of a recorded walk: created 0700 if it is absent, then
+ * admitted (P-15 escalón D3, ADR 0105; decision 139, C-D1).
+ *
+ * The one creator of `dirname(L)/executions`. It creates the directory only when
+ * nothing is there — an existing one is never re-moded or re-owned — and hands the
+ * rest to the runtime's admission, which refuses a wrong mode, owner, symlink or
+ * product path by name. The minted root must be the directory created here, or
+ * the two spellings of one path disagree and the start is refused.
+ */
+function admitEvidenceRoot(ledgerPath: string): ScenarioRoot {
+  // A product checkout is refused before anything is created in it: the evidence
+  // root's own admission refuses the same markers, but only after the mkdir below
+  // would already have written a directory there.
+  // Case-insensitive, as both admissions are: macOS filesystems are.
+  const folded = dirname(ledgerPath).toLowerCase();
+  if (PRODUCT_PATH_MARKERS.some((marker) => folded.includes(marker.toLowerCase()))) {
+    throw new StartupError("the evidence root is refused: PRODUCT_PATH at databasePath; nothing was created");
+  }
+  const directory = join(dirname(ledgerPath), "executions");
+  try {
+    mkdirSync(directory, { mode: 0o700 });
+  } catch (error: unknown) {
+    const code = (error as { readonly code?: unknown }).code;
+    if (code !== "EEXIST") throw new StartupError("the evidence root could not be created (" + String(code) + ")");
+  }
+  const admitted = evidenceRootFor(ledgerPath);
+  if (!admitted.ok) {
+    throw new StartupError("the evidence root is refused: " + admitted.refusal + " at " + admitted.at);
+  }
+  if (admitted.root !== directory) {
+    throw new StartupError("the evidence root admitted is not the directory beside the ledger");
+  }
+  return admitted.root;
+}
+
+/**
+ * The usage source an adapter declared, by provider, or null (P-15 escalón D2/D3).
+ *
+ * Claude declares one; Codex and Kimi declare none until they execute (ND-D2-1 (b)),
+ * so a recorded walk on them has no stream to declare and is refused at the start.
+ */
+function usageSourceFor(provider: string): WalkChainFacts["usageSource"] | null {
+  return provider === "claude" ? CLAUDE_USAGE_SOURCE : null;
+}
+
+/**
+ * Read a recorded task back as the walk's subject, with its chain's facts (P-15
+ * escalón D3, ADR 0105; decisions 139 and 140).
+ *
+ * The private plane is opened over the operator ledger — its blob lease store
+ * beside it, pushed on the unwind — because the envelope is read by reference
+ * from it and the result is published through it. The reader refuses by name and
+ * the refusal stops the start before anything is appended; the account is the
+ * config's election, and the provider, alias and transport must agree with the
+ * intake's resolution.
+ */
+function recordedSubject(input: {
+  readonly ledger: Ledger;
+  readonly ledgerPath: string;
+  readonly taskId: string;
+  readonly catalogDocumentId: string;
+  readonly execution: DaemonExecutionConfig;
+  readonly stack: UnwindStack;
+  readonly clock: () => string;
+}): WalkSubject {
+  const usageSource = usageSourceFor(input.execution.route.provider);
+  if (usageSource === null) {
+    throw new StartupError(
+      "the recorded form runs on a provider that declares its usage source, and " +
+        input.execution.route.provider +
+        " declares none yet",
+    );
+  }
+  const blobLeases = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(input.ledgerPath), {
+    incarnationId: randomUUID(),
+    createdAt: input.clock(),
+  });
+  input.stack.push({
+    name: "artifact-blob-lease-store",
+    release: (): Promise<string | null> => {
+      try {
+        blobLeases.close();
+        return Promise.resolve(null);
+      } catch (error: unknown) {
+        return Promise.resolve(classify(error));
+      }
+    },
+  });
+  const plane = openArtifactPlane({ ledger: input.ledger, leaseStore: blobLeases, ledgerPath: input.ledgerPath });
+  const read = readRecordedTask({ ledger: input.ledger, plane, taskId: input.taskId, route: input.execution.route });
+  if (!read.ok) {
+    throw new StartupError("the recorded task is refused: " + read.refusal + " at " + read.at);
+  }
+  const task = read.task;
+  return {
+    invocation: task.invocation,
+    envelope: task.envelope,
+    taskId: task.taskId,
+    attempt: task.attempt,
+    initiativeId: task.initiativeId,
+    chain: {
+      plane,
+      modelVersionId: task.resolution.modelVersionId,
+      routingAssignmentId: task.resolution.assignmentId,
+      catalogDocumentId: input.catalogDocumentId,
+      usageSource,
+      holderPid: process.pid,
+    },
+  };
+}
+
+/**
  * Start the daemon, in order, and stop at the first thing that fails.
  *
  * Every acquisition is pushed before the next is attempted, so the unwind
  * releases exactly what was taken. Nothing is retried and nothing falls back:
  * a requested mode that cannot be served is a refusal.
  */
-export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
+export function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
+  return startWalks(options);
+}
+
+/**
+ * Start the daemon on a task the intake recorded (P-15 escalón D3, ADR 0105;
+ * decision 139).
+ *
+ * The recorded form names a task already in an operator's ledger — the ledger, the
+ * task and the price catalog its delivery is pinned against — and states none of
+ * the coordinates the inline form does: the envelope, the revision, the attempt,
+ * the instant and the initiative are read back by `readRecordedTask`, never
+ * restated. It shares the inline form's mode, emitter, execution section and
+ * injections, and every step after the ledger opens, and it runs one walk under
+ * `SQLITE_SUPERVISOR`.
+ *
+ * A separate entry rather than a widening of `DaemonOptions`: the inline form's
+ * coordinates are required there, and a union would make every caller that reads
+ * them narrow first.
+ */
+export function startRecordedDaemon(
+  options: Pick<DaemonOptions, "mode" | "emittedBy" | "inspector" | "clock" | "checkPorts" | "execution" | "apiClientFor"> & {
+    readonly recorded: {
+      /** The operator ledger, absolute and canonical; the evidence root is derived beside it. */
+      readonly databasePath: string;
+      /** The task the intake recorded in it. */
+      readonly taskId: string;
+      /** The `PRICE_TABLE` document the delivery is pinned against: named, never defaulted (ND-D3-2). */
+      readonly catalogDocumentId: string;
+    };
+    readonly walks?: undefined;
+  },
+): Promise<DaemonRun> {
+  return startWalks(options);
+}
+
+async function startWalks(options: DaemonOptions | Parameters<typeof startRecordedDaemon>[0]): Promise<DaemonRun> {
   if (!isDaemonMode(options.mode)) {
     throw new ModeError("a daemon mode must be requested explicitly");
   }
+  // P-15 escalón D3: the recorded form runs one walk, under the SQLite supervisor.
+  // Restate's endpoint hosts a task object closed over one walk's effects, and the
+  // chain it would need is not composed there: refused by name, never run partly.
+  if (options.recorded !== undefined && options.mode !== "SQLITE_SUPERVISOR") {
+    throw new ModeError("the recorded form runs under SQLITE_SUPERVISOR only; " + options.mode + " does not compose its chain");
+  }
+  // What the status document calls this run: the scenario, or the recorded task.
+  const statusScenarioId = options.recorded === undefined ? options.scenarioId : options.recorded.taskId;
   const clock = options.clock ?? ((): string => new Date().toISOString());
   const inspector = options.inspector ?? createPsInspector();
   const startedAt = clock();
@@ -561,7 +765,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
       writeStatus(root, {
         phase,
         mode: options.mode,
-        scenarioId: options.scenarioId,
+        scenarioId: statusScenarioId,
         pid: process.pid,
         serverPid,
         serverStartToken,
@@ -618,9 +822,17 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
     }
 
     if (scheduled === null || scheduled.length === 1) {
-      // S3.
-      const scenarioRoot: ScenarioRoot = resolveScenarioRoot(options.scenarioId);
-      ledger = openLedger(scenarioLedgerPath(scenarioRoot));
+      // S3. The inline form resolves its scenario root and opens the scenario's
+      // ledger; the recorded form opens the operator's ledger and admits the
+      // evidence root beside it, creating it 0700 only if it is absent (P-15
+      // escalón D3, decision 139).
+      const scenarioRoot: ScenarioRoot =
+        options.recorded === undefined
+          ? resolveScenarioRoot(options.scenarioId)
+          : admitEvidenceRoot(options.recorded.databasePath);
+      const ledgerPath =
+        options.recorded === undefined ? scenarioLedgerPath(scenarioRoot) : options.recorded.databasePath;
+      ledger = openLedger(ledgerPath);
       const openedLedger = ledger;
       stack.push({
         name: "ledger",
@@ -635,12 +847,28 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
       });
       publish("LEDGER_OPEN", null);
 
-      const invocation: DurableInvocation = deriveInvocation(
-        options.taskId,
-        options.attempt,
-        options.submittedAt,
-        options.submissionDigest,
-      );
+      // The walk's subject: stated by the inline form, read back whole from the
+      // ledger by the recorded one — which also brings the chain's facts.
+      const walked: WalkSubject =
+        options.recorded === undefined
+          ? {
+              invocation: deriveInvocation(options.taskId, options.attempt, options.submittedAt, options.submissionDigest),
+              envelope: options.envelope,
+              taskId: options.taskId,
+              attempt: options.attempt,
+              initiativeId: options.initiativeId,
+              chain: null,
+            }
+          : recordedSubject({
+              ledger: openedLedger,
+              ledgerPath,
+              taskId: options.recorded.taskId,
+              catalogDocumentId: options.recorded.catalogDocumentId,
+              execution: options.execution,
+              stack,
+              clock,
+            });
+      const invocation: DurableInvocation = walked.invocation;
 
       // S3b (V2-B1b, stage 2): the effect the walk performs. The port is built
       // from the resolved route the config carries and the one admitted CLI
@@ -829,12 +1057,12 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
       // second answer to "did the prestate move"; building a second port would
       // be a second admission of the same bindings. Both are the same values
       // the seam has always been given, named a few lines earlier.
-      const port = executionPortFor(options.execution, options.taskId, harness, options.apiClientFor);
+      const port = executionPortFor(options.execution, walked.taskId, harness, options.apiClientFor);
       const gate = conformanceGateFor({
         ledger: openedLedger,
         invocation,
         worktreePath: bindingForRoute(options.execution).workdir,
-        declaredWriteSet: options.envelope.writeSet,
+        declaredWriteSet: walked.envelope.writeSet,
         lease: hold.lease,
         emittedBy: options.emittedBy,
         onViolation: () => {
@@ -851,8 +1079,8 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         execution: options.execution,
         port,
         checkConformance: gate,
-        taskId: options.taskId,
-        attempt: options.attempt,
+        taskId: walked.taskId,
+        attempt: walked.attempt,
         emittedBy: options.emittedBy,
       });
       const route = landing.route;
@@ -866,9 +1094,10 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         // forgets is a compile error at the seam rather than at the builder.
         const walkInput: ComposedSqliteWalkInput = {
           ledger: openedLedger,
+          ledgerPath,
           invocation,
           execution: options.execution,
-          envelope: options.envelope,
+          envelope: walked.envelope,
           scenarioRoot,
           worktreePath: bindingForRoute(options.execution).workdir,
           port,
@@ -877,11 +1106,12 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
           landed: landing.landed,
           hold,
           gate,
-          ...instructionFor(openedLedger, options.envelope),
-          taskId: options.taskId,
-          attempt: options.attempt,
+          ...instructionFor(openedLedger, walked.envelope),
+          taskId: walked.taskId,
+          attempt: walked.attempt,
           emittedBy: options.emittedBy,
-          initiativeId: options.initiativeId,
+          initiativeId: walked.initiativeId,
+          chain: walked.chain,
         };
         const result = await runComposedSqliteWalk(walkInput);
         publish("RECONCILED", null);
@@ -898,10 +1128,10 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
         const checkpointsFactory = (candidate: DurableInvocation): CheckpointPort =>
           checkpointsFor({
             ledger: openedLedger,
-            ledgerPath: scenarioLedgerPath(scenarioRoot),
+            ledgerPath,
             invocation: candidate,
             emittedBy: options.emittedBy,
-            envelope: options.envelope,
+            envelope: walked.envelope,
             worktreePath: bindingForRoute(options.execution).workdir,
           });
 
@@ -912,13 +1142,14 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
           route,
           ledger: openedLedger,
           invocation,
-          taskId: options.taskId,
-          attempt: options.attempt,
+          taskId: walked.taskId,
+          attempt: walked.attempt,
           emittedBy: options.emittedBy,
-          ...instructionFor(openedLedger, options.envelope),
+          ...instructionFor(openedLedger, walked.envelope),
           scenarioRoot,
           generation: landing.generation,
           gate,
+          chain: walked.chain,
         };
         const effects = buildWalkEffects(effectsInput);
 
@@ -930,7 +1161,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
           // The same explicit policy as the SQLite site above, for the same
           // reason: one place a reader can find it, and no default anywhere.
           commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
-          initiativeId: options.initiativeId,
+          initiativeId: walked.initiativeId,
           effects,
           checkpoints: checkpointsFactory,
           route,
@@ -1174,6 +1405,7 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
           // — and the same named context type at both.
           const walkInput: ComposedSqliteWalkInput = {
             ledger: held.ledger,
+            ledgerPath: scenarioLedgerPath(walkRoot),
             invocation: held.invocation,
             execution: walk.spec.execution,
             envelope: walk.envelope,
@@ -1190,6 +1422,8 @@ export async function startDaemon(options: DaemonOptions): Promise<DaemonRun> {
             attempt: walk.spec.attempt,
             emittedBy: walk.spec.emittedBy,
             initiativeId: walk.spec.initiativeId,
+            // Scheduled walks are inline: V1 coordinates, the legacy usage sink.
+            chain: null,
           };
           const result = await runComposedSqliteWalk(walkInput);
           return result.finalState;

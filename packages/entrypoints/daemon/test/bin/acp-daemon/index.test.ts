@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,10 +10,17 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { CONFIG_MAX_BYTES, checkConfigPath, loadDaemonConfig } from "../../../src/bin/config-file/index.js";
 import { DEFAULT_ROUTING_CONFIG, EVIDENCE_ABSENT, loadPolicyRegistry } from "@acp/accounts";
 import type { CandidateEvidence, PolicyRouteRequest, QuotaOutcome, RoutingRequest } from "@acp/accounts";
-import { AccountRecord, CONTRACT_VERSION } from "@acp/contracts";
+import { AccountRecord, CONTRACT_VERSION, buildInitiativeIdempotencyKey } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import { admitBinary, admitConfigRoot, admitWorkdir, claudeAdapter, createExecutionPort } from "@acp/providers";
-import { composeSubmission } from "@acp/runtime";
+import {
+  artifactBlobLeaseStorePath,
+  canonicalJsonStringify,
+  openArtifactBlobLeaseStore,
+  openArtifactPlane,
+  openLedger,
+} from "@acp/ledger";
+import { composeSubmission, intakeTask } from "@acp/runtime";
 
 // V2-B7S: still imported through this module, which is now a re-export of
 // `@acp/runtime`. That these two lines need no edit is the point of the
@@ -24,6 +31,7 @@ import {
   canonicalSubmission,
   canonicalSubmissionDigest,
   parseDaemonChildConfig,
+  runDaemonChild,
 } from "../../../src/daemon-child/index.js";
 import type { DaemonExecutionBinding, DaemonExecutionConfig, DaemonSubmission } from "../../../src/daemon-child/index.js";
 import { EXIT_CONFIG_CONTENT, EXIT_CONFIG_PATH, EXIT_USAGE, runPackagedEntry } from "../../../src/bin/acp-daemon/index.js";
@@ -480,6 +488,7 @@ function refusalOf(document: unknown): string {
 describe("the singular form declares what it may write (DT Option B)", () => {
   it("admits a config carrying a well-formed envelope, and echoes it exactly", () => {
     const parsed = parseDaemonChildConfig(validConfig());
+    if (parsed.recorded !== null) throw new Error("expected the inline form");
     expect(parsed.envelope.taskId).toBe(parsed.taskId);
     expect(parsed.envelope.initiativeId).toBe(parsed.initiativeId);
     expect(parsed.walks).toBeNull();
@@ -832,6 +841,7 @@ describe("A2: an elected route survives the door", () => {
 
     // The real door, not a re-implementation of it.
     const parsed = parseDaemonChildConfig(document);
+    if (parsed.recorded !== null) throw new Error("expected the inline form");
     expect(parsed.submissionDigest).toBe(composed.submissionDigest);
     expect(parsed.execution.route).toEqual(composed.submission.route);
     expect(parsed.execution.route.capabilityPolicyVersion).toBe("2026-09-06.1");
@@ -1681,5 +1691,373 @@ describe("R6: an API_KEY binding is a shape of its own", () => {
     expect(() => parseDaemonChildConfig(apiConfig({ transportKind: "LOCAL" }))).toThrow(
       "execution.bindings[0].transportKind names no transport this daemon composes",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón D3: the recorded form (ADR 0105; decision 139, C6)
+// ---------------------------------------------------------------------------
+
+describe("the recorded form names a recorded task, and states none of the inline coordinates (P-15/D3)", () => {
+  /** A present operator ledger file, canonical, in an owner-only directory. */
+  function ledgerFile(): string {
+    const dir = stage();
+    const path = join(dir, "control-plane.sqlite");
+    writeFileSync(path, "");
+    return path;
+  }
+
+  function recordedConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      mode: "SQLITE_SUPERVISOR",
+      databasePath: ledgerFile(),
+      taskId: randomUUID(),
+      emittedBy: "claude/opus/implementer/01",
+      holdOpen: false,
+      checkPorts: false,
+      execution: { ...validExecution(), catalogDocumentId: "catalog-recorded" },
+      ...overrides,
+    };
+  }
+
+  it("admits the recorded form and reads it as recorded, never as inline", () => {
+    const document = recordedConfig();
+    const parsed = parseDaemonChildConfig(document);
+    expect(parsed.recorded).toEqual({ databasePath: document["databasePath"], catalogDocumentId: "catalog-recorded" });
+    expect(parsed.taskId).toBe(document["taskId"]);
+    expect(parsed.walks).toBeNull();
+    expect(parsed.execution.route.accountId).toBe("acct-config-contract");
+  });
+
+  it("N-D1: refuses every inline coordinate beside databasePath, by name", () => {
+    const inline = validConfig();
+    for (const field of ["envelope", "walks", "scenarioId", "attempt", "submittedAt", "submissionDigest", "initiativeId"]) {
+      const value = field === "walks" ? [] : inline[field];
+      expect(refusalOf(recordedConfig({ [field]: value })), field).toBe(
+        "config.databasePath and config." + field + " are exclusive; the recorded form reads the task's coordinates back from its ledger",
+      );
+    }
+  });
+
+  it("N-D19: databasePath is refused null, empty, relative, with a .. segment, absent on disk or through a symlink", () => {
+    const dir = stage();
+    const real = join(dir, "real.sqlite");
+    writeFileSync(real, "");
+    const link = join(dir, "link.sqlite");
+    symlinkSync(real, link);
+    const cases: readonly (readonly [string, unknown, string])[] = [
+      ["null", null, "config.databasePath must be an absolute path"],
+      ["empty", "", "config.databasePath must be an absolute path"],
+      ["relative", "ledger/control-plane.sqlite", "config.databasePath must be an absolute path"],
+      // Concatenated, not joined: `join` would resolve the segment away.
+      ["dotdot", dir + "/../control-plane.sqlite", "config.databasePath must contain no .. segment"],
+      ["absent", join(dir, "missing.sqlite"), "config.databasePath does not exist"],
+      ["symlink", link, "config.databasePath must be canonical; it traverses a symlink"],
+    ];
+    for (const [label, value, message] of cases) {
+      expect(refusalOf(recordedConfig({ databasePath: value })), label).toBe(message);
+    }
+  });
+
+  it("N-D19: taskId is refused absent, null or not a uuid; emittedBy absent or empty", () => {
+    const withoutTask = recordedConfig();
+    delete withoutTask["taskId"];
+    expect(refusalOf(withoutTask)).toBe("config.taskId must be a uuid");
+    expect(refusalOf(recordedConfig({ taskId: null }))).toBe("config.taskId must be a uuid");
+    expect(refusalOf(recordedConfig({ taskId: "not-a-uuid" }))).toBe("config.taskId must be a uuid");
+    expect(refusalOf(recordedConfig({ emittedBy: "" }))).toBe("config.emittedBy must be a non-empty string");
+    const withoutEmitter = recordedConfig();
+    delete withoutEmitter["emittedBy"];
+    expect(refusalOf(withoutEmitter)).toBe("config.emittedBy must be a non-empty string");
+  });
+
+  it("ND-D3-2: the price catalog is named in the execution section, never defaulted, and only by the recorded form", () => {
+    for (const value of [undefined, null, "", 7]) {
+      const execution: Record<string, unknown> = { ...validExecution() };
+      if (value !== undefined) execution["catalogDocumentId"] = value;
+      expect(refusalOf(recordedConfig({ execution })), String(value)).toBe(
+        "config.execution.catalogDocumentId must be a non-empty string; the recorded form names the price catalog" +
+          " its delivery is pinned against, and there is no default",
+      );
+    }
+    expect(refusalOf({ ...validConfig(), execution: { ...validExecution(), catalogDocumentId: "catalog-recorded" } })).toBe(
+      "execution.catalogDocumentId belongs to the recorded form; an inline walk pins no price catalog",
+    );
+  });
+
+  it("runs under SQLITE_SUPERVISOR only", () => {
+    expect(refusalOf(recordedConfig({ mode: "RESTATE" }))).toBe(
+      "config.mode RESTATE does not run the recorded form; it runs under SQLITE_SUPERVISOR",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón D3 v2: the recorded form, end to end through runDaemonChild
+// ---------------------------------------------------------------------------
+
+describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D3 v2, V-C1)", () => {
+  const INITIATIVE = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7ad3e2";
+  const REGISTRY_AT = "2026-08-01T00:00:00.000Z";
+  const INTAKE_AT = "2026-09-13T12:00:00.000Z";
+  const MODEL_VERSION = "claude-opus-5@2026-06-01";
+  const CATALOG = "catalog-recorded-e2e";
+  const ACCOUNT = "acct-recorded-e2e";
+  const OPERATOR = "claude/opus/implementer/01";
+  const WRITTEN = "docs/recorded.md";
+  const INSTRUCTION = "echo the recorded instruction";
+
+  function digest(text: string): string {
+    return createHash("sha256").update(text, "utf8").digest("hex");
+  }
+
+  /** An operator ledger with its registry, one priced catalog and one task entered through the real intake. */
+  function operatorLedger(directory: string): { readonly databasePath: string; readonly taskId: string } {
+    const databasePath = join(directory, "control-plane.sqlite");
+    const taskId = randomUUID();
+    const ledger = openLedger(databasePath);
+    const leases = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(databasePath), {
+      incarnationId: randomUUID(),
+      createdAt: REGISTRY_AT,
+    });
+    try {
+      const plane = openArtifactPlane({ ledger, leaseStore: leases, ledgerPath: databasePath });
+      ledger.appendInitiativeEvent({
+        contractVersion: CONTRACT_VERSION,
+        eventId: randomUUID(),
+        initiativeId: INITIATIVE,
+        transitionId: "initiative.registered",
+        idempotencyKey: buildInitiativeIdempotencyKey({ initiativeId: INITIATIVE, transitionId: "initiative.registered" }),
+        type: "INITIATIVE_REGISTERED",
+        fromStatus: null,
+        toStatus: "ACTIVE",
+        emittedBy: OPERATOR,
+        occurredAt: REGISTRY_AT,
+        recordedAt: REGISTRY_AT,
+        payload: {},
+      });
+      const document = (documentKind: string, documentId: string, payload: Record<string, unknown>): Record<string, unknown> => ({
+        contractVersion: CONTRACT_VERSION,
+        eventId: randomUUID(),
+        idempotencyKey: documentId + "/1",
+        documentKind,
+        documentId,
+        documentVersion: 1,
+        parentDocumentVersion: null,
+        contentDigest: digest(canonicalJsonStringify(payload)),
+        recordedBy: "kimi/k3/coordinator/01",
+        effectiveFrom: REGISTRY_AT,
+        occurredAt: REGISTRY_AT,
+        recordedAt: REGISTRY_AT,
+        payload,
+      });
+      ledger.appendRegistryEvent(
+        document("MODEL_VERSION", MODEL_VERSION, {
+          provider: "claude",
+          model: "claude-opus-5",
+          release: "2026-06-01",
+          status: "ACTIVE",
+          contextTokens: 200000,
+          policyVersion: "2026.09.0",
+          deprecatedAt: null,
+          eligibleRoles: ["implementer"],
+          transports: ["CLI_SUBSCRIPTION"],
+        }),
+      );
+      ledger.appendRegistryEvent(
+        document("ROUTING_ASSIGNMENT_GLOBAL", "routing:GLOBAL:implementer:0", {
+          role: "implementer",
+          slot: 0,
+          provider: "claude",
+          modelVersionId: MODEL_VERSION,
+          fallbacks: [],
+        }),
+      );
+      ledger.appendRegistryEvent(
+        document("PRICE_TABLE", CATALOG, {
+          intervals: [
+            {
+              provider: "claude",
+              modelVersionId: MODEL_VERSION,
+              transportKind: "CLI_SUBSCRIPTION",
+              tokenClass: "output",
+              currency: "USD",
+              effectiveFrom: REGISTRY_AT,
+              effectiveTo: null,
+              pricePerMillionNanos: 75_000_000_000,
+            },
+          ],
+        }),
+      );
+      const envelope = {
+        ...envelopeFor(taskId, INITIATIVE, [WRITTEN]),
+        objective: INSTRUCTION,
+        content: fixtureContent(INSTRUCTION),
+        readSet: [WRITTEN],
+      };
+      const intake = intakeTask({
+        ledger,
+        plane,
+        request: {
+          envelope,
+          clientScope: OPERATOR,
+          clientRequestKey: "recorded-e2e-0001",
+          roadmapVersionId: null,
+          stepId: null,
+          role: "implementer",
+          slot: 0,
+          transportKind: "CLI_SUBSCRIPTION",
+          recordedBy: OPERATOR,
+        },
+        recordedAt: INTAKE_AT,
+        holderPid: process.pid,
+        identities: {
+          eventId: randomUUID(),
+          revisionId: randomUUID(),
+          commandId: randomUUID(),
+          artifactPinId: randomUUID(),
+          artifactReferenceId: randomUUID(),
+          intentionEventId: randomUUID(),
+          terminalEventId: randomUUID(),
+        },
+      });
+      if (!intake.ok) throw new Error("the fixture's intake was refused: " + intake.reason);
+    } finally {
+      leases.close();
+      ledger.close();
+    }
+    return { databasePath, taskId };
+  }
+
+  /** A git worktree holding the one path the envelope declares, committed. */
+  function worktree(): string {
+    const directory = stage();
+    const git = (...args: string[]): void => {
+      spawnSync("/usr/bin/git", args, { cwd: directory, encoding: "utf8" });
+    };
+    git("init", "--quiet");
+    git("config", "user.email", "drill@example.invalid");
+    git("config", "user.name", "drill");
+    mkdirSync(join(directory, "docs"), { recursive: true });
+    writeFileSync(join(directory, WRITTEN), "recorded\n", "utf8");
+    git("add", "-A");
+    git("commit", "-q", "-m", "fixture base");
+    return directory;
+  }
+
+  /**
+   * A synthetic Claude CLI behind the real adapter's argv: it reads the instruction
+   * from stdin, keeps it in a side file it owns (never on stdout, which the adapter
+   * parses), and answers in the captured stream-json shape with the instruction as
+   * its text and one result usage. It is no provider and it spends nothing.
+   */
+  function fakeClaude(directory: string, echoPath: string): string {
+    const binary = join(directory, "fake-claude");
+    const program = [
+      "#!" + realpathSync(process.execPath),
+      "const chunks = [];",
+      "process.stdin.on('data', (c) => chunks.push(c));",
+      "process.stdin.on('end', () => {",
+      "  const text = Buffer.concat(chunks).toString('utf8');",
+      "  require('node:fs').writeFileSync(" + JSON.stringify(echoPath) + ", text);",
+      "  const at = process.argv.indexOf('--session-id');",
+      "  const session = at >= 0 ? process.argv[at + 1] : 'session-recorded';",
+      "  const out = (value) => process.stdout.write(JSON.stringify(value) + '\\n');",
+      "  out({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601' });",
+      "  out({ type: 'assistant', message: { id: 'msg_recorded_1', content: [{ type: 'text', text }] } });",
+      "  out({ type: 'result', subtype: 'success', is_error: false, session_id: session,",
+      "    usage: { input_tokens: 1, output_tokens: 2, cache_creation_input_tokens: 3, cache_read_input_tokens: 4 } });",
+      "  process.exit(0);",
+      "});",
+    ].join("\n");
+    writeFileSync(binary, program + "\n", { mode: 0o700 });
+    return binary;
+  }
+
+  function recordedDocument(databasePath: string, taskId: string, binary: string, workdir: string): Record<string, unknown> {
+    const configRoot = stage();
+    return {
+      mode: "SQLITE_SUPERVISOR",
+      databasePath,
+      taskId,
+      emittedBy: OPERATOR,
+      holdOpen: false,
+      checkPorts: false,
+      execution: {
+        route: {
+          provider: "claude",
+          model: "claude-opus-5",
+          accountId: ACCOUNT,
+          transportKind: "CLI_SUBSCRIPTION",
+          capabilityPolicyVersion: "2026-08-30.1",
+          resolvedAt: INTAKE_AT,
+        },
+        bindings: [
+          {
+            accountId: ACCOUNT,
+            transportKind: "CLI_SUBSCRIPTION",
+            provider: "claude",
+            binary,
+            configRoot,
+            workdir,
+            limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+          },
+        ],
+        catalogDocumentId: CATALOG,
+      },
+    };
+  }
+
+  it("V-C1: runDaemonChild starts a recorded task no walk has opened, and walks it to CHECKPOINTED with its whole chain", async () => {
+    const home = stage();
+    const { databasePath, taskId } = operatorLedger(home);
+    const echoPath = join(stage(), "echo.txt");
+    const binary = fakeClaude(stage(), echoPath);
+    const config = parseDaemonChildConfig(recordedDocument(databasePath, taskId, binary, worktree()));
+
+    await expect(runDaemonChild(config)).resolves.toBe(0);
+
+    // The child ran once and was handed the composed instruction on stdin.
+    expect(readFileSync(echoPath, "utf8")).toBe(INSTRUCTION);
+    const ledger = openLedger(databasePath);
+    try {
+      expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
+      const types = ledger.listEvents({ taskId, limit: 200 }).events.map((record) => record.event.type);
+      const at = types.indexOf("RUN_STARTED");
+      expect(types.slice(at + 1, at + 9)).toEqual([
+        "EFFECT_INTENDED",
+        "DISPATCH_INTENDED",
+        "DISPATCH_OUTCOME_RECORDED",
+        "PROMPT_OCCURRENCE_RECORDED",
+        "USAGE_STREAM_DECLARED",
+        "USAGE_OBSERVATION_RECORDED",
+        "DISPATCH_OUTCOME_RECORDED",
+        "RESPONSE_OCCURRENCE_RECORDED",
+      ]);
+      expect(types).not.toContain("TOKEN_USAGE_RECORDED");
+      // The lease was recorded once the walk opened the attempt, never before it.
+      expect(types.indexOf("LEASE_ACQUIRED")).toBeGreaterThan(types.indexOf("TASK_ATTEMPT_OPENED"));
+      expect(types.filter((type) => type === "LEASE_ACQUIRED")).toHaveLength(1);
+      expect(ledger.verifyIntegrity().problems).toEqual([]);
+    } finally {
+      ledger.close();
+    }
+    // The marker lives beside the operator ledger, under the evidence root.
+    expect(readdirSync(join(home, "executions", "executions"))).toHaveLength(1);
+  });
+
+  it("V-C2: a database under a product checkout, in any case, is refused before anything is created there", async () => {
+    // Case-insensitive, as macOS filesystems are: the lowercase spelling is the same checkout.
+    for (const segments of [["Rottay", "app-recorded"], ["rottay", "app-recorded"], ["ROTTAY", "Platform"]]) {
+      const product = join(stage(), ...segments);
+      mkdirSync(product, { recursive: true, mode: 0o700 });
+      const databasePath = join(product, "control-plane.sqlite");
+      writeFileSync(databasePath, "");
+      const config = parseDaemonChildConfig(
+        recordedDocument(databasePath, randomUUID(), fakeClaude(stage(), join(stage(), "never.txt")), worktree()),
+      );
+      await expect(runDaemonChild(config), segments.join("/")).rejects.toThrow("PRODUCT_PATH at databasePath; nothing was created");
+      expect(existsSync(join(product, "executions")), segments.join("/")).toBe(false);
+    }
   });
 });

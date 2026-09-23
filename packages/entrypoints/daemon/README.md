@@ -152,6 +152,26 @@ health check and no capability claim at startup: capabilities stay UNKNOWN, and
 what a client can serve is answered when the route is admitted. ADR 0052 records
 the whole of it.
 
+## The recorded form
+
+Since P-15 escalón D3 (ADR 0105, decision 139) the daemon also runs a task the
+intake already recorded. The config names it by `databasePath` — the operator's
+ledger, absolute and canonical — its `taskId`, and the `PRICE_TABLE` its delivery
+is pinned against in `execution.catalogDocumentId`, which has no default. The form
+is exclusive with every inline coordinate (`envelope`, `walks`, `scenarioId`,
+`attempt`, `submittedAt`, `submissionDigest`, `initiativeId`), each refused by
+name: the envelope, the revision, the attempt, the instant and the initiative are
+read back from the ledger, never restated. It runs one walk under
+`SQLITE_SUPERVISOR`, through `startRecordedDaemon`.
+
+The start creates the evidence directory beside the ledger — `executions/`, mode
+0700, only if it is absent — and the runtime admits it or the start is refused.
+The walk records its whole chain through the runtime's execution chain: the price
+pin, the effect, the delivery, the prompt, the usage stream, the result and the
+response. A recorded walk writes no `TOKEN_USAGE_RECORDED`, so V1 quota does not
+see its spend until P-19. Codex and Kimi declare no usage source yet, so a
+recorded walk on them is refused at the start.
+
 ## Bounds
 
 Logs are capped three ways: total bytes, file count, and a single line. All
