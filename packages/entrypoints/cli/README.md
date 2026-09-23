@@ -3,23 +3,25 @@
 The observation CLI of the Agent Control Plane.
 
 `acp` answers questions about a ledger. **Every read verb opens it query-only;
-five named verbs — `tool-call`, `cancel`, `attach`, `initiative` and `intake` —
-share one short-lived writable handle, and between them append at most one row
-each to a stream: `tool-call` a receipt, `cancel` a cancellation, `attach` nothing
-at all, `initiative` one registration, after publishing its objective to the
-private artifact plane, and `intake` one task intake, after publishing its
-envelope there.** The first narrowing is V2-B4b stage 3D's, the second V2 L2's,
-the third P-14/B's and the fourth P-14/C's, and all four are stated rather than
-softened: what changed is not "this CLI now writes", it is that five named verbs
+six named verbs — `tool-call`, `cancel`, `attach`, `initiative`, `intake` and
+`registry` — share one short-lived writable handle, and between them append at
+most one row each to a stream: `tool-call` a receipt, `cancel` a cancellation,
+`attach` nothing at all, `initiative` one registration, after publishing its
+objective to the private artifact plane, `intake` one task intake, after
+publishing its envelope there, and `registry` one registry version.** The first
+narrowing is V2-B4b stage 3D's, the second V2 L2's, the third P-14/B's, the
+fourth P-14/C's and the fifth P-15/R's, and all five are stated rather than
+softened: what changed is not "this CLI now writes", it is that six named verbs
 do and every other one still cannot.
 
-For every verb but those five, the posture is unchanged and structural rather
+For every verb but those six, the posture is unchanged and structural rather
 than promised: the ledger is opened with `readOnly: true`, which puts SQLite
 itself into query-only mode. Nothing in this package calls `append()` or
 `rebuildReadModel()` — every row that lands is appended by `@acp/runtime`, which
 is the one authority on what a tool call or a cancellation may be, or by
 `registerInitiative` in `@acp/ledger`, the one authority on what a registration
-may be. A CLI
+may be, or by `publishRegistryDocument` in `@acp/ledger`, the one authority on
+what a registry publication may be. A CLI
 that could repair a ledger would still be a CLI that could rewrite recorded
 history, and this one cannot.
 
@@ -52,12 +54,15 @@ acp <command> --database <path> [options]
 | `attach`            | Rejoin a durable invocation already in flight                             |
 | `initiative`        | Register one initiative from a request document and print the registration |
 | `intake`            | Enter one task from a request document and print the intake               |
+| `registry`          | Publish one registry version from a request document and print it         |
 
 The table above said eight while there were fourteen: `submission`,
 `switch-decision`, `tool-calls`, `tool-call`, `cancel` and `attach` all landed
 without it. `initiative`, the fifteenth, landed with its row (P-14/B), and
-`intake`, the sixteenth, with its own (P-14/C). Where each command meets the API — and which two meet nothing,
-because the plane serves no route that plans or decides — is declared in
+`intake`, the sixteenth, with its own (P-14/C), and `registry`, the seventeenth,
+with its own (P-15/R). Where each command meets the API — and which three meet
+nothing, because the plane serves no route that plans, decides or publishes
+registry configuration — is declared in
 `SURFACE_MAP` (`packages/kernel/protocol/src/surface-map/index.ts`), the one
 place the CLI/API relation is written down.
 
@@ -102,10 +107,10 @@ acp integrity --database ./control-plane.sqlite
 search of the working directory. A tool that guesses which ledger it is reading
 is a tool that eventually reads the wrong one and reports confidently about it.
 
-### 2. Read only for every verb but five, structurally
+### 2. Read only for every verb but six, structurally
 
 `openLedger(path, { readOnly: true })` is how this package opens a ledger for
-every verb except `tool-call`, `cancel`, `attach`, `initiative` and `intake`. The handle refuses
+every verb except `tool-call`, `cancel`, `attach`, `initiative`, `intake` and `registry`. The handle refuses
 mutation, SQLite refuses mutation, and the append-only triggers in the schema
 refuse mutation. The suite drives every read verb and asserts the event count
 and the applied-migration set are unchanged afterwards — a claim about every
@@ -167,6 +172,21 @@ twice, by this verb or by the API, is the same task, printed with
 `replayed: true`; a refusal is `WRITE_REFUSED` with the class, the code, any
 proposal, and the field. Nothing runs the task it records.
 
+`registry` is P-15/R's exception, on the same terms: the same open, the same
+ladder, and a `--request` document parsed by `RegistryPublicationRequest` — the
+kind, the document and its version, the parent, the canonical instant it rules
+from, `recordedBy` and the payload, and nothing the door derives. It publishes a
+`MODEL_VERSION`, a `ROUTING_ASSIGNMENT_GLOBAL` or a `PRICE_TABLE` and refuses any
+other kind by name. The verb decides nothing: it reads the clock and calls
+`publishRegistryDocument` in `@acp/ledger`, which derives the digest from the
+payload's canonical JSON, the key and the event id, and appends through the
+ledger door that validates the document. The same document twice is the same
+version, printed with `replayed: true`; the same version with another kind,
+payload, parent or instant is refused `WRITE_REFUSED` with
+`REGISTRY_VERSION_CONFLICT` and the field. It is CLI only: no route publishes
+registry configuration (ADR 0104). It prices nothing it was not given — a price
+table's intervals are the operator's, stored as sent or refused.
+
 **One bound `tool-call` does not have: nothing serializes two runs of it.** A tool call
 spends its coordinate by recording *after* the tool answers, so two overlapping
 invocations for the same coordinate both find it unspent and both run the tool.
@@ -225,7 +245,7 @@ envelope on stderr.
 | `2`  | The request was malformed: bad command, option, or filter — or it named an attempt that had already ended (`TASK_TERMINAL`, printed as a document). |
 | `4`  | Nothing is there to act on, from either of two sources: the ledger holds no such task, worker or attempt (an envelope on stderr), or the ledger holds the attempt and the engine answered that it holds no invocation at its address (`INVOCATION_NOT_FOUND`, printed as a document on stdout). Not a retry loop: confirm the endpoint is registered, then ask once more — the ledger remains the authority on what the task did. |
 | `5`  | The ledger could not be read, the engine could not be reached, or the effect's postcondition could not be established (`POSTCONDITION_UNKNOWN`, printed as a document, nothing appended). |
-| `6`  | The recorded history will not carry this write: an integrity check failed, or a write door — `tool-call`, a lifecycle verb, `initiative` or `intake` — refused because the ledger disagrees with the coordinates the request named (`WRITE_REFUSED`). Every write door answers with this code. Nothing about the invocation was wrong, so it is neither a `2` to argue with nor a `5` to retry. |
+| `6`  | The recorded history will not carry this write: an integrity check failed, or a write door — `tool-call`, a lifecycle verb, `initiative`, `intake` or `registry` — refused because the ledger disagrees with the coordinates the request named (`WRITE_REFUSED`). Every write door answers with this code. Nothing about the invocation was wrong, so it is neither a `2` to argue with nor a `5` to retry. |
 | `7`  | Another caller holds this tool coordinate.                    |
 | `8`  | This engine does not serve the lifecycle verb that was asked. |
 

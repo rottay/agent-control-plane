@@ -2147,6 +2147,116 @@ export const TaskIntakeResponse = z
 export type TaskIntakeResponse = z.infer<typeof TaskIntakeResponse>;
 
 // ---------------------------------------------------------------------------
+// The registry publication (P-15/R)
+// ---------------------------------------------------------------------------
+
+/**
+ * A document kind's name: an upper-case word. Not the closed set, on purpose: a
+ * kind this door does not publish is refused by the publication by name
+ * (`REGISTRY_KIND_NOT_PUBLISHABLE`), not by a schema the operator had to satisfy.
+ */
+const RegistryDocumentKindName = z.string().regex(/^[A-Z][A-Z_]{0,63}$/);
+
+/**
+ * The three kinds a publication answers with, restated because this package may
+ * not import `@acp/ledger`. The CLI suite holds this list equal to the ledger's
+ * `PUBLISHABLE_DOCUMENT_KINDS`.
+ */
+const PublishableDocumentKindDto = z.enum(["MODEL_VERSION", "PRICE_TABLE", "ROUTING_ASSIGNMENT_GLOBAL"]);
+
+/**
+ * A document's stable identity: printable ASCII without spaces, at most 256
+ * characters, so the key the door derives from it (`registry/<id>/<version>`) stays
+ * inside the registry's 512-character bound.
+ */
+const RegistryDocumentId = z.string().regex(/^[!-~]{1,256}$/);
+
+/**
+ * The instant a version rules from, in the one canonical form the registry holds
+ * and compares as text: ISO-8601 with milliseconds, in UTC, ending in `Z`, and the
+ * form a round-trip through `Date` reproduces. Not `Timestamp`, which admits
+ * offsets: an instant in another spelling is refused here rather than normalized.
+ */
+const CanonicalInstant = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+  .refine((value) => !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value, {
+    message: "expected the canonical instant, ISO-8601 with milliseconds in UTC",
+  });
+
+/**
+ * What an operator sends to publish one registry version (P-15/R, ADR 0104).
+ *
+ * **The operator's fields and nothing the door derives.** The digest, the
+ * idempotency key, the event id, the door's instants and the contract version are
+ * derived by the publication; a request carrying any of them is refused by this
+ * strict object, so no caller can state a digest the payload does not have.
+ *
+ * **A linear lineage.** A first version names no parent, and every later version
+ * names the one before it. The registry admits branches; this door does not
+ * publish one.
+ *
+ * **Bounded here, decided there.** The payload is an object and runs the
+ * guards; its shape, the model versions it names, and the lineage against what is
+ * recorded are the ledger door's, which the publication answers as
+ * `WRITE_REFUSED`. CLI only: no route parses this schema (decision 128).
+ */
+export const RegistryPublicationRequest = z
+  .strictObject({
+    documentKind: RegistryDocumentKindName,
+    documentId: RegistryDocumentId,
+    documentVersion: Sequence,
+    parentDocumentVersion: Sequence.nullable(),
+    effectiveFrom: CanonicalInstant,
+    recordedBy: WorkerIdentityString,
+    payload: z.record(z.string(), z.unknown()),
+  })
+  .superRefine((value, ctx) => {
+    const expected = value.documentVersion === 1 ? null : value.documentVersion - 1;
+    if (value.parentDocumentVersion !== expected) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          expected === null
+            ? "a first version names no parent"
+            : "a later version names the version before it as its parent",
+        path: ["parentDocumentVersion"],
+      });
+    }
+    attachGuards(value, ctx);
+  });
+export type RegistryPublicationRequest = z.infer<typeof RegistryPublicationRequest>;
+
+/**
+ * What the CLI prints when a version is published, or found published.
+ *
+ * `replayed` says which: true when the stream already held this version with the
+ * same kind, digest, parent and instant, and nothing was appended. `sequence` is the
+ * version's position in the registry stream, in both cases. The document carries
+ * its digest and never its payload.
+ */
+export const RegistryPublicationResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    replayed: z.boolean(),
+    sequence: Sequence,
+    document: z.strictObject({
+      documentKind: PublishableDocumentKindDto,
+      documentId: z.string().min(1).max(512),
+      documentVersion: Sequence,
+      parentDocumentVersion: Sequence.nullable(),
+      contentDigest: Sha256Hex,
+      effectiveFrom: Timestamp,
+      recordedBy: z.string().min(1).max(512),
+      recordedAt: Timestamp,
+      eventId: z.string().min(1).max(512),
+    }),
+  })
+  .superRefine(attachGuards);
+export type RegistryPublicationResponse = z.infer<typeof RegistryPublicationResponse>;
+
+// ---------------------------------------------------------------------------
 // The roadmap content read (P8-8D-c2)
 // ---------------------------------------------------------------------------
 

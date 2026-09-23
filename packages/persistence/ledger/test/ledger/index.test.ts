@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -46,6 +46,7 @@ import {
   openLeaseStore,
   openLedger,
   requestSha256,
+  sha256Hex,
   measurementStreamIdV1,
   USAGE_SOURCE_POLICY_SHA256_V1,
   type CausationRef,
@@ -4162,6 +4163,16 @@ const MODEL_TWO = "claude-sonnet-5@2026-06-01";
 const CONTENT_ONE = "1".repeat(64);
 const CONTENT_TWO = "2".repeat(64);
 
+/**
+ * The digest the door verifies for the three inline-content kinds (P-15/R, ADR 0104,
+ * C-R1): the SHA-256 of the payload's canonical JSON. Every other kind keeps a
+ * placeholder, which the door does not read.
+ */
+const INLINE_KINDS: readonly string[] = ["MODEL_VERSION", "PRICE_TABLE", "ROUTING_ASSIGNMENT_GLOBAL"];
+function payloadDigest(payload: Record<string, unknown>): string {
+  return sha256Hex(canonicalJsonStringify(payload));
+}
+
 interface RegistryInput {
   readonly eventId?: string;
   readonly idempotencyKey?: string;
@@ -4196,21 +4207,23 @@ function routingPayload(overrides: Record<string, unknown> = {}): Record<string,
 function makeRegistryDocument(input: RegistryInput = {}): Record<string, unknown> {
   const documentId = input.documentId ?? routingDocumentId();
   const documentVersion = input.documentVersion ?? 1;
+  const documentKind = input.documentKind ?? "ROUTING_ASSIGNMENT_GLOBAL";
+  const payload = input.payload ?? routingPayload();
   return {
     contractVersion: CONTRACT_VERSION,
     eventId: input.eventId ?? randomUUID(),
     idempotencyKey: input.idempotencyKey ?? documentId + "/" + String(documentVersion),
-    documentKind: input.documentKind ?? "ROUTING_ASSIGNMENT_GLOBAL",
+    documentKind,
     documentId,
     documentVersion,
     parentDocumentVersion:
       input.parentDocumentVersion === undefined ? null : input.parentDocumentVersion,
-    contentDigest: input.contentDigest ?? CONTENT_ONE,
+    contentDigest: input.contentDigest ?? (INLINE_KINDS.includes(documentKind) ? payloadDigest(payload) : CONTENT_ONE),
     recordedBy: input.recordedBy ?? KIMI,
     effectiveFrom: input.effectiveFrom ?? REGISTRY_AT,
     occurredAt: input.occurredAt ?? REGISTRY_AT,
     recordedAt: input.recordedAt ?? REGISTRY_AT,
-    payload: input.payload ?? routingPayload(),
+    payload,
   };
 }
 
@@ -4427,7 +4440,6 @@ describe("the registry stream carries its own chain, head and projection", () =>
       makeRegistryDocument({
         documentVersion: 2,
         parentDocumentVersion: 1,
-        contentDigest: CONTENT_TWO,
         payload: routingPayload({ modelVersionId: MODEL_TWO, fallbacks: [] }),
       }),
     );
@@ -4872,7 +4884,6 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
       makeRegistryDocument({
         documentVersion: 2,
         parentDocumentVersion: 1,
-        contentDigest: CONTENT_TWO,
         payload: routingPayload({ modelVersionId: MODEL_TWO }),
       }),
     );
@@ -9256,16 +9267,35 @@ const FIXTURE_CATALOG = "catalog-fixture";
 const FIXTURE_MODEL_VERSION = "claude-opus-5-20260101";
 const FIXTURE_CATALOG_FROM = "2026-01-01T00:00:00.000Z";
 const FIXTURE_PIN = { catalogDocumentId: FIXTURE_CATALOG, catalogVersion: 1 } as const;
-/** The content digests of the two fixture catalog documents, as the demotions recognize them. */
-const FIXTURE_CATALOG_DIGESTS: readonly string[] = ["6".repeat(64), "5".repeat(64)];
+/** The fixture model version's payload, registered under the interval's provider. */
+const FIXTURE_MODEL_PAYLOAD = modelVersionPayload({ provider: "anthropic" });
+/** The fixture catalog's version 1: one interval, open-ended, never zero. */
+const FIXTURE_CATALOG_PAYLOAD = {
+  intervals: [
+    {
+      provider: "anthropic",
+      modelVersionId: FIXTURE_MODEL_VERSION,
+      transportKind: "CLI_SUBSCRIPTION",
+      tokenClass: "input",
+      currency: "USD",
+      effectiveFrom: FIXTURE_CATALOG_FROM,
+      effectiveTo: null,
+      pricePerMillionNanos: 15_000_000_000,
+    },
+  ],
+};
+/**
+ * The content digests of the two fixture catalog documents, as the demotions
+ * recognize them: each its payload's, which the door verifies since P-15/R.
+ */
+const FIXTURE_CATALOG_DIGESTS: readonly string[] = [payloadDigest(FIXTURE_MODEL_PAYLOAD), payloadDigest(FIXTURE_CATALOG_PAYLOAD)];
 
 function plantFixtureCatalog(ledger: Ledger): void {
   if (ledger.getVigentCatalogPin(FIXTURE_CATALOG, EFFECT_AT) !== null) return;
   ledger.appendRegistryEvent(
     makeModelVersionDocument(FIXTURE_MODEL_VERSION, {
       eventId: "c0c0c0c0-0000-4000-8000-00000000c001",
-      contentDigest: "6".repeat(64),
-      payload: modelVersionPayload({ provider: "anthropic" }),
+      payload: FIXTURE_MODEL_PAYLOAD,
       effectiveFrom: FIXTURE_CATALOG_FROM,
       occurredAt: FIXTURE_CATALOG_FROM,
       recordedAt: FIXTURE_CATALOG_FROM,
@@ -9276,24 +9306,10 @@ function plantFixtureCatalog(ledger: Ledger): void {
       eventId: "c0c0c0c0-0000-4000-8000-00000000c002",
       documentKind: "PRICE_TABLE",
       documentId: FIXTURE_CATALOG,
-      contentDigest: "5".repeat(64),
       effectiveFrom: FIXTURE_CATALOG_FROM,
       occurredAt: FIXTURE_CATALOG_FROM,
       recordedAt: FIXTURE_CATALOG_FROM,
-      payload: {
-        intervals: [
-          {
-            provider: "anthropic",
-            modelVersionId: FIXTURE_MODEL_VERSION,
-            transportKind: "CLI_SUBSCRIPTION",
-            tokenClass: "input",
-            currency: "USD",
-            effectiveFrom: FIXTURE_CATALOG_FROM,
-            effectiveTo: null,
-            pricePerMillionNanos: 15_000_000_000,
-          },
-        ],
-      },
+      payload: FIXTURE_CATALOG_PAYLOAD,
     }),
   );
 }
@@ -13265,7 +13281,9 @@ function plantRegistryRow(
         columns.contentDigest,
         columns.parentDocumentVersion,
         body["recordedBy"],
-        body["occurredAt"],
+        // A document's own instant when it states one: a price table version takes
+        // effect after its predecessor since P-15/R, not at the instant it was written.
+        "effectiveFrom" in body ? body["effectiveFrom"] : body["occurredAt"],
         body["occurredAt"],
         body["recordedAt"],
         body["contractVersion"],
@@ -14765,7 +14783,6 @@ describe("a GLOBAL assignment passes the registry at the door, or nothing is app
       makeModelVersionDocument(MODEL_ONE, {
         documentVersion: 2,
         parentDocumentVersion: 1,
-        contentDigest: CONTENT_TWO,
         payload: modelVersionPayload({ status: "RETIRED", deprecatedAt: REGISTRY_AT, eligibleRoles: ["reviewer"], transports: [] }),
       }),
     );
@@ -14965,7 +14982,7 @@ describe("the GLOBAL assignment is read with the vector it was read at (P-14 A, 
     // Two branches of one document, both in force: nothing picks one.
     ledger.appendRegistryEvent(makeRegistryDocument());
     ledger.appendRegistryEvent(makeRegistryDocument({ documentVersion: 3, parentDocumentVersion: 1 }));
-    ledger.appendRegistryEvent(makeRegistryDocument({ documentVersion: 2, parentDocumentVersion: 1, contentDigest: CONTENT_TWO }));
+    ledger.appendRegistryEvent(makeRegistryDocument({ documentVersion: 2, parentDocumentVersion: 1 }));
     const ambiguous = caught(() => ledger.getGlobalRoutingAssignment({ role: "implementer", slot: 0 }));
     expect(ambiguous).toBeInstanceOf(LedgerQueryError);
     expect((ambiguous as Error).message).toContain("nothing resolves until one supersedes the others");
@@ -16429,6 +16446,8 @@ describe("usage is a declared stream and a measured observation, and the door se
 
 const CATALOG = "catalog-claude";
 const PRICE_JAN = "2026-01-01T00:00:00.000Z";
+/** The instant version 2 of the catalog takes effect from: a day after version 1. */
+const CATALOG_V2_FROM = "2026-09-04T12:00:00.000Z";
 const PRICE_FEB = "2026-02-01T00:00:00.000Z";
 const PRICE_MAR = "2026-03-01T00:00:00.000Z";
 const PRICE_ORDER =
@@ -16456,15 +16475,18 @@ function makePriceTableDocument(
   return makeRegistryDocument({
     documentKind: "PRICE_TABLE",
     documentId: CATALOG,
-    contentDigest: "3".repeat(64),
     payload: { intervals },
     ...input,
   });
 }
 
-/** Version 2 of the catalog, superseding version 1. */
+/**
+ * Version 2 of the catalog, superseding version 1. It takes effect a day after
+ * version 1: since P-15/R two versions of one price table never take effect at the
+ * same instant (ADR 0104). Its intervals may still be retroactive.
+ */
 function secondCatalogVersion(intervals: readonly unknown[]): Record<string, unknown> {
-  return makePriceTableDocument(intervals, { documentVersion: 2, parentDocumentVersion: 1, contentDigest: "4".repeat(64) });
+  return makePriceTableDocument(intervals, { documentVersion: 2, parentDocumentVersion: 1, effectiveFrom: CATALOG_V2_FROM });
 }
 
 /** The catalog table of a closed ledger, every column, in primary-key order. */
@@ -17009,7 +17031,7 @@ describe("migration 21 lands whole over a registry that already holds price cata
         documentId: CATALOG,
         documentVersion: 2,
         parentDocumentVersion: 1,
-        contentDigest: "4".repeat(64),
+        contentDigest: planted["contentDigest"] as string,
       },
       planted,
     );
@@ -17555,7 +17577,6 @@ function publishCatalogVersion(
       documentId,
       documentVersion: version,
       ...(version === 1 ? {} : { parentDocumentVersion: version - 1 }),
-      contentDigest: String(version).repeat(64).slice(0, 64),
       effectiveFrom,
       occurredAt: effectiveFrom,
       recordedAt: effectiveFrom,
@@ -17953,21 +17974,142 @@ describe("a delivery pins the catalog version it will be valued against (P-15 es
     ledger.close();
   });
 
-  it("C-R2: two versions sharing an effective instant make the pin ambiguous, refused and never resolved (kept while C precedes R)", () => {
-    // The registry does not forbid the tie today, so it can be planted through its
-    // own door; the selector's pure test is the lasting one (price-catalog suite).
+  it("C-R2, converted by P-15/R (N-R3): a second version at the same effective instant is refused at the registry door, and version 1 stays in force", () => {
+    // Until P-15/R the registry admitted the tie, and this test planted it through
+    // the door to reach the dispatch door's AMBIGUOUS refusal. R's registry door
+    // refuses the plant itself (ADR 0104), so the ambiguity is reachable only on a
+    // ledger written before R; the selector's pure test in the price-catalog suite
+    // is the lasting cover for it.
     const ledger = open(temporaryDatabase());
     const taskId = randomUUID();
     const effectId = seedEffectOnly(ledger, taskId);
     publishCatalogVersion(ledger, VIGENT_CATALOG, 1, VIGENT_T0, [fixtureInterval({ effectiveFrom: VIGENT_T0 })]);
-    publishCatalogVersion(ledger, VIGENT_CATALOG, 2, VIGENT_T0, [fixtureInterval({ effectiveFrom: VIGENT_T0 })]);
-    expect(ledger.getVigentCatalogPin(VIGENT_CATALOG, EFFECT_AT)).toBeNull();
-    for (const version of [1, 2]) {
-      const refused = refusalOf(() =>
-        ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId, pin: { catalogDocumentId: VIGENT_CATALOG, catalogVersion: version } })),
-      );
-      expect(refused.message).toContain("versions 1, 2 taking effect at the same instant");
+    const before = priceFootprint(ledger.path);
+    const tie = refusalOf(() => {
+      publishCatalogVersion(ledger, VIGENT_CATALOG, 2, VIGENT_T0, [fixtureInterval({ effectiveFrom: VIGENT_T0 })]);
+    });
+    expect(tie.path).toBe("effectiveFrom");
+    expect(tie.message).toMatch(/^REGISTRY_EFFECTIVE_FROM_TAKEN: version 1 /);
+    expect(priceFootprint(ledger.path)).toEqual(before);
+    expect(ledger.getVigentCatalogPin(VIGENT_CATALOG, EFFECT_AT)).toEqual({ catalogDocumentId: VIGENT_CATALOG, catalogVersion: 1 });
+    expect(
+      ledger.append(dispatchIntention({ taskId, transitionId: "dispatch-1", effectId, pin: { catalogDocumentId: VIGENT_CATALOG, catalogVersion: 1 } })),
+    ).toMatchObject({ inserted: true });
+    ledger.close();
+  });
+});
+
+describe("the registry door verifies an inline digest and keeps one price table version per instant (P-15/R, ADR 0104)", () => {
+  it("C-R1: each inline kind whose digest is not its payload's is refused at contentDigest, with nothing appended", () => {
+    const ledger = open(temporaryDatabase());
+    seedModelVersions(ledger);
+    const documents: readonly Record<string, unknown>[] = [
+      makeModelVersionDocument("claude-haiku-5@2026-06-01"),
+      makeRegistryDocument(),
+      makePriceTableDocument([priceInterval()]),
+    ];
+    for (const document of documents) {
+      const before = priceFootprint(ledger.path);
+      const wrong = { ...document, contentDigest: CONTENT_TWO };
+      const refusal = refusalOf(() => ledger.appendRegistryEvent(wrong));
+      expect({ kind: document["documentKind"], path: refusal.path }).toEqual({ kind: document["documentKind"], path: "contentDigest" });
+      expect(refusal.message).toMatch(/^REGISTRY_CONTENT_DIGEST_MISMATCH: /);
+      expect(priceFootprint(ledger.path)).toEqual(before);
+      // The derived digest is admitted: the check is the payload's, not a list of values.
+      expect(ledger.appendRegistryEvent(document).inserted).toBe(true);
+      expect(document["contentDigest"]).toBe(createHashHex(canonicalJsonStringify(document["payload"])));
+    }
+    ledger.close();
+  });
+
+  it("C-R1 scope: a kind whose content is an artifact keeps its digest unread, and a stored document still replays", () => {
+    const ledger = open(temporaryDatabase());
+    const policy = makeRegistryDocument({ documentKind: "CAPABILITY_POLICY", documentId: "capability-policy", payload: {} });
+    expect(policy["contentDigest"]).toBe(CONTENT_ONE);
+    expect(ledger.appendRegistryEvent(policy).inserted).toBe(true);
+    expect(ledger.appendRegistryEvent(policy).inserted).toBe(false);
+    ledger.close();
+  });
+
+  it("the instant rule is a price table's alone, and per document", () => {
+    const ledger = open(temporaryDatabase());
+    seedModelVersions(ledger);
+    // A model version's second version at its first's instant is admitted: C3 defines
+    // no version in force for it, and the rule does not reach it.
+    expect(
+      ledger.appendRegistryEvent(
+        makeModelVersionDocument(MODEL_ONE, { documentVersion: 2, parentDocumentVersion: 1, payload: modelVersionPayload({ contextTokens: 100000 }) }),
+      ).inserted,
+    ).toBe(true);
+    ledger.appendRegistryEvent(makePriceTableDocument([priceInterval()]));
+    const before = priceFootprint(ledger.path);
+    const tie = refusalOf(() => ledger.appendRegistryEvent(secondCatalogVersionAt(REGISTRY_AT)));
+    expect(tie.path).toBe("effectiveFrom");
+    expect(tie.message).toMatch(/^REGISTRY_EFFECTIVE_FROM_TAKEN: version 1 /);
+    expect(priceFootprint(ledger.path)).toEqual(before);
+    // Another price table at the same instant is another document.
+    expect(ledger.appendRegistryEvent(makePriceTableDocument([priceInterval()], { documentId: "catalog-other" })).inserted).toBe(true);
+    ledger.close();
+  });
+
+  it("a tie a ledger already holds opens, verifies and rebuilds: the rule is the write door's, not the fold's (decision 56)", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    ledger.appendRegistryEvent(makePriceTableDocument([priceInterval()]));
+    ledger.close();
+    const planted = secondCatalogVersionAt(REGISTRY_AT);
+    plantRegistryRow(
+      path,
+      {
+        subjectKind: "DOCUMENT",
+        documentKind: "PRICE_TABLE",
+        artifactEventKind: null,
+        documentId: CATALOG,
+        documentVersion: 2,
+        parentDocumentVersion: 1,
+        contentDigest: planted["contentDigest"] as string,
+      },
+      planted,
+    );
+    const reopened = open(path);
+    reopened.rebuildReadModel();
+    expect(reopened.verifyIntegrity().problems).toEqual([]);
+    expect(reopened.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 2 })).toHaveLength(1);
+    // And the version in force at that instant is ambiguous, which C's dispatch door refuses.
+    expect(reopened.getVigentCatalogPin(CATALOG, REGISTRY_AT)).toBeNull();
+    reopened.close();
+  });
+
+  it("getRegistryDocumentVersion reads one version by coordinate, whatever key wrote it, or null", () => {
+    const ledger = open(temporaryDatabase());
+    seedModelVersions(ledger);
+    const written = ledger.appendRegistryEvent(makeRegistryDocument());
+    expect(ledger.getRegistryDocumentVersion(routingDocumentId(), 1)).toEqual(written.record);
+    expect(ledger.getRegistryDocumentVersion(routingDocumentId(), 2)).toBeNull();
+    expect(ledger.getRegistryDocumentVersion("no-such-document", 1)).toBeNull();
+    for (const [documentId, version] of [
+      ["", 1],
+      ["x".repeat(513), 1],
+      [routingDocumentId(), 0],
+      [routingDocumentId(), 1.5],
+    ] as const) {
+      expect(caught(() => ledger.getRegistryDocumentVersion(documentId, version))).toBeInstanceOf(LedgerQueryError);
     }
     ledger.close();
   });
 });
+
+/** Version 2 of the catalog at a stated instant, for the P-15/R instant rule. */
+function secondCatalogVersionAt(effectiveFrom: string): Record<string, unknown> {
+  return makePriceTableDocument([priceInterval({ pricePerMillionNanos: 12_000_000_000 })], {
+    documentVersion: 2,
+    parentDocumentVersion: 1,
+    effectiveFrom,
+  });
+}
+
+/** SHA-256 of a text, by `node:crypto` rather than the ledger's helper. */
+function createHashHex(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}

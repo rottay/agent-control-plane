@@ -380,6 +380,34 @@ export type {
   RegisteredInitiative,
 } from "./initiative-registration/index.js";
 
+/**
+ * Registry publication (P-15 escalón R, ADR 0104).
+ *
+ * The one orchestration that publishes a `MODEL_VERSION`, a GLOBAL routing
+ * assignment or a `PRICE_TABLE`, and the one caller of `appendRegistryEvent` in
+ * production source (L-P15R-1). The CLI's `acp registry` calls it. It derives the
+ * digest, the key and the event id, answers an exact retry as a replay, and refuses
+ * a version recorded otherwise; validation stays the ledger door's.
+ */
+export {
+  PUBLISHABLE_DOCUMENT_KINDS,
+  REGISTRY_PUBLICATION_REFUSALS,
+  REGISTRY_PUBLICATION_UUID_NAMESPACE,
+  publishRegistryDocument,
+  registryPayloadDigest,
+  registryPublicationEventId,
+  registryPublicationIdempotencyKey,
+} from "./registry-publication/index.js";
+
+export type {
+  PublishableDocumentKind,
+  PublishedRegistryDocument,
+  RegistryPublicationFields,
+  RegistryPublicationInput,
+  RegistryPublicationOutcome,
+  RegistryPublicationRefusal,
+} from "./registry-publication/index.js";
+
 export type {
   AppendBatchResult,
   AppendResult,
@@ -473,6 +501,15 @@ export type {
  * package imports it today.
  */
 export { DOCUMENT_KINDS } from "./types/index.js";
+
+/**
+ * The registry door's inline-content kinds and its own two refusals (P-15/R, ADR
+ * 0104): the three kinds whose digest is their payload's, which the door verifies,
+ * and the words it refuses a misstated digest and a `PRICE_TABLE` instant already
+ * taken with.
+ */
+export { INLINE_CONTENT_DOCUMENT_KINDS, REGISTRY_DOCUMENT_REFUSALS } from "./types/index.js";
+export type { RegistryDocumentRefusal } from "./types/index.js";
 
 /**
  * The model version registry's two closed sets (P-14 A, ADR 0085).

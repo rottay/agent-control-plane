@@ -209,7 +209,8 @@ function registryDocument(input: {
     documentId: input.documentId,
     documentVersion,
     parentDocumentVersion: documentVersion === 1 ? null : documentVersion - 1,
-    contentDigest: String(documentVersion).repeat(64),
+    // The payload's own digest, which the registry door verifies (P-15/R, ADR 0104).
+    contentDigest: sha256(canonicalJsonStringify(input.payload)),
     recordedBy: COORDINATOR,
     effectiveFrom: REGISTRY_AT,
     occurredAt: REGISTRY_AT,

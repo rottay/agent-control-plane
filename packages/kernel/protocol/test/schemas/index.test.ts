@@ -32,6 +32,8 @@ import {
   InitiativeRoadmapResponse,
   TaskIntakeRequest,
   TaskIntakeResponse,
+  RegistryPublicationRequest,
+  RegistryPublicationResponse,
   RoadmapVersionWriteRequest,
   ApiErrorCode,
   ACCOUNTS_UNAVAILABLE_REASONS,
@@ -2459,6 +2461,134 @@ describe("the task intake's wire contract (P-14/C)", () => {
     expect(API_ERROR_CODES).toHaveLength(15);
     // Derived from `CONTRACT_VERSION`, which P-15 escalón C moved to 2.9.0 (ADR 0103).
     expect(LEDGER_CONTRACT_VERSION).toBe("2.9.0");
+  });
+});
+
+describe("the registry publication's request (P-15/R, ADR 0104)", () => {
+  const OWNER = "claude/opus/coordinator/01";
+  const RULES_FROM = "2026-09-01T00:00:00.000Z";
+
+  function publication(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      documentKind: "PRICE_TABLE",
+      documentId: "catalog-claude",
+      documentVersion: 1,
+      parentDocumentVersion: null,
+      effectiveFrom: RULES_FROM,
+      recordedBy: OWNER,
+      payload: { intervals: [] },
+      ...overrides,
+    };
+  }
+
+  /**
+   * The verdict for one request, written here and not read from the schema: the
+   * independent oracle the NULL matrix is held against (N-R10).
+   */
+  function oracle(candidate: Record<string, unknown>): boolean {
+    const has = (key: string): boolean => Object.prototype.hasOwnProperty.call(candidate, key);
+    const kind = candidate["documentKind"];
+    const id = candidate["documentId"];
+    const version = candidate["documentVersion"];
+    const parent = candidate["parentDocumentVersion"];
+    const from = candidate["effectiveFrom"];
+    const by = candidate["recordedBy"];
+    const payload = candidate["payload"];
+    const kindOk = typeof kind === "string" && /^[A-Z][A-Z_]{0,63}$/.test(kind);
+    const idOk = typeof id === "string" && id.length >= 1 && id.length <= 256 && Array.from({ length: id.length }, (_, i) => id.charCodeAt(i)).every((code) => code >= 0x21 && code <= 0x7e);
+    const versionOk = typeof version === "number" && Number.isSafeInteger(version) && version >= 1;
+    const parentOk = has("parentDocumentVersion") && versionOk && parent === (version === 1 ? null : version - 1);
+    const fromOk =
+      typeof from === "string" &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(from) &&
+      !Number.isNaN(Date.parse(from)) &&
+      new Date(from).toISOString() === from;
+    const byOk = by === OWNER;
+    const payloadOk = typeof payload === "object" && payload !== null && !Array.isArray(payload);
+    return kindOk && idOk && versionOk && parentOk && fromOk && byOk && payloadOk;
+  }
+
+  it("N-R10: absent, null, empty, wrong type and valid, per field, each verdict the oracle's", () => {
+    const ABSENT = Symbol("absent");
+    const cells: Record<string, readonly unknown[]> = {
+      documentKind: [ABSENT, null, "", 7, "price_table", "PRICE_TABLE", "CAPABILITY_POLICY"],
+      documentId: [ABSENT, null, "", 7, "has space", "x".repeat(257), "claude-opus-5@2026-06-01", "x".repeat(256)],
+      documentVersion: [ABSENT, null, "", "1", 0, -1, 1.5, 2 ** 53, 1],
+      parentDocumentVersion: [ABSENT, null, "", "1", 0, 1],
+      effectiveFrom: [
+        ABSENT,
+        null,
+        "",
+        1,
+        "2026-09-01T00:00:00Z",
+        "2026-09-01T02:00:00.000+02:00",
+        "2026-09-01T00:00:00.000z",
+        "2026-02-30T00:00:00.000Z",
+        RULES_FROM,
+      ],
+      recordedBy: [ABSENT, null, "", 7, "not an identity", OWNER],
+      payload: [ABSENT, null, "", 7, [], {}],
+    };
+    let admitted = 0;
+    let refused = 0;
+    for (const [field, values] of Object.entries(cells)) {
+      for (const version of [1, 2]) {
+        for (const value of values) {
+          const base = publication(version === 1 ? {} : { documentVersion: 2, parentDocumentVersion: 1 });
+          const candidate: Record<string, unknown> = { ...base };
+          if (value === ABSENT) Reflect.deleteProperty(candidate, field);
+          else candidate[field] = value;
+          const cell = field + "=" + (value === ABSENT ? "<absent>" : JSON.stringify(value)) + " at v" + String(version);
+          const verdict = oracle(candidate);
+          expect({ cell, admitted: RegistryPublicationRequest.safeParse(candidate).success }).toEqual({ cell, admitted: verdict });
+          if (verdict) admitted += 1;
+          else refused += 1;
+        }
+      }
+    }
+    // The matrix measured both verdicts, so neither half is vacuous.
+    expect(admitted).toBeGreaterThan(0);
+    expect(refused).toBeGreaterThan(admitted);
+  });
+
+  it("N-R14: a digest, a key, an event id or an instant of the door's is refused: the door derives them", () => {
+    expect(RegistryPublicationRequest.safeParse(publication()).success).toBe(true);
+    for (const derived of ["contentDigest", "idempotencyKey", "eventId", "occurredAt", "recordedAt", "contractVersion"]) {
+      expect(RegistryPublicationRequest.safeParse(publication({ [derived]: "x" })).success, derived).toBe(false);
+    }
+  });
+
+  it("runs the guards over the payload", () => {
+    const planted = RegistryPublicationRequest.safeParse(publication({ payload: { apiKey: "sk-" + "ant-api03-SENTINEL" } }));
+    expect(planted.success).toBe(false);
+  });
+
+  it("answers the version by digest, never with its payload, and names one of the three kinds", () => {
+    const response = {
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      replayed: false,
+      sequence: 3,
+      document: {
+        documentKind: "PRICE_TABLE",
+        documentId: "catalog-claude",
+        documentVersion: 1,
+        parentDocumentVersion: null,
+        contentDigest: "a".repeat(64),
+        effectiveFrom: RULES_FROM,
+        recordedBy: OWNER,
+        recordedAt: "2026-09-20T10:00:00.000Z",
+        eventId: "7c4a701f-2d9c-50bc-bcc8-a9456ee22dfd",
+      },
+    };
+    expect(RegistryPublicationResponse.safeParse(response).success).toBe(true);
+    expect(RegistryPublicationResponse.safeParse({ ...response, document: { ...response.document, payload: {} } }).success).toBe(false);
+    expect(
+      RegistryPublicationResponse.safeParse({ ...response, document: { ...response.document, documentKind: "CAPABILITY_POLICY" } }).success,
+    ).toBe(false);
+    // No route parses it: the API contract version and the write table do not move.
+    expect(API_CONTRACT_VERSION).toBe("0.18.0");
+    expect(API_WRITE_ROUTES).toHaveLength(6);
   });
 });
 

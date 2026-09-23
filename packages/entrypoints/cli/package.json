@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Observation CLI for the Agent Control Plane. Every read verb opens the ledger query-only; five named verbs share one short-lived writable handle: tool-call appends one receipt, cancel appends one cancellation, attach appends nothing, initiative appends one registration, and intake appends one task intake.",
+  "description": "Observation CLI for the Agent Control Plane. Every read verb opens the ledger query-only; six named verbs share one short-lived writable handle: tool-call appends one receipt, cancel appends one cancellation, attach appends nothing, initiative appends one registration, intake appends one task intake, and registry appends one registry version.",
   "license": "UNLICENSED",
   "exports": {
     ".": {

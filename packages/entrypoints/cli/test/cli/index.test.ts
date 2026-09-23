@@ -41,7 +41,7 @@ import {
   WorkerPageResponse,
   surfaceDefects,
 } from "@acp/protocol";
-import { LEDGER_MIGRATIONS, openLedger } from "@acp/ledger";
+import { LEDGER_MIGRATIONS, canonicalJsonStringify, openLedger, sha256Hex } from "@acp/ledger";
 import { ToolCallExecuteRequest } from "@acp/protocol";
 import {
   DEFAULT_ROUTING_CONFIG,
@@ -331,11 +331,12 @@ describe("usage", () => {
     expect(result.stdout).toContain("tool-call writes one receipt");
     expect(result.stdout).toContain("cancel settles one cancellation");
     // And the closing paragraph no longer claims the CLI never writes. P-14/B
-    // added the fourth writing verb and P-14/C the fifth, and the sentence
-    // counts them.
-    expect(result.stdout).toContain("Five verbs write, and they");
+    // added the fourth writing verb, P-14/C the fifth and P-15/R the sixth, and
+    // the sentence counts them.
+    expect(result.stdout).toContain("Six verbs write, and they");
     expect(result.stdout).toContain("`initiative` registers one initiative");
     expect(result.stdout).toContain("`intake` enters one task");
+    expect(result.stdout).toContain("`registry` publishes one registry version");
     expect(result.stdout).not.toContain("This CLI opens the ledger read-only and never writes");
     // Old-V2 R1, F7. This was a `toContain` sweep over twelve of the fourteen
     // names, against the whole of stdout: `task` was satisfied by the word
@@ -1134,6 +1135,17 @@ describe("integrity", () => {
     // 17 has a model version to fold when it is re-applied (N-P14A-15). Its
     // payload is the fixed shape the door holds a MODEL_VERSION to since P-14 A,
     // where it used to be `{}`.
+    const rewindModelPayload = {
+      provider: "claude",
+      model: "claude-opus-5",
+      release: "2026-06-01",
+      status: "ACTIVE",
+      contextTokens: 200000,
+      policyVersion: "2026.09.0",
+      deprecatedAt: null,
+      eligibleRoles: ["implementer"],
+      transports: ["CLI_SUBSCRIPTION"],
+    };
     ledger.appendRegistryEvent({
       contractVersion: LEDGER_CONTRACT_VERSION,
       eventId: randomUUID(),
@@ -1142,26 +1154,41 @@ describe("integrity", () => {
       documentId: "mv-rewind",
       documentVersion: 1,
       parentDocumentVersion: null,
-      contentDigest: "1".repeat(64),
+      // The payload's own digest, which the registry door verifies (P-15/R, ADR 0104).
+      contentDigest: sha256Hex(canonicalJsonStringify(rewindModelPayload)),
       recordedBy: B1E_ACTOR,
       effectiveFrom: "2026-08-27T00:00:00.000Z",
       occurredAt: "2026-08-27T00:00:00.000Z",
       recordedAt: "2026-08-27T00:00:00.000Z",
-      payload: {
-        provider: "claude",
-        model: "claude-opus-5",
-        release: "2026-06-01",
-        status: "ACTIVE",
-        contextTokens: 200000,
-        policyVersion: "2026.09.0",
-        deprecatedAt: null,
-        eligibleRoles: ["implementer"],
-        transports: ["CLI_SUBSCRIPTION"],
-      },
+      payload: rewindModelPayload,
     });
     // And one price catalog version naming that model version, so migration 21
     // has intervals to fold back when it is re-applied (N-P33A-12). Its payload is
     // the closed shape the door holds a PRICE_TABLE to since P-33/catálogo A.
+    const rewindCatalogPayload = {
+      intervals: [
+        {
+          provider: "claude",
+          modelVersionId: "mv-rewind",
+          transportKind: "CLI_SUBSCRIPTION",
+          tokenClass: "input",
+          currency: "USD",
+          effectiveFrom: "2026-08-01T00:00:00.000Z",
+          effectiveTo: null,
+          pricePerMillionNanos: 15000000000,
+        },
+        {
+          provider: "claude",
+          modelVersionId: "mv-rewind",
+          transportKind: "CLI_SUBSCRIPTION",
+          tokenClass: "output",
+          currency: "USD",
+          effectiveFrom: "2026-08-01T00:00:00.000Z",
+          effectiveTo: null,
+          pricePerMillionNanos: 75000000000,
+        },
+      ],
+    };
     ledger.appendRegistryEvent({
       contractVersion: LEDGER_CONTRACT_VERSION,
       eventId: randomUUID(),
@@ -1170,35 +1197,13 @@ describe("integrity", () => {
       documentId: "catalog-rewind",
       documentVersion: 1,
       parentDocumentVersion: null,
-      contentDigest: "3".repeat(64),
+      // The payload's own digest, which the registry door verifies (P-15/R, ADR 0104).
+      contentDigest: sha256Hex(canonicalJsonStringify(rewindCatalogPayload)),
       recordedBy: B1E_ACTOR,
       effectiveFrom: "2026-08-27T00:00:00.000Z",
       occurredAt: "2026-08-27T00:00:00.000Z",
       recordedAt: "2026-08-27T00:00:00.000Z",
-      payload: {
-        intervals: [
-          {
-            provider: "claude",
-            modelVersionId: "mv-rewind",
-            transportKind: "CLI_SUBSCRIPTION",
-            tokenClass: "input",
-            currency: "USD",
-            effectiveFrom: "2026-08-01T00:00:00.000Z",
-            effectiveTo: null,
-            pricePerMillionNanos: 15000000000,
-          },
-          {
-            provider: "claude",
-            modelVersionId: "mv-rewind",
-            transportKind: "CLI_SUBSCRIPTION",
-            tokenClass: "output",
-            currency: "USD",
-            effectiveFrom: "2026-08-01T00:00:00.000Z",
-            effectiveTo: null,
-            pricePerMillionNanos: 75000000000,
-          },
-        ],
-      },
+      payload: rewindCatalogPayload,
     });
     // And one registration in the closed payload the initiative door records, so
     // migration 18 has title and digest to fold back when it is re-applied

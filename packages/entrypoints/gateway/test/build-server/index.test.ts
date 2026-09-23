@@ -33,7 +33,7 @@ import {
   WorkerDetailResponse,
   WorkerPageResponse,
 } from "@acp/protocol";
-import { LEDGER_MIGRATIONS, openLedger, type Ledger } from "@acp/ledger";
+import { LEDGER_MIGRATIONS, canonicalJsonStringify, openLedger, sha256Hex, type Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { parseArgv } from "../../src/bin/index.js";
@@ -607,6 +607,17 @@ describe("integrity", () => {
     // 17 has a model version to fold when it is re-applied (N-P14A-15). Its
     // payload is the fixed shape the door holds a MODEL_VERSION to since P-14 A,
     // where it used to be `{}`.
+    const rewindModelPayload = {
+      provider: "claude",
+      model: "claude-opus-5",
+      release: "2026-06-01",
+      status: "ACTIVE",
+      contextTokens: 200000,
+      policyVersion: "2026.09.0",
+      deprecatedAt: null,
+      eligibleRoles: ["implementer"],
+      transports: ["CLI_SUBSCRIPTION"],
+    };
     ledger.appendRegistryEvent({
       contractVersion: LEDGER_CONTRACT_VERSION,
       eventId: randomUUID(),
@@ -615,26 +626,41 @@ describe("integrity", () => {
       documentId: "mv-rewind",
       documentVersion: 1,
       parentDocumentVersion: null,
-      contentDigest: "1".repeat(64),
+      // The payload's own digest, which the registry door verifies (P-15/R, ADR 0104).
+      contentDigest: sha256Hex(canonicalJsonStringify(rewindModelPayload)),
       recordedBy: WORKER_A,
       effectiveFrom: "2026-08-27T00:00:00.000Z",
       occurredAt: "2026-08-27T00:00:00.000Z",
       recordedAt: "2026-08-27T00:00:00.000Z",
-      payload: {
-        provider: "claude",
-        model: "claude-opus-5",
-        release: "2026-06-01",
-        status: "ACTIVE",
-        contextTokens: 200000,
-        policyVersion: "2026.09.0",
-        deprecatedAt: null,
-        eligibleRoles: ["implementer"],
-        transports: ["CLI_SUBSCRIPTION"],
-      },
+      payload: rewindModelPayload,
     });
     // And one price catalog version naming that model version, so migration 21
     // has intervals to fold back when it is re-applied (N-P33A-12). Its payload is
     // the closed shape the door holds a PRICE_TABLE to since P-33/catálogo A.
+    const rewindCatalogPayload = {
+      intervals: [
+        {
+          provider: "claude",
+          modelVersionId: "mv-rewind",
+          transportKind: "CLI_SUBSCRIPTION",
+          tokenClass: "input",
+          currency: "USD",
+          effectiveFrom: "2026-08-01T00:00:00.000Z",
+          effectiveTo: null,
+          pricePerMillionNanos: 15000000000,
+        },
+        {
+          provider: "claude",
+          modelVersionId: "mv-rewind",
+          transportKind: "CLI_SUBSCRIPTION",
+          tokenClass: "output",
+          currency: "USD",
+          effectiveFrom: "2026-08-01T00:00:00.000Z",
+          effectiveTo: null,
+          pricePerMillionNanos: 75000000000,
+        },
+      ],
+    };
     ledger.appendRegistryEvent({
       contractVersion: LEDGER_CONTRACT_VERSION,
       eventId: randomUUID(),
@@ -643,35 +669,13 @@ describe("integrity", () => {
       documentId: "catalog-rewind",
       documentVersion: 1,
       parentDocumentVersion: null,
-      contentDigest: "3".repeat(64),
+      // The payload's own digest, which the registry door verifies (P-15/R, ADR 0104).
+      contentDigest: sha256Hex(canonicalJsonStringify(rewindCatalogPayload)),
       recordedBy: WORKER_A,
       effectiveFrom: "2026-08-27T00:00:00.000Z",
       occurredAt: "2026-08-27T00:00:00.000Z",
       recordedAt: "2026-08-27T00:00:00.000Z",
-      payload: {
-        intervals: [
-          {
-            provider: "claude",
-            modelVersionId: "mv-rewind",
-            transportKind: "CLI_SUBSCRIPTION",
-            tokenClass: "input",
-            currency: "USD",
-            effectiveFrom: "2026-08-01T00:00:00.000Z",
-            effectiveTo: null,
-            pricePerMillionNanos: 15000000000,
-          },
-          {
-            provider: "claude",
-            modelVersionId: "mv-rewind",
-            transportKind: "CLI_SUBSCRIPTION",
-            tokenClass: "output",
-            currency: "USD",
-            effectiveFrom: "2026-08-01T00:00:00.000Z",
-            effectiveTo: null,
-            pricePerMillionNanos: 75000000000,
-          },
-        ],
-      },
+      payload: rewindCatalogPayload,
     });
     // And one registration in the closed payload the initiative door records, so
     // migration 18 has title and digest to fold back when it is re-applied

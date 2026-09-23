@@ -45,7 +45,8 @@ ledger.close();
 | `getExecutionRoute(taskId, attempt)` / `listExecutionRoutes(taskId)` | The route an attempt was admitted on, keyed by the pair. Null, or empty, when nothing recorded one. |
 | `getOutboxCommand(commandId)` / `listOutboxCommands()` | An outbox command folded from its own events, or every one in intention order: what a lost outbox cache is rebuilt to. No table holds it. |
 | `appendInitiativeEvent(event, causation?)` | The same pipeline on the initiative stream: validate, canonicalize, append. |
-| `appendRegistryEvent(document, causation?)` | The same pipeline on the registry stream: one version of one configuration document, on its own chain. A unit door; there is no registry batch. |
+| `appendRegistryEvent(document, causation?)` | The same pipeline on the registry stream: one version of one configuration document, on its own chain. A unit door; there is no registry batch. In `src/`, only `publishRegistryDocument` calls it (L-P15R-1). |
+| `getRegistryDocumentVersion(documentId, documentVersion)` | One recorded version of one configuration document by coordinate, whatever key wrote it, or null. What the publication decides a replay or a conflict against. |
 | `appendArtifactEvent(event, causation?)` | The registry stream's second door: one artifact event, `subject_kind = 'ARTIFACT'`, parsed by `@acp/contracts`' `ArtifactRegistryEvent` and folded into the four artifact read models in the same transaction. Facts of the bytes, never the bytes, and no file is touched. |
 | `getArtifactBlob(digest, generation)` / `getUnreclaimedArtifactBlob(digest)` / `getHighestArtifactBlobGeneration(digest)` / `listArtifactBlobsInState(state)` | The artifact fold's own view of the blob read model, read-only and outside a transaction: what a publisher proposes a generation from. |
 | `getArtifactReference(id)` / `getArtifactPin(id)` / `listLiveArtifactPins(kind)` | A reference, a pin, and every live pin of one holder kind in the order taken: what a reader authorizes by and a reconciler works from. |
@@ -59,6 +60,7 @@ ledger.close();
 | `decideRoadmapVersion(request)` | Pure. The caller supplies the folded head; nothing here reads a ledger. |
 | `decideInitiativeRegistration(request)` | Pure. Parses a candidate through `Initiative`, guards included, and compares it with the registration the stream holds under the same id: grant, replay or `CONFLICT`. |
 | `registerInitiative(input)` | The one registration both doors call: decide, publish the objective to the private plane, append one `INITIATIVE_REGISTERED` whose closed payload carries the objective's digest and reference. Handles, instants, the pid and identifiers are injected; it opens nothing and reads no clock. |
+| `publishRegistryDocument(input)` | The one publication of a `MODEL_VERSION`, a `ROUTING_ASSIGNMENT_GLOBAL` or a `PRICE_TABLE` (P-15/R, ADR 0104): derives the digest, the key and a version 5 event id, answers an exact retry as a replay, refuses a version recorded otherwise, and carries the door's refusals by field and word. `acp registry` calls it. |
 | `readInitiativeObjective(ledger, event)` | The objective a registration published, read back by reference under the initiative's scope; null for a registration that never published one, and a `LedgerIntegrityError` rather than null when the plane cannot produce it. |
 | `rebuildReadModel()` | Drop and replay every projection of both streams, transactionally. |
 | `verifyIntegrity()` | Full report. Never throws on a finding; returns problems. |
@@ -1225,6 +1227,42 @@ the dictionary's index is the primary key's own.
 No pin on a segment or a dispatch (P-15). No catalog on the artifact plane, no cost
 snapshot, no valuation. Price resolution and `PRICE_MISSING` were escalón B's, and
 are described next.
+
+## Publishing registry configuration, through one door
+
+A first task needs a model version, its role's GLOBAL slot and a catalog covering the
+model, and `publishRegistryDocument` is how they are written (P-15 escalón R, ADR 0104;
+decisions 127-131). It publishes exactly `PUBLISHABLE_DOCUMENT_KINDS` — `MODEL_VERSION`,
+`PRICE_TABLE`, `ROUTING_ASSIGNMENT_GLOBAL` — and refuses every other kind by name.
+
+The operator states the kind, the document and its version, the parent, the instant
+the version rules from, the author and the payload. The publication derives the rest:
+
+| Field | Derived as |
+| --- | --- |
+| `contentDigest` | `sha256Hex(canonicalJsonStringify(payload))` |
+| `idempotencyKey` | `registry/<documentId>/<documentVersion>` |
+| `eventId` | a version 5 UUID over the key, under `REGISTRY_PUBLICATION_UUID_NAMESPACE` |
+| `occurredAt`, `recordedAt` | the door's instant, injected |
+| `contractVersion` | the version in force |
+
+The same version with the same kind, digest, parent and instant is a replay; the
+author and the door's instants are not compared. Any other difference is
+`REGISTRY_VERSION_CONFLICT` at the first field that differs. The ledger door's own
+refusal is `REGISTRY_DOCUMENT_REFUSED`, with its field and closed word. Nothing is
+defaulted in a price table: no interval, end, currency or price the owner did not give.
+
+The registry door holds two rules of its own since this escalón, words at the head of
+the message (`REGISTRY_DOCUMENT_REFUSALS`):
+
+| Word | Path | When |
+| --- | --- | --- |
+| `REGISTRY_CONTENT_DIGEST_MISMATCH` | `contentDigest` | a document of `INLINE_CONTENT_DOCUMENT_KINDS` whose digest is not its payload's; checked first, for every writer, after the replay and lineage checks |
+| `REGISTRY_EFFECTIVE_FROM_TAKEN` | `effectiveFrom` | a `PRICE_TABLE` version taking effect at the instant another version of the same document already does |
+
+Both are write invariants. The fold re-verifies neither: stored history keeps its
+digests, and a tie a ledger already holds opens, verifies and rebuilds, with no version
+in force at its instant (decision 56's asymmetry).
 
 ## Resolving a price inside a pinned catalog version
 

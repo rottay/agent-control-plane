@@ -299,6 +299,26 @@ describe("the task intake is one document at two doors (P-14/C)", () => {
   });
 });
 
+describe("registry publication is a CLI door alone (P-15/R, decision 128)", () => {
+  it("records registry CLI_ONLY, with its reason, and pairs it with no arm", () => {
+    const entries = SURFACE_MAP.filter((entry) => entry.command === "registry");
+    expect(entries.map((entry) => [entry.route, entry.method, entry.equivalence])).toEqual([[null, null, "CLI_ONLY"]]);
+    expect(entries[0]?.because ?? "").toContain("no API door");
+    expect(defects()).toEqual([]);
+  });
+
+  it("names the command when the CLI half is checked with a verb the map lost", () => {
+    const commands = SURFACE_MAP.flatMap((entry) => (entry.command === null ? [] : [entry.command]));
+    const found = surfaceDefects({
+      entries: without((entry) => entry.command === "registry"),
+      routes: ROUTES,
+      writeRoutes: WRITE_ROUTES,
+      commands,
+    });
+    expect(names(found, "registry")).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // F8 — the causal regression the stale prose could not have had
 // ---------------------------------------------------------------------------

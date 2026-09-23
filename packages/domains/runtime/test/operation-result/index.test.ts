@@ -12,6 +12,7 @@ import * as ledgerModule from "@acp/ledger";
 import {
   LedgerValidationError,
   artifactBlobLeaseStorePath,
+  canonicalJsonStringify,
   effectIdV1,
   effectIdempotencyKeyV1,
   logicalOperationSha256,
@@ -19,6 +20,7 @@ import {
   openArtifactPlane,
   openLedger,
   requestSha256,
+  sha256Hex,
 } from "@acp/ledger";
 import type { ArtifactPlane, ArtifactPlaneTestFaults, Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -331,7 +333,6 @@ function plantFixtureCatalog(ledger: Ledger): void {
     eventId: string,
     documentKind: string,
     documentId: string,
-    contentDigest: string,
     payload: Record<string, unknown>,
   ): Record<string, unknown> => ({
     contractVersion: CONTRACT_VERSION,
@@ -341,7 +342,8 @@ function plantFixtureCatalog(ledger: Ledger): void {
     documentId,
     documentVersion: 1,
     parentDocumentVersion: null,
-    contentDigest,
+    // The payload's own digest, which the registry door verifies (P-15/R, ADR 0104).
+    contentDigest: sha256Hex(canonicalJsonStringify(payload)),
     recordedBy: "kimi/k3/coordinator/01",
     effectiveFrom: FIXTURE_CATALOG_FROM,
     occurredAt: FIXTURE_CATALOG_FROM,
@@ -349,7 +351,7 @@ function plantFixtureCatalog(ledger: Ledger): void {
     payload,
   });
   ledger.appendRegistryEvent(
-    document("c0c0c0c0-0000-4000-8000-00000000c001", "MODEL_VERSION", FIXTURE_MODEL_VERSION, "6".repeat(64), {
+    document("c0c0c0c0-0000-4000-8000-00000000c001", "MODEL_VERSION", FIXTURE_MODEL_VERSION, {
       provider: "anthropic",
       model: "claude-opus-5",
       release: "2026-01-01",
@@ -362,7 +364,7 @@ function plantFixtureCatalog(ledger: Ledger): void {
     }),
   );
   ledger.appendRegistryEvent(
-    document("c0c0c0c0-0000-4000-8000-00000000c002", "PRICE_TABLE", FIXTURE_CATALOG, "5".repeat(64), {
+    document("c0c0c0c0-0000-4000-8000-00000000c002", "PRICE_TABLE", FIXTURE_CATALOG, {
       intervals: [
         {
           provider: "anthropic",

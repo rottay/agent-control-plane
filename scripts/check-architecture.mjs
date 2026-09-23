@@ -11205,6 +11205,67 @@ const P15C_WRITE_SET = [
   "packages/domains/runtime/test/switch-landing/index.test.ts",
 ];
 
+/**
+ * P-15 escalón R: registry seeding through a real door (the P-14 errata; Fable
+ * C-D6; ADR 0104).
+ *
+ * **What lands.** `publishRegistryDocument`, a ledger concept with its type leaf,
+ * publishes a `MODEL_VERSION`, a `ROUTING_ASSIGNMENT_GLOBAL` or a `PRICE_TABLE`: it
+ * derives the digest from the payload's canonical JSON, the key and a version 5
+ * event id, answers an exact retry as a replay, and refuses a version recorded
+ * otherwise. `acp registry` is its one door, CLI only. The ledger's registry door
+ * verifies the digest of the three inline kinds (C-R1) and refuses a second
+ * `PRICE_TABLE` version at an instant another already takes effect at (Q-C3); a new
+ * read verb, `getRegistryDocumentVersion`. The suites that published those kinds
+ * with placeholder digests derive them; C's door-planted tie test is converted.
+ *
+ * **Pins that move.** The CLI's writing verbs five -> **six**, in its README, its
+ * banner and its manifest description; `SURFACE_MAP` gains `registry`, `CLI_ONLY`;
+ * `PATH_SCOPED_LAWS` 151 -> **152** for L-P15R-1. The ADR corpus 103 -> 104.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` (2.9.0); `MIGRATIONS` (23);
+ * `API_CONTRACT_VERSION` and `API_WRITE_ROUTES`; `CONTRACTS_SCHEMA_EXPORTS`;
+ * `RUNTIME_PUBLIC_EXPORTS`; L-B4B-11 and its one writable open.
+ *
+ * **Thirty-three paths; six are new to the fence** -- the concept, its leaf and its
+ * suite, the CLI verb and its suite, and ADR 0104.
+ */
+const P15R_WRITE_SET = [
+  "packages/persistence/ledger/src/registry-publication/index.ts",
+  "packages/persistence/ledger/src/registry-publication/types/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/registry-publication/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/domains/runtime/test/usage/index.test.ts",
+  "packages/domains/runtime/test/intake/index.test.ts",
+  "packages/domains/runtime/test/operation-result/index.test.ts",
+  "packages/entrypoints/cli/test/intake/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/task-intake/index.test.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/src/surface-map/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/surface-map/index.test.ts",
+  "packages/entrypoints/cli/src/registry/index.ts",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/package.json",
+  "packages/entrypoints/cli/README.md",
+  "packages/entrypoints/cli/test/registry/index.test.ts",
+  "docs/audit/architecture/database/streams/index.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0104-registry-configuration-is-published-through-one-door-that-derives-its-digest.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11439,6 +11500,7 @@ const WRITE_SET = [
   ...P15A_WRITE_SET,
   ...P15B_WRITE_SET,
   ...P15C_WRITE_SET,
+  ...P15R_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -12884,6 +12946,12 @@ const PATH_SCOPED_LAWS = [
   // its own row and adds none.
   {
     law: "only the runtime's events concept constructs an effect, a delivery or a delivery's move",
+    scope: "packages/*/*/src/**",
+  },
+  // P-15 escalón R. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 151 -> 152 for L-P15R-1.
+  {
+    law: "only the registry publication calls appendRegistryEvent in src",
     scope: "packages/*/*/src/**",
   },
 ];
@@ -27677,6 +27745,83 @@ const EXECUTION_RECORD_TYPES = ["EFFECT_INTENDED", "DISPATCH_INTENDED", "DISPATC
       " constant spelling(s), over " +
       String(recordScanned) +
       " other sources",
+  );
+}
+
+// L-P15R-1 -- only the registry publication calls appendRegistryEvent in src
+// (P-15 escalón R, ADR 0104; the L-P07C-1 F1 mould, C-R3).
+//
+// `publishRegistryDocument` is the one producer that derives a version's digest, key
+// and event id, answers an exact retry as a replay and refuses a version recorded
+// otherwise. A second `src/` caller of the ledger's registry door would skip all of
+// that and write configuration the CLI's door never saw. So the syntax tree of every
+// tracked `src/` `.ts`/`.tsx` is read, comments aside, and a call whose callee is a
+// property access named `appendRegistryEvent`, or an element access whose key is
+// that string or a no-substitution template, is admitted in two files only: the
+// publication (exactly one call, which is also the positive control and the
+// staleness guard) and the ledger that defines the door, where any internal call is
+// admitted by name. Zero files parsed fails. Stated limit, by family: an invocation
+// through `Function.prototype` (`call`/`apply`/`bind`), `Reflect.apply`, a
+// destructured or aliased method, and a computed key through an identifier are not
+// seen.
+const REGISTRY_PUBLICATION_CALLER = "packages/persistence/ledger/src/registry-publication/index.ts";
+const REGISTRY_DOOR_DEFINITION = "packages/persistence/ledger/src/ledger/index.ts";
+{
+  const registryCallee = (callee) =>
+    (ts.isPropertyAccessExpression(callee) && callee.name.text === "appendRegistryEvent") ||
+    (ts.isElementAccessExpression(callee) &&
+      (ts.isStringLiteral(callee.argumentExpression) || ts.isNoSubstitutionTemplateLiteral(callee.argumentExpression)) &&
+      callee.argumentExpression.text === "appendRegistryEvent");
+  let registryScanned = 0;
+  let publicationCalls = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      registryScanned += 1;
+      const kind = relativePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+      const file = ts.createSourceFile(relativePath, stripComments(content), ts.ScriptTarget.Latest, true, kind);
+      const visit = (node) => {
+        if (ts.isCallExpression(node) && registryCallee(node.expression)) {
+          if (relativePath === REGISTRY_PUBLICATION_CALLER) {
+            publicationCalls += 1;
+          } else if (relativePath !== REGISTRY_DOOR_DEFINITION) {
+            const { line } = file.getLineAndCharacterOfPosition(node.getStart(file));
+            fail(
+              relativePath +
+                ":" +
+                String(line + 1) +
+                " calls appendRegistryEvent; only " +
+                REGISTRY_PUBLICATION_CALLER +
+                " publishes registry configuration in src, deriving its digest, key and id and answering a" +
+                " retry as a replay",
+            );
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(file);
+    }
+  }
+  if (registryScanned === 0) fail("L-P15R-1 parsed no src file; the registry door's callers were never looked at");
+  if (publicationCalls !== 1) {
+    fail(
+      REGISTRY_PUBLICATION_CALLER +
+        " holds " +
+        String(publicationCalls) +
+        " call(s) of appendRegistryEvent; it holds exactly one, so this law's one admitted caller cannot go stale",
+    );
+  }
+  requireScope("only the registry publication calls appendRegistryEvent in src", registryScanned);
+  notes.push(
+    "only " +
+      REGISTRY_PUBLICATION_CALLER +
+      " calls appendRegistryEvent in src (one call), beside the door's own definition, over " +
+      String(registryScanned) +
+      " sources",
   );
 }
 

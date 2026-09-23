@@ -192,6 +192,10 @@ export {
   // P-14/C: the task intake, on the same terms as the registration above it.
   TaskIntakeRequest,
   TaskIntakeResponse,
+  // P-15/R: the registry publication. The CLI parses the request and prints the
+  // response; no route does (decision 128).
+  RegistryPublicationRequest,
+  RegistryPublicationResponse,
   RollupSummary,
   StreamIntegrityCoverageDto,
   TASK_STATE_COUNT,

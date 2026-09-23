@@ -1500,7 +1500,12 @@ export interface RegistryDocument {
    * version, and null is the only way to be a first version.
    */
   readonly parentDocumentVersion: number | null;
-  /** Digest of the content artifact, 64 lowercase hex characters. */
+  /**
+   * Digest of the content, 64 lowercase hex characters. For the three kinds whose
+   * content travels inline (`INLINE_CONTENT_DOCUMENT_KINDS`) it is the SHA-256 of the
+   * payload's canonical JSON, and the door verifies it (P-15/R, ADR 0104); for the
+   * others it is the content artifact's.
+   */
   readonly contentDigest: string;
   readonly recordedBy: string;
   /** The instant from which this version rules. ISO-8601 ms UTC. */
@@ -1509,6 +1514,34 @@ export interface RegistryDocument {
   readonly recordedAt: string;
   readonly payload: Record<string, unknown>;
 }
+
+/**
+ * The document kinds whose content is the payload itself (P-15/R, ADR 0104).
+ *
+ * A `MODEL_VERSION`, a GLOBAL assignment and a `PRICE_TABLE` carry their content
+ * inline in the event (decisions 71 and 88); no content artifact is published for
+ * them. So their `contentDigest` is the SHA-256 of the payload's canonical JSON, and
+ * the registry door refuses one that says otherwise. Every other kind keeps the
+ * artifact's digest, which this door does not read.
+ */
+export const INLINE_CONTENT_DOCUMENT_KINDS = ["MODEL_VERSION", "PRICE_TABLE", "ROUTING_ASSIGNMENT_GLOBAL"] as const;
+
+/**
+ * The registry door's own refusals of a document's content and lineage (P-15/R,
+ * ADR 0104), words carried at the head of the issue's message, on
+ * `PRICE_TABLE_REFUSALS`' pattern.
+ *
+ * - `REGISTRY_CONTENT_DIGEST_MISMATCH` — an inline-content document whose digest is
+ *   not its payload's.
+ * - `REGISTRY_EFFECTIVE_FROM_TAKEN` — a `PRICE_TABLE` version taking effect at the
+ *   instant another version of the same document already does.
+ */
+export const REGISTRY_DOCUMENT_REFUSALS = [
+  "REGISTRY_CONTENT_DIGEST_MISMATCH",
+  "REGISTRY_EFFECTIVE_FROM_TAKEN",
+] as const;
+
+export type RegistryDocumentRefusal = (typeof REGISTRY_DOCUMENT_REFUSALS)[number];
 
 /** One durable registry-stream row, with the document and its chain position. */
 export interface RegistryEventRecord {

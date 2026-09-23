@@ -181,6 +181,7 @@ import {
   DISPATCH_STATE_TRANSITIONS,
   DOCUMENT_KINDS,
   EXECUTION_EFFECT_KINDS,
+  INLINE_CONTENT_DOCUMENT_KINDS,
   EXECUTION_REQUEST_CONTRACT_VERSIONS,
   type AppendBatchResult,
   type AppendResult,
@@ -699,8 +700,12 @@ function requireArtifactCount(value: number, field: string): number {
  * refusal is a typed `LedgerValidationError` naming the field, rather than a
  * raw SQLite constraint failure nobody can catch by class; the base is what
  * holds the same line for a caller who reaches past the door.
+ *
+ * Exported for the registry publication (P-15/R, ADR 0104), which parses its
+ * candidate here before it compares it with a recorded version, so a form problem
+ * is refused as one and never reported as a conflict. The one parser, not a copy.
  */
-function normalizeRegistryDocument(candidate: unknown): RegistryDocument {
+export function normalizeRegistryDocument(candidate: unknown): RegistryDocument {
   if (!isPlainObject(candidate)) {
     throw new LedgerValidationError([
       { path: "<root>", message: "a registry document is an object" },
@@ -7101,6 +7106,31 @@ export class Ledger {
       ]);
     }
 
+    // P-15/R (ADR 0104, Q-C3). A catalog version is chosen by the instant it takes
+    // effect, so two versions of one `PRICE_TABLE` at the same instant leave no version
+    // in force there. Refused as a write invariant, for this kind alone and per
+    // document; not a UNIQUE index, because a ledger that already holds a tie must
+    // still open, and the fold that rebuilds it stays tolerant (decision 56's
+    // asymmetry). C's dispatch door refuses such a history's ambiguous pin.
+    if (document.documentKind === "PRICE_TABLE") {
+      const taken = this.#stmt(
+        "SELECT document_version FROM registry_events " +
+          "WHERE subject_kind = 'DOCUMENT' AND document_id = ? AND effective_from = ? LIMIT 1",
+      ).get(document.documentId, document.effectiveFrom) as { readonly document_version: number } | undefined;
+      if (taken !== undefined) {
+        throw new LedgerValidationError([
+          {
+            path: "effectiveFrom",
+            message:
+              "REGISTRY_EFFECTIVE_FROM_TAKEN: version " +
+              String(taken.document_version) +
+              " of this price table already takes effect at this instant, and two versions at one instant " +
+              "leave neither in force",
+          },
+        ]);
+      }
+    }
+
     if (document.parentDocumentVersion === null) {
       if (anyVersion !== undefined) {
         throw new LedgerValidationError([
@@ -7156,6 +7186,24 @@ export class Ledger {
    * and the provider it was registered under.
    */
   #assertRegistryDocumentAdmissible(document: RegistryDocument): void {
+    // P-15/R (ADR 0104, C-R1). The three kinds whose content is the payload carry the
+    // payload's own digest, and the door verifies it rather than trusting the writer:
+    // this binds every producer, not only the publication door. First, because a
+    // document that misstates its content is not read further. The fold does not
+    // re-verify; stored history keeps the digests it was written with.
+    if ((INLINE_CONTENT_DOCUMENT_KINDS as readonly string[]).includes(document.documentKind)) {
+      if (document.contentDigest !== sha256Hex(canonicalJsonStringify(document.payload))) {
+        throw new LedgerValidationError([
+          {
+            path: "contentDigest",
+            message:
+              "REGISTRY_CONTENT_DIGEST_MISMATCH: a " +
+              document.documentKind +
+              " carries its content inline, so its digest is the SHA-256 of the payload's canonical JSON",
+          },
+        ]);
+      }
+    }
     let issues: LedgerValidationIssue[];
     if (document.documentKind === "MODEL_VERSION") {
       issues = modelVersionPayloadIssues(document.payload);
@@ -7855,6 +7903,26 @@ export class Ledger {
     const selection = selectVigentCatalogVersion(this.#catalogVersions(documentId), instant);
     if (selection.kind !== "VIGENT") return null;
     return { catalogDocumentId: documentId, catalogVersion: selection.catalogVersion };
+  }
+
+  /**
+   * One recorded version of one configuration document, or null (P-15/R, ADR 0104).
+   *
+   * The registry publication door reads it before it appends: the same version with
+   * the same kind, digest, parent and instant is a replay, and a version that differs
+   * in any of them is a conflict, never a second version. Read by coordinate, so the
+   * answer does not depend on which idempotency key the version was written under.
+   */
+  getRegistryDocumentVersion(documentId: string, documentVersion: number): RegistryEventRecord | null {
+    this.#assertOpen("getRegistryDocumentVersion");
+    const id = requireArtifactIdentifier(documentId, "documentId");
+    const version = requireArtifactCount(documentVersion, "documentVersion");
+    const row = this.#stmt(
+      "SELECT " +
+        REGISTRY_EVENT_COLUMNS +
+        " FROM registry_events WHERE subject_kind = 'DOCUMENT' AND document_id = ? AND document_version = ?",
+    ).get(id, version) as RegistryEventRow | undefined;
+    return row === undefined ? null : this.#registryRowToRecord(row);
   }
 
   /**

@@ -112,6 +112,10 @@ export const SURFACE_MAP: readonly SurfaceEntry[] = Object.freeze([
     "a decision verb: it folds recorded pressure through the switch policy and prints " +
       "what it decided; it plays no plan and moves no account, and the plane exposes no " +
       "route that decides"),
+  entry("registry", null, null, "CLI_ONLY",
+    "registry configuration is an owner act on the local plane: the specification names " +
+      "no API door for it (requirements E4, streams §4), so a route is added only when a " +
+      "specification row asks for one (P-15/R, decision 128)"),
   entry(null, "health", "GET", "API_ONLY",
     "liveness of a server process; a CLI has no process to report on, and the contract " +
       "already names it the non-ledger exception"),

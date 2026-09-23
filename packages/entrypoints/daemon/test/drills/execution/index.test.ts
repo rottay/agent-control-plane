@@ -29,6 +29,7 @@ import {
   LedgerValidationError,
   artifactBlobLeaseStorePath,
   artifactRootFor,
+  canonicalJsonStringify,
   createCheckpointStore,
   effectIdV1,
   effectIdempotencyKeyV1,
@@ -39,6 +40,7 @@ import {
   openLeaseStore,
   readArtifact,
   requestSha256,
+  sha256Hex,
 } from "@acp/ledger";
 import type { ArtifactPlane, ArtifactPlaneTestFaults, ExecutionRouteReadModel, Ledger } from "@acp/ledger";
 import { admitBinary, admitConfigRoot, admitWorkdir, claudeAdapter, createExecutionPort, executionSessionId } from "@acp/providers";
@@ -5014,7 +5016,6 @@ function plantFixtureCatalog(ledger: Ledger): void {
     eventId: string,
     documentKind: string,
     documentId: string,
-    contentDigest: string,
     payload: Record<string, unknown>,
   ): Record<string, unknown> => ({
     contractVersion: CONTRACT_VERSION,
@@ -5024,7 +5025,8 @@ function plantFixtureCatalog(ledger: Ledger): void {
     documentId,
     documentVersion: 1,
     parentDocumentVersion: null,
-    contentDigest,
+    // The payload's own digest, which the registry door verifies (P-15/R, ADR 0104).
+    contentDigest: sha256Hex(canonicalJsonStringify(payload)),
     recordedBy: "kimi/k3/coordinator/01",
     effectiveFrom: FIXTURE_CATALOG_FROM,
     occurredAt: FIXTURE_CATALOG_FROM,
@@ -5032,7 +5034,7 @@ function plantFixtureCatalog(ledger: Ledger): void {
     payload,
   });
   ledger.appendRegistryEvent(
-    document("c0c0c0c0-0000-4000-8000-00000000c001", "MODEL_VERSION", FIXTURE_MODEL_VERSION, "6".repeat(64), {
+    document("c0c0c0c0-0000-4000-8000-00000000c001", "MODEL_VERSION", FIXTURE_MODEL_VERSION, {
       provider: "anthropic",
       model: "claude-opus-5",
       release: "2026-01-01",
@@ -5045,7 +5047,7 @@ function plantFixtureCatalog(ledger: Ledger): void {
     }),
   );
   ledger.appendRegistryEvent(
-    document("c0c0c0c0-0000-4000-8000-00000000c002", "PRICE_TABLE", FIXTURE_CATALOG, "5".repeat(64), {
+    document("c0c0c0c0-0000-4000-8000-00000000c002", "PRICE_TABLE", FIXTURE_CATALOG, {
       intervals: [
         {
           provider: "anthropic",

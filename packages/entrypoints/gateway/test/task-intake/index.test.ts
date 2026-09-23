@@ -20,6 +20,7 @@ import {
   openArtifactBlobLeaseStore,
   openArtifactPlane,
   openLedger,
+  sha256Hex,
 } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { intakeTask } from "@acp/runtime";
@@ -105,7 +106,8 @@ function registryDocument(documentKind: string, documentId: string, payload: Rec
     documentId,
     documentVersion: version,
     parentDocumentVersion: version === 1 ? null : version - 1,
-    contentDigest: String(version).repeat(64),
+    // The payload's own digest, which the registry door verifies (P-15/R, ADR 0104).
+    contentDigest: sha256Hex(canonicalJsonStringify(payload)),
     recordedBy: COORDINATOR,
     effectiveFrom: AT,
     occurredAt: AT,
