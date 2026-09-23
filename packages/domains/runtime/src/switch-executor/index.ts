@@ -10,9 +10,16 @@ import { foldPressureTrigger } from "@acp/accounts";
 import type { PressureObservation, SwitchPlan, SwitchStep } from "@acp/accounts";
 
 import type { DurableInvocation } from "../contracts/index.js";
-import { deriveEventCoordinate } from "../core/coordinates/index.js";
+import { deriveEventCoordinate, payloadCoordinate } from "../core/coordinates/index.js";
+import { assertAttemptOpened } from "../core/step-executor/index.js";
 import type { BeatContext, LedgerPort } from "../core/step-executor/index.js";
 import { SupervisorError } from "../errors/index.js";
+import type { SwitchEventPayload } from "./types/index.js";
+
+export type { SwitchEventPayload } from "./types/index.js";
+
+/** The two payload keys a candidate may never carry (ADR 0102). */
+const COORDINATE_KEYS: readonly string[] = Object.freeze(["revisionNumber", "attemptNumber"]);
 
 /**
  * The switch executor.
@@ -175,6 +182,27 @@ export function executeSwitchPlan(input: SwitchExecutionInput): SwitchExecutionR
     );
   }
 
+  // Nothing of a V2 coordinate before its opening (N-G-3, ADR 0102).
+  if (invocation.revision !== undefined) assertAttemptOpened(ledger, invocation);
+
+  // A candidate may not name the coordinate (ADR 0102). The two keys decide which
+  // idempotency key an event must carry, and they come from the walk's revision
+  // alone; a plan able to set them could key an event into another coordinate.
+  // Present at all is refused — a value of any type, on a V1 walk as on a V2 one.
+  for (const candidate of plan.events) {
+    for (const key of COORDINATE_KEYS) {
+      if (Object.hasOwn(candidate.payload, key)) {
+        throw new SupervisorError(
+          "refusing to execute a switch plan whose " +
+            candidate.type +
+            " names " +
+            key +
+            "; the payload coordinate is the walk's, never a plan's",
+        );
+      }
+    }
+  }
+
   // A plan that revokes a lease must be given the lease it revokes. Appending
   // the revocation without one would record an enrichment that names nothing,
   // which is worse than the unenriched payload it replaces.
@@ -294,7 +322,7 @@ export function executeSwitchPlan(input: SwitchExecutionInput): SwitchExecutionR
       recordedAt: coordinate.recordedAt,
       correlationId: invocation.invocationId,
       causationId: causedBy ?? null,
-      payload: payloadFor(candidate.type, candidate.payload, lease),
+      payload: payloadFor(candidate.type, candidate.payload, lease, invocation),
     });
 
     const result = ledger.append(event);
@@ -318,8 +346,11 @@ function payloadFor(
   type: ControlPlaneEventType,
   payload: Readonly<Record<string, string>>,
   lease: Lease | null,
-): Record<string, string> {
-  if (type !== "LEASE_REVOKED" || lease === null) return { ...payload };
+  invocation: DurableInvocation,
+): SwitchEventPayload {
+  // Last, after the plan's fields: the candidate was refused above if it named
+  // either key, so nothing here is overwritten, and a V1 walk adds nothing.
+  if (type !== "LEASE_REVOKED" || lease === null) return { ...payload, ...payloadCoordinate(invocation) };
 
   return {
     ...payload,
@@ -327,6 +358,7 @@ function payloadFor(
     worktreePath: lease.worktreePath,
     holder: lease.holder,
     cause: "ACCOUNT_SWITCH",
+    ...payloadCoordinate(invocation),
   };
 }
 

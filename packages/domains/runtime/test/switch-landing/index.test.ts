@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { AccountRecord, CONTRACT_VERSION, ControlPlaneEvent, ResolvedRoute } from "@acp/contracts";
+import { AccountRecord, CONTRACT_VERSION, ControlPlaneEvent, ResolvedRoute, buildV2IdempotencyKey } from "@acp/contracts";
 import { CONTROL_PLANE_EVENT_TYPES, EXCEPTIONAL_STATES, LIFECYCLE_STATES } from "@acp/contracts";
 import { EXECUTION_REFUSALS, SWITCH_STEP_NAMES } from "@acp/contracts";
 import type { HealthProbe, Lease, ResolvedRoute as ResolvedRouteValue } from "@acp/contracts";
@@ -14,6 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { DurableInvocation } from "../../src/contracts/index.js";
 import { deriveEventCoordinate, deterministicUuid } from "../../src/core/coordinates/index.js";
+import { ATTEMPT_OPENING_STEP } from "../../src/core/events/index.js";
 import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP } from "../../src/core/lifecycle/index.js";
 import { appendPlanStep, nextStep } from "../../src/core/step-executor/index.js";
 import type { BeatContext } from "../../src/core/step-executor/index.js";
@@ -36,6 +38,7 @@ import {
 } from "../../src/toy/repository/index.js";
 import type { ScenarioRoot } from "../../src/toy/repository/index.js";
 import { recordTokenObservation, usageTransitionId } from "../../src/usage/index.js";
+import { deriveInvocation } from "../../src/submission/index.js";
 
 /**
  * Evidence for the durable switch landing (V2-B1f/F5).
@@ -998,5 +1001,145 @@ describe("F5 N1-N14: the landing refuses rather than guessing", () => {
     const types = rowsOf(state.ledger, state.invocation.taskId).map((row) => row.type);
     expect(types).toContain("ACCOUNT_SWITCH_COMPLETED");
     expect(types).not.toContain("CHECKPOINT_WRITTEN");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón B: the switch landing speaks the V2 coordinate (ADR 0102)
+// ---------------------------------------------------------------------------
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/** The canonical bytes of the task's last event. */
+function lastEventSha(ledger: Ledger, taskId: string): string {
+  return sha256(ledger.listEvents({ taskId, limit: 500 }).events.at(-1)?.canonicalJson ?? "");
+}
+
+/**
+ * The task's envelope reference, planted through the ledger's artifact door, and
+ * the revision that names it (the step executor suite's fixture, restated: a test
+ * file cannot export helpers). The revision's number differs from the flat
+ * attempt, so a payload that read the flat attempt would be caught.
+ */
+function p15bRevision(ledger: Ledger, taskId: string, at: string): NonNullable<DurableInvocation["revision"]> {
+  const reference = "ref-envelope-" + taskId;
+  const content = "7".repeat(64);
+  const envelope = (kind: string, ordinal: number, payload: Record<string, unknown>): Record<string, unknown> => ({
+    contractVersion: CONTRACT_VERSION,
+    eventId: deterministicUuid("envelope/" + taskId + "/" + kind),
+    idempotencyKey: "envelope/" + taskId + "/" + kind,
+    subjectKind: "ARTIFACT",
+    artifactEventKind: kind,
+    subjectOrdinal: ordinal,
+    parentSubjectOrdinal: ordinal === 1 ? null : ordinal - 1,
+    recordedBy: EMITTED_BY,
+    occurredAt: at,
+    recordedAt: at,
+    payload,
+  });
+  const common = { commandId: "cmd-envelope", contentSha256: content, blobGeneration: 1, artifactPinId: "pin-envelope" };
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_INTENDED", 1, {
+      ...common,
+      mediaType: "application/json",
+      sizeBytes: 128,
+      encryptionStatus: "PLAINTEXT",
+      keyReference: null,
+      encryptionProfile: "local-plaintext-v1",
+    }),
+  );
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_SUCCEEDED", 2, {
+      ...common,
+      reference: {
+        artifactReferenceId: reference,
+        artifactClass: "TASK_ENVELOPE",
+        classification: "INTERNAL",
+        scopeKind: "TASK",
+        scopeId: taskId,
+        producerIdentity: EMITTED_BY,
+        accessPolicyId: "SCOPE_EQUALITY_V1",
+        retentionClass: "STANDARD",
+        expiresAt: "2026-12-31T00:00:00.000Z",
+      },
+    }),
+  );
+  return {
+    revisionId: deterministicUuid("revision/" + taskId + "/4"),
+    revisionNumber: 4,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+    envelopeArtifactReferenceId: reference,
+  };
+}
+
+/** `blocked`, over a V2 attempt: opened first, then the same walk and switch. */
+function blockedV2(id: string, taskId: string): Prestate {
+  const root = scenario(id);
+  const ledger = openLedger(scenarioLedgerPath(root));
+  ledgers.push(ledger);
+  const invocation = deriveInvocation(taskId, 1, AT, "e".repeat(64), p15bRevision(ledger, taskId, AT));
+  appendPlanStep(contextFor(ledger, invocation), ATTEMPT_OPENING_STEP);
+  walkTo(ledger, invocation, INTENT_STEP.index);
+  const task = ledger.getTask(taskId);
+  if (task === null) throw new Error("the fixture appended no task");
+  executeSwitchPlan({
+    ledger,
+    invocation,
+    plan: handBuiltPlan(FOUR_EVENTS),
+    emittedBy: EMITTED_BY,
+    lease: leaseFor(),
+    taskState: task.currentState,
+    causedBy: null,
+  });
+  return { ledger, invocation };
+}
+
+describe("P-15/B: the switch landing under V1 and under V2 (ADR 0102)", () => {
+  it("PC-B1: a V1 landing is byte-identical to the one built before B", async () => {
+    const state = blocked("p15b-landing-v1", "f5f5f5f5-0000-4000-8000-0000000000b1");
+    landed(await landAccountSwitch(landingInput(state)));
+    expect(lastEventSha(state.ledger, state.invocation.taskId)).toBe(
+      // Lifted by running the pre-B source (HEAD 313512d) over this fixture.
+      "715e71f62d54a0986f9dacb98fe23bb0177ed43e9b52cb5c415351a93d11e3b5",
+    );
+  });
+
+  it("PC-B2/B3: a V2 landing carries the revision's coordinate, keys V2, and its replay reads the row back", async () => {
+    const state = blockedV2("p15b-landing-v2", "f5f5f5f5-0000-4000-8000-0000000000b2");
+    const outcome = landed(await landAccountSwitch(landingInput(state)));
+    expect(outcome.inserted).toBe(true);
+    expect(outcome.event.payload).toMatchObject({ toAccountId: DESTINATION_ACCOUNT, revisionNumber: 4, attemptNumber: 1 });
+    expect(outcome.event.idempotencyKey).toBe(
+      buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId: state.invocation.taskId,
+        revisionNumber: 4,
+        attemptNumber: 1,
+        transitionId: outcome.event.transitionId,
+      }),
+    );
+    // The probe reads the durable V2 row back through its text and count readers.
+    const again = landed(await landAccountSwitch(landingInput(state)));
+    expect(again.inserted).toBe(false);
+    expect(again.toAccountId).toBe(DESTINATION_ACCOUNT);
+    expect(again.generation).toBe(outcome.generation);
+  });
+
+  it("N-B-1: an attempt the ledger never opened is refused by name before the probe, with zero delta", async () => {
+    const state = blockedV2("p15b-landing-unopened", "f5f5f5f5-0000-4000-8000-0000000000b3");
+    const revision = state.invocation.revision;
+    if (revision === undefined) throw new Error("expected a revision");
+    const unopened = deriveInvocation(state.invocation.taskId, 2, AT, "e".repeat(64), { ...revision, attemptNumber: 2 });
+    const probe = probeDouble();
+    const status = state.ledger.status();
+    await expect(
+      landAccountSwitch(landingInput({ ledger: state.ledger, invocation: unopened }, { port: probe.port })),
+    ).rejects.toThrow("has not been opened");
+    expect(probe.probed).toHaveLength(0);
+    expect(state.ledger.status().eventCount).toBe(status.eventCount);
+    expect(state.ledger.status().headEventSha256).toBe(status.headEventSha256);
   });
 });

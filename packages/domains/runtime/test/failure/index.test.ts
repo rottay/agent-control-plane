@@ -1,4 +1,13 @@
-import { CONTROL_PLANE_EVENT_TYPES, EXCEPTIONAL_STATES, EXECUTION_REFUSALS, TERMINAL_STATES } from "@acp/contracts";
+import { createHash } from "node:crypto";
+
+import {
+  CONTRACT_VERSION,
+  CONTROL_PLANE_EVENT_TYPES,
+  EXCEPTIONAL_STATES,
+  EXECUTION_REFUSALS,
+  TERMINAL_STATES,
+  buildV2IdempotencyKey,
+} from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import { LedgerError, openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
@@ -6,7 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { DurableInvocation } from "../../src/contracts/index.js";
 import { deterministicUuid } from "../../src/core/coordinates/index.js";
-import { operationForStep } from "../../src/core/events/index.js";
+import { ATTEMPT_OPENING_STEP, operationForStep } from "../../src/core/events/index.js";
 import { INTENT_STEP, READ_ONLY_PLAN, planStep } from "../../src/core/lifecycle/index.js";
 import { appendPlanStep, assertInvocationContinuity, currentState } from "../../src/core/step-executor/index.js";
 import type { BeatContext, EffectPort } from "../../src/core/step-executor/index.js";
@@ -35,6 +44,7 @@ import {
   scenarioLedgerPath,
 } from "../../src/toy/repository/index.js";
 import type { ScenarioRoot } from "../../src/toy/repository/index.js";
+import { deriveInvocation } from "../../src/submission/index.js";
 
 /**
  * Terminal settlement for a walk that could not finish (V2-B7T).
@@ -446,5 +456,161 @@ describe("classifyFailure (V2-B7R)", () => {
     expect([...FAILURE_REFUSALS]).toEqual([
       "BOUNDARY", "CONTINUITY", "LEDGER", "PLAN", "POSTCONDITION_UNKNOWN", "RECONCILIATION", "UNCLASSIFIED",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón B: the failure settlement speaks the V2 coordinate (ADR 0102)
+// ---------------------------------------------------------------------------
+
+const P15B_AT = "2026-08-27T12:00:00.000Z";
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/** The canonical bytes of the task's last event. */
+function lastEventSha(ledger: Ledger, taskId: string): string {
+  return sha256(ledger.listEvents({ taskId, limit: 500 }).events.at(-1)?.canonicalJson ?? "");
+}
+
+/**
+ * The task's envelope reference, planted through the ledger's artifact door, and
+ * the revision that names it (the step executor suite's fixture, restated: a test
+ * file cannot export helpers). The revision's number differs from the flat
+ * attempt, so a payload that read the flat attempt would be caught.
+ */
+function p15bRevision(ledger: Ledger, taskId: string, at: string): NonNullable<DurableInvocation["revision"]> {
+  const reference = "ref-envelope-" + taskId;
+  const content = "7".repeat(64);
+  const envelope = (kind: string, ordinal: number, payload: Record<string, unknown>): Record<string, unknown> => ({
+    contractVersion: CONTRACT_VERSION,
+    eventId: deterministicUuid("envelope/" + taskId + "/" + kind),
+    idempotencyKey: "envelope/" + taskId + "/" + kind,
+    subjectKind: "ARTIFACT",
+    artifactEventKind: kind,
+    subjectOrdinal: ordinal,
+    parentSubjectOrdinal: ordinal === 1 ? null : ordinal - 1,
+    recordedBy: EMITTED_BY,
+    occurredAt: at,
+    recordedAt: at,
+    payload,
+  });
+  const common = { commandId: "cmd-envelope", contentSha256: content, blobGeneration: 1, artifactPinId: "pin-envelope" };
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_INTENDED", 1, {
+      ...common,
+      mediaType: "application/json",
+      sizeBytes: 128,
+      encryptionStatus: "PLAINTEXT",
+      keyReference: null,
+      encryptionProfile: "local-plaintext-v1",
+    }),
+  );
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_SUCCEEDED", 2, {
+      ...common,
+      reference: {
+        artifactReferenceId: reference,
+        artifactClass: "TASK_ENVELOPE",
+        classification: "INTERNAL",
+        scopeKind: "TASK",
+        scopeId: taskId,
+        producerIdentity: EMITTED_BY,
+        accessPolicyId: "SCOPE_EQUALITY_V1",
+        retentionClass: "STANDARD",
+        expiresAt: "2026-12-31T00:00:00.000Z",
+      },
+    }),
+  );
+  return {
+    revisionId: deterministicUuid("revision/" + taskId + "/4"),
+    revisionNumber: 4,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+    envelopeArtifactReferenceId: reference,
+  };
+}
+
+/** A V2 attempt, opened and walked by hand up to (not including) `stopBefore`. */
+function stageV2(name: string, taskId: string, stopBefore: number, effects?: EffectPort): Staged {
+  const root = scenario(name);
+  const ledger = track(openLedger(scenarioLedgerPath(root)));
+  const invocation = deriveInvocation(taskId, 1, P15B_AT, "d".repeat(64), p15bRevision(ledger, taskId, P15B_AT));
+  const context = contextFor(root, ledger, invocation, effects);
+  appendPlanStep(context, ATTEMPT_OPENING_STEP);
+  walkTo(context, stopBefore);
+  return { root, ledger, invocation, context };
+}
+
+describe("P-15/B: the failure settlement under V1 and under V2 (ADR 0102)", () => {
+  it("PC-B1: a V1 TASK_FAILED is byte-identical to the one built before B", async () => {
+    const staged = stage("p15b-failure-v1", "b7100000-0000-4000-8000-0000000000b1", 4);
+    await settleFailure(staged.context, "BOUND_EXHAUSTED");
+    expect(lastEventSha(staged.ledger, staged.invocation.taskId)).toBe(
+      // Lifted by running the pre-B source (HEAD 313512d) over this fixture.
+      "b7f3ddc29fd0c6a79ff2474b2e0307cbc270ebb90ee2ae4896d7457d35754f2e",
+    );
+  });
+
+  it("PC-B2: a V2 TASK_FAILED carries the revision's coordinate, keys V2 and settles once", async () => {
+    const staged = stageV2("p15b-failure-v2", "b7100000-0000-4000-8000-0000000000b2", 4);
+    const settlement = await settleFailure(staged.context, "BOUND_EXHAUSTED");
+    expect(settlement.verdict).toBe("FAILED");
+    expect(settlement.failed?.payload).toEqual({
+      submissionDigest: "d".repeat(64),
+      reason: "BOUND_EXHAUSTED",
+      revisionNumber: 4,
+      attemptNumber: 1,
+    });
+    expect(settlement.failed?.idempotencyKey).toBe(
+      buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId: staged.invocation.taskId,
+        revisionNumber: 4,
+        attemptNumber: 1,
+        transitionId: FAILURE_TRANSITION_ID,
+      }),
+    );
+    expect(staged.ledger.getTask(staged.invocation.taskId)?.currentState).toBe("FAILED");
+    const count = staged.ledger.status().eventCount;
+    expect((await settleFailure(staged.context, "BOUND_EXHAUSTED")).verdict).toBe("TASK_TERMINAL");
+    expect(staged.ledger.status().eventCount).toBe(count);
+  });
+
+  it("PC-B3: a V2 settlement reads the open INTENT under its V2 key and closes it first", async () => {
+    const staged = stageV2("p15b-failure-v2-intent", "b7100000-0000-4000-8000-0000000000b3", INTENT_STEP.index + 1);
+    await staged.context.effects.apply(operationForStep(staged.invocation, INTENT_STEP));
+    const settlement = await settleFailure(staged.context, "BOUND_EXHAUSTED");
+    expect(settlement).toMatchObject({ verdict: "FAILED", effect: "DONE", closedIntent: true });
+    expect(staged.ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-B-1: an attempt the ledger never opened is refused by name before the probe, with zero delta", async () => {
+    const staged = stageV2("p15b-failure-unopened", "b7100000-0000-4000-8000-0000000000b4", 4);
+    const revision = staged.invocation.revision;
+    if (revision === undefined) throw new Error("expected a revision");
+    const unopened = deriveInvocation(staged.invocation.taskId, 2, P15B_AT, "d".repeat(64), { ...revision, attemptNumber: 2 });
+    const status = staged.ledger.status();
+    await expect(settleFailure({ ...staged.context, invocation: unopened }, "BOUND_EXHAUSTED")).rejects.toThrow(
+      "has not been opened",
+    );
+    expect(staged.ledger.status().eventCount).toBe(status.eventCount);
+    expect(staged.ledger.status().headEventSha256).toBe(status.headEventSha256);
+  });
+
+  it("N-B-10: a revision whose numbers differ from the recorded opening is refused, with zero delta", async () => {
+    const staged = stageV2("p15b-failure-other-revision", "b7100000-0000-4000-8000-0000000000b5", 4);
+    const revision = staged.invocation.revision;
+    if (revision === undefined) throw new Error("expected a revision");
+    const other = deriveInvocation(staged.invocation.taskId, 1, P15B_AT, "d".repeat(64), { ...revision, revisionNumber: 5 });
+    const status = staged.ledger.status();
+    // Other revision numbers move the opening's own key, so no opening stands there.
+    await expect(settleFailure({ ...staged.context, invocation: other }, "BOUND_EXHAUSTED")).rejects.toThrow(SupervisorError);
+    await expect(settleFailure({ ...staged.context, invocation: other }, "BOUND_EXHAUSTED")).rejects.toThrow(
+      "has not been opened",
+    );
+    expect(staged.ledger.status().eventCount).toBe(status.eventCount);
+    expect(staged.ledger.getTask(staged.invocation.taskId)?.currentState).toBe("RESERVED");
   });
 });

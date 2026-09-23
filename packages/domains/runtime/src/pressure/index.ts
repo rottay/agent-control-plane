@@ -7,7 +7,8 @@ import type {
 import type { PressureObservation } from "@acp/accounts";
 
 import type { DurableInvocation } from "../contracts/index.js";
-import { deriveEventCoordinate } from "../core/coordinates/index.js";
+import { deriveEventCoordinate, payloadCoordinate } from "../core/coordinates/index.js";
+import { assertAttemptOpened } from "../core/step-executor/index.js";
 import type { LedgerPort } from "../core/step-executor/index.js";
 import { SupervisorError } from "../errors/index.js";
 
@@ -160,6 +161,9 @@ export function recordProviderPressure(
     );
   }
 
+  // Nothing of a V2 coordinate before its opening (N-G-3, ADR 0102).
+  if (invocation.revision !== undefined) assertAttemptOpened(ledger, invocation);
+
   const coordinate = deriveEventCoordinate(invocation, transitionId, 0);
   const event = ControlPlaneEvent.parse({
     contractVersion: CONTRACT_VERSION,
@@ -182,8 +186,9 @@ export function recordProviderPressure(
     // Three safe scalars, built field by field from named members. No free
     // text, no provider message, no URL, no code, and no number: there is no
     // remaining count, reset instant or retry-after here because the
-    // vocabulary that reaches this point has no field one could occupy.
-    payload: { accountId, provider, pressure },
+    // vocabulary that reaches this point has no field one could occupy. The
+    // payload coordinate, from the one helper, is empty for a V1 walk.
+    payload: { accountId, provider, pressure, ...payloadCoordinate(invocation) },
   });
 
   ledger.append(event);

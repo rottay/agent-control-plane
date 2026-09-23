@@ -1,14 +1,16 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { PROVIDER_PRESSURES } from "@acp/contracts";
+import { CONTRACT_VERSION, PROVIDER_PRESSURES, buildV2IdempotencyKey } from "@acp/contracts";
 import type { ControlPlaneEvent as ControlPlaneEventValue, ResolvedRoute } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { LIFECYCLE_PLAN } from "../../src/core/lifecycle/index.js";
+import { ATTEMPT_OPENING_STEP } from "../../src/core/events/index.js";
+import { LIFECYCLE_PLAN, planStep } from "../../src/core/lifecycle/index.js";
 import { appendPlanStep } from "../../src/core/step-executor/index.js";
 import type { BeatContext } from "../../src/core/step-executor/index.js";
 import { SupervisorError } from "../../src/errors/index.js";
@@ -26,6 +28,7 @@ import {
 import type { PressureEventSource } from "../../src/pressure/index.js";
 import type { DurableInvocation } from "../../src/contracts/index.js";
 import { deterministicUuid } from "../../src/core/coordinates/index.js";
+import { deriveInvocation } from "../../src/submission/index.js";
 
 /**
  * Evidence that a provider's own words about an account become one durable row
@@ -718,5 +721,211 @@ describe("F4b N7: the reader reads no clock and no random source", () => {
         first,
       );
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón B: the pressure event speaks the V2 coordinate (ADR 0102)
+// ---------------------------------------------------------------------------
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/** The canonical bytes of the task's last event. */
+function lastEventSha(ledger: Ledger, taskId: string): string {
+  return sha256(ledger.listEvents({ taskId, limit: 500 }).events.at(-1)?.canonicalJson ?? "");
+}
+
+/**
+ * The task's envelope reference, planted through the ledger's artifact door (the
+ * step executor suite's fixture, restated: a test file cannot export helpers).
+ */
+function plantEnvelopeReference(ledger: Ledger, taskId: string): string {
+  const reference = "ref-envelope-" + taskId;
+  const content = "7".repeat(64);
+  const envelope = (kind: string, ordinal: number, payload: Record<string, unknown>): Record<string, unknown> => ({
+    contractVersion: CONTRACT_VERSION,
+    eventId: deterministicUuid("envelope/" + taskId + "/" + kind),
+    idempotencyKey: "envelope/" + taskId + "/" + kind,
+    subjectKind: "ARTIFACT",
+    artifactEventKind: kind,
+    subjectOrdinal: ordinal,
+    parentSubjectOrdinal: ordinal === 1 ? null : ordinal - 1,
+    recordedBy: EMITTED_BY,
+    occurredAt: AT,
+    recordedAt: AT,
+    payload,
+  });
+  const common = { commandId: "cmd-envelope", contentSha256: content, blobGeneration: 1, artifactPinId: "pin-envelope" };
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_INTENDED", 1, {
+      ...common,
+      mediaType: "application/json",
+      sizeBytes: 128,
+      encryptionStatus: "PLAINTEXT",
+      keyReference: null,
+      encryptionProfile: "local-plaintext-v1",
+    }),
+  );
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_SUCCEEDED", 2, {
+      ...common,
+      reference: {
+        artifactReferenceId: reference,
+        artifactClass: "TASK_ENVELOPE",
+        classification: "INTERNAL",
+        scopeKind: "TASK",
+        scopeId: taskId,
+        producerIdentity: EMITTED_BY,
+        accessPolicyId: "SCOPE_EQUALITY_V1",
+        retentionClass: "STANDARD",
+        expiresAt: "2026-12-31T00:00:00.000Z",
+      },
+    }),
+  );
+  return reference;
+}
+
+/**
+ * A revision-bearing invocation whose coordinate differs from the flat attempt,
+ * so a payload that read the flat attempt would be caught.
+ */
+function v2InvocationFor(ledger: Ledger, taskId: string): DurableInvocation {
+  const reference = plantEnvelopeReference(ledger, taskId);
+  return deriveInvocation(taskId, 1, AT, "d".repeat(64), {
+    revisionId: deterministicUuid("revision/" + taskId + "/4"),
+    revisionNumber: 4,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+    envelopeArtifactReferenceId: reference,
+  });
+}
+
+/** A fresh ledger with a V2 attempt, opened (or not) and discovered (or not). */
+function openV2(id: string, taskId: string, opened: boolean): { ledger: Ledger; invocation: DurableInvocation } {
+  const root = scenario(id);
+  const ledger = openLedger(scenarioLedgerPath(root));
+  ledgers.push(ledger);
+  const invocation = v2InvocationFor(ledger, taskId);
+  if (opened) {
+    const context: BeatContext = {
+      ledger,
+      effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("DONE") },
+      invocation,
+      emittedBy: EMITTED_BY,
+      plan: LIFECYCLE_PLAN,
+      route: TEST_ROUTE,
+      initiativeId: INITIATIVE_ID,
+    };
+    appendPlanStep(context, ATTEMPT_OPENING_STEP);
+    appendPlanStep(context, planStep(0));
+  }
+  return { ledger, invocation };
+}
+
+describe("P-15/B: provider pressure under V1 and under V2 (ADR 0102)", () => {
+  it("PC-B1: a V1 pressure event is byte-identical to the one built before B", () => {
+    const { ledger, invocation } = openWithTask("p15b-pressure-v1", "9b9b9b9b-9b9b-4b9b-8b9b-9b9b9b9b9bb1");
+    recordProviderPressure(ledger, {
+      invocation,
+      accountId: "acct-primary",
+      provider: "codex",
+      pressure: "QUOTA_EXHAUSTED",
+      transitionId: pressureTransitionId(0, 3),
+      emittedBy: EMITTED_BY,
+    });
+    expect(lastEventSha(ledger, invocation.taskId)).toBe(
+      // Lifted by running the pre-B source (HEAD 313512d) over this fixture.
+      "528e71dd2e777f4ccf54ef3f3d4dae290445582cdb9bdb8d2093d0d83560201d",
+    );
+  });
+
+  it("PC-B2/B3: a V2 pressure event carries the revision's coordinate, keys V2, appends once and reads back", () => {
+    const { ledger, invocation } = openV2("p15b-pressure-v2", "9b9b9b9b-9b9b-4b9b-8b9b-9b9b9b9b9bb2", true);
+    const observation = {
+      invocation,
+      accountId: "acct-primary",
+      provider: "codex",
+      pressure: "QUOTA_EXHAUSTED" as const,
+      transitionId: pressureTransitionId(0, 3),
+      emittedBy: EMITTED_BY,
+    };
+    const before = ledger.status().eventCount;
+    recordProviderPressure(ledger, observation);
+    const rows = rowsOf(ledger, invocation.taskId, "QUOTA_WARNING");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.payload).toEqual({
+      accountId: "acct-primary",
+      provider: "codex",
+      pressure: "QUOTA_EXHAUSTED",
+      revisionNumber: 4,
+      attemptNumber: 1,
+    });
+    expect(rows[0]?.idempotencyKey).toBe(
+      buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId: invocation.taskId,
+        revisionNumber: 4,
+        attemptNumber: 1,
+        transitionId: pressureTransitionId(0, 3),
+      }),
+    );
+    expect(ledger.status().eventCount).toBe(before + 1);
+    recordProviderPressure(ledger, observation);
+    expect(ledger.status().eventCount).toBe(before + 1);
+    // The reader reads the V2 row back.
+    const read = readAccountPressure(ledger, "acct-primary", { since: "2026-08-30T14:00:00.000Z" });
+    expect(read.ok && read.observations.map((row) => row.pressure)).toEqual(["QUOTA_EXHAUSTED"]);
+  });
+
+  it("N-B-1/N-B-10: an attempt the ledger never opened is refused by name, with zero delta", () => {
+    // Attempt 1 is opened; the invocation below names attempt 2 of the same
+    // revision, which nothing opened. The task exists, so the refusal is the
+    // opening guard's and not the unknown-task one.
+    const { ledger, invocation } = openV2("p15b-pressure-unopened", "9b9b9b9b-9b9b-4b9b-8b9b-9b9b9b9b9bb3", true);
+    const revision = invocation.revision;
+    if (revision === undefined) throw new Error("expected a revision");
+    const unopened = deriveInvocation(invocation.taskId, 2, AT, "d".repeat(64), { ...revision, attemptNumber: 2 });
+    const status = ledger.status();
+    let refusal: unknown = null;
+    try {
+      recordProviderPressure(ledger, {
+        invocation: unopened,
+        accountId: "acct-primary",
+        provider: "codex",
+        pressure: "QUOTA_EXHAUSTED",
+        transitionId: pressureTransitionId(0, 3),
+        emittedBy: EMITTED_BY,
+      });
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(SupervisorError);
+    expect((refusal as Error).message).toContain("has not been opened");
+    expect(ledger.status().eventCount).toBe(status.eventCount);
+    expect(ledger.status().headEventSha256).toBe(status.headEventSha256);
+  });
+
+  it("N-B-2: an opening key holding another event is refused as work this invocation did not do", () => {
+    const { ledger, invocation } = openV2("p15b-pressure-forged", "9b9b9b9b-9b9b-4b9b-8b9b-9b9b9b9b9bb4", true);
+    const forged = {
+      getTask: ledger.getTask.bind(ledger),
+      append: ledger.append.bind(ledger),
+      getEventBySequence: ledger.getEventBySequence.bind(ledger),
+      getEventByIdempotencyKey: () => ({ canonicalJson: JSON.stringify({ eventId: "00000000-0000-4000-8000-0000000000fe" }) }),
+    };
+    const before = ledger.status().eventCount;
+    expect(() => {
+      recordProviderPressure(forged as unknown as Ledger, {
+        invocation,
+        accountId: "acct-primary",
+        provider: "codex",
+        pressure: "QUOTA_EXHAUSTED",
+        transitionId: pressureTransitionId(0, 3),
+        emittedBy: EMITTED_BY,
+      });
+    }).toThrow("did not do");
+    expect(ledger.status().eventCount).toBe(before);
   });
 });

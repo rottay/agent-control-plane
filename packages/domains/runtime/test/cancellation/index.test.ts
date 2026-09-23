@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { CONTRACT_VERSION, ControlPlaneEvent, buildIdempotencyKey } from "@acp/contracts";
+import { CONTRACT_VERSION, ControlPlaneEvent, buildIdempotencyKey, buildV2IdempotencyKey } from "@acp/contracts";
 import type { Checkpoint, ResolvedRoute, TaskState } from "@acp/contracts";
 import { createCheckpointStore, openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
@@ -17,7 +18,7 @@ import {
 } from "../../src/cancellation/index.js";
 import type { DurableInvocation, OperationCoordinate, PostconditionVerdict } from "../../src/contracts/index.js";
 import { deriveEventCoordinate, deterministicUuid } from "../../src/core/coordinates/index.js";
-import { operationForStep } from "../../src/core/events/index.js";
+import { ATTEMPT_OPENING_STEP, operationForStep } from "../../src/core/events/index.js";
 import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP } from "../../src/core/lifecycle/index.js";
 import {
   appendPlanStep,
@@ -32,6 +33,7 @@ import type {
   CheckpointSource,
 } from "../../src/checkpoint/index.js";
 import { SupervisorError } from "../../src/errors/index.js";
+import { deriveInvocation } from "../../src/submission/index.js";
 import {
   applyEffect,
   probeEffect,
@@ -694,5 +696,147 @@ describe("the cancellation event itself", () => {
     expect(event.causationId).toBeNull();
 
     expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón B: the cancellation settlement speaks the V2 coordinate (ADR 0102)
+// ---------------------------------------------------------------------------
+
+const P15B_AT = "2026-08-27T12:00:00.000Z";
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/** The canonical bytes of the task's last event. */
+function lastEventSha(ledger: Ledger, taskId: string): string {
+  return sha256(ledger.listEvents({ taskId, limit: 500 }).events.at(-1)?.canonicalJson ?? "");
+}
+
+/**
+ * The task's envelope reference, planted through the ledger's artifact door, and
+ * the revision that names it (the step executor suite's fixture, restated: a test
+ * file cannot export helpers). The revision's number differs from the flat
+ * attempt, so a payload that read the flat attempt would be caught.
+ */
+function p15bRevision(ledger: Ledger, taskId: string, at: string): NonNullable<DurableInvocation["revision"]> {
+  const reference = "ref-envelope-" + taskId;
+  const content = "7".repeat(64);
+  const envelope = (kind: string, ordinal: number, payload: Record<string, unknown>): Record<string, unknown> => ({
+    contractVersion: CONTRACT_VERSION,
+    eventId: deterministicUuid("envelope/" + taskId + "/" + kind),
+    idempotencyKey: "envelope/" + taskId + "/" + kind,
+    subjectKind: "ARTIFACT",
+    artifactEventKind: kind,
+    subjectOrdinal: ordinal,
+    parentSubjectOrdinal: ordinal === 1 ? null : ordinal - 1,
+    recordedBy: EMITTED_BY,
+    occurredAt: at,
+    recordedAt: at,
+    payload,
+  });
+  const common = { commandId: "cmd-envelope", contentSha256: content, blobGeneration: 1, artifactPinId: "pin-envelope" };
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_INTENDED", 1, {
+      ...common,
+      mediaType: "application/json",
+      sizeBytes: 128,
+      encryptionStatus: "PLAINTEXT",
+      keyReference: null,
+      encryptionProfile: "local-plaintext-v1",
+    }),
+  );
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_SUCCEEDED", 2, {
+      ...common,
+      reference: {
+        artifactReferenceId: reference,
+        artifactClass: "TASK_ENVELOPE",
+        classification: "INTERNAL",
+        scopeKind: "TASK",
+        scopeId: taskId,
+        producerIdentity: EMITTED_BY,
+        accessPolicyId: "SCOPE_EQUALITY_V1",
+        retentionClass: "STANDARD",
+        expiresAt: "2026-12-31T00:00:00.000Z",
+      },
+    }),
+  );
+  return {
+    revisionId: deterministicUuid("revision/" + taskId + "/4"),
+    revisionNumber: 4,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+    envelopeArtifactReferenceId: reference,
+  };
+}
+
+/** The fixture over a V2 attempt, opened. */
+function fixtureV2(name: string, taskId: string, verdict?: PostconditionVerdict): Fixture {
+  const base = fixture(name, taskId, verdict);
+  const invocation = deriveInvocation(taskId, 1, P15B_AT, "a".repeat(64), p15bRevision(base.ledger, taskId, P15B_AT));
+  const context: BeatContext = { ...base.context, invocation };
+  appendPlanStep(context, ATTEMPT_OPENING_STEP);
+  return { ...base, context, invocation };
+}
+
+describe("P-15/B: the cancellation settlement under V1 and under V2 (ADR 0102)", () => {
+  it("PC-B1: a V1 TASK_CANCELLED is byte-identical to the one built before B", async () => {
+    const { context, ledger, invocation } = fixture("p15b-cancel-v1", "11111111-1111-4111-8111-1111111111b1");
+    walkTo(context, 3);
+    await settleCancellation(context);
+    expect(lastEventSha(ledger, invocation.taskId)).toBe(
+      // Lifted by running the pre-B source (HEAD 313512d) over this fixture.
+      "637d84761ec54cf03cfd783d97f201cfbc2455cbf41e5024353aff391e084c9c",
+    );
+  });
+
+  it("PC-B2: a V2 TASK_CANCELLED carries the revision's coordinate, keys V2 and settles once", async () => {
+    const { context, ledger, invocation } = fixtureV2("p15b-cancel-v2", "11111111-1111-4111-8111-1111111111b2");
+    walkTo(context, 3);
+    const settlement = await settleCancellation(context);
+    expect(settlement.verdict).toBe("CANCELLED");
+    expect(settlement.cancelled?.payload).toEqual({
+      submissionDigest: "a".repeat(64),
+      effect: "NONE",
+      revisionNumber: 4,
+      attemptNumber: 1,
+    });
+    expect(settlement.cancelled?.idempotencyKey).toBe(
+      buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId: invocation.taskId,
+        revisionNumber: 4,
+        attemptNumber: 1,
+        transitionId: CANCELLATION_TRANSITION_ID,
+      }),
+    );
+    expect(ledger.getTask(invocation.taskId)?.currentState).toBe("CANCELLED");
+    const count = ledger.status().eventCount;
+    expect((await settleCancellation(context)).verdict).toBe("TASK_TERMINAL");
+    expect(ledger.status().eventCount).toBe(count);
+  });
+
+  it("PC-B3: a V2 cancellation reads the open INTENT under its V2 key and closes it first", async () => {
+    const { context, ledger } = fixtureV2("p15b-cancel-v2-intent", "11111111-1111-4111-8111-1111111111b3", "DONE");
+    walkTo(context, INTENT_STEP.index);
+    const settlement = await settleCancellation(context);
+    expect(settlement).toMatchObject({ verdict: "CANCELLED", effect: "DONE", closedIntent: true });
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-B-1: an attempt the ledger never opened is refused by name before the probe, with zero delta", async () => {
+    const { context, ledger, invocation, recorder } = fixtureV2("p15b-cancel-unopened", "11111111-1111-4111-8111-1111111111b4");
+    walkTo(context, 3);
+    const revision = invocation.revision;
+    if (revision === undefined) throw new Error("expected a revision");
+    const unopened = deriveInvocation(invocation.taskId, 2, P15B_AT, "a".repeat(64), { ...revision, attemptNumber: 2 });
+    const status = ledger.status();
+    const calls = recorder.calls.length;
+    await expect(settleCancellation({ ...context, invocation: unopened })).rejects.toThrow("has not been opened");
+    expect(ledger.status().eventCount).toBe(status.eventCount);
+    expect(ledger.status().headEventSha256).toBe(status.headEventSha256);
+    expect(recorder.calls.length).toBe(calls);
   });
 });

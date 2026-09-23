@@ -2,7 +2,8 @@ import { BOUNDED_IDENTIFIER, CONTRACT_VERSION, ControlPlaneEvent } from "@acp/co
 import type { ControlPlaneEvent as ControlPlaneEventType } from "@acp/contracts";
 
 import type { DurableInvocation } from "../contracts/index.js";
-import { deriveEventCoordinate } from "../core/coordinates/index.js";
+import { deriveEventCoordinate, payloadCoordinate } from "../core/coordinates/index.js";
+import { assertAttemptOpened } from "../core/step-executor/index.js";
 import type { LedgerPort } from "../core/step-executor/index.js";
 import { SupervisorError } from "../errors/index.js";
 
@@ -253,6 +254,9 @@ export function recordToolCall(
     );
   }
 
+  // Nothing of a V2 coordinate before its opening (N-G-3, ADR 0102).
+  if (invocation.revision !== undefined) assertAttemptOpened(ledger, invocation);
+
   const coordinate = deriveEventCoordinate(invocation, transitionId, 0);
   const event = ControlPlaneEvent.parse({
     contractVersion: CONTRACT_VERSION,
@@ -288,6 +292,8 @@ export function recordToolCall(
       argumentBytes: facts.argumentBytes,
       resultBytes: facts.resultBytes,
       contentBlocks: facts.contentBlocks,
+      // The payload coordinate, from the one helper: empty for a V1 walk.
+      ...payloadCoordinate(invocation),
     },
   });
 

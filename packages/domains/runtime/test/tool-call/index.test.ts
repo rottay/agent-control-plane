@@ -1,3 +1,4 @@
+import { buildV2IdempotencyKey } from "@acp/contracts";
 import { canonicalJsonStringify } from "@acp/ledger";
 import { describe, expect, it } from "vitest";
 
@@ -879,5 +880,87 @@ describe("the coordinate is arbitrated before the effect", () => {
     expect(claim?.argumentBytes).toBeGreaterThan(0);
     // Non-vacuous: the sentinel is in the arguments that produced the count.
     expect(JSON.stringify(claim)).not.toContain(sentinel);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón B: a V2 tool call claims and records under one V2 key (ADR 0102)
+// ---------------------------------------------------------------------------
+
+describe("P-15/B: the V2 claim key is the V2 receipt key, and a replay finds it", () => {
+  const revision = {
+    revisionId: "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0fb1",
+    revisionNumber: 4,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+    envelopeArtifactReferenceId: "ref-envelope-p15b",
+  };
+  const v2Invocation = deriveInvocation(TASK, 1, SUBMITTED_AT, DIGEST, revision);
+
+  /** The fake ledger, with this attempt's opening recorded under its V2 key. */
+  function openedLedger(): FakeLedger {
+    const ledger = fakeLedger();
+    const opening = deriveEventCoordinate(v2Invocation, "attempt.opened", -1);
+    ledger.append({ idempotencyKey: opening.idempotencyKey, eventId: opening.eventId });
+    return ledger;
+  }
+
+  it("claims under the V2 key, records the receipt under the same key with the coordinate, and replays by it", async () => {
+    const ledger = openedLedger();
+    const port = countingPort(completedOutcome());
+    const claims = claimPortOf();
+    const key = buildV2IdempotencyKey({
+      stream: "control_plane_events",
+      taskId: TASK,
+      revisionNumber: 4,
+      attemptNumber: 1,
+      transitionId: "tool.0.0",
+    });
+
+    const first = await runToolCall(ledger, port, claims, executionFor({ invocation: v2Invocation }));
+    expect(first.replayed).toBe(false);
+    expect([...claims.rows.keys()]).toEqual([key]);
+    const receipt = ledger.rows.at(-1);
+    expect(receipt?.["idempotencyKey"]).toBe(key);
+    expect(receipt?.["payload"]).toMatchObject({ revisionNumber: 4, attemptNumber: 1 });
+
+    const second = await runToolCall(ledger, port, claims, executionFor({ invocation: v2Invocation }));
+    expect(second.replayed).toBe(true);
+    expect(second.eventId).toBe(first.eventId);
+    expect(port.calls()).toBe(1);
+  });
+
+  it("an unopened V2 attempt is refused before the claim and the port: no call, no claim row, no receipt", async () => {
+    const ledger = fakeLedger();
+    const port = countingPort(completedOutcome());
+    const claims = claimPortOf();
+    const rowsBefore = ledger.rows.length;
+    await expect(runToolCall(ledger, port, claims, executionFor({ invocation: v2Invocation }))).rejects.toThrow(
+      "has not been opened",
+    );
+    expect(port.calls()).toBe(0);
+    expect(claims.rows.size).toBe(0);
+    expect(claims.calls).toEqual([]);
+    expect(ledger.rows.length).toBe(rowsBefore);
+  });
+
+  it("the positive control: the same call on the opened attempt calls the port once and records its row", async () => {
+    const ledger = openedLedger();
+    const port = countingPort(completedOutcome());
+    const rowsBefore = ledger.rows.length;
+    const result = await runToolCall(ledger, port, claimPortOf(), executionFor({ invocation: v2Invocation }));
+    expect(result.replayed).toBe(false);
+    expect(port.calls()).toBe(1);
+    expect(ledger.rows.length).toBe(rowsBefore + 1);
+  });
+
+  it("the V1 path is unchanged: no opening is asked for, and the call runs and records", async () => {
+    const ledger = fakeLedger();
+    const port = countingPort(completedOutcome());
+    const result = await runToolCall(ledger, port, claimPortOf(), executionFor());
+    expect(result.replayed).toBe(false);
+    expect(port.calls()).toBe(1);
+    expect(ledger.rows).toHaveLength(1);
+    expect(Object.keys(ledger.rows[0]?.["payload"] as Record<string, unknown>).sort()).toEqual([...PAYLOAD_KEYS].sort());
   });
 });

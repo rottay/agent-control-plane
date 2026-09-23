@@ -809,3 +809,33 @@ describe("the response occurrence records an answer's digest and length, never i
     expect(() => responseEvent(RESPONSE, INVOCATION)).toThrow(/without a revision/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// P-15 escalón B — buildEvent's base comes from the one helper (ADR 0102)
+// ---------------------------------------------------------------------------
+
+describe("P-15/B: the payload-coordinate refactor of buildEvent moves no byte", () => {
+  it("builds both plans' V2 walks, opening included, exactly as before B", () => {
+    // Lifted by running the pre-B `buildEvent` (HEAD 313512d) over this file's
+    // fixture; the V1 vectors above already hold the V1 half.
+    const v2Walk = (plan: readonly PlanStep[]): string =>
+      createHash("sha256")
+        .update([ATTEMPT_OPENING_STEP, ...plan].map((step) => JSON.stringify(buildWith(V2_INVOCATION, step, plan))).join("\n"), "utf8")
+        .digest("hex");
+    expect(v2Walk(LIFECYCLE_PLAN)).toBe(
+      // Lifted by running the pre-B source (HEAD 313512d) over this fixture.
+      "cc96cb2669169ee7c02d85369ebc40abacc6b6afc1825dfdb827762ffe2218f7",
+    );
+    expect(v2Walk(READ_ONLY_PLAN)).toBe(
+      // Lifted by running the pre-B source (HEAD 313512d) over this fixture.
+      "063ad4a1bd9605164d38b77828aa401c8a9716d6b97fede52c5dcdb8e355e7cb",
+    );
+  });
+
+  it("puts the digest first and the coordinate after it, on every V2 event", () => {
+    for (const step of LIFECYCLE_PLAN) {
+      const keys = Object.keys(buildWith(V2_INVOCATION, step).payload);
+      expect(keys.slice(0, 3)).toEqual(["submissionDigest", "revisionNumber", "attemptNumber"]);
+    }
+  });
+});

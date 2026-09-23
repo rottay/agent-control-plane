@@ -1,8 +1,9 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { AccountRecord, CONTRACT_VERSION } from "@acp/contracts";
+import { AccountRecord, CONTRACT_VERSION, buildV2IdempotencyKey } from "@acp/contracts";
 import type { SwitchAuthorization } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import type { Lease } from "@acp/contracts";
@@ -13,7 +14,8 @@ import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { DurableInvocation } from "../../src/contracts/index.js";
-import { LIFECYCLE_PLAN } from "../../src/core/lifecycle/index.js";
+import { ATTEMPT_OPENING_STEP } from "../../src/core/events/index.js";
+import { LIFECYCLE_PLAN, planStep } from "../../src/core/lifecycle/index.js";
 import { appendPlanStep } from "../../src/core/step-executor/index.js";
 import type { BeatContext } from "../../src/core/step-executor/index.js";
 import { SupervisorError } from "../../src/errors/index.js";
@@ -30,6 +32,7 @@ import {
 } from "../../src/toy/repository/index.js";
 import type { ScenarioRoot } from "../../src/toy/repository/index.js";
 import { deterministicUuid } from "../../src/core/coordinates/index.js";
+import { deriveInvocation } from "../../src/submission/index.js";
 
 
 /**
@@ -1084,5 +1087,213 @@ describe("F4d N1-N5, N10: what the walk never does", () => {
     seedPressure(ledger, invocation, "QUOTA_EXHAUSTED");
     const ancient = authorizationFor({ decidedAt: "2020-01-01T00:00:00.000Z" });
     expect(considerFor(ledger, invocation, { authorization: ancient }).kind).toBe("SWITCHED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón B: the switch player speaks the V2 coordinate (ADR 0102)
+// ---------------------------------------------------------------------------
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/**
+ * The task's envelope reference, planted through the ledger's artifact door, and
+ * the revision that names it (the step executor suite's fixture, restated: a test
+ * file cannot export helpers). The revision's number differs from the flat
+ * attempt, so a payload that read the flat attempt would be caught.
+ */
+function p15bRevision(ledger: Ledger, taskId: string, at: string): NonNullable<DurableInvocation["revision"]> {
+  const reference = "ref-envelope-" + taskId;
+  const content = "7".repeat(64);
+  const envelope = (kind: string, ordinal: number, payload: Record<string, unknown>): Record<string, unknown> => ({
+    contractVersion: CONTRACT_VERSION,
+    eventId: deterministicUuid("envelope/" + taskId + "/" + kind),
+    idempotencyKey: "envelope/" + taskId + "/" + kind,
+    subjectKind: "ARTIFACT",
+    artifactEventKind: kind,
+    subjectOrdinal: ordinal,
+    parentSubjectOrdinal: ordinal === 1 ? null : ordinal - 1,
+    recordedBy: EMITTED_BY,
+    occurredAt: at,
+    recordedAt: at,
+    payload,
+  });
+  const common = { commandId: "cmd-envelope", contentSha256: content, blobGeneration: 1, artifactPinId: "pin-envelope" };
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_INTENDED", 1, {
+      ...common,
+      mediaType: "application/json",
+      sizeBytes: 128,
+      encryptionStatus: "PLAINTEXT",
+      keyReference: null,
+      encryptionProfile: "local-plaintext-v1",
+    }),
+  );
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_SUCCEEDED", 2, {
+      ...common,
+      reference: {
+        artifactReferenceId: reference,
+        artifactClass: "TASK_ENVELOPE",
+        classification: "INTERNAL",
+        scopeKind: "TASK",
+        scopeId: taskId,
+        producerIdentity: EMITTED_BY,
+        accessPolicyId: "SCOPE_EQUALITY_V1",
+        retentionClass: "STANDARD",
+        expiresAt: "2026-12-31T00:00:00.000Z",
+      },
+    }),
+  );
+  return {
+    revisionId: deterministicUuid("revision/" + taskId + "/4"),
+    revisionNumber: 4,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+    envelopeArtifactReferenceId: reference,
+  };
+}
+
+/** Every event of the task, as one digest over their canonical bytes in order. */
+function taskEventsSha(ledger: Ledger, taskId: string): string {
+  return sha256(
+    ledger
+      .listEvents({ taskId, limit: 500 })
+      .events.map((record) => record.canonicalJson)
+      .join("\n"),
+  );
+}
+
+/** A fresh ledger with a V2 attempt opened and discovered. */
+function openV2(id: string, taskId: string): { ledger: Ledger; invocation: DurableInvocation } {
+  const root = scenario(id);
+  const ledger = openLedger(scenarioLedgerPath(root));
+  ledgers.push(ledger);
+  const invocation = deriveInvocation(taskId, 1, AT, "d".repeat(64), p15bRevision(ledger, taskId, AT));
+  const context = contextFor(ledger, invocation);
+  appendPlanStep(context, ATTEMPT_OPENING_STEP);
+  appendPlanStep(context, planStep(0));
+  return { ledger, invocation };
+}
+
+function playedPlan(): SwitchPlan {
+  const outcome = switchPlan();
+  if (!outcome.ok) throw new Error("expected a switch plan");
+  return outcome.plan;
+}
+
+describe("P-15/B: the switch player under V1 and under V2 (ADR 0102)", () => {
+  it("PC-B1: a V1 switch plays byte-identically to before B", () => {
+    const { ledger, invocation } = openWithTask("p15b-switch-v1", "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9cb1");
+    executeSwitchPlan({
+      ledger,
+      invocation,
+      plan: playedPlan(),
+      emittedBy: EMITTED_BY,
+      lease: leaseFor("/tmp/acp-p8w-worktree"),
+      taskState: ledger.getTask(invocation.taskId)?.currentState ?? "DISCOVERED",
+    });
+    expect(taskEventsSha(ledger, invocation.taskId)).toBe(
+      // Lifted by running the pre-B source (HEAD 313512d) over this fixture.
+      "369fdf304416fa39c5996e8e67a5e57e88c7a21ceefd8b0a53a522746f035f9f",
+    );
+  });
+
+  it("PC-B2: every event of a V2 switch carries the revision's coordinate and keys V2, and the play replays", () => {
+    const { ledger, invocation } = openV2("p15b-switch-v2", "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9cb2");
+    const input = {
+      ledger,
+      invocation,
+      plan: playedPlan(),
+      emittedBy: EMITTED_BY,
+      lease: leaseFor("/tmp/acp-p8w-worktree"),
+      taskState: ledger.getTask(invocation.taskId)?.currentState ?? "DISCOVERED",
+    } as const;
+    const result = executeSwitchPlan(input);
+    expect(result.appended).toBe(input.plan.events.length);
+    result.events.forEach((event, index) => {
+      expect(event.payload["revisionNumber"]).toBe(4);
+      expect(event.payload["attemptNumber"]).toBe(1);
+      expect(event.idempotencyKey).toBe(
+        buildV2IdempotencyKey({
+          stream: "control_plane_events",
+          taskId: invocation.taskId,
+          revisionNumber: 4,
+          attemptNumber: 1,
+          transitionId: "switch." + String(index) + "." + event.type.toLowerCase(),
+        }),
+      );
+    });
+    const revoked = result.events.find((event) => event.type === "LEASE_REVOKED");
+    expect(revoked?.payload).toMatchObject({ cause: "ACCOUNT_SWITCH", revisionNumber: 4, attemptNumber: 1 });
+    const count = ledger.status().eventCount;
+    expect(executeSwitchPlan(input).appended).toBe(0);
+    expect(ledger.status().eventCount).toBe(count);
+  });
+
+  it("PC-B3: the walk's switch reads a V2 attempt's pressure rows back and plays", () => {
+    const { ledger, invocation } = openV2("p15b-switch-v2-consider", F4D_TASK);
+    seedPressure(ledger, invocation, "QUOTA_EXHAUSTED");
+    expect(considerFor(ledger, invocation).kind).toBe("SWITCHED");
+  });
+
+  it("N-B-3: a candidate naming either coordinate key is refused before any append, on V1 and V2 walks", () => {
+    const cases: readonly Readonly<Record<string, string>>[] = [
+      { revisionNumber: "4" },
+      { attemptNumber: "1" },
+      { revisionNumber: "9", attemptNumber: "9" },
+    ];
+    for (const [index, extra] of cases.entries()) {
+      for (const v2 of [false, true]) {
+        const taskId = "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9d" + String(index) + (v2 ? "2" : "1");
+        const { ledger, invocation } = v2
+          ? openV2("p15b-switch-candidate-" + String(index) + "-v2", taskId)
+          : openWithTask("p15b-switch-candidate-" + String(index) + "-v1", taskId);
+        const base = playedPlan();
+        const [first, ...rest] = base.events;
+        if (first === undefined) throw new Error("expected a candidate");
+        const plan = planWith(base, { events: [{ type: first.type, payload: { ...first.payload, ...extra } }, ...rest] });
+        const status = ledger.status();
+        let refusal: unknown = null;
+        try {
+          executeSwitchPlan({
+            ledger,
+            invocation,
+            plan,
+            emittedBy: EMITTED_BY,
+            lease: leaseFor("/tmp/acp-p8w-worktree"),
+            taskState: ledger.getTask(invocation.taskId)?.currentState ?? "DISCOVERED",
+          });
+        } catch (error) {
+          refusal = error;
+        }
+        expect(refusal, JSON.stringify({ extra, v2 })).toBeInstanceOf(SupervisorError);
+        expect((refusal as Error).message).toContain("payload coordinate");
+        expect(ledger.status().eventCount).toBe(status.eventCount);
+        expect(ledger.status().headEventSha256).toBe(status.headEventSha256);
+      }
+    }
+  });
+
+  it("N-B-1: an attempt the ledger never opened is refused by name, with zero delta", () => {
+    const { ledger, invocation } = openV2("p15b-switch-unopened", "9c9c9c9c-9c9c-4c9c-8c9c-9c9c9c9c9cb3");
+    const revision = invocation.revision;
+    if (revision === undefined) throw new Error("expected a revision");
+    const unopened = deriveInvocation(invocation.taskId, 2, AT, "d".repeat(64), { ...revision, attemptNumber: 2 });
+    const status = ledger.status();
+    expect(() =>
+      executeSwitchPlan({
+        ledger,
+        invocation: unopened,
+        plan: playedPlan(),
+        emittedBy: EMITTED_BY,
+        lease: leaseFor("/tmp/acp-p8w-worktree"),
+        taskState: ledger.getTask(invocation.taskId)?.currentState ?? "DISCOVERED",
+      }),
+    ).toThrow("has not been opened");
+    expect(ledger.status().eventCount).toBe(status.eventCount);
+    expect(ledger.status().headEventSha256).toBe(status.headEventSha256);
   });
 });

@@ -3,6 +3,7 @@ import { BOUNDED_IDENTIFIER, ControlPlaneEvent, parseWorkerIdentity, utf8ByteLen
 import type { DurableInvocation } from "../contracts/index.js";
 import { deriveEventCoordinate, deterministicUuid } from "../core/coordinates/index.js";
 import { deriveInvocation } from "../submission/index.js";
+import { assertAttemptOpened } from "../core/step-executor/index.js";
 import type { LedgerPort } from "../core/step-executor/index.js";
 import { SupervisorError } from "../errors/index.js";
 import { recordToolCall, toolCallTransitionId } from "../tool-receipt/index.js";
@@ -695,6 +696,13 @@ export async function runToolCall(
         "; a call cannot belong to an attempt that has not begun",
     );
   }
+
+  // 8b. Nothing of a V2 coordinate before its opening (P-15 escalón B, ADR 0102).
+  //     Here, before the replay read, the claim and the port, and not only in the
+  //     receipt: a refusal after the port would leave a performed call with no
+  //     row, which is exactly what "throw = the request never became an
+  //     operation" forbids.
+  if (invocation.revision !== undefined) assertAttemptOpened(ledger, invocation);
 
   // 9. The replay read. A coordinate is spent once: on a hit the port is never
   //    constructed, never called, and nothing is appended.

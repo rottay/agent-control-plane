@@ -11072,6 +11072,71 @@ const P15A_WRITE_SET = [
   "docs/audit/implementation/packets/index.md",
 ];
 
+/**
+ * P-15 escalón B: the exceptional producers speak the V2 coordinate (adjudication
+ * v2 C1, C2; ADR 0102).
+ *
+ * **What lands.** One helper, `payloadCoordinate`, gives every producer the payload
+ * coordinate: nothing for a V1 invocation, the revision's two numbers for a V2 one.
+ * `buildEvent` uses it byte-identically, and pressure, the switch player and its
+ * landing, both settlements and the tool receipt spread it into their payloads.
+ * Each of those refuses a V2 invocation whose attempt has not been opened, through
+ * the step executor's narrowed `assertAttemptOpened`. A switch candidate that names
+ * either coordinate key is refused before any append. `restateInvocation` reads an
+ * opening-first V2 task: the revision from the opening, whose invocation id must be
+ * this coordinate's or the opening is unreadable, and the discovery by its V2 key.
+ * Legacy
+ * `TOKEN_USAGE_RECORDED` is not adopted (C1): under V2 it stays refused by the
+ * contract, and quota and rollups see no V2 spend until P-19.
+ *
+ * **Pins that move.** None by count: L-B7R-3 is amended in its own row, and
+ * `PATH_SCOPED_LAWS` stays 150 (no word-scan law, Q-B2). The ADR corpus 101 -> 102.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` 2.8.0; `MIGRATIONS` 22;
+ * `CONTRACTS_SCHEMA_EXPORTS` 161; `RUNTIME_PUBLIC_EXPORTS` 285 (the helper and the
+ * guard are module exports, not barrel exports); `LIFECYCLE_RECOVERY_REFUSALS`
+ * (an opening naming another invocation is `DISCOVERY_UNREADABLE`, no new word).
+ *
+ * The tool-call operation checks the opening too, before its replay read, its
+ * claim and its port: a refusal only in the receipt would come after the call was
+ * performed and leave it with no row (the DT's widening, one path).
+ *
+ * **Thirty paths; three are new to the fence** -- the two type leaves and
+ * ADR 0102.
+ */
+const P15B_WRITE_SET = [
+  "packages/domains/runtime/src/core/coordinates/index.ts",
+  "packages/domains/runtime/src/core/coordinates/types/index.ts",
+  "packages/domains/runtime/src/core/events/index.ts",
+  "packages/domains/runtime/src/core/step-executor/index.ts",
+  "packages/domains/runtime/src/pressure/index.ts",
+  "packages/domains/runtime/src/switch-executor/index.ts",
+  "packages/domains/runtime/src/switch-executor/types/index.ts",
+  "packages/domains/runtime/src/switch-landing/index.ts",
+  "packages/domains/runtime/src/cancellation/index.ts",
+  "packages/domains/runtime/src/failure/index.ts",
+  "packages/domains/runtime/src/tool-receipt/index.ts",
+  "packages/domains/runtime/src/tool-call/index.ts",
+  "packages/domains/runtime/src/lifecycle-operation/index.ts",
+  "packages/domains/runtime/test/core/coordinates/index.test.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/domains/runtime/test/pressure/index.test.ts",
+  "packages/domains/runtime/test/switch-executor/index.test.ts",
+  "packages/domains/runtime/test/switch-landing/index.test.ts",
+  "packages/domains/runtime/test/cancellation/index.test.ts",
+  "packages/domains/runtime/test/failure/index.test.ts",
+  "packages/domains/runtime/test/tool-receipt/index.test.ts",
+  "packages/domains/runtime/test/tool-call/index.test.ts",
+  "packages/domains/runtime/test/lifecycle-operation/index.test.ts",
+  "packages/domains/runtime/test/usage/index.test.ts",
+  "packages/domains/runtime/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0102-the-exceptional-producers-speak-the-v2-coordinate.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11304,6 +11369,7 @@ const WRITE_SET = [
   ...P07C_WRITE_SET,
   ...P07D_WRITE_SET,
   ...P15A_WRITE_SET,
+  ...P15B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -17996,6 +18062,12 @@ if (tracked.status === 0) {
   // name a path, a provider's output or a credential. What the LEDGER is told
   // must be a classified code derived from the error's TYPE, so the module that
   // builds the payload may not name a message at all.
+  //
+  // AMENDED by P-15 escalón B (ADR 0102), in this row: a V2 settlement carries the
+  // payload coordinate, so the payload is the digest, the reason and
+  // `payloadCoordinate(invocation)` -- the one helper, empty for a V1 walk -- and
+  // nothing else. The message ban is unchanged. Same row, same `requireScope`:
+  // `PATH_SCOPED_LAWS` does not move.
   const FAILURE_HOME = "packages/domains/runtime/src/failure/index.ts";
   {
     const source = stripComments(readIfPresent(FAILURE_HOME) ?? "");
@@ -18003,10 +18075,16 @@ if (tracked.status === 0) {
     const forbidden = ["error.message", "String(error)", ".stack"].filter((name) => source.includes(name));
     if (!source.includes("export function classifyFailure(")) {
       fail(FAILURE_HOME + " no longer declares the shared failure classification both drivers ask");
-    } else if (!source.includes("payload: { submissionDigest: invocation.submissionDigest, reason }")) {
+    } else if (
+      !source.includes(
+        "payload: { submissionDigest: invocation.submissionDigest, reason, ...payloadCoordinate(invocation) }",
+      ) ||
+      (source.match(/\bpayload:\s*\{/g) ?? []).length !== 1
+    ) {
       fail(
         FAILURE_HOME +
-          " no longer builds the settlement payload from a digest and a classified reason alone",
+          " no longer builds the settlement payload from a digest, a classified reason and the payload" +
+          " coordinate alone",
       );
     } else if (forbidden.length > 0) {
       fail(
@@ -18016,7 +18094,9 @@ if (tracked.status === 0) {
           "; a settlement payload carries a code derived from the error type, never the error's own text",
       );
     } else {
-      notes.push("the settlement payload is a digest and a classified reason, in " + FAILURE_HOME);
+      notes.push(
+        "the settlement payload is a digest, a classified reason and the payload coordinate, in " + FAILURE_HOME,
+      );
     }
   }
 

@@ -1,4 +1,6 @@
-import { BOUNDED_IDENTIFIER } from "@acp/contracts";
+import { createHash } from "node:crypto";
+
+import { BOUNDED_IDENTIFIER, CONTRACT_VERSION, buildV2IdempotencyKey } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
@@ -6,10 +8,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { DurableInvocation } from "../../src/contracts/index.js";
 import { deterministicUuid } from "../../src/core/coordinates/index.js";
-import { LIFECYCLE_PLAN } from "../../src/core/lifecycle/index.js";
+import { ATTEMPT_OPENING_STEP } from "../../src/core/events/index.js";
+import { LIFECYCLE_PLAN, planStep } from "../../src/core/lifecycle/index.js";
 import { appendPlanStep } from "../../src/core/step-executor/index.js";
 import type { BeatContext } from "../../src/core/step-executor/index.js";
 import { SupervisorError } from "../../src/errors/index.js";
+import { deriveInvocation } from "../../src/submission/index.js";
 import { recordToolCall, toolCallTransitionId } from "../../src/tool-receipt/index.js";
 import type { ToolCallFacts } from "../../src/tool-receipt/index.js";
 import {
@@ -492,5 +496,189 @@ describe("the module refuses rather than appending", () => {
       ).toThrow(SupervisorError);
     }
     expect(ledger.status().eventCount).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón B: the tool-call receipt speaks the V2 coordinate (ADR 0102)
+// ---------------------------------------------------------------------------
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/** The canonical bytes of the task's last event. */
+function lastEventSha(ledger: Ledger, taskId: string): string {
+  return sha256(ledger.listEvents({ taskId, limit: 500 }).events.at(-1)?.canonicalJson ?? "");
+}
+
+/**
+ * The task's envelope reference, planted through the ledger's artifact door (the
+ * step executor suite's fixture, restated: a test file cannot export helpers).
+ */
+function plantEnvelopeReference(ledger: Ledger, taskId: string): string {
+  const reference = "ref-envelope-" + taskId;
+  const content = "7".repeat(64);
+  const envelope = (kind: string, ordinal: number, payload: Record<string, unknown>): Record<string, unknown> => ({
+    contractVersion: CONTRACT_VERSION,
+    eventId: deterministicUuid("envelope/" + taskId + "/" + kind),
+    idempotencyKey: "envelope/" + taskId + "/" + kind,
+    subjectKind: "ARTIFACT",
+    artifactEventKind: kind,
+    subjectOrdinal: ordinal,
+    parentSubjectOrdinal: ordinal === 1 ? null : ordinal - 1,
+    recordedBy: EMITTED_BY,
+    occurredAt: AT,
+    recordedAt: AT,
+    payload,
+  });
+  const common = { commandId: "cmd-envelope", contentSha256: content, blobGeneration: 1, artifactPinId: "pin-envelope" };
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_INTENDED", 1, {
+      ...common,
+      mediaType: "application/json",
+      sizeBytes: 128,
+      encryptionStatus: "PLAINTEXT",
+      keyReference: null,
+      encryptionProfile: "local-plaintext-v1",
+    }),
+  );
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_SUCCEEDED", 2, {
+      ...common,
+      reference: {
+        artifactReferenceId: reference,
+        artifactClass: "TASK_ENVELOPE",
+        classification: "INTERNAL",
+        scopeKind: "TASK",
+        scopeId: taskId,
+        producerIdentity: EMITTED_BY,
+        accessPolicyId: "SCOPE_EQUALITY_V1",
+        retentionClass: "STANDARD",
+        expiresAt: "2026-12-31T00:00:00.000Z",
+      },
+    }),
+  );
+  return reference;
+}
+
+/**
+ * A revision-bearing invocation whose coordinate differs from the flat attempt,
+ * so a payload that read the flat attempt would be caught.
+ */
+function v2InvocationFor(ledger: Ledger, taskId: string): DurableInvocation {
+  const reference = plantEnvelopeReference(ledger, taskId);
+  return deriveInvocation(taskId, 1, AT, "d".repeat(64), {
+    revisionId: deterministicUuid("revision/" + taskId + "/4"),
+    revisionNumber: 4,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+    envelopeArtifactReferenceId: reference,
+  });
+}
+
+/** A fresh ledger with a V2 attempt, opened (or not) and discovered (or not). */
+function openV2(id: string, taskId: string, opened: boolean): { ledger: Ledger; invocation: DurableInvocation } {
+  const root = scenario(id);
+  const ledger = openLedger(scenarioLedgerPath(root));
+  ledgers.push(ledger);
+  const invocation = v2InvocationFor(ledger, taskId);
+  if (opened) {
+    const context: BeatContext = {
+      ledger,
+      effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("DONE") },
+      invocation,
+      emittedBy: EMITTED_BY,
+      plan: LIFECYCLE_PLAN,
+      route: TEST_ROUTE,
+      initiativeId: INITIATIVE_ID,
+    };
+    appendPlanStep(context, ATTEMPT_OPENING_STEP);
+    appendPlanStep(context, planStep(0));
+  }
+  return { ledger, invocation };
+}
+
+describe("P-15/B: the tool-call receipt under V1 and under V2 (ADR 0102)", () => {
+  it("PC-B1: a V1 receipt is byte-identical to the one built before B", () => {
+    const { ledger, invocation } = openWithTask("p15b-tool-v1", "9b9b9b9b-9b9b-4b9b-8b9b-9b9b9b9b9bc1");
+    recordToolCall(ledger, {
+      invocation,
+      accountId: ACCOUNT,
+      facts: COMPLETED,
+      transitionId: toolCallTransitionId(0, 0),
+      emittedBy: EMITTED_BY,
+    });
+    expect(lastEventSha(ledger, invocation.taskId)).toBe(
+      // Lifted by running the pre-B source (HEAD 313512d) over this fixture.
+      "58f25e148261623ec27b145e0787c2e1f80026cba3f81ff84b3505ac2c5ee747",
+    );
+  });
+
+  it("PC-B2: a V2 receipt carries the nine facts and the revision's coordinate, keys V2 and replays", () => {
+    const { ledger, invocation } = openV2("p15b-tool-v2", "9b9b9b9b-9b9b-4b9b-8b9b-9b9b9b9b9bc2", true);
+    const observation = {
+      invocation,
+      accountId: ACCOUNT,
+      facts: COMPLETED,
+      transitionId: toolCallTransitionId(0, 0),
+      emittedBy: EMITTED_BY,
+    };
+    const first = recordToolCall(ledger, observation);
+    expect(first.inserted).toBe(true);
+    expect(Object.keys(first.event.payload).sort()).toEqual([...PAYLOAD_KEYS, "attemptNumber", "revisionNumber"].sort());
+    expect(first.event.payload["revisionNumber"]).toBe(4);
+    expect(first.event.payload["attemptNumber"]).toBe(1);
+    expect(first.event.idempotencyKey).toBe(
+      buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId: invocation.taskId,
+        revisionNumber: 4,
+        attemptNumber: 1,
+        transitionId: toolCallTransitionId(0, 0),
+      }),
+    );
+    const again = recordToolCall(ledger, observation);
+    expect(again.inserted).toBe(false);
+  });
+
+  it("N-B-1: an attempt the ledger never opened is refused by name, with zero delta", () => {
+    const { ledger, invocation } = openV2("p15b-tool-unopened", "9b9b9b9b-9b9b-4b9b-8b9b-9b9b9b9b9bc3", true);
+    const revision = invocation.revision;
+    if (revision === undefined) throw new Error("expected a revision");
+    const unopened = deriveInvocation(invocation.taskId, 2, AT, "d".repeat(64), { ...revision, attemptNumber: 2 });
+    const status = ledger.status();
+    expect(() =>
+      recordToolCall(ledger, {
+        invocation: unopened,
+        accountId: ACCOUNT,
+        facts: COMPLETED,
+        transitionId: toolCallTransitionId(0, 0),
+        emittedBy: EMITTED_BY,
+      }),
+    ).toThrow("has not been opened");
+    expect(ledger.status().eventCount).toBe(status.eventCount);
+    expect(ledger.status().headEventSha256).toBe(status.headEventSha256);
+  });
+
+  it("N-B-2: an opening key holding another event is refused as work this invocation did not do", () => {
+    const { ledger, invocation } = openV2("p15b-tool-forged", "9b9b9b9b-9b9b-4b9b-8b9b-9b9b9b9b9bc4", true);
+    const forged = {
+      getTask: ledger.getTask.bind(ledger),
+      append: ledger.append.bind(ledger),
+      getEventBySequence: ledger.getEventBySequence.bind(ledger),
+      getEventByIdempotencyKey: () => ({ canonicalJson: JSON.stringify({ eventId: "00000000-0000-4000-8000-0000000000fe" }) }),
+    };
+    const before = ledger.status().eventCount;
+    expect(() =>
+      recordToolCall(forged as unknown as Ledger, {
+        invocation,
+        accountId: ACCOUNT,
+        facts: COMPLETED,
+        transitionId: toolCallTransitionId(0, 0),
+        emittedBy: EMITTED_BY,
+      }),
+    ).toThrow("did not do");
+    expect(ledger.status().eventCount).toBe(before);
   });
 });

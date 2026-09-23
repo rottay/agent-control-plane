@@ -7,8 +7,9 @@ import type {
 } from "@acp/contracts";
 
 import type { DurableInvocation } from "../contracts/index.js";
-import { deriveEventCoordinate } from "../core/coordinates/index.js";
+import { deriveEventCoordinate, payloadCoordinate } from "../core/coordinates/index.js";
 import { INTENT_STEP } from "../core/lifecycle/index.js";
+import { assertAttemptOpened } from "../core/step-executor/index.js";
 import type { LedgerPort } from "../core/step-executor/index.js";
 import { SupervisorError } from "../errors/index.js";
 
@@ -269,6 +270,10 @@ function routeOnto(route: ResolvedRouteValue, accountId: string): ResolvedRouteV
 export async function landAccountSwitch(input: SwitchLandingInput): Promise<SwitchLandingOutcome> {
   const { ledger, invocation, route, bindings, port, checkConformance, sessionIdFor, emittedBy } = input;
 
+  // Nothing of a V2 coordinate before its opening (N-G-3, ADR 0102): refused
+  // before the probe, the gate or the append.
+  if (invocation.revision !== undefined) assertAttemptOpened(ledger, invocation);
+
   // 1. The probe. A completion is durable, or it is not.
   const transitionId = landingTransitionId(SWITCH_LANDINGS_MAX);
   const existing = durableRow(ledger, invocation, transitionId);
@@ -384,7 +389,14 @@ export async function landAccountSwitch(input: SwitchLandingInput): Promise<Swit
     // Bounded scalars, built field by field from named members. No checkpoint
     // digest, no credential root, no binary path, no worktree path, no
     // provider output, and no free text of any kind.
-    payload: { fromAccountId, toAccountId, sessionId, generation: SWITCH_LANDINGS_MAX },
+    // The payload coordinate, from the one helper, is empty for a V1 walk.
+    payload: {
+      fromAccountId,
+      toAccountId,
+      sessionId,
+      generation: SWITCH_LANDINGS_MAX,
+      ...payloadCoordinate(invocation),
+    },
   });
 
   const appended = ledger.append(event);

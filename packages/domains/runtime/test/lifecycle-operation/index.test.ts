@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
 
+import { CONTRACT_VERSION, buildV2IdempotencyKey } from "@acp/contracts";
 import type { DriverCapabilities, DriverOutcome, DriverStatus, ResolvedRoute } from "@acp/contracts";
 import { openLedger } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { DurableInvocation, OrchestrationDriver } from "../../src/contracts/index.js";
-import { buildEvent } from "../../src/core/events/index.js";
+import { ATTEMPT_OPENING_STEP, buildEvent } from "../../src/core/events/index.js";
+import { deterministicUuid } from "../../src/core/coordinates/index.js";
 import {
+  INTENT_STEP,
   LIFECYCLE_PLAN,
   SHARED_PLAN_PREFIX,
   planStep,
@@ -24,6 +27,7 @@ import {
   restateInvocation,
   runLifecycleOperation,
 } from "../../src/lifecycle-operation/index.js";
+import type { LifecycleRecoveryPort } from "../../src/lifecycle-operation/index.js";
 import { canonicalSubmissionDigest, deriveInvocation } from "../../src/submission/index.js";
 import {
   removeScenarioRoot,
@@ -522,5 +526,262 @@ describe("the shared prefix a lifecycle construction walks", () => {
     // cancel path the plan is inert, so refusing to guess a commit policy costs
     // nothing that could be observed in the log.
     expect(bytes[0]).toBe(bytes[1]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón B: recovery reads an opening-first V2 task (ADR 0102)
+// ---------------------------------------------------------------------------
+
+/**
+ * The task's envelope reference, planted through the ledger's artifact door, and
+ * the revision naming it (the step executor suite's fixture, restated).
+ */
+function plantRevision(ledger: Ledger, taskId: string): NonNullable<DurableInvocation["revision"]> {
+  const reference = "ref-envelope-" + taskId;
+  const envelope = (kind: string, ordinal: number, payload: Record<string, unknown>): Record<string, unknown> => ({
+    contractVersion: CONTRACT_VERSION,
+    eventId: deterministicUuid("envelope/" + taskId + "/" + kind),
+    idempotencyKey: "envelope/" + taskId + "/" + kind,
+    subjectKind: "ARTIFACT",
+    artifactEventKind: kind,
+    subjectOrdinal: ordinal,
+    parentSubjectOrdinal: ordinal === 1 ? null : ordinal - 1,
+    recordedBy: EMITTED_BY,
+    occurredAt: SUBMITTED_AT,
+    recordedAt: SUBMITTED_AT,
+    payload,
+  });
+  const common = { commandId: "cmd-envelope", contentSha256: "7".repeat(64), blobGeneration: 1, artifactPinId: "pin-envelope" };
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_INTENDED", 1, {
+      ...common,
+      mediaType: "application/json",
+      sizeBytes: 128,
+      encryptionStatus: "PLAINTEXT",
+      keyReference: null,
+      encryptionProfile: "local-plaintext-v1",
+    }),
+  );
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_SUCCEEDED", 2, {
+      ...common,
+      reference: {
+        artifactReferenceId: reference,
+        artifactClass: "TASK_ENVELOPE",
+        classification: "INTERNAL",
+        scopeKind: "TASK",
+        scopeId: taskId,
+        producerIdentity: EMITTED_BY,
+        accessPolicyId: "SCOPE_EQUALITY_V1",
+        retentionClass: "STANDARD",
+        expiresAt: "2026-12-31T00:00:00.000Z",
+      },
+    }),
+  );
+  return {
+    revisionId: deterministicUuid("revision/" + taskId + "/4"),
+    revisionNumber: 4,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+    envelopeArtifactReferenceId: reference,
+  };
+}
+
+/** An opening-first V2 walk through the INTENT, so the route is recorded. */
+function seedV2(name: string, taskId: string): { readonly ledger: Ledger; readonly invocation: DurableInvocation } {
+  const root = scenario(name);
+  const ledger = track(openLedger(scenarioLedgerPath(root)));
+  const revision = plantRevision(ledger, taskId);
+  const digest = canonicalSubmissionDigest({
+    taskId,
+    attempt: 1,
+    submittedAt: SUBMITTED_AT,
+    initiativeId: TEST_INITIATIVE_ID,
+    route: TEST_ROUTE,
+  });
+  const invocation = deriveInvocation(taskId, 1, SUBMITTED_AT, digest, revision);
+  append(ledger, invocation, ATTEMPT_OPENING_STEP);
+  for (let index = 0; index <= INTENT_STEP.index; index += 1) append(ledger, invocation, planStep(index));
+  return { ledger, invocation };
+}
+
+/** The ledger, with the first event's JSON or the key lookup replaced. */
+function doctored(
+  ledger: Ledger,
+  overrides: {
+    readonly firstEvent?: (json: Record<string, unknown>) => Record<string, unknown>;
+    readonly byKey?: (key: string) => { readonly canonicalJson: string } | null;
+  },
+): LifecycleRecoveryPort {
+  return {
+    getTask: (taskId) => ledger.getTask(taskId),
+    getExecutionRoute: (taskId, attempt) => ledger.getExecutionRoute(taskId, attempt),
+    getEventByIdempotencyKey: (key) =>
+      overrides.byKey === undefined ? ledger.getEventByIdempotencyKey(key) : overrides.byKey(key),
+    getEventBySequence: (sequence) => {
+      const recorded = ledger.getEventBySequence(sequence);
+      if (recorded === null || overrides.firstEvent === undefined) return recorded;
+      const task = ledger.listEvents({ limit: 1 }).events[0];
+      if (task?.sequence !== sequence) return recorded;
+      return { canonicalJson: JSON.stringify(overrides.firstEvent(JSON.parse(recorded.canonicalJson) as Record<string, unknown>)) };
+    },
+  };
+}
+
+function withPayload(
+  json: Record<string, unknown>,
+  change: (payload: Record<string, unknown>) => void,
+): Record<string, unknown> {
+  const payload = { ...(json["payload"] as Record<string, unknown>) };
+  change(payload);
+  return { ...json, payload };
+}
+
+describe("P-15/B: restateInvocation reads an opening-first V2 task (ADR 0102)", () => {
+  it("PC-B4: recovers the revision field for field, and the opening's own invocation id", () => {
+    const taskId = "b4b4b4b4-0000-4000-8000-0000000000b1";
+    const { ledger, invocation } = seedV2("p15b-restate-v2", taskId);
+    const recovered = restateInvocation(ledger, taskId, 1);
+    expect(recovered.ok).toBe(true);
+    if (!recovered.ok) return;
+    expect(recovered.context.invocation).toEqual(invocation);
+    expect(recovered.context.invocation.revision).toEqual(invocation.revision);
+    const opening = ledger.getEventByIdempotencyKey(
+      buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId,
+        revisionNumber: 4,
+        attemptNumber: 1,
+        transitionId: ATTEMPT_OPENING_STEP.transitionId,
+      }),
+    );
+    const payload = (JSON.parse(opening?.canonicalJson ?? "{}") as { payload: Record<string, unknown> }).payload;
+    expect(recovered.context.invocation.invocationId).toBe(payload["invocationId"]);
+    expect(recovered.context.initiativeId).toBe(TEST_INITIATIVE_ID);
+    expect(recovered.context.route).toEqual(TEST_ROUTE);
+  });
+
+  it("PC-B5: the recovered context cancels the task with a V2 TASK_CANCELLED, end to end", async () => {
+    const taskId = "b4b4b4b4-0000-4000-8000-0000000000b2";
+    const { ledger } = seedV2("p15b-restate-cancel", taskId);
+    const recovered = restateInvocation(ledger, taskId, 1);
+    if (!recovered.ok) throw new Error("expected a recovered context");
+    const context: BeatContext = {
+      ...lifecycleBeat(ledger, probePort("DONE"), recovered.context)(recovered.context.invocation),
+      plan: SHARED_PLAN_PREFIX,
+      initiativeId: recovered.context.initiativeId,
+    };
+    const settlement = await settleCancellation(context);
+    expect(settlement.verdict).toBe("CANCELLED");
+    expect(settlement.cancelled?.payload).toMatchObject({ revisionNumber: 4, attemptNumber: 1 });
+    expect(ledger.getTask(taskId)?.currentState).toBe("CANCELLED");
+    expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("N-B-6: an opening that names an invocation other than this coordinate's is unreadable, not a digest mismatch", () => {
+    const taskId = "b4b4b4b4-0000-4000-8000-0000000000b3";
+    const { ledger } = seedV2("p15b-restate-mismatch", taskId);
+    const port = doctored(ledger, {
+      firstEvent: (json) =>
+        withPayload(json, (payload) => {
+          payload["invocationId"] = "00000000-0000-4000-8000-0000000000fe";
+        }),
+    });
+    // The invocation id is derived from the task and the flat attempt alone, so it
+    // certifies nothing about the submission digest: the opening is present and
+    // invalid, and is refused as such.
+    expect(restateInvocation(port, taskId, 1)).toEqual({
+      ok: false,
+      refusal: "DISCOVERY_UNREADABLE",
+      at: "task.firstSequence",
+    });
+  });
+
+  it("N-B-6′: an opening field absent, null or of the wrong type is unreadable, never read as no opening", () => {
+    const taskId = "b4b4b4b4-0000-4000-8000-0000000000b4";
+    const { ledger } = seedV2("p15b-restate-fields", taskId);
+    // The two coordinate numbers are not in this list: changing them moves the
+    // key rule, so the contract refuses the event and it is not an opening at all
+    // (the same refusal, by another road).
+    const fields = ["revisionId", "envelopeSha256", "envelopeArtifactReferenceId", "invocationId", "legacyAttemptNumber"];
+    const variants: readonly (readonly [string, unknown])[] = [
+      ["absent", undefined],
+      ["null", null],
+      ["empty", ""],
+      ["number", 7],
+    ];
+    for (const field of fields) {
+      for (const [name, value] of variants) {
+        const port = doctored(ledger, {
+          firstEvent: (json) =>
+            withPayload(json, (payload) => {
+              if (value === undefined) Reflect.deleteProperty(payload, field);
+              else payload[field] = value;
+            }),
+        });
+        expect({ field, name, outcome: restateInvocation(port, taskId, 1) }).toEqual({
+          field,
+          name,
+          outcome: { ok: false, refusal: "DISCOVERY_UNREADABLE", at: "task.firstSequence" },
+        });
+      }
+    }
+    // And the undoctored ledger recovers, so the refusals above are the fields'.
+    expect(restateInvocation(ledger, taskId, 1).ok).toBe(true);
+  });
+
+  it("N-B-7: an opening whose discovery is missing under its V2 key is refused at the discovery", () => {
+    const taskId = "b4b4b4b4-0000-4000-8000-0000000000b5";
+    const { ledger } = seedV2("p15b-restate-no-discovery", taskId);
+    const port = doctored(ledger, { byKey: () => null });
+    expect(restateInvocation(port, taskId, 1)).toEqual({
+      ok: false,
+      refusal: "DISCOVERY_UNREADABLE",
+      at: "attempt.discovery",
+    });
+  });
+
+  it("N-B-8: an intake-first task stays unreadable until P-15/D (ADR 0087 Ten)", () => {
+    // P-15/D owns the intake → opening → discovery continuity (adjudication v2
+    // C2). Until then an intake-first task — whose first event is a discovery
+    // under the intake transition — is refused by name here, never read.
+    const taskId = "b4b4b4b4-0000-4000-8000-0000000000b6";
+    const { ledger } = seedV2("p15b-restate-intake", taskId);
+    const intake = {
+      contractVersion: CONTRACT_VERSION,
+      eventId: deterministicUuid("intake/" + taskId),
+      taskId,
+      attempt: 1,
+      transitionId: "intake",
+      idempotencyKey: buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId,
+        revisionNumber: 1,
+        attemptNumber: 1,
+        transitionId: "intake",
+      }),
+      type: "TASK_DISCOVERED",
+      fromState: null,
+      toState: "DISCOVERED",
+      emittedBy: EMITTED_BY,
+      occurredAt: SUBMITTED_AT,
+      recordedAt: SUBMITTED_AT,
+      correlationId: null,
+      causationId: null,
+      payload: {
+        revisionId: deterministicUuid("revision/" + taskId + "/1"),
+        revisionNumber: 1,
+        attemptNumber: 1,
+        envelopeSha256: "e".repeat(64),
+        initiativeId: TEST_INITIATIVE_ID,
+      },
+    };
+    const port = doctored(ledger, { firstEvent: () => intake });
+    expect(restateInvocation(port, taskId, 1)).toEqual({
+      ok: false,
+      refusal: "DISCOVERY_UNREADABLE",
+      at: "task.firstSequence",
+    });
   });
 });

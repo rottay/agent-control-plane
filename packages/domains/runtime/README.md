@@ -230,12 +230,46 @@ event states. With it:
 
 What does not speak V2 yet is declared, not hidden. The daemon, durability, the
 CLI and the gateway derive V1 invocations until the adoption binds a revision.
-The exceptional producers (settlement, cancellation, `recordTokenObservation`,
-tool receipts, pressure, switches) build their payloads without the coordinate,
-so a revision-bearing invocation that reaches one is refused by the contract
-rather than recorded as legacy, and `restateInvocation` refuses a task whose
-first event is an opening. No producer of effects, deliveries or occurrences
-ships here: those are adoption and recovery.
+
+**The exceptional producers speak it since P-15 escalón B (ADR 0102).** These
+producers build their own events outside `buildEvent`:
+
+- provider pressure;
+- the switch player and its landing;
+- the failure and cancellation settlements;
+- the tool-call receipt.
+
+Each one spreads `payloadCoordinate(invocation)` into its payload. That is empty
+for a V1 invocation, so every V1 byte is what it was (pinned by vectors lifted
+from the pre-B source). For a V2 invocation it is the revision's
+`revisionNumber` and `attemptNumber`, never the flat attempt.
+
+Each producer also refuses a V2 invocation whose attempt has not been opened. It
+does so before it builds, probes or appends anything, through the step
+executor's `assertAttemptOpened`.
+
+A switch candidate that names either coordinate key is refused before any
+append: the coordinate is the walk's, never a plan's.
+
+`restateInvocation` reads an opening-first task:
+
+- the revision comes from the opening;
+- the discovery is found by its V2 key;
+- an opening that names an invocation other than this coordinate's is
+  unreadable, like any other present-invalid field;
+- the discovery's digest check is the one that vouches for the submission.
+
+An intake-first task stays refused until P-15/D, so a task admitted through the
+P-14/C intake cannot be cancelled or attached through the lifecycle door until
+then.
+
+**`recordTokenObservation` is not adopted** (adjudication v2 C1). Under V2 a
+legacy `TOKEN_USAGE_RECORDED` stays refused by the contract. V2 spend is recorded
+only as `USAGE_STREAM_DECLARED` / `USAGE_OBSERVATION_RECORDED`, which D wires. So
+`readAccountUsage` and the quota fold see **no spend from a V2 walk until P-19**.
+
+No producer of effects, deliveries or occurrences ships here: those are adoption
+and recovery.
 
 The two usage recorders of P-32/captura C (ADR 0090) are the exception to that
 exception, and speak **only** V2. `recordUsageStreamDeclaration` and

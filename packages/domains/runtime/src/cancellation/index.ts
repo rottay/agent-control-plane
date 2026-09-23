@@ -1,10 +1,10 @@
 import { CONTRACT_VERSION, ControlPlaneEvent, TERMINAL_STATES } from "@acp/contracts";
 import type { ControlPlaneEvent as ParsedControlPlaneEvent, TaskState } from "@acp/contracts";
 
-import { deriveEventCoordinate } from "../core/coordinates/index.js";
+import { deriveEventCoordinate, payloadCoordinate } from "../core/coordinates/index.js";
 import { operationForStep } from "../core/events/index.js";
 import { INTENT_STEP, OUTCOME_STEP } from "../core/lifecycle/index.js";
-import { appendPlanStep, currentState } from "../core/step-executor/index.js";
+import { appendPlanStep, assertAttemptOpened, currentState } from "../core/step-executor/index.js";
 import type { BeatContext } from "../core/step-executor/index.js";
 import { SupervisorError } from "../errors/index.js";
 
@@ -169,6 +169,11 @@ function isTerminal(state: TaskState): boolean {
 export async function settleCancellation(
   context: BeatContext,
 ): Promise<CancellationSettlement> {
+  // Nothing of a V2 coordinate before its opening (N-G-3, ADR 0102): refused
+  // before the precheck, the probe or any append.
+  if (context.invocation.revision !== undefined) {
+    assertAttemptOpened(context.ledger, context.invocation);
+  }
   const precheck = cancellationPrecheck(context);
   if (!precheck.proceed) {
     return {
@@ -299,6 +304,6 @@ function cancellationEvent(
     recordedAt: coordinate.recordedAt,
     correlationId: invocation.invocationId,
     causationId: null,
-    payload: { submissionDigest: invocation.submissionDigest, effect },
+    payload: { submissionDigest: invocation.submissionDigest, effect, ...payloadCoordinate(invocation) },
   });
 }

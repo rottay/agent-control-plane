@@ -1168,3 +1168,33 @@ describe("N-P32C-3: reading a lineage's generation back, exhaustively", () => {
     expect(() => readUsageStreamLineage(source, { ...LINEAGE, routeSegmentId: "" })).toThrow(SupervisorError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// P-15 escalón B: legacy usage is not adopted under V2 (adjudication v2 C1)
+// ---------------------------------------------------------------------------
+
+describe("P-15/B N-B-9: no TOKEN_USAGE_RECORDED under V2 (C1, ADR 0102)", () => {
+  it("refuses a legacy token observation for a revision-bearing walk at the contract, with zero delta", () => {
+    // B adopted six exceptional producers and deliberately not this one: under V2
+    // spend is recorded only as USAGE_STREAM_DECLARED / USAGE_OBSERVATION_RECORDED,
+    // which D wires. So the legacy row keeps failing closed exactly as ADR 0080
+    // left it, and quota and rollups see no V2 spend until P-19.
+    const { ledger, invocation } = openV2Attempt("p15b-legacy-usage", "c1c1c1c1-0000-4000-8000-0000000000b1");
+    const status = ledger.status();
+    expect(() =>
+      recordTokenObservation(ledger, {
+        invocation,
+        kind: "USAGE",
+        accountId: "acct-primary",
+        tokens: 1_200,
+        transitionId: "usage.step-1",
+        emittedBy: EMITTED_BY,
+      }),
+    ).toThrow("idempotencyKey must be exactly taskId/attempt/transitionId");
+    expect(ledger.status().eventCount).toBe(status.eventCount);
+    expect(ledger.status().headEventSha256).toBe(status.headEventSha256);
+    expect(
+      ledger.listEvents({ taskId: invocation.taskId, limit: 500 }).events.filter((record) => record.event.type === "TOKEN_USAGE_RECORDED"),
+    ).toEqual([]);
+  });
+});

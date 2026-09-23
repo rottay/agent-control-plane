@@ -4,7 +4,7 @@ import { CONTRACT_VERSION, ControlPlaneEvent, ResolvedRoute } from "@acp/contrac
 import type { ControlPlaneEvent as ControlPlaneEventType } from "@acp/contracts";
 
 import type { DurableInvocation, OperationCoordinate } from "../../contracts/index.js";
-import { deriveEventCoordinate, deriveOperationCoordinate, operationDigest } from "../coordinates/index.js";
+import { deriveEventCoordinate, deriveOperationCoordinate, operationDigest, payloadCoordinate } from "../coordinates/index.js";
 import { planStep } from "../lifecycle/index.js";
 import type { PlanStep } from "../lifecycle/index.js";
 import { LifecyclePlanError, SupervisorError } from "../../errors/index.js";
@@ -134,15 +134,7 @@ function payloadFor(
   // so the key `deriveEventCoordinate` composed and the payload built here move
   // together or `ControlPlaneEvent.parse` below refuses. Without a revision the
   // base is exactly what it was before G, which is what keeps V1 byte-identical.
-  const revision = invocation.revision;
-  const base =
-    revision === undefined
-      ? { submissionDigest: invocation.submissionDigest }
-      : {
-          submissionDigest: invocation.submissionDigest,
-          revisionNumber: revision.revisionNumber,
-          attemptNumber: revision.attemptNumber,
-        };
+  const base = { submissionDigest: invocation.submissionDigest, ...payloadCoordinate(invocation) };
 
   // The discovery step opens the task, so it is the one place the initiative
   // can be stated. Carrying it on every event would put the same fact in N

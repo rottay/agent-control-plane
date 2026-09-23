@@ -10,6 +10,7 @@ import {
   eventName,
   operationDigest,
   operationName,
+  payloadCoordinate,
 } from "../../../src/core/coordinates/index.js";
 
 const INVOCATION: DurableInvocation = {
@@ -172,5 +173,48 @@ describe("names", () => {
     expect(name).toContain(INVOCATION.taskId);
     expect(name).toContain("run.started");
     expect(operationName(INVOCATION, "run.started", 4)).toContain("/4");
+  });
+});
+
+describe("P-15/B: the payload coordinate has one source (ADR 0102)", () => {
+  const REVISION = {
+    revisionId: "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f01",
+    revisionNumber: 7,
+    attemptNumber: 3,
+    envelopeSha256: "e".repeat(64),
+    envelopeArtifactReferenceId: "ref-envelope-0001",
+  };
+
+  it("is empty for a V1 invocation, with no key at all rather than undefined ones", () => {
+    const coordinate = payloadCoordinate(INVOCATION);
+    expect(coordinate).toEqual({});
+    expect(Object.keys(coordinate)).toEqual([]);
+  });
+
+  it("reads the revision's numbers for a V2 invocation, never the flat attempt", () => {
+    // The flat attempt is 1; the revision's are 7 and 3, so a helper that read the
+    // flat attempt would be caught.
+    expect(payloadCoordinate({ ...INVOCATION, revision: REVISION })).toEqual({ revisionNumber: 7, attemptNumber: 3 });
+  });
+
+  it("is built field by field: a wider revision cannot widen it, and each call is a fresh object", () => {
+    const wider = { ...REVISION, stray: "value" } as typeof REVISION;
+    const invocation: DurableInvocation = { ...INVOCATION, revision: wider };
+    expect(Object.keys(payloadCoordinate(invocation)).sort()).toEqual(["attemptNumber", "revisionNumber"]);
+    expect(payloadCoordinate(invocation)).not.toBe(payloadCoordinate(invocation));
+  });
+
+  it("agrees with the key the coordinate derivation composes, on the same record", () => {
+    const invocation: DurableInvocation = { ...INVOCATION, revision: REVISION };
+    const coordinate = payloadCoordinate(invocation);
+    expect(deriveEventCoordinate(invocation, "t", 0).idempotencyKey).toBe(
+      buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId: INVOCATION.taskId,
+        revisionNumber: coordinate.revisionNumber ?? -1,
+        attemptNumber: coordinate.attemptNumber ?? -1,
+        transitionId: "t",
+      }),
+    );
   });
 });

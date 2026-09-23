@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { CONTRACT_VERSION, buildIdempotencyKey, buildV2IdempotencyKey } from "@acp/contracts";
+import { CONTRACT_VERSION, ControlPlaneEvent, buildIdempotencyKey, buildV2IdempotencyKey } from "@acp/contracts";
 import type { Checkpoint, ResolvedRoute } from "@acp/contracts";
 import {
   LedgerIdempotencyConflictError,
@@ -1459,29 +1459,120 @@ describe("N-G-10: losing an acknowledgement, handing off and replaying, on the w
   });
 });
 
-describe("what does not speak V2 yet fails closed, by name or by contract (ADR 0080)", () => {
-  it("a settlement for a revision-bearing walk is refused by the contract, and nothing is appended", async () => {
+describe("what ADR 0080 left failing closed now speaks V2 (P-15/B, ADR 0102)", () => {
+  it("a settlement for a revision-bearing walk appends one V2 TASK_FAILED, where it was refused before B", async () => {
+    // Inverted from ADR 0080's fail-closed drill: the settlement's payload now
+    // carries the coordinate its V2 key names, so the contract admits it.
     const taskId = "40404040-4040-4040-8040-40404040400f";
     const { context, ledger } = v2ContextFor("p18g-settlement", taskId);
     walkUntil(context, "RESERVED");
-    const before = ledger.status();
+    const before = ledger.status().eventCount;
 
-    // The settlement builds its payload without the coordinate while its key is
-    // derived V2: the contract refuses the mismatch instead of recording a
-    // legacy-shaped event on a V2 attempt.
-    await expect(settleFailure(context, "BOUND_EXHAUSTED")).rejects.toThrow(
-      "idempotencyKey must be exactly taskId/attempt/transitionId",
+    const settlement = await settleFailure(context, "BOUND_EXHAUSTED");
+
+    expect(settlement.verdict).toBe("FAILED");
+    expect(settlement.failed?.payload).toMatchObject({ revisionNumber: 1, attemptNumber: 1 });
+    expect(settlement.failed?.idempotencyKey).toBe(
+      buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId,
+        revisionNumber: 1,
+        attemptNumber: 1,
+        transitionId: "failed",
+      }),
     );
-    expect(ledger.status().eventCount).toBe(before.eventCount);
-    expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
-    expect(ledger.getTask(taskId)?.currentState).toBe("RESERVED");
+    expect(ledger.status().eventCount).toBe(before + 1);
+    expect(ledger.getTask(taskId)?.currentState).toBe("FAILED");
   });
 
-  it("restateInvocation refuses a task whose first event is an opening", () => {
+  it("restateInvocation reads past an opening to the V2 discovery, where it refused the opening before B", () => {
+    // Inverted: before B the first event being an opening was refused as an
+    // unreadable discovery. Now the discovery is found by its V2 key, and the
+    // refusal at RESERVED is the ordinary one — no route is recorded before the
+    // INTENT — which proves the door read the discovery rather than the opening.
     const taskId = "40404040-4040-4040-8040-404040404010";
     const { context, ledger } = v2ContextFor("p18g-restate", taskId);
     walkUntil(context, "RESERVED");
     const outcome = restateInvocation(ledger, taskId, 1);
-    expect(outcome).toEqual({ ok: false, refusal: "DISCOVERY_UNREADABLE", at: "task.firstSequence" });
+    expect(outcome).toEqual({ ok: false, refusal: "ROUTE_NOT_RECORDED", at: "attempt.route" });
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// P-15 escalón B: the payload coordinate is load-bearing (ADR 0102)
+// ---------------------------------------------------------------------------
+
+describe("P-15/B N-B-4/N-B-5: a payload coordinate is whole and valid, or the event does not land", () => {
+  it("N-B-4: a built V2 event with its attempt number dropped is refused by the contract's key rule", () => {
+    const event = buildEvent({
+      invocation: v2InvocationFor("40404040-4040-4040-8040-4040404040b1"),
+      step: planStep(1),
+      emittedBy: EMITTED_BY,
+      initiativeId: TEST_INITIATIVE_ID,
+      plan: LIFECYCLE_PLAN,
+      route: TEST_ROUTE,
+    });
+    const { attemptNumber: dropped, ...payload } = event.payload;
+    expect(dropped).toBe(1);
+    const parsed = ControlPlaneEvent.safeParse({ ...event, payload });
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed.error?.issues)).toContain("idempotencyKey must be exactly");
+  });
+
+  it("N-B-5: over the presence matrix, only the whole valid V2 pair on a V2 walk and no pair on a V1 walk land", () => {
+    const VALUES: readonly (readonly [string, unknown])[] = [
+      ["absent", undefined],
+      ["null", null],
+      ["zero", 0],
+      ["string", "1"],
+      ["fraction", 1.5],
+      ["valid", 1],
+    ];
+    const landed: string[] = [];
+    let cell = 0;
+    for (const kind of ["V1", "V2"] as const) {
+      for (const [revisionName, revisionValue] of VALUES) {
+        for (const [attemptName, attemptValue] of VALUES) {
+          cell += 1;
+          const name = kind + "/" + revisionName + "/" + attemptName;
+          const taskId = "40404040-4040-4040-8040-4040404" + String(10000 + cell);
+          // A fresh ledger at the point where step 1 is the next event: the V1
+          // walk discovered, the V2 walk opened and discovered.
+          const staged = kind === "V1" ? contextFor("p15b-matrix-" + String(cell), taskId, []) : v2ContextFor("p15b-matrix-" + String(cell), taskId);
+          if (kind === "V2") appendPlanStep(staged.context, ATTEMPT_OPENING_STEP);
+          appendPlanStep(staged.context, planStep(0));
+          const event = buildEvent({
+            invocation: staged.context.invocation,
+            step: planStep(1),
+            emittedBy: EMITTED_BY,
+            initiativeId: TEST_INITIATIVE_ID,
+            plan: LIFECYCLE_PLAN,
+            route: TEST_ROUTE,
+          });
+          const { revisionNumber: _r, attemptNumber: _a, ...rest } = event.payload;
+          void _r;
+          void _a;
+          const payload: Record<string, unknown> = { ...rest };
+          if (revisionValue !== undefined) payload["revisionNumber"] = revisionValue;
+          if (attemptValue !== undefined) payload["attemptNumber"] = attemptValue;
+          const candidate = { ...event, payload };
+          const before = staged.ledger.status();
+          const parsed = ControlPlaneEvent.safeParse(candidate);
+          if (!parsed.success) {
+            expect(staged.ledger.status().eventCount).toBe(before.eventCount);
+            continue;
+          }
+          try {
+            staged.ledger.append(parsed.data);
+            landed.push(name);
+          } catch {
+            expect({ name, count: staged.ledger.status().eventCount }).toEqual({ name, count: before.eventCount });
+            expect(staged.ledger.status().headEventSha256).toBe(before.headEventSha256);
+          }
+        }
+      }
+    }
+    expect(landed).toEqual(["V1/absent/absent", "V2/valid/valid"]);
   });
 });

@@ -117,6 +117,7 @@ new records from `_template.md`, which carries the required fields.
 | 0099 | [A transport, a process and an operation are three facts, and output bytes live on the private side](0099-a-transport-a-process-and-an-operation-are-three-facts.md) | accepted |
 | 0100 | [An effect answers with a published result and its response occurrence](0100-an-effect-answers-with-a-published-result-and-its-response-occurrence.md) | accepted |
 | 0101 | [The Claude adapter speaks the observed CLI](0101-the-claude-adapter-speaks-the-observed-cli.md) | accepted |
+| 0102 | [The exceptional producers speak the V2 coordinate](0102-the-exceptional-producers-speak-the-v2-coordinate.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

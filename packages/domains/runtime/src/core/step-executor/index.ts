@@ -330,7 +330,7 @@ export function appendPlanStep(context: BeatContext, step: PlanStep): BeatResult
   if (step.eventType === ATTEMPT_OPENING_STEP.eventType) {
     assertOpeningProposal(context, event.idempotencyKey);
   } else if (context.invocation.revision !== undefined) {
-    assertAttemptOpened(context);
+    assertAttemptOpened(context.ledger, context.invocation);
   }
 
   assertCausalPredecessor(context, step, event.causationId);
@@ -504,7 +504,7 @@ function assertOpeningProposal(context: BeatContext, openingKey: string): void {
 }
 
 /**
- * Refuse any V2 beat whose attempt has not been opened (N-G-3).
+ * Refuse any V2 event whose attempt has not been opened (N-G-3).
  *
  * B's door is tolerant: a V2 event whose coordinate has no attempt row is
  * admitted, and O-2 of B's postaudit showed the consequence — a coordinate that
@@ -514,14 +514,23 @@ function assertOpeningProposal(context: BeatContext, openingKey: string): void {
  * walk other than the opening requires the opening to be in the ledger under
  * its V2 key, and to be this invocation's opening rather than an event that
  * merely sits there.
+ *
+ * Since P-15 escalón B (ADR 0102) the exceptional producers — pressure, the switch
+ * player and its landing, both settlements and the tool receipt — call it too,
+ * before they build anything, so none of them reopens O-2 from outside the walk.
+ * It takes the one ledger read it needs and the invocation, and it is exported
+ * to those modules only: the runtime barrel does not carry it.
  */
-function assertAttemptOpened(context: BeatContext): void {
+export function assertAttemptOpened(
+  ledger: Pick<LedgerPort, "getEventByIdempotencyKey">,
+  invocation: DurableInvocation,
+): void {
   const opening = deriveEventCoordinate(
-    context.invocation,
+    invocation,
     ATTEMPT_OPENING_STEP.transitionId,
     ATTEMPT_OPENING_STEP.index,
   );
-  const recorded = context.ledger.getEventByIdempotencyKey(opening.idempotencyKey);
+  const recorded = ledger.getEventByIdempotencyKey(opening.idempotencyKey);
   if (recorded === null) {
     throw new SupervisorError(
       "refusing to append: this attempt has not been opened, and nothing of a" +

@@ -3,6 +3,9 @@ import { createHash } from "node:crypto";
 import { buildIdempotencyKey, buildV2IdempotencyKey } from "@acp/contracts";
 
 import type { DurableInvocation, EventCoordinate, OperationCoordinate } from "../../contracts/index.js";
+import type { PayloadCoordinate } from "./types/index.js";
+
+export type { PayloadCoordinate } from "./types/index.js";
 
 /**
  * Deterministic coordinate derivation.
@@ -156,6 +159,21 @@ function idempotencyKeyFor(invocation: DurableInvocation, transitionId: string):
     attemptNumber: revision.attemptNumber,
     transitionId,
   });
+}
+
+/**
+ * The coordinate an event's payload carries (P-15 escalón B, ADR 0102).
+ *
+ * The one place a producer gets it. Nothing for a V1 invocation, which keeps every
+ * V1 payload byte-identical; the revision's `revisionNumber` and `attemptNumber`
+ * for a V2 one, **never** the flat `attempt` (ADR 0090 Three), so the payload and
+ * the key `idempotencyKeyFor` composes are read from the same record and cannot
+ * disagree. Built field by field, so a wider revision cannot widen a payload.
+ */
+export function payloadCoordinate(invocation: DurableInvocation): PayloadCoordinate {
+  const revision = invocation.revision;
+  if (revision === undefined) return {};
+  return { revisionNumber: revision.revisionNumber, attemptNumber: revision.attemptNumber };
 }
 
 /** Derive the addressable identity of one side effect. */

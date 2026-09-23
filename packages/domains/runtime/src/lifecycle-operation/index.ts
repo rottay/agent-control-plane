@@ -1,7 +1,9 @@
 import { ControlPlaneEvent, DriverMode, ResolvedRoute } from "@acp/contracts";
 import type { DriverOutcome, DriverMode as DriverModeName, TransportKind } from "@acp/contracts";
 
-import type { DurableInvocation, OrchestrationDriver } from "../contracts/index.js";
+import type { DurableInvocation, InvocationRevision, OrchestrationDriver } from "../contracts/index.js";
+import { deriveEventCoordinate } from "../core/coordinates/index.js";
+import { planStep } from "../core/lifecycle/index.js";
 import type { BeatContext, EffectPort, LedgerPort } from "../core/step-executor/index.js";
 import { canonicalSubmissionDigest, deriveInvocation } from "../submission/index.js";
 
@@ -68,6 +70,11 @@ export interface LifecycleRecoveryPort {
     taskId: string,
   ): { readonly currentState: string; readonly latestAttempt: number; readonly firstSequence: number } | null;
   getEventBySequence(sequence: number): { readonly canonicalJson: string } | null;
+  /**
+   * One event by its key (P-15 escalón B). A V2 attempt's discovery is found by
+   * its V2 key, because the first event of an opening-first task is the opening.
+   */
+  getEventByIdempotencyKey(idempotencyKey: string): { readonly canonicalJson: string } | null;
   getExecutionRoute(taskId: string, attempt: number): RecordedRoute | null;
 }
 
@@ -176,8 +183,28 @@ export function restateInvocation(
   const recorded = ledger.getEventBySequence(task.firstSequence);
   if (recorded === null) return refuse("DISCOVERY_UNREADABLE", "task.firstSequence");
 
-  const discovery = readDiscovery(recorded.canonicalJson, taskId, attempt);
-  if (discovery === null) return refuse("DISCOVERY_UNREADABLE", "task.firstSequence");
+  // An opening-first V2 task (P-15 escalón B, ADR 0102): the first event is this
+  // attempt's opening, which carries the revision; the discovery follows under
+  // its V2 key. An intake-first task — first event a discovery under the intake
+  // transition — is not read here and stays refused below until P-15/D.
+  const opening = readOpening(recorded.canonicalJson, taskId, attempt);
+  let revision: InvocationRevision | undefined;
+  let discoveryJson = recorded.canonicalJson;
+  if (opening === "UNREADABLE") return refuse("DISCOVERY_UNREADABLE", "task.firstSequence");
+  if (opening !== null) {
+    revision = opening.revision;
+    const keyed = deriveInvocation(taskId, attempt, "", "", revision);
+    const discoveryStep = planStep(0);
+    const key = deriveEventCoordinate(keyed, discoveryStep.transitionId, discoveryStep.index).idempotencyKey;
+    const found = ledger.getEventByIdempotencyKey(key);
+    if (found === null) return refuse("DISCOVERY_UNREADABLE", "attempt.discovery");
+    discoveryJson = found.canonicalJson;
+  }
+
+  const discovery = readDiscovery(discoveryJson, taskId, attempt);
+  if (discovery === null) {
+    return refuse("DISCOVERY_UNREADABLE", opening === null ? "task.firstSequence" : "attempt.discovery");
+  }
 
   const recordedRoute = ledger.getExecutionRoute(taskId, attempt);
   if (recordedRoute === null) return refuse("ROUTE_NOT_RECORDED", "attempt.route");
@@ -204,19 +231,81 @@ export function restateInvocation(
     return refuse("SUBMISSION_DIGEST_MISMATCH", "attempt.submissionDigest");
   }
 
+  const invocation = deriveInvocation(taskId, attempt, discovery.submittedAt, discovery.submissionDigest, revision);
+
   return {
     ok: true,
     context: {
-      invocation: deriveInvocation(
-        taskId,
-        attempt,
-        discovery.submittedAt,
-        discovery.submissionDigest,
-      ),
+      invocation,
       emittedBy: discovery.emittedBy,
       initiativeId: discovery.initiativeId,
       route,
     },
+  };
+}
+
+interface Opening {
+  readonly revision: InvocationRevision;
+  readonly invocationId: string;
+}
+
+function nonEmptyText(value: unknown): value is string {
+  return typeof value === "string" && value !== "";
+}
+
+function positiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+/**
+ * Read an attempt's opening, if the first event is one (P-15 escalón B).
+ *
+ * `null` when the first event is not an opening at all, so the V1 and
+ * intake-first paths read it as before. An opening that is not this task's and
+ * this attempt's, or whose revision record or invocation id is absent, `null`, or
+ * present with the wrong type, is `"UNREADABLE"` — never read as no opening.
+ *
+ * So is an opening that names an invocation other than this coordinate's. The
+ * invocation id is derived from the task and the flat attempt alone (the revision
+ * stays out of it, ADR 0080), so it says nothing about the submission's digest:
+ * a mismatch is an opening this door cannot attribute, not a digest disagreement.
+ */
+function readOpening(canonicalJson: string, taskId: string, attempt: number): Opening | "UNREADABLE" | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(canonicalJson);
+  } catch {
+    return null;
+  }
+  const parsed = ControlPlaneEvent.safeParse(raw);
+  if (!parsed.success) return null;
+  const event = parsed.data;
+  if (event.type !== "TASK_ATTEMPT_OPENED") return null;
+  if (event.taskId !== taskId || event.attempt !== attempt) return "UNREADABLE";
+
+  const payload = event.payload;
+  const revisionId: unknown = payload["revisionId"];
+  const revisionNumber: unknown = payload["revisionNumber"];
+  const attemptNumber: unknown = payload["attemptNumber"];
+  const envelopeSha256: unknown = payload["envelopeSha256"];
+  const envelopeArtifactReferenceId: unknown = payload["envelopeArtifactReferenceId"];
+  const invocationId: unknown = payload["invocationId"];
+  const legacyAttemptNumber: unknown = payload["legacyAttemptNumber"];
+  if (
+    !nonEmptyText(revisionId) ||
+    !positiveInteger(revisionNumber) ||
+    !positiveInteger(attemptNumber) ||
+    !nonEmptyText(envelopeSha256) ||
+    !nonEmptyText(envelopeArtifactReferenceId) ||
+    !nonEmptyText(invocationId) ||
+    legacyAttemptNumber !== attempt ||
+    invocationId !== deriveInvocation(taskId, attempt, "", "").invocationId
+  ) {
+    return "UNREADABLE";
+  }
+  return {
+    revision: { revisionId, revisionNumber, attemptNumber, envelopeSha256, envelopeArtifactReferenceId },
+    invocationId,
   };
 }
 
