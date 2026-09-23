@@ -12,6 +12,25 @@
   which named what C owes and is now paid. `L-B1C-1` and `L-P06A-1` are each amended
   in their own fence row rather than replaced.
 
+## Errata, 2026-09-22
+
+Two statements below no longer hold, and ADR 0096 (P-06/CORR) records why.
+
+- "It is not a live defect: the shipped capability policy admits no API transport"
+  (in "Why the acceptance proof is complete on one leg and declared on the other").
+  That is true of `resolveRoute`, but the daemon executes the route in its
+  configuration without re-resolving it, and its R6 drills drive `startDaemon` over
+  an `API_KEY` route to a checkpoint. The missing instruction was reachable through
+  the composition root, and the API and local legs admitted a class they could not
+  carry.
+- "Threading an instruction into `ApiStreamRequest`: the API transport's own packet"
+  (in "Not in this record"). It was P-06's to close, and ADR 0096 closes it for the
+  API and local legs: both carry the composed instruction and refuse a non-text class
+  and a credential-shaped instruction before calling the client.
+
+What this errata does **not** do: it rewrites no other line of this record. The
+intake-door-to-child path stays P-15's, as "Not in this record" already says.
+
 ## Context
 
 Escalón A froze the content contract and held it inert. Escalón B put the content in

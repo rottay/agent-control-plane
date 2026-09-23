@@ -25,7 +25,15 @@ import { deriveInvocation } from "@acp/durability";
 import { artifactRootFor, createCheckpointStore, openLedger, openLeaseStore, readArtifact } from "@acp/ledger";
 import type { ExecutionRouteReadModel, Ledger } from "@acp/ledger";
 import { admitBinary, admitConfigRoot, admitWorkdir, claudeAdapter, createExecutionPort, executionSessionId } from "@acp/providers";
-import type { ApiStreamChunk, ApiStreamingClient, CliBinding, ProviderAdapter, SessionDescriptor, SessionRequest } from "@acp/providers";
+import type {
+  ApiStreamChunk,
+  ApiStreamRequest,
+  ApiStreamingClient,
+  CliBinding,
+  ProviderAdapter,
+  SessionDescriptor,
+  SessionRequest,
+} from "@acp/providers";
 import {
   ExecutionEffectError,
   INTENT_STEP,
@@ -4748,9 +4756,9 @@ describe("the acceptance proof: a child returns what it received (contratos sect
     expect(existsSync(echoPath)).toBe(false);
   }, 60_000);
 
-  it("runs the same composed instruction on the API leg, whose stream request carries no instruction at all", async () => {
+  it("runs the same composed instruction on the API leg, and the stream request carries exactly it (P-06/CORR)", async () => {
     const composed = acceptanceInstruction("p06c-accept-api-compose");
-    const seen: unknown[] = [];
+    const seen: ApiStreamRequest[] = [];
     const recordingClient: ApiStreamingClient = {
       provider: "claude",
       models: ["opus"],
@@ -4770,24 +4778,117 @@ describe("the acceptance proof: a child returns what it received (contratos sect
       modalities: [...composed.modalities],
     });
 
+    // The walk reached its terminal state; that is the lifecycle settling, not a
+    // claim about what the stream produced (P-07 owns the result contract).
     expect(done.state).toBe("CHECKPOINTED");
-    // MEASURED, not assumed: `ApiStreamRequest` carries the model, the task, the
-    // attempt and the identity -- and no instruction. So "a child returns what it
-    // received" is not expressible on this leg without widening a shape this packet
-    // does not own; the gap belongs to the API transport and is declared in ADR
-    // 0095 rather than papered over here. What IS proven is that the instruction
-    // composed by the one producer drives this leg to the same terminal state and
-    // that none of it reaches the request, the trail or the log.
+    // The API leg carries the instruction composed by the one producer, verbatim,
+    // in the request's five declared members (ADR 0096; ADR 0095's errata).
     expect(seen).toHaveLength(1);
-    expect(Object.keys(seen[0] as Record<string, unknown>).sort()).toEqual([
-      "attempt",
-      "identity",
-      "model",
-      "taskId",
-    ]);
-    const everywhere = JSON.stringify(seen) + JSON.stringify(done.bodiesWithoutRoute) + JSON.stringify(done.trail);
+    const received = seen[0];
+    if (received === undefined) throw new Error("the API client was never called");
+    expect(Object.keys(received).sort()).toEqual(["attempt", "identity", "instructions", "model", "taskId"]);
+    expect(received.instructions).toBe(composed.instructions);
+    // The request is the one lawful crossing: the instruction still reaches no
+    // event body and no trail.
+    const everywhere = JSON.stringify(done.bodiesWithoutRoute) + JSON.stringify(done.trail);
     for (const fragment of [ACCEPTANCE_FIRST, ACCEPTANCE_SECOND]) {
       expect(everywhere).not.toContain(fragment);
     }
   }, 60_000);
+
+  it("through startDaemon, a synthetic API client echoes back exactly the composed instruction (P-06/CORR)", async () => {
+    // The composition root this time, not a walk harness: `startDaemon` composes
+    // the instruction from its envelope with `instructionFor` and hands it to the
+    // API leg. The client is synthetic and echoes what it received as the
+    // stream's text; nothing here asserts a useful result, only the crossing.
+    const expected = acceptanceInstruction("p06corr-api-echo-compose");
+    const received: ApiStreamRequest[] = [];
+    const echoed: string[] = [];
+    const echoClient: ApiStreamingClient = {
+      provider: "claude",
+      models: ["opus"],
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async *stream(request): AsyncIterable<ApiStreamChunk> {
+        received.push(request);
+        const [started, ...rest] = API_SCENARIO;
+        if (started !== undefined) yield started;
+        echoed.push(request.instructions);
+        yield { kind: "text", delta: request.instructions };
+        for (const chunk of rest) yield chunk;
+      },
+    };
+    await p06corrRun(b4aScenarioId("p06corr-api-echo"), acceptanceEnvelopeFor, () => echoClient);
+
+    expect(received).toHaveLength(1);
+    expect(Object.keys(received[0] ?? {}).sort()).toEqual(["attempt", "identity", "instructions", "model", "taskId"]);
+    expect(echoed).toEqual([expected.instructions]);
+    expect(echoed[0]).toBe(ACCEPTANCE_FIRST + "\n\n" + ACCEPTANCE_SECOND);
+  }, 60_000);
+
+  it("through startDaemon, a class the API leg cannot carry is refused before the client, with zero calls (P-06/CORR)", async () => {
+    const received: ApiStreamRequest[] = [];
+    const recordingClient: ApiStreamingClient = {
+      provider: "claude",
+      models: ["opus"],
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async *stream(request): AsyncIterable<ApiStreamChunk> {
+        received.push(request);
+        for (const chunk of API_SCENARIO) yield chunk;
+      },
+    };
+    const scenarioId = b4aScenarioId("p06corr-api-image");
+    await expect(p06corrRun(scenarioId, imageEnvelopeFor, () => recordingClient)).rejects.toMatchObject({
+      refusal: "TRANSPORT_UNAVAILABLE",
+      at: "request.modalities",
+    });
+    expect(received).toHaveLength(0);
+    const types = r6Events(scenarioId).map((event) => event.type);
+    expect(types).toContain("TASK_FAILED");
+    expect(types).not.toContain("CHECKPOINT_WRITTEN");
+  }, 60_000);
 });
+
+/**
+ * `r6Run` with the envelope as a parameter (P-06/CORR): the acceptance envelope's
+ * two text blocks, or those plus an image block, over the R6 API config. The
+ * write-set is R6's, because the same drill binary is the workdir.
+ */
+async function p06corrRun(
+  scenarioId: string,
+  envelopeOf: (taskId: string) => TaskEnvelope,
+  apiClientFor: (accountId: string) => ApiStreamingClient | undefined,
+): Promise<void> {
+  const { root } = fakeProviderBinary(CLAUDE_LINES, { linger: false });
+  const base = b4aOptions(scenarioId, r6ApiExecution(root));
+  const run = await startDaemon({ ...base, envelope: envelopeOf(base.taskId), apiClientFor });
+  await stopDaemon(run);
+}
+
+function acceptanceEnvelopeFor(taskId: string): TaskEnvelope {
+  return { ...acceptanceEnvelope(taskId), writeSet: ["child.pid"] } as unknown as TaskEnvelope;
+}
+
+/** The acceptance envelope plus one referenced image block, which no API leg carries. */
+function imageEnvelopeFor(taskId: string): TaskEnvelope {
+  const envelope = acceptanceEnvelopeFor(taskId);
+  return {
+    ...envelope,
+    content: {
+      contentContractVersion: 1,
+      blocks: [
+        ...envelope.content.blocks,
+        {
+          kind: "image",
+          blockId: "b3",
+          mediaType: "image/png",
+          byteLength: 2_048,
+          contentSha256: "b".repeat(64),
+          artifactRefId: "ref-image-1",
+          text: null,
+          toolCallId: null,
+          effectId: null,
+        },
+      ],
+    },
+  } as unknown as TaskEnvelope;
+}

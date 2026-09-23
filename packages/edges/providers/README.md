@@ -90,7 +90,9 @@ member able to carry a credential. That is what keeps law 6 true by
 construction rather than by discipline: the SDK binding stays optional, no
 client library is imported here, and nothing on the CLI path can reach an API
 key. A port constructed for CLI only refuses the other two kinds with a
-classified refusal.
+classified refusal. Both non-CLI clients receive the composed instruction, and the
+port refuses a non-text class and a credential-shaped instruction before calling
+either one (ADR 0096).
 
 ## One process boundary
 

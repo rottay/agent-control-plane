@@ -22,11 +22,11 @@ import {
   toExecutionEvent,
 } from "../../src/execution-port/index.js";
 import { normalizedEvent } from "../../src/events/index.js";
-import type { ApiKeyBinding, ApiStreamChunk } from "../../src/api-key/index.js";
+import type { ApiKeyBinding, ApiStreamChunk, ApiStreamRequest } from "../../src/api-key/index.js";
 import { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "../../src/claude/index.js";
 import { CODEX_APP_SERVER_PROTOCOL, codexAdapter } from "../../src/codex/index.js";
 import { KIMI_ACP_PROTOCOL, kimiAdapter } from "../../src/kimi/index.js";
-import type { LocalBinding, LocalChatChunk } from "../../src/local/index.js";
+import type { LocalBinding, LocalChatChunk, LocalChatRequest } from "../../src/local/index.js";
 import type { AgentHarness } from "../../src/harness/index.js";
 import { createAgentHarness } from "../../src/harness/index.js";
 import { fakeApiClient, fakeLocalClient, scriptedAdapter } from "../testing/index.js";
@@ -1258,4 +1258,107 @@ describe("the owned session lifecycle", () => {
 
     await port.interrupt(started.sessionId);
   });
+});
+
+// ---------------------------------------------------------------------------
+// P-06/CORR: the API and local legs carry the composed instruction, and refuse
+// what they cannot carry before the client is called (ADR 0096)
+// ---------------------------------------------------------------------------
+
+/** One request the client received, as the recording client saw it. */
+type ReceivedRequest = ApiStreamRequest | LocalChatRequest;
+
+/**
+ * A port bound to one synthetic client per non-CLI leg that records every
+ * request it is handed and streams the shared scenario. Synthetic only: no
+ * provider, no network and no spend.
+ */
+function recordingPort(leg: "api" | "local"): { readonly port: ModelExecutionPort; readonly seen: ReceivedRequest[] } {
+  const seen: ReceivedRequest[] = [];
+  if (leg === "api") {
+    const bound: ApiKeyBinding = {
+      client: {
+        provider: API_PROVIDER,
+        models: [API_MODEL],
+        // eslint-disable-next-line @typescript-eslint/require-await
+        async *stream(received: ApiStreamRequest): AsyncIterable<ApiStreamChunk> {
+          seen.push(received);
+          for (const chunk of API_SCENARIO) yield chunk;
+        },
+      },
+    };
+    return { port: portFor({}, { [API_ACCOUNT]: bound }), seen };
+  }
+  const bound: LocalBinding = {
+    client: {
+      provider: LOCAL_PROVIDER,
+      models: [LOCAL_MODEL],
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async *stream(received: LocalChatRequest): AsyncIterable<LocalChatChunk> {
+        seen.push(received);
+        for (const chunk of LOCAL_SCENARIO) yield chunk;
+      },
+    },
+  };
+  return { port: portFor({}, undefined, { [LOCAL_ACCOUNT]: bound }), seen };
+}
+
+const NON_CLI_LEGS = [
+  { leg: "api", route: (): ResolvedRoute => apiRoute() },
+  { leg: "local", route: (): ResolvedRoute => localRoute() },
+] as const;
+
+const CLIENT_REQUEST_KEYS = ["attempt", "identity", "instructions", "model", "taskId"];
+
+describe("P-06/CORR: the API and local legs carry the composed instruction", () => {
+  for (const { leg, route: legRoute } of NON_CLI_LEGS) {
+    it(leg + ": two distinct instructions arrive distinct, byte-equal to what was asked, in exactly five keys", async () => {
+      // The anti-constant control: a hard-coded, cached or first-seen value
+      // passes one of these and fails the other.
+      const first = "summarise the packet\n\nthen list its open questions";
+      const second = "draft the migration note — with a non-ASCII byte";
+      const { port, seen } = recordingPort(leg);
+      await drain(port, legRoute(), request({ instructions: first }));
+      await drain(port, legRoute(), request({ instructions: second }));
+      expect(seen).toHaveLength(2);
+      expect(seen.map((received) => received.instructions)).toEqual([first, second]);
+      for (const received of seen) {
+        expect(Object.keys(received).sort()).toEqual(CLIENT_REQUEST_KEYS);
+      }
+    });
+
+    it(leg + ": a positive text case still streams to its terminal event", async () => {
+      const { port, seen } = recordingPort(leg);
+      const trail = await drain(port, legRoute(), request({ modalities: ["text"] }));
+      expect(seen).toHaveLength(1);
+      expect(trail.map((event) => event.kind)).toContain("completed");
+    });
+
+    it(leg + ": text beside any other class is refused before the client, with zero calls", async () => {
+      const { port, seen } = recordingPort(leg);
+      const outcome = await port.start(legRoute(), request({ modalities: ["text", "image"] }));
+      expect(outcome).toEqual({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "request.modalities" });
+      expect(seen).toHaveLength(0);
+    });
+
+    it(leg + ": a request with no text class at all is refused before the client, with zero calls", async () => {
+      const { port, seen } = recordingPort(leg);
+      for (const kind of ["image", "audio", "document"] as const) {
+        const outcome = await port.start(legRoute(), request({ modalities: [kind] }));
+        expect(outcome).toEqual({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "request.modalities" });
+      }
+      expect(seen).toHaveLength(0);
+    });
+
+    it(leg + ": a credential-shaped instruction is refused before the client, with zero calls", async () => {
+      // Built by concatenation so no tracked literal matches a credential
+      // pattern; the port's scan is the same one `startSession` runs.
+      const secret = "AKIA" + "ABCDEFGHIJKLMNOP";
+      const { port, seen } = recordingPort(leg);
+      const outcome = await port.start(legRoute(), request({ instructions: "deploy with " + secret }));
+      expect(outcome).toEqual({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "request.instructions" });
+      expect(JSON.stringify(outcome)).not.toContain(secret);
+      expect(seen).toHaveLength(0);
+    });
+  }
 });

@@ -39,9 +39,13 @@ export const API_TRANSPORT_KIND = "API_KEY";
 /**
  * What the control plane asks a provider API for.
  *
- * The task coordinates and the model, and nothing else. Every field here is
- * something the control plane already knows and already puts in the ledger;
- * none of it is a secret, and there is deliberately nowhere to put one.
+ * The task coordinates, the model and the composed instruction, and nothing
+ * else (P-06/CORR, ADR 0096). The coordinates and the model are things the
+ * control plane already knows and already puts in the ledger; none of it is a
+ * secret, and there is deliberately nowhere to put one. The instruction is
+ * content, not a credential: the execution port runs the same credential scan
+ * the CLI session runs over it, and refuses every class but text, before this
+ * object is built -- so a credential-shaped instruction never reaches it.
  */
 export interface ApiStreamRequest {
   /** Exactly the route's model. The client never substitutes another. */
@@ -49,6 +53,8 @@ export interface ApiStreamRequest {
   readonly taskId: string;
   readonly attempt: number;
   readonly identity: WorkerIdentityString;
+  /** The composed instruction, verbatim as the execution request carried it. */
+  readonly instructions: string;
 }
 
 /**

@@ -8,6 +8,8 @@
  * walk module rather than an internal of either — the root fills them at its
  * two call sites and the walk module reads them, so a reader following "what
  * does a walk need" arrives at one leaf instead of at a builder's signature.
+ * `ComposedInstruction`, what the root's `instructionFor` hands a walk, joined
+ * them at P-06/CORR for the same reason (owner law §7).
  *
  * A pure type leaf: it declares data and nothing else, imports only types, and
  * carries no behaviour to mirror — the same shape, and the same absence of a
@@ -106,4 +108,13 @@ export interface ComposedSqliteWalkInput {
   readonly attempt: number;
   readonly emittedBy: string;
   readonly initiativeId: string;
+}
+
+/**
+ * What the composition produces: the bytes that cross, and the classes they came
+ * from (P-06/C, ADR 0095; moved to this leaf by P-06/CORR, ADR 0096).
+ */
+export interface ComposedInstruction {
+  readonly instructions: string;
+  readonly modalities: readonly ContentBlockKind[];
 }

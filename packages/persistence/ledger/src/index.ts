@@ -532,6 +532,16 @@ export {
 export { taskIntakePayloadOf } from "./projection/index.js";
 
 /**
+ * P-06/CORR: the prompt occurrence record's closed key set (ADR 0096).
+ *
+ * The door refuses a key this grammar does not declare, and `@acp/runtime`'s
+ * `buildPromptOccurrenceEvent` is the one producer of the record, so its suite
+ * reads the set from here rather than restating it — `TASK_INTAKE_PAYLOAD_KEYS`'
+ * precedent above. The reader stays internal; only the grammar is public.
+ */
+export { PROMPT_OCCURRENCE_RECORD_KEYS } from "./projection/index.js";
+
+/**
  * The artifact plane's two closed sets (P-36/local A, ADR 0081).
  *
  * Which six of the contract's nine artifact event words this build records, and

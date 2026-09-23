@@ -10764,6 +10764,61 @@ const P06C_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-06/CORR: the correction of P-06 after the Codex pause audit of 2026-09-15
+ * (F1-F4), ADR 0096.
+ *
+ * **What lands.** F1: `buildPromptOccurrenceEvent` builds its record field by field,
+ * an explicit literal of exactly the thirteen names, where it used to spread its
+ * input -- a spread copies every own key of a value TypeScript lets through wider,
+ * and the door refuses the extra key after the instruction was sent. F2: the API and
+ * local legs carry the composed instruction to their client, verbatim, and refuse a
+ * class other than text and a credential-shaped instruction first, with the
+ * vocabulary the CLI leg already answers with (`TRANSPORT_UNAVAILABLE`, `at` naming
+ * the field) and zero client calls. F3: `PromptOccurrenceRecord` and
+ * `BuildPromptOccurrenceInput` move to the events concept's new type leaf and
+ * `ComposedInstruction` to the daemon's composition types leaf, re-exported so no
+ * importer changes. The ledger barrel gains `PROMPT_OCCURRENCE_RECORD_KEYS` so the
+ * producer's suite reads the door's grammar rather than restating it.
+ *
+ * **Pins that move.** `API_CLIENT_SHAPE` and `LOCAL_CLIENT_SHAPE`: each request
+ * interface 4 -> **5** members, `instructions` last -- deliberately, the reviewed act
+ * the pin exists for; the credential scan runs before the object is built. L-P06C-2
+ * is amended IN ITS OWN ROW: it reads the record's declaration from the concept's
+ * leaf, and it now reads the builder too -- the built literal's names must be the
+ * grammar's, and a spread in the builder fails. The ADR corpus 95 -> 96.
+ *
+ * **Pins that do not move.** `CONTRACT_VERSION` 2.7.0, `API_CONTRACT_VERSION`,
+ * `MIGRATIONS` 21, `PATH_SCOPED_LAWS` 146 (L-P06C-2 is not path-scoped and no law is
+ * added), every `*_PUBLIC_EXPORTS` pin (no runtime, providers or daemon barrel
+ * changes; the ledger barrel has no equality pin), L-B4A-3 (each non-CLI leg's
+ * reattach refusal stays its first statement), L-B1C-1 (the legs pass
+ * `asked.instructions` through; they produce nothing).
+ *
+ * **Seventeen paths; two are new to the fence** -- the events type leaf and ADR 0096.
+ * The door-to-child path (intake door -> recorded envelope read by reference ->
+ * child) is P-15's, as the P-14 and P-15 rows and ADR 0095 already assign.
+ */
+const P06CORR_WRITE_SET = [
+  "packages/domains/runtime/src/core/events/index.ts",
+  "packages/domains/runtime/src/core/events/types/index.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/edges/providers/src/api-key/index.ts",
+  "packages/edges/providers/src/local/index.ts",
+  "packages/edges/providers/src/execution-port/index.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/entrypoints/daemon/src/composition/index.ts",
+  "packages/entrypoints/daemon/src/composition/types/index.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0096-the-api-and-local-legs-carry-the-composed-instruction.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/architecture/0095-the-instruction-is-resolved-on-the-private-side-of-the-adapter-boundary.md",
+  "packages/edges/providers/README.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -10990,6 +11045,7 @@ const WRITE_SET = [
   ...P06A_WRITE_SET,
   ...P06B_WRITE_SET,
   ...P06C_WRITE_SET,
+  ...P06CORR_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -20711,8 +20767,12 @@ if (adaptersIndex !== null) {
  * sentence from a field is a scan that gets disabled the first time it is
  * wrong.
  */
+//
+// P-06/CORR (ADR 0096) moved each request 4 -> 5: `instructions`, the composed
+// instruction, which is content and not a credential -- the execution port runs
+// the CLI session's credential scan over it before the object is built.
 const API_CLIENT_SHAPE = {
-  ApiStreamRequest: ["model", "taskId", "attempt", "identity"],
+  ApiStreamRequest: ["model", "taskId", "attempt", "identity", "instructions"],
   ApiStreamingClient: ["provider", "models", "stream"],
 };
 
@@ -20725,7 +20785,7 @@ const API_CLIENT_SHAPE = {
  * pin is what makes that reach fail rather than land.
  */
 const LOCAL_CLIENT_SHAPE = {
-  LocalChatRequest: ["model", "taskId", "attempt", "identity"],
+  LocalChatRequest: ["model", "taskId", "attempt", "identity", "instructions"],
   LocalChatClient: ["provider", "models", "stream"],
 };
 
@@ -27158,15 +27218,28 @@ function functionBody(source, declaration) {
 //
 // Bidirectional, exactly as `CONTRACTS_SCHEMA_EXPORTS` is: whichever side moved,
 // the failure names it.
-const OCCURRENCE_PRODUCER_PATH = "packages/domains/runtime/src/core/events/index.ts";
+//
+// **Amended at P-06/CORR (ADR 0096), in this row.** The declared names were checked
+// and the BUILT object was not: the builder spread its input, and a value typed as
+// the record can carry more keys than the record declares, so the door would have
+// refused an event its producer's declaration agreed with. The declaration moved to
+// the events concept's type leaf (F3), so the row reads it there; and it now reads
+// the builder as well -- the record literal inside `buildPromptOccurrenceEvent`
+// must name exactly the grammar's keys, the payload must carry that literal, and a
+// spread anywhere in the builder fails.
+const OCCURRENCE_PRODUCER_PATH = "packages/domains/runtime/src/core/events/types/index.ts";
+const OCCURRENCE_BUILDER_PATH = "packages/domains/runtime/src/core/events/index.ts";
 const OCCURRENCE_GRAMMAR_PATH = "packages/persistence/ledger/src/projection/index.ts";
 {
   const producer = readIfPresent(OCCURRENCE_PRODUCER_PATH);
+  const builder = readIfPresent(OCCURRENCE_BUILDER_PATH);
   const grammar = readIfPresent(OCCURRENCE_GRAMMAR_PATH);
-  if (producer === null || grammar === null) {
+  if (producer === null || builder === null || grammar === null) {
     fail(
-      "L-P06C-2 needs both the prompt occurrence's producer and the ledger's grammar; one of " +
+      "L-P06C-2 needs the prompt occurrence's declaration, its builder and the ledger's grammar; one of " +
         OCCURRENCE_PRODUCER_PATH +
+        ", " +
+        OCCURRENCE_BUILDER_PATH +
         " and " +
         OCCURRENCE_GRAMMAR_PATH +
         " is missing",
@@ -27198,10 +27271,40 @@ const OCCURRENCE_GRAMMAR_PATH = "packages/persistence/ledger/src/projection/inde
       if (produced.includes("identity") || keys.includes("identity")) {
         fail("a prompt occurrence record carries no identity field; that column is the event's emittedBy");
       }
+      const body = /export function buildPromptOccurrenceEvent\(([\s\S]*?)\n\}\n/.exec(stripComments(builder))?.[1];
+      if (body === undefined) {
+        fail(OCCURRENCE_BUILDER_PATH + " no longer declares buildPromptOccurrenceEvent");
+      } else {
+        if (/\.\.\./.test(body)) {
+          fail(
+            "buildPromptOccurrenceEvent spreads a value; the record is built field by field, because a" +
+              " spread copies every own key of a value wider than its type and the door refuses the extra one",
+          );
+        }
+        const literal = /const record: PromptOccurrenceRecord = \{([\s\S]*?)\};/.exec(body)?.[1];
+        if (literal === undefined) {
+          fail("buildPromptOccurrenceEvent no longer builds its record as one typed literal");
+        } else {
+          const built = [...literal.matchAll(/^\s*(\w+):/gm)].map((match) => match[1]);
+          const builtDisagreement = tableDisagreement(built, keys);
+          if (builtDisagreement.omits.length > 0 || builtDisagreement.invents.length > 0) {
+            fail(
+              "the prompt occurrence's built record and the ledger's grammar disagree: the builder omits [" +
+                builtDisagreement.omits.join(", ") +
+                "] and invents [" +
+                builtDisagreement.invents.join(", ") +
+                "]",
+            );
+          }
+          if (!/promptOccurrence:\s*record\b/.test(body)) {
+            fail("buildPromptOccurrenceEvent's payload does not carry the record literal it builds");
+          }
+        }
+      }
       notes.push(
-        "the prompt occurrence's producer and the ledger's grammar agree on " +
+        "the prompt occurrence's declaration, its built literal and the ledger's grammar agree on " +
           String(keys.length) +
-          " field(s), and neither names an identity",
+          " field(s), neither names an identity, and the builder spreads nothing",
       );
     }
   }

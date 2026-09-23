@@ -36,7 +36,7 @@
  */
 
 import { findCredentialViolations } from "@acp/contracts";
-import type { ContentBlockKind, ModelExecutionPort, ResolvedRoute, TaskEnvelope } from "@acp/contracts";
+import type { ModelExecutionPort, ResolvedRoute, TaskEnvelope } from "@acp/contracts";
 import type { Ledger, LeaseStore } from "@acp/ledger";
 import { openArtifactPlane, openLeaseStore, openLedger } from "@acp/ledger";
 import type { ArtifactBlobLeaseStore, ArtifactPlane } from "@acp/ledger";
@@ -68,7 +68,7 @@ import type { DaemonPhase, DaemonStatusDocument } from "../status/index.js";
 import { clearStatus, readStatusFrom, writeStatus } from "../status/index.js";
 
 import { bindingForRoute, checkpointsFor, cliBindingsOf, conformanceGateFor, executionPortFor } from "./ports/index.js";
-import type { ComposedSqliteWalkInput, WalkEffectsInput } from "./types/index.js";
+import type { ComposedInstruction, ComposedSqliteWalkInput, WalkEffectsInput } from "./types/index.js";
 import { buildWalkEffects, runComposedSqliteWalk } from "./walk/index.js";
 import { lockResource } from "./usecases/index.js";
 
@@ -269,11 +269,12 @@ function refuseInstructionHolding(): never {
  */
 const BLOCK_SEPARATOR = "\n\n";
 
-/** What the composition produces: the bytes that cross, and the classes they came from. */
-export interface ComposedInstruction {
-  readonly instructions: string;
-  readonly modalities: readonly ContentBlockKind[];
-}
+/**
+ * `ComposedInstruction` lives in the composition context leaf, `./types/index.ts`,
+ * and is re-exported here unchanged so every importer keeps reading it from this
+ * module (owner law §7, P-06/CORR, ADR 0096).
+ */
+export type { ComposedInstruction } from "./types/index.js";
 
 /**
  * The credential guard, over ONE block, before it is joined (N-P06-18, E15).

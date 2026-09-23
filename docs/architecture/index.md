@@ -111,6 +111,7 @@ new records from `_template.md`, which carries the required fields.
 | 0093 | [An instruction's content is an ordered list of discriminated blocks, contract v1](0093-an-instructions-content-is-an-ordered-list-of-discriminated-blocks.md) | accepted |
 | 0094 | [The task envelope carries the instruction's content, and both doors validate it](0094-the-task-envelope-carries-the-instructions-content.md) | accepted |
 | 0095 | [The instruction is resolved on the private side of the adapter boundary, and its prompt occurrence is recorded](0095-the-instruction-is-resolved-on-the-private-side-of-the-adapter-boundary.md) | accepted |
+| 0096 | [The API and local legs carry the composed instruction, and the prompt occurrence is closed by construction](0096-the-api-and-local-legs-carry-the-composed-instruction.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

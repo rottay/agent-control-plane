@@ -9,6 +9,7 @@ import {
   findTranscriptViolations,
 } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
+import { PROMPT_OCCURRENCE_RECORD_KEYS } from "@acp/ledger";
 import { describe, expect, it } from "vitest";
 
 import type { DurableInvocation } from "../../../src/contracts/index.js";
@@ -659,25 +660,49 @@ describe("the prompt occurrence records the use of an instruction, never its byt
     expect(event.payload["revisionNumber"]).toBe(1);
     expect(event.payload["attemptNumber"]).toBe(1);
     const record = event.payload["promptOccurrence"] as Record<string, unknown>;
-    // The thirteen of the ledger's `PROMPT_OCCURRENCE_RECORD_KEYS`, written out
-    // rather than imported: the reader is not on this package's public surface,
-    // so the equality of the two lists is pinned by the fence (L-P06C-2) and
-    // this assertion pins that the producer really emits the list it declares.
-    expect(Object.keys(record).sort()).toEqual([
-      "accountId",
-      "contextSha256",
-      "dispatchAttemptId",
-      "effectId",
-      "modelResolutionStatus",
-      "modelVersionId",
-      "occurrenceId",
-      "ordinal",
-      "promptBytes",
-      "promptSha256",
-      "provider",
-      "requestedModelId",
-      "routeSegmentId",
-    ]);
+    // The ledger's own `PROMPT_OCCURRENCE_RECORD_KEYS`, imported from its
+    // barrel (P-06/CORR): the door's reader stays internal, so the equality of
+    // the produced key set with the grammar the reader enforces is the grammar
+    // test here, and the fence (L-P06C-2) pins the declared side.
+    expect(PROMPT_OCCURRENCE_RECORD_KEYS).toHaveLength(13);
+    expect(Object.keys(record).sort()).toEqual([...PROMPT_OCCURRENCE_RECORD_KEYS].sort());
+  });
+
+  it("F1: a record typed as the record but carrying an extra key yields exactly the thirteen, and the extra value nowhere", () => {
+    // A variable, not a literal: TypeScript checks excess keys on a literal
+    // only, so a structurally wider object assigned through a wider type is
+    // exactly the value a spread would have copied whole.
+    const extraValue = "stray-" + "audit-value";
+    const wider = { ...OCCURRENCE, auditExtra: extraValue };
+    const typed: PromptOccurrenceRecord = wider;
+    const event = buildPromptOccurrenceEvent({
+      invocation: V2_INVOCATION,
+      state: "RUNNING",
+      emittedBy: EMITTED_BY,
+      causedBy: null,
+      occurrence: typed,
+    });
+    const record = event.payload["promptOccurrence"] as Record<string, unknown>;
+    expect(Object.keys(record)).toHaveLength(13);
+    expect(Object.keys(record).sort()).toEqual([...PROMPT_OCCURRENCE_RECORD_KEYS].sort());
+    expect(record).not.toHaveProperty("auditExtra");
+    const text = JSON.stringify(event);
+    expect(text).not.toContain("auditExtra");
+    expect(text).not.toContain(extraValue);
+  });
+
+  it("F1 positive control: the lawful record round-trips all thirteen values", () => {
+    const withContext: PromptOccurrenceRecord = { ...OCCURRENCE, contextSha256: "c".repeat(64) };
+    for (const occurrence of [OCCURRENCE, withContext]) {
+      const event = buildPromptOccurrenceEvent({
+        invocation: V2_INVOCATION,
+        state: "RUNNING",
+        emittedBy: EMITTED_BY,
+        causedBy: null,
+        occurrence,
+      });
+      expect(event.payload["promptOccurrence"]).toEqual(occurrence);
+    }
   });
 
   it("N-P06-14: no block, no text and no reference reaches the payload, not even as a digest", () => {

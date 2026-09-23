@@ -3,6 +3,7 @@ import {
   ExecutionRequest,
   PROVIDER_PRESSURES,
   ResolvedRoute,
+  findCredentialViolations,
 } from "@acp/contracts";
 import type {
   ExecutionRefusal,
@@ -175,6 +176,31 @@ export const CLI_TRANSPORT_KIND = "CLI_SUBSCRIPTION";
 
 function refuse(refusal: ExecutionRefusal, at: string): ExecutionRefused {
   return Object.freeze({ ok: false as const, refusal, at });
+}
+
+/**
+ * What the API and local legs refuse before they build a client request
+ * (P-06/CORR, ADR 0096), or null when the request can be carried.
+ *
+ * Those legs hand their client one string, so they can carry text and nothing
+ * else: a request naming any other class is refused rather than sent without
+ * the part the leg cannot express. And the instruction crosses to the client,
+ * so it gets the scan the CLI session runs before it writes one to a
+ * child (`startSession`): a credential-shaped instruction is refused here, not
+ * sent. Both answer with `TRANSPORT_UNAVAILABLE`, the member the CLI leg returns
+ * for the same two conditions, and `at` names the field, on the port's
+ * `request.reattach` convention. One helper for both legs, so it is one rule.
+ */
+function refuseUncarriable(asked: ExecutionRequest): ExecutionRefused | null {
+  if (asked.modalities.some((kind) => kind !== "text")) {
+    return refuse("TRANSPORT_UNAVAILABLE", "request.modalities");
+  }
+  // Scanned as an object, as `startSession` scans it: the guard's value scan is
+  // what must run over the content.
+  if (findCredentialViolations({ instructions: asked.instructions }).length > 0) {
+    return refuse("TRANSPORT_UNAVAILABLE", "request.instructions");
+  }
+  return null;
 }
 
 /** The first failing field of a parse, as a stable name for `at`. */
@@ -526,12 +552,17 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
         }
         const admittedApi = admitApiRoute(admitted, apiBindings);
         if (!admittedApi.ok) return admittedApi;
+        // After the route is admitted and before the client is touched: a
+        // refusal here means zero client calls.
+        const apiUncarriable = refuseUncarriable(asked);
+        if (apiUncarriable !== null) return apiUncarriable;
 
         const apiRequest = {
           model: admitted.model,
           taskId: asked.taskId,
           attempt: asked.attempt,
           identity: asked.identity,
+          instructions: asked.instructions,
         };
         return Object.freeze({
           ok: true as const,
@@ -560,12 +591,16 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
         }
         const admittedLocal = admitLocalRoute(admitted, localBindings);
         if (!admittedLocal.ok) return admittedLocal;
+        // The API leg's preflight, for the same reason and in the same place.
+        const localUncarriable = refuseUncarriable(asked);
+        if (localUncarriable !== null) return localUncarriable;
 
         const localRequest = {
           model: admitted.model,
           taskId: asked.taskId,
           attempt: asked.attempt,
           identity: asked.identity,
+          instructions: asked.instructions,
         };
         return Object.freeze({
           ok: true as const,

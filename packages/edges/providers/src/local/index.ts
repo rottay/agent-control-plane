@@ -42,9 +42,11 @@ export const LOCAL_TRANSPORT_KIND = "LOCAL_OR_SELF_HOSTED";
  * What the control plane asks a local or self-hosted server for.
  *
  * Identical in shape to the API leg's request, for the same reason: the task
- * coordinates and the model are everything the control plane already knows
- * and already puts in the ledger, and there is deliberately nowhere here for
- * anything else -- a credential included -- to travel.
+ * coordinates, the model and the composed instruction (P-06/CORR, ADR 0096),
+ * and there is deliberately nowhere here for anything else -- a credential
+ * included -- to travel. The instruction reaches this object only after the
+ * execution port has refused every class but text and run the CLI session's
+ * credential scan over it.
  */
 export interface LocalChatRequest {
   /** Exactly the route's model. The client never substitutes another. */
@@ -52,6 +54,8 @@ export interface LocalChatRequest {
   readonly taskId: string;
   readonly attempt: number;
   readonly identity: WorkerIdentityString;
+  /** The composed instruction, verbatim as the execution request carried it. */
+  readonly instructions: string;
 }
 
 /**
