@@ -268,6 +268,39 @@ Neither recorder is wired: the walk reports one total and emits no effect, so a
 caller today would invent classes or effects. The fence holds it (L-P32C-1) until
 P-15 binds a normalizing adapter.
 
+### The result recorder
+
+P-07 escalón D (ADR 0100) gives an effect its answer, in three pieces.
+
+- **`operation-result/`** decides, assembles and publishes. The decider reads the
+  three facts of a trail by `kind` alone and decides only a `completed` terminal.
+  The crossed pairs and an unobservable verdict are `FAILED`. The assembler builds
+  the result document under the C4 rule: text blocks of at most 4 000 UTF-16
+  units, at most 100 of them, or one markdown document by reference, never both.
+  It refuses output that is too large, credential-shaped or empty instead of
+  truncating or redacting it. The publisher first asks the ledger's own
+  `effectOutcomeArrival`, which it calls and never mirrors. Only then does it put
+  the document on the private plane as this task's `RESPONSE`, before anything
+  references it. A replay publishes nothing, and a conflict is refused in the
+  ledger's words before a byte moves.
+- **`execution-effects`** takes an optional `recordResult`. With one, `apply`
+  builds a private collector and passes its sink as `start`'s third argument. The
+  sink never throws: past 8 MiB it stops retaining and says so, and a fault makes
+  the output unreadable. The recorder is called once, on the `completed` branch
+  only, with the three facts and the whole output, before the conformance gate and
+  the marker. That is the usage sink's crash-safety order, so a throwing recorder
+  leaves no marker and the effect re-executes. Without a recorder, `start` keeps
+  its two arguments and the marker is byte-identical to the legacy path.
+- **`buildResponseOccurrenceEvent`** records the answer's digest and length, which
+  are the published `RESPONSE`'s own, against the prompt it answers. It builds its
+  record as one literal of the ledger's five keys.
+
+The recorder is not wired. No production construction site passes
+`recordResult`, the daemon appends no outcome or occurrence, there is no read
+verb, and the task's terminal state is not coupled to the effect's outcome. All
+of that is P-15's. The runtime barrel exports nothing new, and the suites import
+the concept relatively.
+
 ### Loopback and data roots
 
 Every address is loopback and constant: Restate ingress `127.0.0.1:8080`, admin

@@ -10980,6 +10980,56 @@ const P07C_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-07 escalón D: an effect answers with a published result and its response
+ * occurrence (contratos §4.2; adjudication v2 C8-C10, D7-D10; ADR 0100).
+ *
+ * **What lands.** A runtime concept, `operation-result/`, decides the operation's
+ * outcome once over escalón C's three facts, assembles the result document under
+ * the C4 rule (text blocks of at most 4 000 UTF-16 units, at most 100 of them, or
+ * one markdown document by reference, never both), and publishes it to the private
+ * plane as this task's `RESPONSE` before anything references it. Before a byte
+ * moves it asks the ledger's own comparison, `effectOutcomeArrival`, now exported
+ * from the ledger barrel with `EffectOutcomeArrival` and
+ * `RESPONSE_OCCURRENCE_RECORD_KEYS` and called, never mirrored. The execution
+ * effects hold a private collector whose sink never throws, and hand the result
+ * recorder the three facts and the whole output on the `completed` branch only,
+ * before the gate and the marker; without a recorder `start` keeps its two
+ * arguments. `buildResponseOccurrenceEvent` builds its record as one literal of the
+ * ledger's five keys.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 148 -> **149** for L-P07D-2. L-P07A-1,
+ * L-P06C-1 and L-P07C-1 (with its F1 clause) are amended IN THEIR OWN ROWS; L-P07D-1
+ * is a name-set pin with no row. The ADR corpus 99 -> 100.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` 2.8.0; `MIGRATIONS` 22;
+ * `CONTRACTS_SCHEMA_EXPORTS` 161 (no kernel file is touched);
+ * `RUNTIME_PUBLIC_EXPORTS` 285 (the runtime barrel exports nothing new); the ledger
+ * barrel has no equality pin, so its three names move no constant.
+ *
+ * **Seventeen paths; four are new to the fence** -- the concept, its type leaf, its
+ * suite and ADR 0100.
+ */
+const P07D_WRITE_SET = [
+  "packages/domains/runtime/src/operation-result/index.ts",
+  "packages/domains/runtime/src/operation-result/types/index.ts",
+  "packages/domains/runtime/test/operation-result/index.test.ts",
+  "packages/domains/runtime/src/execution-effects/index.ts",
+  "packages/domains/runtime/test/execution-effects/index.test.ts",
+  "packages/domains/runtime/src/core/events/index.ts",
+  "packages/domains/runtime/src/core/events/types/index.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/domains/runtime/README.md",
+  "docs/audit/architecture/database/execution/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0100-an-effect-answers-with-a-published-result-and-its-response-occurrence.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11210,6 +11260,7 @@ const WRITE_SET = [
   ...P07A_WRITE_SET,
   ...P07B_WRITE_SET,
   ...P07C_WRITE_SET,
+  ...P07D_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -12634,6 +12685,14 @@ const PATH_SCOPED_LAWS = [
   {
     law: "output bytes live on the private side, in named files only",
     scope: "packages/*/*/src/**",
+  },
+  // P-07 escalón D. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 148 -> 149 for L-P07D-2. The L-P07A-1, L-P06C-1
+  // and L-P07C-1 amendments are in those laws' own rows, and L-P07D-1 is a two-file
+  // name-set pin; none adds a row.
+  {
+    law: "the result recorder runs before the marker, on the completed branch only, behind a sink that never throws",
+    scope: "packages/domains/runtime/src/execution-effects/index.ts",
   },
 ];
 
@@ -23218,7 +23277,9 @@ if (tracked.status === 0) {
       const live = stripComments(source);
       const producerAt = live.indexOf("async function execute(");
       const factoryAt = live.indexOf("export function createExecutionEffects(");
-      const trailAt = live.indexOf("await execute(input)");
+      // A prefix since P-07 escalón D (ADR 0100): with a result recorder the call
+      // also hands `execute` the collector's sink, and the trail is still its result.
+      const trailAt = live.indexOf("await execute(input");
       // The LAST sink call, not the first: the drain calls it once per kind.
       const lastSinkAt = live.lastIndexOf("recordPressure({");
       const gateAt = live.indexOf("checkConformance(");
@@ -27307,11 +27368,22 @@ const CONTENT_CONTRACT_CALLERS = [
 // the contracts package, where the barrel would be a self-cycle, so its one admitted
 // form is exactly the relative import of `RESULT_STATUSES` from `../result/index.js`.
 // Same row, same `requireScope`: `PATH_SCOPED_LAWS` does not move.
+//
+// AMENDED by P-07 escalón D (ADR 0100), in this row: the assembler consumes the
+// contract. The runtime's `operation-result/` concept -- the module and its type
+// leaf -- joins the sites as FULL sites: it builds result documents, so it names the
+// schema, the version and the statuses, and that is what "an assembler consumes it"
+// means. The concept is named `operation-result` and not `result` so its own path
+// does not match this law's path pattern; `execution-effects`, which hands it the
+// output, names no contract word. The two readers' map is untouched. Same row, same
+// `requireScope`: `PATH_SCOPED_LAWS` does not move.
 const RESULT_CONTRACT_SITES = [
   "packages/kernel/contracts/src/schemas/result/index.ts",
   "packages/kernel/contracts/src/schemas/result/types/index.ts",
   "packages/persistence/ledger/src/projection/index.ts",
   "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+  "packages/domains/runtime/src/operation-result/index.ts",
+  "packages/domains/runtime/src/operation-result/types/index.ts",
 ];
 const RESULT_STATUS_READERS = {
   "packages/persistence/ledger/src/projection/index.ts": null,
@@ -27359,7 +27431,8 @@ const RESULT_STATUS_READERS = {
           relativePath +
             " names the result contract; it is exported by the contracts barrels and its statuses are read by" +
             " two readers only -- the ledger's outcome grammar (escalon B) and the execution boundary's" +
-            " operationResult (escalon C) -- and no assembler builds one until D",
+            " operationResult (escalon C) -- and one assembler builds it, the runtime's operation-result" +
+            " concept (escalon D)",
         );
       }
     }
@@ -27369,7 +27442,8 @@ const RESULT_STATUS_READERS = {
     resultScanned,
   );
   notes.push(
-    "no production source outside the result concept and the contracts barrels names the result contract, and " +
+    "no production source outside the result concept, its one assembler and the contracts barrels names the" +
+      " result contract, and " +
       Object.keys(RESULT_STATUS_READERS).join(" and ") +
       " are admitted for RESULT_STATUSES alone",
   );
@@ -27403,11 +27477,20 @@ const RESULT_STATUS_READERS = {
 //      a law about the neighbourhood instead of about the bytes.
 //   3. The prose the mould carries stays where it is. A ban nobody can read is a
 //      ban that gets deleted by the next person who tidies the docblock.
+//
+// AMENDED by P-07 escalón D (ADR 0100), in this row: the runtime's
+// `operation-result/index.ts` joins the sites as the one PRODUCER of output blocks.
+// It writes `artifactRefId` in the block literals it builds from model output, and
+// never reads an instruction's blocks -- it names `blocks`, never `content.blocks`,
+// and neither `ContentBlockSchema` nor `InstructionContent`, so L-P06A-1 is
+// untouched. Same row, same `requireScope`: `PATH_SCOPED_LAWS` does not move.
 const BLOCK_READER_SITES = [
   "packages/kernel/contracts/src/schemas/task-envelope/index.ts",
   "packages/domains/runtime/src/intake/index.ts",
   "packages/entrypoints/daemon/src/composition/index.ts",
+  "packages/domains/runtime/src/operation-result/index.ts",
 ];
+const OUTPUT_BLOCK_PRODUCER = "packages/domains/runtime/src/operation-result/index.ts";
 const INSTRUCTION_COMPOSER = "packages/entrypoints/daemon/src/composition/index.ts";
 const INSTRUCTION_BOUNDARY = "packages/kernel/contracts/src/schemas/execution-boundary/index.ts";
 const BLOCK_RECORDING_NAMES =
@@ -27461,11 +27544,20 @@ function functionBody(source, declaration) {
         fail(
           relativePath +
             " reads an instruction's content blocks; exactly three sources may -- the envelope's refinement," +
-            " the door that validates the content and the one producer that composes it -- because a fourth" +
-            " reader is how a block reaches a row, an event, a checkpoint or a log",
+            " the door that validates the content and the one producer that composes it -- and one more builds" +
+            " output blocks, because a fifth reader is how a block reaches a row, an event, a checkpoint or a log",
         );
       }
     }
+  }
+  const outputProducer = stripComments(readIfPresent(OUTPUT_BLOCK_PRODUCER) ?? "");
+  if (outputProducer.length === 0) {
+    fail(OUTPUT_BLOCK_PRODUCER + " is missing; its admission to L-P06C-1 is stale");
+  } else if (/content\.blocks/.test(outputProducer)) {
+    fail(
+      OUTPUT_BLOCK_PRODUCER +
+        " reads content.blocks; it is admitted as the producer of output blocks, and reads no instruction's",
+    );
   }
   const composer = readIfPresent(INSTRUCTION_COMPOSER);
   if (composer === null) {
@@ -27499,7 +27591,7 @@ function functionBody(source, declaration) {
     blockScanned,
   );
   notes.push(
-    "three readers of an instruction's content blocks over " +
+    "three readers of an instruction's content blocks and one producer of output blocks over " +
       String(blockScanned) +
       " other sources, and the one composer records nothing",
   );
@@ -27524,6 +27616,32 @@ function functionBody(source, declaration) {
 // A bare `sink(` call is not the test: a function can only reach output text by
 // being handed a value of the sink's type, and an unrelated edge (the tools'
 // frame writers) calls its own sinks by that name.
+//
+// AMENDED by P-07 escalón D (ADR 0100), in this row:
+//   1. `execution-effects/index.ts` joins the sites: it holds the collector whose
+//      sink is the one `start` receives. `operation-result/index.ts` does NOT join:
+//      it receives the output as a plain string and names neither the sink type nor
+//      the output signal, so it stays scanned, and clause 4 contains it;
+//   4. every function that holds output bytes on the runtime's side --
+//      `collectOutput` (the collector and its sink), `assembleResult` with its
+//      `textBlock` and `documentOf`, and `publishResult` with its `publishDocument`
+//      and `publicationRequest` -- names no recorder: nothing from `BLOCK_RECORDING_NAMES` or
+//      `OUTPUT_RECORDING_NAMES`, no occurrence builder, no event append and no usage
+//      or pressure sink. `publishResult` may name `plane.publish` and
+//      `canonicalJsonStringify`: the plane is the private store and the canonical
+//      bytes are the artifact;
+//   5. (F1) a `start` call shaped to carry a sink -- the one way output reaches a
+//      caller -- is made from `execution-effects` alone, read from the syntax tree of
+//      every tracked `src/` `.ts` and `.tsx` file rather than from text, so a sink
+//      passed inline cannot hide behind a line break. The callee is `.start` or
+//      `["start"]`; the shape is three or more arguments, or any spread among them,
+//      because a spread can carry a sink the count does not see. The admitted caller
+//      holds exactly one such call, and it is three plain arguments with no spread;
+//      the clause fails too if that call disappears while a result recorder exists,
+//      so the list cannot go stale. Stated limit: an aliased callee (`const s =
+//      port.start.bind(port)`, a destructured `start`) is not a `start` callee in the
+//      tree and is not seen.
+// Same row, same `requireScope`: `PATH_SCOPED_LAWS` does not move.
 const OUTPUT_SITES = [
   "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
   "packages/edges/providers/src/contract/index.ts",
@@ -27532,9 +27650,22 @@ const OUTPUT_SITES = [
   "packages/edges/providers/src/execution-port/index.ts",
   "packages/edges/providers/src/api-key/index.ts",
   "packages/edges/providers/src/local/index.ts",
+  "packages/domains/runtime/src/execution-effects/index.ts",
 ];
 const OUTPUT_ROUTER = "packages/edges/providers/src/session/index.ts";
 const OUTPUT_RECORDING_NAMES = /\b(?:shapePayload|normalizedEvent|toNormalized|AdapterError|health)\b/;
+const RESULT_RECORDING_NAMES =
+  /\b(?:buildResponseOccurrenceEvent|buildPromptOccurrenceEvent|appendEvent|recordUsage|recordPressure)\b|\.append\(/;
+const OUTPUT_HOLDERS = [
+  ["packages/domains/runtime/src/execution-effects/index.ts", "function collectOutput("],
+  ["packages/domains/runtime/src/operation-result/index.ts", "export function assembleResult("],
+  ["packages/domains/runtime/src/operation-result/index.ts", "function textBlock("],
+  ["packages/domains/runtime/src/operation-result/index.ts", "function documentOf("],
+  ["packages/domains/runtime/src/operation-result/index.ts", "export function publishResult("],
+  ["packages/domains/runtime/src/operation-result/index.ts", "function publishDocument("],
+  ["packages/domains/runtime/src/operation-result/index.ts", "function publicationRequest("],
+];
+const START_SINK_CALLERS = ["packages/domains/runtime/src/execution-effects/index.ts"];
 {
   let outputScanned = 0;
   if (tracked.status === 0) {
@@ -27551,7 +27682,7 @@ const OUTPUT_RECORDING_NAMES = /\b(?:shapePayload|normalizedEvent|toNormalized|A
       if (/\bExecutionOutputSink\b/.test(code) || /kind:\s*"output"/.test(code)) {
         fail(
           relativePath +
-            " names the output signal or the output sink; output bytes live on the private side, in the seven" +
+            " names the output signal or the output sink; output bytes live on the private side, in the eight" +
             " named files only, and reach no event, checkpoint, log or error",
         );
       }
@@ -27584,11 +27715,95 @@ const OUTPUT_RECORDING_NAMES = /\b(?:shapePayload|normalizedEvent|toNormalized|A
         " no longer carries the sentence L-P07C-1 is the enforcement of; the ban and its words live together",
     );
   }
+  for (const [holder, declaration] of OUTPUT_HOLDERS) {
+    const source = readIfPresent(holder);
+    const body = source === null ? null : functionBody(stripComments(source), declaration);
+    if (body === null) {
+      fail(holder + " no longer declares " + declaration + "; the function L-P07C-1 contains there has moved");
+      continue;
+    }
+    const named =
+      body.match(BLOCK_RECORDING_NAMES) ?? body.match(OUTPUT_RECORDING_NAMES) ?? body.match(RESULT_RECORDING_NAMES);
+    if (named !== null) {
+      fail(
+        holder +
+          " names " +
+          named[0] +
+          " inside " +
+          declaration +
+          "; a function that holds output bytes records nothing, because output text enters no event, log or" +
+          " error -- it reaches the private plane and nowhere else",
+      );
+    }
+  }
+  // F1: the call's shape, read from the syntax tree.
+  let startSinkCalls = 0;
+  let startScanned = 0;
+  const startCallee = (callee) =>
+    (ts.isPropertyAccessExpression(callee) && callee.name.text === "start") ||
+    (ts.isElementAccessExpression(callee) &&
+      (ts.isStringLiteral(callee.argumentExpression) || ts.isNoSubstitutionTemplateLiteral(callee.argumentExpression)) &&
+      callee.argumentExpression.text === "start");
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      startScanned += 1;
+      const kind = relativePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+      const file = ts.createSourceFile(relativePath, content, ts.ScriptTarget.Latest, true, kind);
+      const visit = (node) => {
+        if (ts.isCallExpression(node) && startCallee(node.expression)) {
+          const spread = node.arguments.some((argument) => ts.isSpreadElement(argument));
+          if (node.arguments.length >= 3 || spread) {
+            const plain = node.arguments.length === 3 && !spread && ts.isPropertyAccessExpression(node.expression);
+            if (START_SINK_CALLERS.includes(relativePath) && plain) {
+              startSinkCalls += 1;
+            } else {
+              const { line } = file.getLineAndCharacterOfPosition(node.getStart(file));
+              fail(
+                relativePath +
+                  ":" +
+                  String(line + 1) +
+                  (START_SINK_CALLERS.includes(relativePath)
+                    ? " calls start in a shape other than its one admitted form, three plain arguments with no spread"
+                    : " calls start in a shape that can carry an output sink; output reaches a caller through" +
+                      " execution-effects alone, whose collector never throws and hands the text to the result" +
+                      " recorder and nowhere else"),
+              );
+            }
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(file);
+    }
+  }
+  if (startScanned === 0) fail("L-P07C-1's F1 clause parsed no src file; the call-shape check looked at nothing");
+  const sinkCaller = stripComments(readIfPresent(START_SINK_CALLERS[0]) ?? "");
+  if (/\brecordResult\b/.test(sinkCaller) && startSinkCalls !== 1) {
+    fail(
+      START_SINK_CALLERS[0] +
+        " holds " +
+        String(startSinkCalls) +
+        " admitted start call(s) carrying a sink while a result recorder exists; it holds exactly one, three" +
+        " plain arguments with no spread, so this clause's list of callers cannot go stale",
+    );
+  }
   requireScope("output bytes live on the private side, in named files only", outputScanned);
   notes.push(
-    "seven named files handle output bytes over " +
+    "eight named files handle output bytes over " +
       String(outputScanned) +
-      " other sources, and the session's router records nothing",
+      " other sources, the session's router and the runtime's " +
+      String(OUTPUT_HOLDERS.length) +
+      " output holders record nothing, and over " +
+      String(startScanned) +
+      " parsed sources " +
+      String(startSinkCalls) +
+      " start call is shaped to pass a sink, from " +
+      START_SINK_CALLERS.join(", "),
   );
 }
 
@@ -27695,6 +27910,165 @@ const OCCURRENCE_GRAMMAR_PATH = "packages/persistence/ledger/src/projection/inde
           " field(s), neither names an identity, and the builder spreads nothing",
       );
     }
+  }
+}
+
+// L-P07D-1 -- the response occurrence's producer and the ledger's grammar are one
+// shape (P-07 escalón D, ADR 0100).
+//
+// L-P06C-2's twin, in the form P-06/CORR left it, from the response builder's first
+// day: the declaration in the events concept's type leaf and the ledger's
+// `RESPONSE_OCCURRENCE_RECORD_KEYS` agree both ways; the builder's record is one
+// typed literal naming exactly those keys, the payload carries that literal, and a
+// spread anywhere in the builder fails. Neither side names `identity` (the event's
+// `emittedBy`), nor `dispatchAttemptId`, `routeSegmentId` or `accountId`: an answer
+// is attributed through the prompt it answers, and a record able to name a delivery,
+// a segment or an account could name one other than its prompt's. A two-file
+// name-set pin, not a path-shaped surface: no `PATH_SCOPED_LAWS` row.
+const RESPONSE_OCCURRENCE_FORBIDDEN = ["identity", "dispatchAttemptId", "routeSegmentId", "accountId"];
+{
+  const producer = readIfPresent(OCCURRENCE_PRODUCER_PATH);
+  const builder = readIfPresent(OCCURRENCE_BUILDER_PATH);
+  const grammar = readIfPresent(OCCURRENCE_GRAMMAR_PATH);
+  if (producer === null || builder === null || grammar === null) {
+    fail(
+      "L-P07D-1 needs the response occurrence's declaration, its builder and the ledger's grammar; one of " +
+        OCCURRENCE_PRODUCER_PATH +
+        ", " +
+        OCCURRENCE_BUILDER_PATH +
+        " and " +
+        OCCURRENCE_GRAMMAR_PATH +
+        " is missing",
+    );
+  } else {
+    const produced = interfaceMembers(stripComments(producer), "ResponseOccurrenceRecord");
+    const declared = /const RESPONSE_OCCURRENCE_RECORD_KEYS = \[([\s\S]*?)\] as const;/.exec(stripComments(grammar));
+    if (produced === null) {
+      fail(OCCURRENCE_PRODUCER_PATH + " no longer declares ResponseOccurrenceRecord");
+    } else if (declared === null || declared[1] === undefined) {
+      fail(OCCURRENCE_GRAMMAR_PATH + " no longer declares RESPONSE_OCCURRENCE_RECORD_KEYS as a closed list");
+    } else {
+      const keys = [...declared[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+      const disagreement = tableDisagreement(produced, keys);
+      if (disagreement.omits.length > 0 || disagreement.invents.length > 0) {
+        fail(
+          "the response occurrence's producer and the ledger's grammar disagree: the producer omits [" +
+            disagreement.omits.join(", ") +
+            "] and invents [" +
+            disagreement.invents.join(", ") +
+            "]",
+        );
+      }
+      for (const name of RESPONSE_OCCURRENCE_FORBIDDEN) {
+        if (produced.includes(name) || keys.includes(name)) {
+          fail(
+            "a response occurrence record carries no " +
+              name +
+              " field; an answer is attributed through the prompt it answers",
+          );
+        }
+      }
+      const body = /export function buildResponseOccurrenceEvent\(([\s\S]*?)\n\}\n/.exec(stripComments(builder))?.[1];
+      if (body === undefined) {
+        fail(OCCURRENCE_BUILDER_PATH + " no longer declares buildResponseOccurrenceEvent");
+      } else {
+        if (/\.\.\./.test(body)) {
+          fail(
+            "buildResponseOccurrenceEvent spreads a value; the record is built field by field, because a" +
+              " spread copies every own key of a value wider than its type and the door refuses the extra one",
+          );
+        }
+        const literal = /const record: ResponseOccurrenceRecord = \{([\s\S]*?)\};/.exec(body)?.[1];
+        if (literal === undefined) {
+          fail("buildResponseOccurrenceEvent no longer builds its record as one typed literal");
+        } else {
+          const built = [...literal.matchAll(/^\s*(\w+):/gm)].map((match) => match[1]);
+          const builtDisagreement = tableDisagreement(built, keys);
+          if (builtDisagreement.omits.length > 0 || builtDisagreement.invents.length > 0 || built.length !== keys.length) {
+            fail(
+              "the response occurrence's built record and the ledger's grammar disagree: the builder omits [" +
+                builtDisagreement.omits.join(", ") +
+                "] and invents [" +
+                builtDisagreement.invents.join(", ") +
+                "], naming " +
+                String(built.length) +
+                " key(s) for " +
+                String(keys.length),
+            );
+          }
+          if (!/responseOccurrence:\s*record\b/.test(body)) {
+            fail("buildResponseOccurrenceEvent's payload does not carry the record literal it builds");
+          }
+        }
+      }
+      notes.push(
+        "the response occurrence's declaration, its built literal and the ledger's grammar agree on " +
+          String(keys.length) +
+          " field(s), none names an identity, a delivery, a segment or an account, and the builder spreads nothing",
+      );
+    }
+  }
+}
+
+// L-P07D-2 -- the result recorder runs before the marker, on the completed branch
+// only, behind a sink that never throws (P-07 escalón D, ADR 0100).
+//
+// Three clauses over `execution-effects`, each the mechanical form of a sentence in
+// its docblocks:
+//   (i)   the `recordResult` call precedes the conformance gate and the marker write
+//         -- the usage sink's crash-safety reason (L-B7T-3): a resumed walk that
+//         finds a verified marker never re-enters `apply`, so a result recorded after
+//         it would be lost rather than re-recorded;
+//   (ii)  it is called once, after the refusal that settles every non-`completed`
+//         terminal, so an `error` terminal never reaches the recorder (Q-D6);
+//   (iii) the collector's sink is one `try { … } catch { … }` and names no `throw`:
+//         a sink that throws fails the provider session as `MALFORMED_EVENT` and the
+//         three facts are lost, so the collector classifies instead (C3).
+// Its own row: `PATH_SCOPED_LAWS` 148 -> 149.
+const RESULT_SINK_HOME = "packages/domains/runtime/src/execution-effects/index.ts";
+{
+  const source = stripComments(readIfPresent(RESULT_SINK_HOME) ?? "");
+  requireScope(
+    "the result recorder runs before the marker, on the completed branch only, behind a sink that never throws",
+    source.length === 0 ? 0 : 1,
+  );
+  const calls = source.split("recordResult({").length - 1;
+  const recordAt = source.indexOf("recordResult({");
+  const refusalAt = source.indexOf("if (!outcome.ok) throw new ExecutionEffectError(");
+  const gateAt = source.indexOf("checkConformance(operation.operationIndex)");
+  const markerAt = source.indexOf("writeMarker(target, {");
+  if (calls !== 1) {
+    fail(RESULT_SINK_HOME + " calls the result recorder " + String(calls) + " time(s); it calls it once, inside apply");
+  } else if (refusalAt === -1 || gateAt === -1 || markerAt === -1) {
+    fail(
+      RESULT_SINK_HOME +
+        " no longer carries the anchors L-P07D-2 orders the recorder against (the refusal, the gate and the marker)",
+    );
+  } else if (!(refusalAt < recordAt && recordAt < gateAt && recordAt < markerAt)) {
+    fail(
+      RESULT_SINK_HOME +
+        " calls the result recorder outside its place: after the refusal that settles every other terminal," +
+        " and before the conformance gate and the evidence marker",
+    );
+  }
+  const collector = functionBody(source, "function collectOutput(");
+  const closure = collector === null ? null : functionBody(collector, "const sink: ExecutionOutputSink = (delta) =>");
+  if (closure === null) {
+    fail(RESULT_SINK_HOME + " no longer declares the collector's sink; the closure L-P07D-2 reads has moved");
+  } else if (!/^\{\s*try\s*\{[\s\S]*\}\s*catch\s*(?:\([^)]*\))?\s*\{[\s\S]*\}\s*\}$/.test(closure)) {
+    fail(
+      RESULT_SINK_HOME +
+        " wraps the collector's sink in something other than one try/catch; a statement outside it can throw" +
+        " into the provider session, which fails the session and loses the three facts",
+    );
+  } else if (/\bthrow\b/.test(closure)) {
+    fail(RESULT_SINK_HOME + " throws from the collector's sink; it classifies, and never rethrows");
+  } else {
+    notes.push(
+      "the result recorder runs once, after the refusal and before the gate and the marker, behind a sink" +
+        " that never throws, in " +
+        RESULT_SINK_HOME,
+    );
   }
 }
 

@@ -12,18 +12,35 @@ import {
   AccountRecord,
   CONTRACT_VERSION,
   ExecutionEvent,
+  ResultContractSchema,
   TERMINAL_STATES,
   buildIdempotencyKey,
 } from "@acp/contracts";
 import type {
   Checkpoint,
+  ExecutionOutputSink,
+  TaskState,
   ExecutionRequest,
   ModelExecutionPort,
   ResolvedRoute,
 } from "@acp/contracts";
 import { deriveInvocation } from "@acp/durability";
-import { artifactRootFor, createCheckpointStore, openLedger, openLeaseStore, readArtifact } from "@acp/ledger";
-import type { ExecutionRouteReadModel, Ledger } from "@acp/ledger";
+import {
+  LedgerValidationError,
+  artifactBlobLeaseStorePath,
+  artifactRootFor,
+  createCheckpointStore,
+  effectIdV1,
+  effectIdempotencyKeyV1,
+  logicalOperationSha256,
+  openArtifactBlobLeaseStore,
+  openArtifactPlane,
+  openLedger,
+  openLeaseStore,
+  readArtifact,
+  requestSha256,
+} from "@acp/ledger";
+import type { ArtifactPlane, ArtifactPlaneTestFaults, ExecutionRouteReadModel, Ledger } from "@acp/ledger";
 import { admitBinary, admitConfigRoot, admitWorkdir, claudeAdapter, createExecutionPort, executionSessionId } from "@acp/providers";
 import type {
   ApiStreamChunk,
@@ -35,6 +52,7 @@ import type {
   SessionRequest,
 } from "@acp/providers";
 import {
+  ATTEMPT_OPENING_STEP,
   ExecutionEffectError,
   INTENT_STEP,
   LIFECYCLE_PLAN,
@@ -49,6 +67,7 @@ import {
   landAccountSwitch,
   appendPlanStep,
   operationForStep,
+  planStep,
   pressureTransitionId,
   recordProviderPressure,
   recordTokenObservation,
@@ -59,10 +78,12 @@ import {
   usageTransitionId,
 } from "@acp/runtime";
 import type {
+  BeatContext,
   CheckpointPort,
   CheckpointRefused,
   CheckpointSource,
   DurableInvocation,
+  InvocationRevision,
   ScenarioRoot,
   UsageSample,
 } from "@acp/runtime";
@@ -76,6 +97,16 @@ import type { ScheduledWalk } from "../../../src/scheduler/index.js";
 import { startDaemon, stopDaemon } from "../../../src/index.js";
 import { instructionFor } from "../../../src/composition/index.js";
 import type { ComposedInstruction } from "../../../src/composition/index.js";
+// Relative, as the runtime's own suites import them: D exports nothing new from the
+// runtime barrel (Q-D8).
+import { buildPromptOccurrenceEvent, buildResponseOccurrenceEvent } from "../../../../../domains/runtime/src/core/events/index.js";
+import { assembleResult, publishResult } from "../../../../../domains/runtime/src/operation-result/index.js";
+import type {
+  ArtifactIdentities,
+  PublishedResult,
+  ResultAssembly,
+  ResultSample,
+} from "../../../../../domains/runtime/src/operation-result/index.js";
 
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
@@ -4916,3 +4947,557 @@ function imageEnvelopeFor(taskId: string): TaskEnvelope {
     },
   } as unknown as TaskEnvelope;
 }
+
+// ---------------------------------------------------------------------------
+// P-07 escalón D: an effect answers with a published result (ADR 0100)
+// ---------------------------------------------------------------------------
+
+/**
+ * The drills' world: a V2 attempt with its first effect intended and delivered,
+ * and a private plane over the same ledger. Restated from the runtime's own
+ * operation-result suite, whose helpers a test file cannot export; every event
+ * here goes through the ledger's door, and none stands in for the rule under test.
+ */
+const P07D_AT = "2026-09-23T12:00:00.000Z";
+const p07dClosers: (() => void)[] = [];
+
+afterEach(() => {
+  for (const close of p07dClosers.splice(0).reverse()) {
+    try {
+      close();
+    } catch {
+      // already closed
+    }
+  }
+});
+
+interface P07dWorld {
+  readonly root: ScenarioRoot;
+  readonly ledger: Ledger;
+  readonly plane: ArtifactPlane;
+  readonly ledgerPath: string;
+  readonly invocation: DurableInvocation;
+  readonly effectId: string;
+  readonly taskId: string;
+  readonly state: TaskState;
+}
+
+function p07dRevision(taskId: string): InvocationRevision {
+  return {
+    revisionId: deterministicUuid("revision/" + taskId + "/1"),
+    revisionNumber: 1,
+    attemptNumber: 1,
+    envelopeSha256: "e".repeat(64),
+    envelopeArtifactReferenceId: "ref-envelope-" + taskId,
+  };
+}
+
+/** Register the task's envelope reference, as a fixture. */
+function p07dPlantEnvelope(ledger: Ledger, taskId: string): void {
+  const reference = "ref-envelope-" + taskId;
+  const content = "7".repeat(64);
+  const envelope = (kind: string, ordinal: number, payload: Record<string, unknown>): Record<string, unknown> => ({
+    contractVersion: CONTRACT_VERSION,
+    eventId: deterministicUuid("envelope/" + taskId + "/" + kind),
+    idempotencyKey: "envelope/" + taskId + "/" + kind,
+    subjectKind: "ARTIFACT",
+    artifactEventKind: kind,
+    subjectOrdinal: ordinal,
+    parentSubjectOrdinal: ordinal === 1 ? null : ordinal - 1,
+    recordedBy: EMITTED_BY,
+    occurredAt: P07D_AT,
+    recordedAt: P07D_AT,
+    payload,
+  });
+  const common = { commandId: "cmd-envelope", contentSha256: content, blobGeneration: 1, artifactPinId: "pin-envelope" };
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_INTENDED", 1, {
+      ...common,
+      mediaType: "application/json",
+      sizeBytes: 128,
+      encryptionStatus: "PLAINTEXT",
+      keyReference: null,
+      encryptionProfile: "local-plaintext-v1",
+    }),
+  );
+  ledger.appendArtifactEvent(
+    envelope("PUBLICATION_SUCCEEDED", 2, {
+      ...common,
+      reference: {
+        artifactReferenceId: reference,
+        artifactClass: "TASK_ENVELOPE",
+        classification: "INTERNAL",
+        scopeKind: "TASK",
+        scopeId: taskId,
+        producerIdentity: EMITTED_BY,
+        accessPolicyId: "SCOPE_EQUALITY_V1",
+        retentionClass: "STANDARD",
+        expiresAt: "2026-12-31T00:00:00.000Z",
+      },
+    }),
+  );
+}
+
+const P07D_SEGMENT: Record<string, unknown> = {
+  routeSegmentId: "seg-1",
+  segmentNumber: 1,
+  provider: "anthropic",
+  model: "claude-opus-5",
+  modelResolutionStatus: "RESOLVED",
+  modelVersionId: "claude-opus-5-20260101",
+  accountId: "acct-1",
+  transportKind: "cli",
+  capabilityPolicyVersion: "policy-1",
+};
+
+function p07dEvent(
+  world: Pick<P07dWorld, "ledger" | "invocation">,
+  transitionId: string,
+  type: "EFFECT_INTENDED" | "DISPATCH_INTENDED" | "DISPATCH_OUTCOME_RECORDED",
+  record: Record<string, unknown>,
+): Record<string, unknown> {
+  const revision = world.invocation.revision;
+  if (revision === undefined) throw new Error("an execution event needs the walk's revision");
+  const coordinate = deriveEventCoordinate(world.invocation, transitionId, 0);
+  const state = world.ledger.getTask(world.invocation.taskId)?.currentState ?? null;
+  return {
+    contractVersion: CONTRACT_VERSION,
+    eventId: coordinate.eventId,
+    taskId: world.invocation.taskId,
+    attempt: world.invocation.attempt,
+    transitionId,
+    idempotencyKey: coordinate.idempotencyKey,
+    type,
+    fromState: state,
+    toState: state,
+    emittedBy: EMITTED_BY,
+    occurredAt: P07D_AT,
+    recordedAt: P07D_AT,
+    correlationId: world.invocation.invocationId,
+    causationId: null,
+    payload: { revisionNumber: revision.revisionNumber, attemptNumber: revision.attemptNumber, ...record },
+  };
+}
+
+function p07dOpenPlane(ledger: Ledger, ledgerPath: string, incarnationId: string, faults: ArtifactPlaneTestFaults = {}): ArtifactPlane {
+  const leaseStore = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(ledgerPath), { incarnationId, createdAt: P07D_AT });
+  p07dClosers.push(() => {
+    leaseStore.close();
+  });
+  return openArtifactPlane({ ledger, leaseStore, ledgerPath, __testFaults: faults });
+}
+
+/** The attempt opened, its effect intended and delivered, and the prompt recorded — the drill's appends, through the door. */
+function p07dWorld(name: string, faults: ArtifactPlaneTestFaults = {}): P07dWorld {
+  const root = scenario(name);
+  const ledgerPath = scenarioLedgerPath(root);
+  const ledger = openLedger(ledgerPath);
+  ledgers.push(ledger);
+  const plane = p07dOpenPlane(ledger, ledgerPath, "11111111-1111-4111-8111-111111111111", faults);
+  const taskId = deterministicUuid("p07d-drill/" + name);
+  p07dPlantEnvelope(ledger, taskId);
+  const invocation = deriveInvocation(taskId, 1, P07D_AT, "c".repeat(64), p07dRevision(taskId));
+  const context: BeatContext = {
+    ledger,
+    effects: { apply: () => Promise.resolve(), probe: () => Promise.resolve("DONE") },
+    invocation,
+    emittedBy: EMITTED_BY,
+    plan: LIFECYCLE_PLAN,
+    route: resolvedCliRoute(),
+    initiativeId: INITIATIVE_ID,
+  };
+  appendPlanStep(context, ATTEMPT_OPENING_STEP);
+  appendPlanStep(context, planStep(0));
+  const coordinate = { taskId, revisionNumber: 1, attemptNumber: 1, segmentNumber: 1, operationOrdinal: 0 };
+  const envelopeSha256 = invocation.revision?.envelopeSha256 ?? "";
+  const effectId = effectIdV1(coordinate);
+  const partial = { ledger, invocation };
+  ledger.append(
+    p07dEvent(partial, "effect-1", "EFFECT_INTENDED", {
+      segment: P07D_SEGMENT,
+      effect: {
+        effectId,
+        operationOrdinal: 0,
+        effectKind: "model_execution",
+        semanticScopeKey: "run",
+        localOperationKey: "compose-answer",
+        logicalOperationSha256: logicalOperationSha256({ invocationId: invocation.invocationId, semanticScopeKey: "run", localOperationKey: "compose-answer" }),
+        requestContractVersion: "1",
+        requestSha256: requestSha256({ effectKind: "model_execution", requestContractVersion: "1", envelopeSha256, neutralRequest: { operation: "compose" } }),
+        idempotencyKey: effectIdempotencyKeyV1({ ...coordinate, effectKind: "model_execution", envelopeSha256 }),
+      },
+    }),
+  );
+  ledger.append(
+    p07dEvent(partial, "dispatch-1", "DISPATCH_INTENDED", {
+      segment: P07D_SEGMENT,
+      dispatch: { dispatchAttemptId: "dsp-1", effectId, attemptOrdinal: 1 },
+    }),
+  );
+  const state: TaskState = ledger.getTask(taskId)?.currentState ?? "RUNNING";
+  ledger.append(
+    buildPromptOccurrenceEvent({
+      invocation,
+      state,
+      emittedBy: EMITTED_BY,
+      causedBy: null,
+      occurrence: {
+        occurrenceId: "po-1",
+        dispatchAttemptId: "dsp-1",
+        effectId,
+        routeSegmentId: "seg-1",
+        ordinal: 0,
+        requestedModelId: "claude-opus-5",
+        provider: "anthropic",
+        modelResolutionStatus: "RESOLVED",
+        modelVersionId: "claude-opus-5-20260101",
+        accountId: "acct-1",
+        promptSha256: "a".repeat(64),
+        promptBytes: 12,
+        contextSha256: null,
+      },
+    }),
+  );
+  return { root, ledger, plane, ledgerPath, invocation, effectId, taskId, state };
+}
+
+function p07dIdentities(role: string): ArtifactIdentities {
+  return {
+    artifactReferenceId: "ref-" + role,
+    commandId: "cmd-" + role,
+    artifactPinId: "pin-" + role,
+    intentionEventId: deterministicUuid("intention/" + role),
+    terminalEventId: deterministicUuid("terminal/" + role),
+  };
+}
+
+function p07dPublish(world: Pick<P07dWorld, "ledger" | "plane" | "effectId" | "taskId">, assembly: ResultAssembly): PublishedResult {
+  return publishResult({
+    ledger: world.ledger,
+    plane: world.plane,
+    effectId: world.effectId,
+    taskId: world.taskId,
+    recordedBy: EMITTED_BY,
+    recordedAt: P07D_AT,
+    holderPid: process.pid,
+    result: p07dIdentities("result"),
+    overflow: p07dIdentities("overflow"),
+    assembly,
+  });
+}
+
+function p07dOutcome(world: P07dWorld, transitionId: string, published: Pick<PublishedResult, "status" | "resultArtifactReferenceId" | "resultSha256">): Record<string, unknown> {
+  return p07dEvent(world, transitionId, "DISPATCH_OUTCOME_RECORDED", {
+    outcome: {
+      dispatchAttemptId: "dsp-1",
+      dispatchState: "SETTLED",
+      terminalAt: P07D_AT,
+      effectOutcomeStatus: published.status,
+      ...(published.resultArtifactReferenceId === null
+        ? {}
+        : { resultArtifactReferenceId: published.resultArtifactReferenceId, resultSha256: published.resultSha256 }),
+    },
+  });
+}
+
+/**
+ * The providers' captured streams (P-07 escalón C), read only.
+ *
+ * Imported through a computed specifier: the fixture lives in the providers' test
+ * project, which is not composite and so cannot be referenced from this one, and a
+ * static import outside this project's root is refused by the compiler (TS6059).
+ * Widening either tsconfig would be a path outside the authorised write-set. The
+ * shape is checked here, so the drills run on the captured lines and not on `any`.
+ */
+const CLAUDE_CAPTURE = join(REPO_ROOT, "packages", "edges", "providers", "test", "testing", "claude-capture", "index.ts");
+
+interface CapturedStreams {
+  readonly CAPTURED_AUTH_FAILURE: readonly string[];
+  readonly CAPTURED_SUCCESS: readonly string[];
+}
+
+async function capturedStreams(): Promise<CapturedStreams> {
+  const module = (await import(CLAUDE_CAPTURE)) as Record<string, unknown>;
+  const lines = (name: string): readonly string[] => {
+    const value = module[name];
+    if (!Array.isArray(value) || value.length === 0 || !value.every((line) => typeof line === "string")) {
+      throw new Error("the capture fixture's " + name + " is not a list of lines");
+    }
+    return value as readonly string[];
+  };
+  return { CAPTURED_AUTH_FAILURE: lines("CAPTURED_AUTH_FAILURE"), CAPTURED_SUCCESS: lines("CAPTURED_SUCCESS") };
+}
+
+/** The real Claude adapter over a node child that speaks `lines` and exits with `exitCode`. */
+function exitingClaude(lines: readonly string[], exitCode: number): ProviderAdapter {
+  const program = [
+    "const lines = " + JSON.stringify([...lines]) + ";",
+    "for (const line of lines) process.stdout.write(line + '\\n');",
+    "process.exit(" + String(exitCode) + ");",
+  ].join("\n");
+  return {
+    ...claudeAdapter,
+    describe(request: SessionRequest): SessionDescriptor {
+      return { provider: "claude", argv: ["-e", program], env: { PATH: "/usr/bin:/bin" }, cwd: request.workdir, delivery: { kind: "STDIN" } };
+    },
+  };
+}
+
+/** `recording`, forwarding the output sink `start` receives as its third argument. */
+function recordingWithSink(port: ModelExecutionPort, trail: ExecutionEvent[]): ModelExecutionPort {
+  return {
+    async start(route, request, sink?: ExecutionOutputSink) {
+      const started = sink === undefined ? await port.start(route, request) : await port.start(route, request, sink);
+      if (!started.ok) return started;
+      return {
+        ok: true,
+        sessionId: started.sessionId,
+        route: started.route,
+        events: async function* (): AsyncIterable<ExecutionEvent> {
+          for await (const event of started.events()) {
+            trail.push(event);
+            yield event;
+          }
+        },
+      };
+    },
+    interrupt: (sessionId) => port.interrupt(sessionId),
+    healthProbe: (route) => port.healthProbe(route),
+  };
+}
+
+interface P07dRun {
+  readonly trail: readonly ExecutionEvent[];
+  readonly samples: readonly ResultSample[];
+  readonly published: readonly PublishedResult[];
+  readonly markerJson: string;
+}
+
+/** Run one execution through the real port and CLI child, its recorder assembling and publishing into `world`. */
+async function p07dExecute(name: string, world: P07dWorld, lines: readonly string[], exitCode: number): Promise<P07dRun> {
+  const trail: ExecutionEvent[] = [];
+  const samples: ResultSample[] = [];
+  const published: PublishedResult[] = [];
+  const port = createExecutionPort({
+    bindings: new Map([[ACCOUNT, { ...cliBinding(lines), adapter: exitingClaude(lines, exitCode) }]]),
+  });
+  const root = scenario(name);
+  const effects = createExecutionEffects({
+    port: recordingWithSink(port, trail),
+    route: resolvedCliRoute(),
+    request: executionRequest(),
+    scenarioRoot: root,
+    recordResult: (sample) => {
+      samples.push(sample);
+      published.push(p07dPublish(world, assembleResult(world.effectId, sample)));
+    },
+  });
+  const operation = operationForStep(invocation(), INTENT_STEP);
+  await effects.apply(operation);
+  const markerPath = join(root, "executions", operation.operationId + ".json");
+  return { trail, samples, published, markerJson: existsSync(markerPath) ? readFileSync(markerPath, "utf8") : "" };
+}
+
+function onlyPublished(run: P07dRun): PublishedResult {
+  expect(run.published).toHaveLength(1);
+  const [published] = run.published;
+  if (published === undefined) throw new Error("the recorder was never called");
+  return published;
+}
+
+function readResult(world: P07dWorld, reference: string): { bytes: Buffer; document: ReturnType<typeof ResultContractSchema.parse> } {
+  const read = world.plane.read({ artifactReferenceId: reference, scopeKind: "TASK", scopeId: world.taskId });
+  if (read.verb !== "READ") throw new Error("the plane did not read the result: " + read.verb);
+  return { bytes: read.content, document: ResultContractSchema.parse(JSON.parse(read.content.toString("utf8"))) };
+}
+
+/** A synthetic stream in the captured shape: init, one assistant text, and a result carrying `isError`. */
+function synLines(text: string, isError: boolean): readonly string[] {
+  return [
+    JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL, session_id: "00000000-0000-4000-8000-000000000001" }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text }], usage: { output_tokens: 1 } } }),
+    JSON.stringify({ type: "result", subtype: "success", is_error: isError, result: text }),
+  ];
+}
+
+describe("P-07 escalón D: an effect answers with a published result, end to end", () => {
+  it("D-P07D-1 (OBS sample 2): the captured success publishes {text \"ok\"}, and the door holds the pair and its response", async () => {
+    const world = p07dWorld("p07d-drill-success");
+    const { CAPTURED_SUCCESS } = await capturedStreams();
+    const run = await p07dExecute("p07d-drill-success-run", world, CAPTURED_SUCCESS, 0);
+
+    expect(run.trail.slice(-3)).toEqual([
+      { kind: "processExited", exitCode: 0, signal: null },
+      { kind: "operationResult", status: "SUCCEEDED" },
+      { kind: "completed", stepIndex: expect.any(Number) as number },
+    ]);
+    const published = onlyPublished(run);
+    expect(published.status).toBe("SUCCEEDED");
+    if (published.resultArtifactReferenceId === null) throw new Error("a SUCCEEDED result carries its pair");
+    const result = readResult(world, published.resultArtifactReferenceId);
+    expect(result.document.status).toBe("SUCCEEDED");
+    expect(result.document.blocks.map((block) => [block.kind, block.text])).toEqual([["text", "ok"]]);
+
+    // After publication, and only then: the outcome with its pair, then the answer.
+    world.ledger.append(p07dOutcome(world, "settle-1", published));
+    world.ledger.append(
+      buildResponseOccurrenceEvent({
+        invocation: world.invocation,
+        state: world.state,
+        emittedBy: EMITTED_BY,
+        causedBy: null,
+        occurrence: {
+          occurrenceId: "ro-1",
+          promptOccurrenceId: "po-1",
+          responseSha256: published.resultSha256,
+          responseBytes: published.responseBytes,
+          redactionVerdict: "CLEAN",
+        },
+      }),
+    );
+    expect(world.ledger.getEffect(world.effectId)).toMatchObject({
+      outcomeStatus: "SUCCEEDED",
+      resultArtifactReferenceId: published.resultArtifactReferenceId,
+      resultSha256: published.resultSha256,
+    });
+    expect(world.ledger.getResponseOccurrenceForPrompt("po-1")?.responseSha256).toBe(published.resultSha256);
+    expect(world.ledger.verifyIntegrity().ok).toBe(true);
+  }, 60_000);
+
+  it("D-P07D-2 (OBS sample 1): the captured authentication failure is FAILED with no pair, no RESPONSE, and the door admits it", async () => {
+    const world = p07dWorld("p07d-drill-auth");
+    const { CAPTURED_AUTH_FAILURE } = await capturedStreams();
+    const run = await p07dExecute("p07d-drill-auth-run", world, CAPTURED_AUTH_FAILURE, 1);
+
+    expect(run.trail.filter((event) => event.kind === "processExited" || event.kind === "operationResult")).toEqual([
+      { kind: "processExited", exitCode: 1, signal: null },
+      { kind: "operationResult", status: "FAILED" },
+    ]);
+    expect(run.published).toEqual([
+      { status: "FAILED", reason: "OPERATION_FAILED", resultArtifactReferenceId: null, resultSha256: null, responseBytes: null },
+    ]);
+    // No RESPONSE reference was registered for the task: the envelope's is the only one.
+    expect(world.ledger.getArtifactReference("ref-result")).toBeNull();
+    expect(world.ledger.getArtifactReference("ref-overflow")).toBeNull();
+    expect(world.ledger.rebuildReadModel().artifactReferenceRows).toBe(1);
+    world.ledger.append(p07dOutcome(world, "settle-1", onlyPublished(run)));
+    expect(world.ledger.getEffect(world.effectId)).toMatchObject({ outcomeStatus: "FAILED", resultArtifactReferenceId: null, resultSha256: null });
+    expect(world.ledger.getResponseOccurrenceForPrompt("po-1")).toBeNull();
+  }, 60_000);
+
+  it("D-P07D-3 (SYN — the crossed pair §4.2 names): is_error with exit 0 is FAILED, and its output publishes with the pair", async () => {
+    const world = p07dWorld("p07d-drill-crossed");
+    const run = await p07dExecute("p07d-drill-crossed-run", world, synLines("boom", true), 0);
+
+    expect(run.samples.map((sample) => sample.facts)).toEqual([
+      { terminal: "completed", process: { kind: "EXITED", exitCode: 0, signal: null }, operation: "FAILED" },
+    ]);
+    const published = onlyPublished(run);
+    expect(published.status).toBe("FAILED");
+    if (published.resultArtifactReferenceId === null) throw new Error("a FAILED operation with output carries its pair (Q-D9)");
+    const result = readResult(world, published.resultArtifactReferenceId);
+    expect(result.document.status).toBe("FAILED");
+    expect(result.document.blocks.map((block) => block.text)).toEqual(["boom"]);
+    world.ledger.append(p07dOutcome(world, "settle-1", published));
+    expect(world.ledger.getEffect(world.effectId)).toMatchObject({ outcomeStatus: "FAILED", resultSha256: published.resultSha256 });
+  }, 60_000);
+
+  it("D-P07D-4 (order): the outcome's pair before its publication is refused by the door; after it, the same append is admitted", async () => {
+    const { CAPTURED_SUCCESS } = await capturedStreams();
+    const world = p07dWorld("p07d-drill-order");
+    const samples: ResultSample[] = [];
+    const port = createExecutionPort({
+      bindings: new Map([[ACCOUNT, { ...cliBinding(CAPTURED_SUCCESS), adapter: exitingClaude(CAPTURED_SUCCESS, 0) }]]),
+    });
+    const effects = createExecutionEffects({
+      port,
+      route: resolvedCliRoute(),
+      request: executionRequest(),
+      scenarioRoot: scenario("p07d-drill-order-run"),
+      recordResult: (sample) => {
+        samples.push(sample);
+      },
+    });
+    await effects.apply(operationForStep(invocation(), INTENT_STEP));
+    const [sample] = samples;
+    if (sample === undefined) throw new Error("the recorder was never called");
+    const assembly = assembleResult(world.effectId, sample);
+    if (assembly.kind !== "DOCUMENT") throw new Error("expected a document");
+    const early = { status: assembly.status, resultArtifactReferenceId: "ref-result", resultSha256: assembly.sha256 };
+
+    expect(() => world.ledger.append(p07dOutcome(world, "settle-1", early))).toThrow(LedgerValidationError);
+    expect(world.ledger.getEffect(world.effectId)?.outcomeStatus ?? null).toBeNull();
+
+    const published = p07dPublish(world, assembly);
+    expect(published.resultArtifactReferenceId).toBe("ref-result");
+    world.ledger.append(p07dOutcome(world, "settle-1", early));
+    expect(world.ledger.getEffect(world.effectId)?.resultSha256).toBe(assembly.sha256);
+  }, 60_000);
+
+  it("D-P07D-5 (containment): the output's sentinel is in the private bytes and nowhere the ledger or the walk can show it", async () => {
+    const sentinel = "p07d-" + "containment-" + "5e7a1c";
+    const world = p07dWorld("p07d-drill-sentinel");
+    const run = await p07dExecute("p07d-drill-sentinel-run", world, synLines(sentinel, false), 0);
+    const published = onlyPublished(run);
+    if (published.resultArtifactReferenceId === null) throw new Error("expected the pair");
+    world.ledger.append(p07dOutcome(world, "settle-1", published));
+    world.ledger.append(
+      buildResponseOccurrenceEvent({
+        invocation: world.invocation,
+        state: world.state,
+        emittedBy: EMITTED_BY,
+        causedBy: null,
+        occurrence: {
+          occurrenceId: "ro-1",
+          promptOccurrenceId: "po-1",
+          responseSha256: published.resultSha256,
+          responseBytes: published.responseBytes,
+          redactionVerdict: "CLEAN",
+        },
+      }),
+    );
+
+    // The positive control: the private side holds it.
+    expect(readResult(world, published.resultArtifactReferenceId).bytes.toString("utf8")).toContain(sentinel);
+    // Every control-plane event, every registry event, the ledger file itself.
+    const events = world.ledger.listEvents({ limit: 500 }).events.map((entry) => entry.canonicalJson).join("\n");
+    expect(events).toContain("RESPONSE_OCCURRENCE_RECORDED");
+    expect(events).not.toContain(sentinel);
+    const registry = [...world.ledger.listArtifactEvents("7".repeat(64)), ...world.ledger.listArtifactEvents(published.resultSha256)];
+    expect(registry.length).toBeGreaterThan(0);
+    expect(JSON.stringify(registry)).not.toContain(sentinel);
+    for (const suffix of ["", "-wal"]) {
+      const path = world.ledgerPath + suffix;
+      if (existsSync(path)) expect(readFileSync(path).includes(Buffer.from(sentinel, "utf8"))).toBe(false);
+    }
+    // The walk's own evidence: the marker and the trail.
+    expect(run.markerJson).not.toBe("");
+    expect(run.markerJson).not.toContain(sentinel);
+    expect(JSON.stringify(run.trail)).not.toContain(sentinel);
+  }, 60_000);
+
+  it("D-P07D-6: a crash after PUBLICATION_SUCCEEDED resumes under the same keys, and the outcome is appended once", async () => {
+    const { CAPTURED_SUCCESS } = await capturedStreams();
+    const world = p07dWorld("p07d-drill-crash", {
+      afterOutcomeRecorded: () => {
+        throw new Error("crash after the publication's outcome");
+      },
+    });
+    await expect(p07dExecute("p07d-drill-crash-run", world, CAPTURED_SUCCESS, 0)).rejects.toThrow(/crash after the publication/);
+
+    // The same ledger, a new plane incarnation: the walk re-executes (no marker was
+    // written) and the recorder publishes again.
+    const resumed: P07dWorld = { ...world, plane: p07dOpenPlane(world.ledger, world.ledgerPath, "22222222-2222-4222-8222-222222222222") };
+    const run = await p07dExecute("p07d-drill-crash-rerun", resumed, CAPTURED_SUCCESS, 0);
+    const published = onlyPublished(run);
+    if (published.resultSha256 === null) throw new Error("expected the pair");
+    expect(published.resultArtifactReferenceId).toBe("ref-result");
+    const kinds = world.ledger.listArtifactEvents(published.resultSha256).map((record) => record.event.artifactEventKind);
+    expect(kinds.filter((kind) => kind === "PUBLICATION_INTENDED")).toHaveLength(1);
+    expect(kinds.filter((kind) => kind === "PUBLICATION_SUCCEEDED")).toHaveLength(1);
+    world.ledger.append(p07dOutcome(resumed, "settle-1", published));
+    world.ledger.append(p07dOutcome(resumed, "settle-1", published));
+    expect(world.ledger.listEvents({ limit: 500 }).events.filter((entry) => entry.event.type === "DISPATCH_OUTCOME_RECORDED")).toHaveLength(1);
+    expect(world.ledger.verifyIntegrity().ok).toBe(true);
+  }, 60_000);
+});

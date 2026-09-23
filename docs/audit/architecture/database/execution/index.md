@@ -460,9 +460,9 @@ enviados dos veces son dos ocurrencias, un solo blob (negativo obligatorio 3).
 | --- | --- | --- | --- |
 | `occurrence_id` | TEXT | NOT NULL | PK, propio (distinto del `occurrence_id` del prompt que responde). |
 | `prompt_occurrence_id` | TEXT | NOT NULL | `fk_response_occurrence_read_model__prompt_occurrence_read_model`. |
-| `response_sha256` | TEXT | NOT NULL | — |
-| `response_bytes` | INTEGER | NOT NULL | `CHECK >= 0`. |
-| `redaction_verdict` | TEXT | NOT NULL | `CHECK IN ('CLEAN','REDACTED')`. |
+| `response_sha256` | TEXT | NOT NULL | El `content_sha256` del artefacto `RESPONSE` publicado para el efecto: el mismo digest que el par de resultado del desenlace (D10, P-07/D). Nunca un digest de bytes que no estén en el plano. |
+| `response_bytes` | INTEGER | NOT NULL | `CHECK >= 0`. El largo en bytes de ese mismo artefacto. |
+| `redaction_verdict` | TEXT | NOT NULL | `CHECK IN ('CLEAN','REDACTED')`. Lo pone el productor de la ocurrencia (`buildResponseOccurrenceEvent`). Desde P-07/D una salida con forma de credencial se rechaza entera y no se publica (D10), así que no hay documento que responder: `REDACTED` queda inalcanzable y todo veredicto registrado es `CLEAN`. |
 | `recorded_at` | TEXT | NOT NULL | — |
 | `sequence` | INTEGER | NOT NULL | — |
 
@@ -471,6 +471,10 @@ enviados dos veces son dos ocurrencias, un solo blob (negativo obligatorio 3).
 El fold comprueba igualdad de effect_id y route_segment_id entre prompt y
 su dispatch_attempt. La respuesta conserva su enlace existente al prompt:
 una respuesta tardía del origen no se atribuye a la cuenta/segmento destino.
+Por eso el registro de respuesta no lleva `identity`, `dispatchAttemptId`,
+`routeSegmentId` ni `accountId` (L-P07D-1): se atribuye a través del prompt que
+responde. Una ocurrencia de respuesta sólo existe si hubo documento publicado; un
+desenlace `FAILED` sin par no tiene respuesta registrada (P-07/D, ADR 0100).
 Evento de ocurrencia, fila y watermark se confirman juntos, después de registrar
 la intención de ese despacho o en el mismo appendBatch en orden causal. No se
 crean ocurrencias para llamadas internas que un transporte no hace observables.

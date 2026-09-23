@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { CONTENT_ARTIFACT_MAX_BYTES } from "@acp/contracts";
 import type {
   ExecutionEvent,
   ExecutionRefused,
@@ -33,6 +34,7 @@ import type {
   UsageSample,
   UsageSink,
 } from "../../src/execution-effects/index.js";
+import type { ResultSample, ResultSink } from "../../src/operation-result/index.js";
 import {
   removeScenarioRoot,
   resolveScenarioRoot,
@@ -1156,5 +1158,179 @@ describe("F4a-E N4/N5/N6: the shapes this errata does not move", () => {
     // sink supplies for an event that carries no provider of its own.
     const members = [...effects.matchAll(/"(QUOTA_EXHAUSTED|QUOTA_WARNING|TRANSIENT|UNCLASSIFIED)"/g)];
     expect(members.map((match) => match[1])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-07 escalón D: the result recorder (ADR 0100)
+// ---------------------------------------------------------------------------
+
+const P07D_TASKS = [
+  "d7000000-0000-4000-8000-000000000001",
+  "d7000000-0000-4000-8000-000000000002",
+  "d7000000-0000-4000-8000-000000000003",
+  "d7000000-0000-4000-8000-000000000004",
+  "d7000000-0000-4000-8000-000000000005",
+  "d7000000-0000-4000-8000-000000000006",
+  "d7000000-0000-4000-8000-000000000007",
+  "d7000000-0000-4000-8000-000000000008",
+] as const;
+
+/** The completed trail with the two facts a real transport reports before its terminal. */
+const RESULT_TRAIL: readonly ExecutionEvent[] = [
+  { kind: "started", route: ROUTE, resolvedModel: "claude-opus-5-20260115", protocolVersion: "stream-json/1" },
+  { kind: "processExited", exitCode: 0, signal: null },
+  { kind: "operationResult", status: "SUCCEEDED" },
+  { kind: "completed", stepIndex: 1 },
+];
+
+/**
+ * A port that speaks output through the sink `start` receives, before its trail,
+ * and records the arity of every `start` call. `deltas` are handed as given, so a
+ * test can hand what the type forbids.
+ */
+function outputPort(deltas: readonly unknown[], events: readonly ExecutionEvent[], calls: { starts: number; arities: number[] }): ModelExecutionPort {
+  return {
+    start: (...args: unknown[]) => {
+      calls.starts += 1;
+      calls.arities.push(args.length);
+      const [route, request, sink] = args as [ResolvedRoute, ExecutionRequest, ((delta: string) => void) | undefined];
+      const session: ExecutionSession = {
+        ok: true,
+        sessionId: request.taskId + "/" + String(request.attempt) + "/" + route.accountId,
+        route,
+        // eslint-disable-next-line @typescript-eslint/require-await
+        events: async function* (): AsyncIterable<ExecutionEvent> {
+          for (const delta of deltas) sink?.(delta as string);
+          for (const event of events) yield event;
+        },
+      };
+      return Promise.resolve(session);
+    },
+    interrupt: () => Promise.resolve(),
+    healthProbe: () =>
+      Promise.resolve({ status: "UNKNOWN" as const, checkedAt: AT, latencyMs: null, classifiedError: null }),
+  };
+}
+
+function resultEffects(name: string, taskId: string, deltas: readonly unknown[], events: readonly ExecutionEvent[], recordResult?: ResultSink) {
+  const root = scenario(name);
+  const invocation = invocationFor(taskId);
+  const calls = { starts: 0, arities: [] as number[] };
+  const effects = createExecutionEffects({
+    port: outputPort(deltas, events, calls),
+    route: ROUTE,
+    request: requestFor(invocation),
+    scenarioRoot: root,
+    ...(recordResult === undefined ? {} : { recordResult }),
+  });
+  const operation = operationForStep(invocation, INTENT_STEP);
+  return { root, calls, effects, operation };
+}
+
+describe("P-07 escalón D: the result recorder", () => {
+  it("N-P07D-11: without a recorder, start is called with two arguments and the marker is byte-identical", async () => {
+    const legacy = resultEffects("p07d-legacy", P07D_TASKS[0], ["ignored"], RESULT_TRAIL);
+    await legacy.effects.apply(legacy.operation);
+    expect(legacy.calls.arities).toEqual([2]);
+    const marker: unknown = JSON.parse(readFileSync(join(legacy.root, "executions", legacy.operation.operationId + ".json"), "utf8"));
+    expect(marker).toEqual({
+      eventCount: RESULT_TRAIL.length,
+      operationDigest: operationDigest(legacy.operation),
+      operationId: legacy.operation.operationId,
+      trailSha256: sha256(canonicalJsonStringify(RESULT_TRAIL)),
+    });
+  });
+
+  it("with a recorder, start receives the sink and the recorder the three facts and the whole output, before the marker", async () => {
+    const seen: ResultSample[] = [];
+    const order: string[] = [];
+    const staged = resultEffects("p07d-recorder", P07D_TASKS[1], ["o", "k"], RESULT_TRAIL, (sample) => {
+      order.push("recorder:" + String(markerFiles(staged.root).length));
+      seen.push(sample);
+    });
+    await staged.effects.apply(staged.operation);
+    expect(staged.calls.arities).toEqual([3]);
+    expect(order).toEqual(["recorder:0"]);
+    expect(seen).toEqual([
+      {
+        operationIndex: staged.operation.operationIndex,
+        facts: { terminal: "completed", process: { kind: "EXITED", exitCode: 0, signal: null }, operation: "SUCCEEDED" },
+        output: "ok",
+        outputCondition: "HELD",
+      },
+    ]);
+    expect(markerFiles(staged.root)).toHaveLength(1);
+  });
+
+  it("N-P07D-13: an error terminal never reaches the recorder", async () => {
+    let called = 0;
+    const staged = resultEffects(
+      "p07d-error",
+      P07D_TASKS[2],
+      ["partial"],
+      [
+        { kind: "processExited", exitCode: 1, signal: null },
+        { kind: "error", refusal: "TRANSPORT_UNAVAILABLE", detail: "gone" },
+      ],
+      () => {
+        called += 1;
+      },
+    );
+    await expect(staged.effects.apply(staged.operation)).rejects.toBeInstanceOf(ExecutionEffectError);
+    expect(called).toBe(0);
+    expect(markerFiles(staged.root)).toHaveLength(0);
+  });
+
+  it("N-P07D-12: a throwing recorder leaves no marker, the probe says NOT_DONE, and the effect re-executes", async () => {
+    let failNext = true;
+    const staged = resultEffects("p07d-recorder-throws", P07D_TASKS[3], ["ok"], RESULT_TRAIL, () => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("the publisher refused");
+      }
+    });
+    await expect(staged.effects.apply(staged.operation)).rejects.toThrow(/the publisher refused/);
+    expect(markerFiles(staged.root)).toHaveLength(0);
+    await expect(staged.effects.probe(staged.operation)).resolves.toBe("NOT_DONE");
+    await staged.effects.apply(staged.operation);
+    expect(staged.calls.starts).toBe(2);
+    expect(markerFiles(staged.root)).toHaveLength(1);
+  });
+
+  it("N-P07D-27: output past the profile never throws into the session; the run completes and the recorder is told OVER_PROFILE", async () => {
+    const seen: ResultSample[] = [];
+    const big = "x".repeat(CONTENT_ARTIFACT_MAX_BYTES);
+    const staged = resultEffects("p07d-over-profile", P07D_TASKS[4], [big, "y", "z"], RESULT_TRAIL, (sample) => {
+      seen.push(sample);
+    });
+    await staged.effects.apply(staged.operation);
+    expect(seen.map((sample) => [sample.facts.terminal, sample.output, sample.outputCondition])).toEqual([["completed", "", "OVER_PROFILE"]]);
+    expect(markerFiles(staged.root)).toHaveLength(1);
+  });
+
+  it("N-P07D-28: a delta that is not text, or one that faults, is UNREADABLE — never coerced, never thrown", async () => {
+    for (const [index, fault] of [[5, 42], [6, Symbol("fault")], [7, null]] as const) {
+      const seen: ResultSample[] = [];
+      const staged = resultEffects("p07d-unreadable-" + String(index), P07D_TASKS[index], ["before", fault, "after"], RESULT_TRAIL, (sample) => {
+        seen.push(sample);
+      });
+      await staged.effects.apply(staged.operation);
+      expect(seen.map((sample) => [sample.facts.terminal, sample.output, sample.outputCondition])).toEqual([["completed", "", "UNREADABLE"]]);
+    }
+  });
+
+  it("the output text reaches the recorder, and the marker never holds it", async () => {
+    const sentinel = "p07d-" + "sentinel-" + "7f3a";
+    const outputs: string[] = [];
+    const staged = resultEffects("p07d-sentinel", "d7000000-0000-4000-8000-000000000009", [sentinel], RESULT_TRAIL, (sample) => {
+      outputs.push(sample.output);
+    });
+    await staged.effects.apply(staged.operation);
+    expect(outputs).toEqual([sentinel]);
+    expect(markerFiles(staged.root)).toHaveLength(1);
+    for (const file of markerFiles(staged.root)) {
+      expect(readFileSync(join(staged.root, "executions", file), "utf8")).not.toContain(sentinel);
+    }
   });
 });

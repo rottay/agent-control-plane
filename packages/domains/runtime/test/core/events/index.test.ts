@@ -9,12 +9,12 @@ import {
   findTranscriptViolations,
 } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
-import { PROMPT_OCCURRENCE_RECORD_KEYS } from "@acp/ledger";
+import { PROMPT_OCCURRENCE_RECORD_KEYS, RESPONSE_OCCURRENCE_RECORD_KEYS } from "@acp/ledger";
 import { describe, expect, it } from "vitest";
 
 import type { DurableInvocation } from "../../../src/contracts/index.js";
-import { ATTEMPT_OPENING_STEP, buildEvent, buildPromptOccurrenceEvent, causalPredecessorOf, operationForStep } from "../../../src/core/events/index.js";
-import type { PromptOccurrenceRecord } from "../../../src/core/events/index.js";
+import { ATTEMPT_OPENING_STEP, buildEvent, buildPromptOccurrenceEvent, buildResponseOccurrenceEvent, causalPredecessorOf, operationForStep } from "../../../src/core/events/index.js";
+import type { PromptOccurrenceRecord, ResponseOccurrenceRecord } from "../../../src/core/events/index.js";
 import { INTENT_STEP, LIFECYCLE_PLAN, OUTCOME_STEP, READ_ONLY_PLAN, planStep } from "../../../src/core/lifecycle/index.js";
 import type { PlanStep } from "../../../src/core/lifecycle/index.js";
 import { LifecyclePlanError, SupervisorError } from "../../../src/errors/index.js";
@@ -728,5 +728,84 @@ describe("the prompt occurrence records the use of an instruction, never its byt
   it("refuses an invocation without a revision, by name, rather than leaving it to the door", () => {
     expect(() => occurrenceEvent({}, INVOCATION)).toThrow(SupervisorError);
     expect(() => occurrenceEvent({}, INVOCATION)).toThrow(/without a revision/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-07 escalón D — the response occurrence has a producer (execution §8.2, ADR 0100)
+// ---------------------------------------------------------------------------
+
+const RESPONSE: ResponseOccurrenceRecord = {
+  occurrenceId: "ro-0001",
+  promptOccurrenceId: "po-0001",
+  responseSha256: "d".repeat(64),
+  responseBytes: 321,
+  redactionVerdict: "CLEAN",
+};
+
+function responseEvent(
+  occurrence: ResponseOccurrenceRecord = RESPONSE,
+  invocation: DurableInvocation = V2_INVOCATION,
+): ReturnType<typeof buildResponseOccurrenceEvent> {
+  return buildResponseOccurrenceEvent({ invocation, state: "RUNNING", emittedBy: EMITTED_BY, causedBy: null, occurrence });
+}
+
+describe("the response occurrence records an answer's digest and length, never its bytes", () => {
+  it("carries the V2 coordinate and one closed record whose keys are the ledger's own grammar, called and not mirrored", () => {
+    const event = responseEvent();
+    expect(ControlPlaneEvent.safeParse(event).success).toBe(true);
+    expect(event.type).toBe("RESPONSE_OCCURRENCE_RECORDED");
+    expect([event.fromState, event.toState]).toEqual(["RUNNING", "RUNNING"]);
+    expect(event.transitionId).toBe("response-occurrence.ro-0001");
+    expect(Object.keys(event.payload).sort()).toEqual(["attemptNumber", "responseOccurrence", "revisionNumber"]);
+    const record = event.payload["responseOccurrence"] as Record<string, unknown>;
+    expect(RESPONSE_OCCURRENCE_RECORD_KEYS).toHaveLength(5);
+    expect(Object.keys(record).sort()).toEqual([...RESPONSE_OCCURRENCE_RECORD_KEYS].sort());
+    expect(record).toEqual(RESPONSE);
+  });
+
+  it("names no identity of its own: no dispatch, segment or account travels on the answer", () => {
+    const record = responseEvent().payload["responseOccurrence"] as Record<string, unknown>;
+    for (const key of ["dispatchAttemptId", "routeSegmentId", "accountId", "identity", "effectId"]) {
+      expect(record).not.toHaveProperty(key);
+    }
+  });
+
+  it("a record typed as the record but carrying an extra key yields exactly the five, and the extra value nowhere", () => {
+    const extraValue = "stray-" + "response-value";
+    const wider = { ...RESPONSE, auditExtra: extraValue, dispatchAttemptId: "dsp-0001" };
+    const typed: ResponseOccurrenceRecord = wider;
+    const event = responseEvent(typed);
+    const record = event.payload["responseOccurrence"] as Record<string, unknown>;
+    expect(Object.keys(record).sort()).toEqual([...RESPONSE_OCCURRENCE_RECORD_KEYS].sort());
+    const text = JSON.stringify(event);
+    expect(text).not.toContain(extraValue);
+    expect(text).not.toContain("dsp-0001");
+  });
+
+  it("carries a present-invalid field exactly as given, never defaulted or coerced, so the door's grammar judges what the producer said", () => {
+    // The contract's payload is open here: the grammar is the ledger reader's, and
+    // the operation-result suite drives each of these through the door, which
+    // refuses them (N-P07D-14/15/16). What the builder owes is not to launder them.
+    const variations: readonly Record<string, unknown>[] = [
+      { ...RESPONSE, responseSha256: "D".repeat(64) },
+      { ...RESPONSE, responseSha256: null },
+      { ...RESPONSE, responseBytes: -1 },
+      { ...RESPONSE, responseBytes: null },
+      { ...RESPONSE, responseBytes: 1.5 },
+      { ...RESPONSE, redactionVerdict: "DIRTY" },
+      { ...RESPONSE, redactionVerdict: null },
+      { ...RESPONSE, promptOccurrenceId: "" },
+      { ...RESPONSE, occurrenceId: "" },
+    ];
+    for (const occurrence of variations) {
+      const event = responseEvent(occurrence as unknown as ResponseOccurrenceRecord);
+      expect(event.payload["responseOccurrence"], JSON.stringify(occurrence)).toEqual(occurrence);
+    }
+  });
+
+  it("refuses an invocation without a revision, by name", () => {
+    expect(() => responseEvent(RESPONSE, INVOCATION)).toThrow(SupervisorError);
+    expect(() => responseEvent(RESPONSE, INVOCATION)).toThrow(/without a revision/);
   });
 });

@@ -18,7 +18,7 @@ import type { ControlPlaneEvent as ControlPlaneEventType } from "@acp/contracts"
 // The resolution status is the ledger's vocabulary, imported rather than
 // restated: the read model owns the closed set, and a second spelling of it here
 // would be a second answer to the question "what statuses exist".
-import type { ModelResolutionStatus } from "@acp/ledger";
+import type { ModelResolutionStatus, RedactionVerdict } from "@acp/ledger";
 
 import type { DurableInvocation } from "../../../contracts/index.js";
 
@@ -89,4 +89,35 @@ export interface BuildPromptOccurrenceInput {
   /** The event this delivery was caused by, or null where the caller has none. */
   readonly causedBy: string | null;
   readonly occurrence: PromptOccurrenceRecord;
+}
+
+/**
+ * What a response occurrence records about the one answer to one prompt
+ * (execution §8.2; P-07 escalón D, ADR 0100).
+ *
+ * The **use**, never the bytes, as the prompt's record is: the five fields are
+ * exactly the ledger's `RESPONSE_OCCURRENCE_RECORD_KEYS`, and there is no sixth.
+ * No `identity`, no delivery, no segment and no account: an answer is attributed
+ * through its prompt and nothing else, which is the grammar's own reason.
+ */
+export interface ResponseOccurrenceRecord {
+  readonly occurrenceId: string;
+  /** The prompt this answers, recorded first; the door refuses an unrecorded one. */
+  readonly promptOccurrenceId: string;
+  /** The published RESPONSE artifact's `content_sha256`, conserved (D10). */
+  readonly responseSha256: string;
+  /** The canonical result document's length, in bytes. */
+  readonly responseBytes: number;
+  /** `CLEAN` from every producer in P-07; `REDACTED` has none. */
+  readonly redactionVerdict: RedactionVerdict;
+}
+
+export interface BuildResponseOccurrenceInput {
+  readonly invocation: DurableInvocation;
+  /** The task's current state, carried as both `fromState` and `toState`, as the prompt's is. */
+  readonly state: ControlPlaneEventType["fromState"];
+  readonly emittedBy: string;
+  /** The event this answer was caused by, or null where the caller has none. */
+  readonly causedBy: string | null;
+  readonly occurrence: ResponseOccurrenceRecord;
 }

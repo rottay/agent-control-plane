@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 
+import { CONTENT_ARTIFACT_MAX_BYTES, utf8ByteLength } from "@acp/contracts";
 import type {
   ExecutionEvent,
+  ExecutionOutputSink,
   ExecutionRefusal,
   ExecutionRequest,
   ModelExecutionPort,
@@ -16,6 +18,8 @@ import type { OperationCoordinate, PostconditionVerdict } from "../contracts/ind
 import { operationDigest } from "../core/coordinates/index.js";
 import type { EffectPort } from "../core/step-executor/index.js";
 import { PostconditionUnknownError, SupervisorError } from "../errors/index.js";
+import { operationFactsOf } from "../operation-result/index.js";
+import type { OutputCondition, ResultSink } from "../operation-result/index.js";
 // The scenario-root brand is taken type-only through this package's own entry
 // point rather than from `toy/repository` by path. The brand is the toy
 // module's, but the module's *specifier* is what the toy-binding law counts,
@@ -135,6 +139,20 @@ export interface ExecutionEffectsInput {
    * effect re-executes.
    */
   readonly recordPressure?: PressureSink | undefined;
+  /**
+   * Where a completed execution's result goes (P-07 escalón D, ADR 0100).
+   *
+   * The fourth use of the idiom: injected as a function, optional, synchronous,
+   * called before the marker. When it is present, `start` is handed a private
+   * output sink and the collected text travels to it with the three facts; when
+   * it is absent, `start` is called with two arguments, exactly as before, and no
+   * output is held at all (C9: the production daemon passes none in P-07).
+   *
+   * Called on the `completed` terminal only: a transport failure records no
+   * result. A throwing recorder leaves no marker, the probe answers `NOT_DONE`,
+   * and the effect re-executes, as a throwing usage sink does.
+   */
+  readonly recordResult?: ResultSink | undefined;
 }
 
 /**
@@ -451,8 +469,13 @@ type ExecutionOutcome =
  * lets the caller drain first and refuse afterwards, without any reader ever
  * parsing a message or re-deriving a classification an adapter already made.
  */
-async function execute(input: ExecutionEffectsInput): Promise<ExecutionOutcome> {
-  const started = await input.port.start(input.route, input.request);
+async function execute(input: ExecutionEffectsInput, sink?: ExecutionOutputSink): Promise<ExecutionOutcome> {
+  // Two literal call forms, never `start(route, request, undefined)`: without a
+  // result recorder the port is asked exactly what it was asked before P-07 D.
+  const started =
+    sink === undefined
+      ? await input.port.start(input.route, input.request)
+      : await input.port.start(input.route, input.request, sink);
   // No stream existed, so nothing was observed and nothing is carried. The
   // empty trail here is not an observation of silence; it is the absence of an
   // observation, and the drains below are no-ops over it.
@@ -472,6 +495,58 @@ async function execute(input: ExecutionEffectsInput): Promise<ExecutionOutcome> 
     return { ok: false, refusal: terminal.refusal, at: "events.error", trail };
   }
   return { ok: true, trail };
+}
+
+/** What the collector holds: its sink, and a read of the output once the execution ends. */
+interface OutputCollector {
+  readonly sink: ExecutionOutputSink;
+  readonly read: () => { readonly output: string; readonly condition: OutputCondition };
+}
+
+/**
+ * The private collector of one execution's output text (P-07 escalón D, ADR 0100).
+ *
+ * Its sink never throws, because a throwing sink fails the provider session as
+ * `MALFORMED_EVENT` and loses the three facts (the providers session's contract).
+ * So every step runs inside `try`, and the collector classifies instead:
+ *
+ * - past the 8 MiB profile it stops retaining — it holds no unbounded buffer and
+ *   never truncates what it hands on — and the output is `OVER_PROFILE`;
+ * - a delta that is not a string, or a fault inside it, makes the output
+ *   `UNREADABLE`.
+ *
+ * Either way the recorder assembles nothing from it. The text lives here and in
+ * the recorder's call, and nowhere else: it enters no event, no marker and no log
+ * (L-P07C-1).
+ */
+function collectOutput(): OutputCollector {
+  const chunks: string[] = [];
+  let bytes = 0;
+  let condition: OutputCondition = "HELD";
+  const sink: ExecutionOutputSink = (delta) => {
+    try {
+      if (condition !== "HELD") return;
+      // The type says string; a producer that hands anything else is a fault,
+      // never coerced into text.
+      if (typeof delta !== "string") {
+        condition = "UNREADABLE";
+        chunks.length = 0;
+        return;
+      }
+      const size = utf8ByteLength(delta);
+      if (bytes + size > CONTENT_ARTIFACT_MAX_BYTES) {
+        condition = "OVER_PROFILE";
+        chunks.length = 0;
+        return;
+      }
+      chunks.push(delta);
+      bytes += size;
+    } catch {
+      condition = "UNREADABLE";
+      chunks.length = 0;
+    }
+  };
+  return { sink, read: () => ({ output: condition === "HELD" ? chunks.join("") : "", condition }) };
 }
 
 /**
@@ -504,7 +579,9 @@ export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort
         );
       }
 
-      const outcome = await execute(input);
+      // P-07 escalón D: a collector exists only when a result recorder does.
+      const collector = input.recordResult === undefined ? null : collectOutput();
+      const outcome = await execute(input, collector?.sink);
       const trail = outcome.trail;
 
       // V2-B7T. The sink runs BEFORE the marker, and the ordering is the whole
@@ -594,6 +671,21 @@ export function createExecutionEffects(input: ExecutionEffectsInput): EffectPort
       // fail-closed direction — an unsettled walk is visible, where a silently
       // discarded observation was not.
       if (!outcome.ok) throw new ExecutionEffectError(outcome.refusal, outcome.at);
+
+      // P-07 escalón D. The result, on the `completed` terminal only — the throw
+      // above settles every other — before the gate and the marker, for the
+      // usage sink's crash-safety reason: a resumed walk that finds a verified
+      // marker never re-enters `apply`.
+      const recordResult = input.recordResult;
+      if (recordResult !== undefined && collector !== null) {
+        const held = collector.read();
+        recordResult({
+          operationIndex: operation.operationIndex,
+          facts: operationFactsOf(trail),
+          output: held.output,
+          outputCondition: held.condition,
+        });
+      }
 
       // Before the marker, and after the spend: a violation must not leave a
       // marker behind, because a marker is what makes the step un-re-runnable

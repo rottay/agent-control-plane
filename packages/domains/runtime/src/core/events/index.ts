@@ -9,7 +9,12 @@ import { planStep } from "../lifecycle/index.js";
 import type { PlanStep } from "../lifecycle/index.js";
 import { LifecyclePlanError, SupervisorError } from "../../errors/index.js";
 
-import type { BuildPromptOccurrenceInput, PromptOccurrenceRecord } from "./types/index.js";
+import type {
+  BuildPromptOccurrenceInput,
+  BuildResponseOccurrenceInput,
+  PromptOccurrenceRecord,
+  ResponseOccurrenceRecord,
+} from "./types/index.js";
 
 /**
  * The prompt occurrence's value types live in their own leaf,
@@ -17,7 +22,12 @@ import type { BuildPromptOccurrenceInput, PromptOccurrenceRecord } from "./types
  * keeps reading them from this module (owner law §7, decision 90; the intake
  * concept's precedent).
  */
-export type { BuildPromptOccurrenceInput, PromptOccurrenceRecord } from "./types/index.js";
+export type {
+  BuildPromptOccurrenceInput,
+  BuildResponseOccurrenceInput,
+  PromptOccurrenceRecord,
+  ResponseOccurrenceRecord,
+} from "./types/index.js";
 
 /**
  * Event construction.
@@ -531,6 +541,77 @@ export function buildPromptOccurrenceEvent(
       revisionNumber: revision.revisionNumber,
       attemptNumber: revision.attemptNumber,
       promptOccurrence: record,
+    },
+  });
+}
+
+/**
+ * The durable name one response occurrence is recorded under (P-07 escalón D).
+ *
+ * Derived from the occurrence's own id, for `promptOccurrenceTransitionId`'s
+ * reason: restating the same answer is a replay under the same key.
+ */
+export function responseOccurrenceTransitionId(occurrenceId: string): string {
+  return "response-occurrence." + occurrenceId;
+}
+
+/**
+ * Build the `RESPONSE_OCCURRENCE_RECORDED` event for one answer (P-07 escalón D,
+ * ADR 0100): the prompt builder's twin, closed by construction from its first line.
+ *
+ * The record is one explicit literal of exactly the five names, typed as the
+ * record, never a spread of the input: a value typed as the record can carry more
+ * keys, and a spread would copy them into a payload the door refuses (P-06/CORR's
+ * lesson, applied before the defect rather than after it). It records that an
+ * answer was received and published — its digest and length — and nothing it
+ * said.
+ */
+export function buildResponseOccurrenceEvent(
+  input: BuildResponseOccurrenceInput,
+): ControlPlaneEventType {
+  const { invocation, occurrence } = input;
+
+  // Refused by name, for the prompt builder's reason: a response occurrence
+  // carries the V2 coordinate, and a V1 invocation names no attempt.
+  const revision = invocation.revision;
+  if (revision === undefined) {
+    throw new SupervisorError(
+      "refusing to record a response occurrence for an invocation without a revision; an" +
+        " occurrence carries the V2 coordinate, and a V1 invocation names no segment or" +
+        " attempt to attribute the answer to",
+    );
+  }
+
+  const record: ResponseOccurrenceRecord = {
+    occurrenceId: occurrence.occurrenceId,
+    promptOccurrenceId: occurrence.promptOccurrenceId,
+    responseSha256: occurrence.responseSha256,
+    responseBytes: occurrence.responseBytes,
+    redactionVerdict: occurrence.redactionVerdict,
+  };
+
+  const transitionId = responseOccurrenceTransitionId(record.occurrenceId);
+  const coordinate = deriveEventCoordinate(invocation, transitionId, 0);
+
+  return ControlPlaneEvent.parse({
+    contractVersion: CONTRACT_VERSION,
+    eventId: coordinate.eventId,
+    taskId: invocation.taskId,
+    attempt: invocation.attempt,
+    transitionId,
+    idempotencyKey: coordinate.idempotencyKey,
+    type: "RESPONSE_OCCURRENCE_RECORDED",
+    fromState: input.state,
+    toState: input.state,
+    emittedBy: input.emittedBy,
+    occurredAt: coordinate.occurredAt,
+    recordedAt: coordinate.recordedAt,
+    correlationId: invocation.invocationId,
+    causationId: input.causedBy,
+    payload: {
+      revisionNumber: revision.revisionNumber,
+      attemptNumber: revision.attemptNumber,
+      responseOccurrence: record,
     },
   });
 }

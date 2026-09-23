@@ -542,6 +542,21 @@ export { taskIntakePayloadOf } from "./projection/index.js";
 export { PROMPT_OCCURRENCE_RECORD_KEYS } from "./projection/index.js";
 
 /**
+ * P-07 escalón D: the response occurrence record's closed key set, and the one
+ * comparison that decides whether an arriving outcome may be an effect's (ADR 0100).
+ *
+ * The key set is exported for `PROMPT_OCCURRENCE_RECORD_KEYS`' reason: the
+ * runtime's response builder is the one producer, and its suite reads the door's
+ * grammar rather than restating it. `effectOutcomeArrival` is exported so the
+ * runtime's result publisher calls the comparison the door and the fold call,
+ * before it publishes anything — a copy of it would be a second authority. This
+ * supersedes the "not on the barrel" sentences of ADR 0084 Consequences and ADR
+ * 0098 for this one function.
+ */
+export { RESPONSE_OCCURRENCE_RECORD_KEYS, effectOutcomeArrival } from "./projection/index.js";
+export type { EffectOutcomeArrival } from "./projection/types/index.js";
+
+/**
  * The artifact plane's two closed sets (P-36/local A, ADR 0081).
  *
  * Which six of the contract's nine artifact event words this build records, and
