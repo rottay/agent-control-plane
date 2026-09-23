@@ -1,8 +1,10 @@
 import { ControlPlaneEvent, DriverMode, ResolvedRoute } from "@acp/contracts";
 import type { DriverOutcome, DriverMode as DriverModeName, TransportKind } from "@acp/contracts";
+import { taskIntakePayloadOf } from "@acp/ledger";
 
 import type { DurableInvocation, InvocationRevision, OrchestrationDriver } from "../contracts/index.js";
 import { deriveEventCoordinate } from "../core/coordinates/index.js";
+import { ATTEMPT_OPENING_STEP } from "../core/events/index.js";
 import { planStep } from "../core/lifecycle/index.js";
 import type { BeatContext, EffectPort, LedgerPort } from "../core/step-executor/index.js";
 import { canonicalSubmissionDigest, deriveInvocation } from "../submission/index.js";
@@ -76,6 +78,19 @@ export interface LifecycleRecoveryPort {
    */
   getEventByIdempotencyKey(idempotencyKey: string): { readonly canonicalJson: string } | null;
   getExecutionRoute(taskId: string, attempt: number): RecordedRoute | null;
+  /**
+   * One revision as the revision read model holds it (P-15/D1, B's note N1). The
+   * opening's revision record is held to it field by field, so a restated invocation
+   * carries the revision the ledger folded rather than whatever text an event holds.
+   */
+  getTaskRevision(
+    taskId: string,
+    revisionNumber: number,
+  ): {
+    readonly revisionId: string;
+    readonly envelopeSha256: string;
+    readonly envelopeArtifactReferenceId: string | null;
+  } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,13 +200,48 @@ export function restateInvocation(
 
   // An opening-first V2 task (P-15 escalón B, ADR 0102): the first event is this
   // attempt's opening, which carries the revision; the discovery follows under
-  // its V2 key. An intake-first task — first event a discovery under the intake
-  // transition — is not read here and stays refused below until P-15/D.
-  const opening = readOpening(recorded.canonicalJson, taskId, attempt);
+  // its V2 key. An intake-first task (P-15/D1, ADR 0105): the first event is the
+  // intake, and the opening follows it under its own V2 key, at the intake's
+  // coordinate; its revision record must be the intake's, field by field.
+  const intake = readIntake(recorded.canonicalJson);
+  let openingJson = recorded.canonicalJson;
+  if (intake !== null) {
+    const keyed = deriveInvocation(taskId, attempt, "", "", {
+      revisionId: intake.revisionId,
+      revisionNumber: intake.revisionNumber,
+      attemptNumber: intake.attemptNumber,
+      envelopeSha256: intake.envelopeSha256,
+      envelopeArtifactReferenceId: intake.envelopeArtifactReferenceId,
+    });
+    const key = deriveEventCoordinate(keyed, ATTEMPT_OPENING_STEP.transitionId, ATTEMPT_OPENING_STEP.index).idempotencyKey;
+    const found = ledger.getEventByIdempotencyKey(key);
+    if (found === null) return refuse("DISCOVERY_UNREADABLE", "attempt.opening");
+    openingJson = found.canonicalJson;
+  }
+  const opening = readOpening(openingJson, taskId, attempt);
   let revision: InvocationRevision | undefined;
   let discoveryJson = recorded.canonicalJson;
-  if (opening === "UNREADABLE") return refuse("DISCOVERY_UNREADABLE", "task.firstSequence");
+  if (opening === "UNREADABLE") {
+    return refuse("DISCOVERY_UNREADABLE", intake === null ? "task.firstSequence" : "attempt.opening");
+  }
+  if (intake !== null && opening === null) return refuse("DISCOVERY_UNREADABLE", "attempt.opening");
   if (opening !== null) {
+    if (intake !== null) {
+      for (const field of REVISION_FIELDS) {
+        if (opening.revision[field] !== intake[field]) return refuse("DISCOVERY_UNREADABLE", "attempt.opening." + field);
+      }
+    }
+    // B's note N1: the revision record the opening carries is held to the revision
+    // read model, field by field. A difference is an opening this door cannot
+    // attribute — the same word as an invocation it cannot attribute (decision 119
+    // as corrected): the submission digest's preimage is the task, the attempt, the
+    // instant, the initiative and the route, and holds no revision field, so a
+    // revision mismatch is not a digest disagreement.
+    const folded = ledger.getTaskRevision(taskId, opening.revision.revisionNumber);
+    if (folded === null) return refuse("DISCOVERY_UNREADABLE", "attempt.revision");
+    for (const field of ["revisionId", "envelopeSha256", "envelopeArtifactReferenceId"] as const) {
+      if (folded[field] !== opening.revision[field]) return refuse("DISCOVERY_UNREADABLE", "attempt.revision." + field);
+    }
     revision = opening.revision;
     const keyed = deriveInvocation(taskId, attempt, "", "", revision);
     const discoveryStep = planStep(0);
@@ -247,6 +297,36 @@ export function restateInvocation(
 interface Opening {
   readonly revision: InvocationRevision;
   readonly invocationId: string;
+}
+
+/** The revision record's five fields, compared one by one where two records must agree. */
+const REVISION_FIELDS = [
+  "revisionId",
+  "revisionNumber",
+  "attemptNumber",
+  "envelopeSha256",
+  "envelopeArtifactReferenceId",
+] as const;
+
+/**
+ * Read a first event as an intake, through the contract and then the fold's own
+ * reading of its payload (`taskIntakePayloadOf`), or `null` when it is not one.
+ */
+function readIntake(canonicalJson: string): {
+  readonly revisionId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly envelopeSha256: string;
+  readonly envelopeArtifactReferenceId: string;
+} | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(canonicalJson);
+  } catch {
+    return null;
+  }
+  const parsed = ControlPlaneEvent.safeParse(raw);
+  return parsed.success ? taskIntakePayloadOf(parsed.data) : null;
 }
 
 function nonEmptyText(value: unknown): value is string {

@@ -21,6 +21,7 @@ import { describe, expect, it } from "vitest";
 import type { DurableInvocation } from "../../../src/contracts/index.js";
 import {
   ATTEMPT_OPENING_STEP,
+  INTAKE_ATTEMPT_OPENING_STEP,
   buildDispatchIntentionEvent,
   buildDispatchTransitionEvent,
   buildEffectIntentionEvent,
@@ -479,6 +480,24 @@ describe("N-G-2: every event of a revision-bearing walk carries the coordinate a
     };
     expect(ControlPlaneEvent.safeParse(flatKeyed).success).toBe(false);
     expect(ControlPlaneEvent.safeParse(event).success).toBe(true);
+  });
+});
+
+describe("the opening of an intake-first task (P-15/D1, ADR 0105)", () => {
+  it("is the same opening out of DISCOVERED: same key, id and payload, one field of state apart", () => {
+    const opening = buildWith(V2_INVOCATION, ATTEMPT_OPENING_STEP);
+    const afterIntake = buildWith(V2_INVOCATION, INTAKE_ATTEMPT_OPENING_STEP);
+    expect(afterIntake.fromState).toBe("DISCOVERED");
+    expect(afterIntake.toState).toBe("DISCOVERED");
+    expect(opening.fromState).toBeNull();
+    expect({ ...afterIntake, fromState: null }).toEqual(opening);
+    expect(Object.isFrozen(INTAKE_ATTEMPT_OPENING_STEP)).toBe(true);
+    expect({ ...INTAKE_ATTEMPT_OPENING_STEP, fromState: null }).toEqual(ATTEMPT_OPENING_STEP);
+  });
+
+  it("has no causal predecessor, and a V1 invocation still has no opening", () => {
+    expect(buildWith(V2_INVOCATION, INTAKE_ATTEMPT_OPENING_STEP).causationId).toBeNull();
+    expect(() => buildWith(INVOCATION, INTAKE_ATTEMPT_OPENING_STEP)).toThrow(LifecyclePlanError);
   });
 });
 

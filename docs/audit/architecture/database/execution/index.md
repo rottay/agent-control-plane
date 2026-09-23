@@ -158,7 +158,7 @@ reintento de la misma revisión, no una revisión nueva.
 | `pk_task_attempt_read_model` | `PRIMARY KEY (task_id, revision_number, attempt_number)` |
 | `ux_task_attempt_read_model__task_id_legacy_attempt_number` | `UNIQUE INDEX (task_id, legacy_attempt_number)` |
 | `ux_task_attempt_read_model__invocation_id` | `UNIQUE INDEX (invocation_id)` |
-| OCC / transacción | En `BEGIN IMMEDIATE`, se compara la cabeza esperada de la tarea y se busca la coordenada completa. Si ya existe, se reutilizan su asignación e invocation_id y se rechaza un invocationId distinto para la misma coordenada; si no, el evento fija invocationId y se asigna `1 + MAX(attempt)` de los eventos de esa tarea, incluidos los legacy (sin eventos: 1). Se rechaza el desborde de INTEGER int64. Evento V2, columna legacy `attempt`, proyección, cabeza y watermark se escriben en la misma transacción; ningún contador independiente ni escritura previa sólo en la proyección. |
+| OCC / transacción | En `BEGIN IMMEDIATE`, se compara la cabeza esperada de la tarea y se busca la coordenada completa. Si ya existe, se reutilizan su asignación e invocation_id y se rechaza un invocationId distinto para la misma coordenada; si no, el evento fija invocationId y se asigna `1 + MAX(attempt)` de los eventos de esa tarea, incluidos los legacy (sin eventos: 1). **Regla de reuso (P-15/D1, ADR 0105; decisión 132):** si la coordenada ya tiene eventos —el `TASK_DISCOVERED` de un intake, escrito antes de cualquier apertura—, la apertura reutiliza su `attempt` plano en lugar de asignar el siguiente; eventos de una coordenada en dos `attempt` planos distintos rechazan la apertura, sin elegir entre ellos. Se rechaza el desborde de INTEGER int64. Evento V2, columna legacy `attempt`, proyección, cabeza y watermark se escriben en la misma transacción; ningún contador independiente ni escritura previa sólo en la proyección. |
 | Rebuild | Determinista: copia `legacy_attempt_number` e `invocation_id` registrados por el evento V2, nunca vuelve a asignarlos ni usa el reloj. Todos los eventos de la misma coordenada deben repetirlo; otra coordenada de esa tarea no puede reutilizarlo. Los eventos legacy se conservan y no reciben revisiones inventadas. |
 
 ---
@@ -183,7 +183,7 @@ linaje explícito hacia el anterior (§6.1 canónico).
 | `model_resolution_status` | TEXT | NOT NULL | `CHECK IN ('RESOLVED','UNKNOWN','NOT_OBSERVABLE')`. `RESOLVED` = `model_version_id` poblado; `UNKNOWN` = no se pudo resolver la versión exacta pese a intentarlo; `NOT_OBSERVABLE` = el transporte no expone versión resoluble. `model_version_id` permanece `NULL` en los dos últimos casos **incluso después de ejecutar** — nunca se inventa un valor para llenar la columna. |
 | `model_version_id` | TEXT | NULL | Versión resuelta; `NULL` sii `model_resolution_status <> 'RESOLVED'`. |
 | `account_id` | TEXT | NULL | `NULL` hasta que exista una reserva. |
-| `transport_kind` | TEXT | NOT NULL | — |
+| `transport_kind` | TEXT | NOT NULL | Una palabra de `TRANSPORT_KINDS`. Desde P-15/D1 (ADR 0105, decisión 135) la puerta rechaza en `payload.segment.transportKind` una ausente, nula, vacía o ajena, y el fold no proyecta fila para ella. |
 | `capability_policy_version` | TEXT | NOT NULL | — |
 | `routing_assignment_id` | TEXT | NULL | Ver [planning](../planning/index.md) §6; comprobación tipada, no FK física (cohortes distintas). |
 | `reservation_id` | TEXT | NULL | Ver [accounts](../accounts/index.md); `NULL` hasta la reserva. |
@@ -408,6 +408,8 @@ canónico).
 | `dispatch_contract_version` | TEXT | NOT NULL (por trigger) | Versión de contrato del `DISPATCH_INTENDED` que originó la entrega (P-15/C, migración 23). `CHECK` de no vacía; que sea obligatoria lo impone el trigger, porque un `CHECK` agregado con `ADD COLUMN` se prueba contra las filas existentes antes del backfill. |
 | `catalog_document_id` | TEXT | NULL | Documento `PRICE_TABLE` contra el que se valorará esta entrega, fijado **antes** del gasto (economía §3 `:208`). `NULL` **sólo** en la cohorte anterior a 2.9.0; obligatorio en toda entrega de 2.9.0 en adelante. `CHECK` de no vacío. |
 | `catalog_version` | INTEGER | NULL | Versión de ese documento. `CHECK >= 1`; el par (`catalog_document_id`, `catalog_version`) es ambos `NULL` o ambos presentes (`ck_dispatch_attempt_read_model__catalog_pin_pair`). |
+
+**Instantes canónicos de la transición (P-15/D1, ADR 0105; decisión 135).** `accepted_at` y `terminal_at` se comparan como texto (P-18 los ordena), así que ambos operandos están en la forma canónica ISO-8601 con milisegundos en UTC terminada en `Z`: la puerta y el fold, que leen por el mismo lector, rechazan en su clave un valor presente en cualquier otra grafía —offset, sin milisegundos, `z` minúscula, fecha que no vuelve igual por `Date`, vacío—, nunca lo normalizan. `terminal_at` puede faltar o ser `NULL` en un estado no terminal; `accepted_at` puede faltar.
 
 **El pin de precio (P-15/C, ADR 0103).** Dos triggers, uno por camino por el que llega
 una fila (el rebuild inserta, el backfill actualiza), sostienen la cohorte con una lista

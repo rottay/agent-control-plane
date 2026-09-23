@@ -1346,6 +1346,30 @@ export function requestSha256(input: {
  * `RESOLVED` without a version, produces no row rather than a row the base
  * would then abort on with a constraint nobody can attribute to an event.
  */
+/**
+ * The refusal of a segment whose transport is not a word of `TRANSPORT_KINDS`, or
+ * null (P-15/D1, ADR 0105; decision 56's rule).
+ *
+ * An intention that announces a segment object with its `transportKind` absent,
+ * null, empty, mistyped or foreign is refused at `payload.segment.transportKind`.
+ * The door throws it before it reads the segment, and `applyEventToSnapshot` throws
+ * the same issue, so a rebuild of a stored history holding one refuses by name in the
+ * door's words instead of dying later on a foreign key. Any other event, or an
+ * intention with no segment object, is null: those are the segment fold's to judge.
+ */
+export function segmentTransportRefusal(
+  event: ControlPlaneEvent,
+): { readonly path: string; readonly message: string } | null {
+  if (event.type !== EFFECT_INTENDED && event.type !== DISPATCH_INTENDED) return null;
+  const record = payloadRecord(event.payload, SEGMENT_KEY);
+  if (record === null) return null;
+  if (recordWord(record, "transportKind", TRANSPORT_KINDS) !== null) return null;
+  return {
+    path: "payload." + SEGMENT_KEY + ".transportKind",
+    message: "a route segment's transport names one of " + TRANSPORT_KINDS.join(", "),
+  };
+}
+
 export function nextExecutionRouteSegmentProjection(
   event: ControlPlaneEvent,
   sequence: number,
@@ -1366,7 +1390,10 @@ export function nextExecutionRouteSegmentProjection(
     "modelResolutionStatus",
     MODEL_RESOLUTION_STATUSES,
   );
-  const transportKind = recordText(record, "transportKind");
+  // A word of the contract's transport vocabulary, or no row (P-15/D1, ADR 0105):
+  // a foreign word is present-invalid, never text to carry, and the door refuses it
+  // by name before this fold would meet it.
+  const transportKind = recordWord(record, "transportKind", TRANSPORT_KINDS);
   const capabilityPolicyVersion = recordText(record, "capabilityPolicyVersion");
 
   if (
@@ -1683,6 +1710,20 @@ function shownValue(value: unknown): string {
   return typeof value === "object" ? "an object" : "a " + typeof value;
 }
 
+/** A transition instant that is not the canonical form, refused at its key without echoing it. */
+function refusedInstant(key: "acceptedAt" | "terminalAt", value: unknown): DispatchOutcomeReading {
+  return {
+    kind: "refused",
+    path: "payload." + OUTCOME_KEY + "." + key,
+    message:
+      key +
+      ", when present, is an instant in the canonical form, ISO-8601 with milliseconds in UTC ending in Z; " +
+      "this event says " +
+      shownValue(value) +
+      ", and an instant in another spelling is refused rather than normalized",
+  };
+}
+
 /**
  * The resolution one event records, if it is one that carries a record — or the
  * optional field that stops it being one.
@@ -1715,6 +1756,19 @@ export function dispatchOutcomeRecord(
   const dispatchAttemptId = recordText(record, "dispatchAttemptId");
   const dispatchState = recordWord(record, "dispatchState", DISPATCH_STATES);
   if (dispatchAttemptId === null || dispatchState === null) return null;
+
+  // The transition's instants are the canonical form or nothing (P-15/D1, ADR 0105):
+  // P-18 orders them as text, which is time order only in that form, so an instant in
+  // any other spelling is refused here, where the door and the fold both read, and
+  // never normalized. `terminalAt` may be absent or null on a state that is not
+  // terminal; `acceptedAt` may be absent. Anything else under either key is a refusal.
+  const presentTerminal = record["terminalAt"];
+  if (presentTerminal !== undefined && presentTerminal !== null && !isInstant(presentTerminal)) {
+    return refusedInstant("terminalAt", presentTerminal);
+  }
+  if (record["acceptedAt"] !== undefined && !isInstant(record["acceptedAt"])) {
+    return refusedInstant("acceptedAt", record["acceptedAt"]);
+  }
 
   // The terminal pair, held here as well as by the base: a rebuild has no door
   // in front of it, and a row the base would abort on has to be refused at the
@@ -2652,7 +2706,6 @@ export const USAGE_OBSERVATION_RECORD_KEYS = [
 ] as const;
 
 const USAGE_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
-const USAGE_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 /** A safe integer at or above zero that is not `-0`: A's `isCount`, for a payload. */
 function usageCount(record: Record<string, unknown>, key: string): number | null {
@@ -2828,7 +2881,9 @@ export function readUsageObservation(
     return shape("isFinal", "is_final is 0 or 1, the source's explicit close of the measurement, never inferred");
   }
   const occurredAt = recordText(record, "occurredAt");
-  if (occurredAt === null || !USAGE_INSTANT_PATTERN.test(occurredAt)) {
+  // The ledger's one instant check (P-15/D1): the shape alone admitted a date that
+  // does not exist, such as February 30th.
+  if (occurredAt === null || !isInstant(occurredAt)) {
     return shape("occurredAt", "the source instant is ISO-8601 with milliseconds and Z");
   }
 
@@ -3690,6 +3745,14 @@ export function applyEventToSnapshot(
   // type check that guards the other two — an effect's intention announces the
   // initial segment and a dispatch's announces the effective one, which after a
   // handoff is a segment nothing has seen before.
+  //
+  // A transport outside the vocabulary is refused here in the door's words (P-15/D1,
+  // decision 56): the fold would project no row, and the rows that name the segment
+  // would then die on a foreign key nobody can attribute to this event.
+  const transportRefusal = segmentTransportRefusal(event);
+  if (transportRefusal !== null) {
+    throw new LedgerValidationError([{ path: transportRefusal.path, message: transportRefusal.message }]);
+  }
   const segment = nextExecutionRouteSegmentProjection(event, sequence);
   if (segment !== null) {
     const existing = snapshot.routeSegments.get(segment.routeSegmentId);
@@ -4151,8 +4214,23 @@ const OUTBOX_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-
 /** A phase or a target kind: a screaming-snake word, never prose. */
 const OUTBOX_WORD_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 
-/** The same instant grammar every other timestamp in this ledger carries. */
-const OUTBOX_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+/**
+ * ISO-8601 with milliseconds, in UTC, ending in `Z`: the contract's one instant
+ * form, and the only form in which text order is time order.
+ *
+ * The one home of this grammar in the ledger package (P-15/D1, ADR 0105), read only
+ * through `isInstant` below. Here and not in `../ledger/index.ts` because the door
+ * imports this module, so the fold and the door read one definition; every other
+ * instant predicate of the package was folded into it.
+ */
+const INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** An instant in the canonical form, and a real date rather than a shape: it round-trips through `Date`. */
+export function isInstant(value: unknown): value is string {
+  if (typeof value !== "string" || !INSTANT_PATTERN.test(value)) return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
 
 /** The longest reference a target id or a response handle may be. */
 const OUTBOX_REFERENCE_MAX = 512;
@@ -4168,12 +4246,6 @@ function isOutboxReference(value: unknown): value is string {
     value.length <= OUTBOX_REFERENCE_MAX &&
     !OUTBOX_CONTROL_PATTERN.test(value)
   );
-}
-
-function isOutboxInstant(value: unknown): value is string {
-  if (typeof value !== "string" || !OUTBOX_INSTANT_PATTERN.test(value)) return false;
-  const parsed = new Date(value);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
 }
 
 /**
@@ -4348,7 +4420,7 @@ function readOutboxIntention(event: ControlPlaneEvent): OutboxReading {
     );
   }
   const deadlineAt = payload["deadlineAt"];
-  if (!isOutboxInstant(deadlineAt)) {
+  if (!isInstant(deadlineAt)) {
     return outboxRefused("payload.deadlineAt", "the deadline is an ISO-8601 instant in UTC with milliseconds");
   }
 
@@ -5288,12 +5360,6 @@ function isBoundedText(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= MODEL_VERSION_TEXT_MAX;
 }
 
-function isModelVersionInstant(value: unknown): value is string {
-  if (typeof value !== "string" || !OUTBOX_INSTANT_PATTERN.test(value)) return false;
-  const parsed = new Date(value);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
-}
-
 /** A payload key, safe to put in a path. Anything else is not echoed. */
 function safePayloadKey(key: string): string {
   return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key) ? key : "<unprintable key>";
@@ -5379,7 +5445,7 @@ export function modelVersionPayloadIssues(
   const deprecatedAt = payload["deprecatedAt"];
   if (!("deprecatedAt" in payload)) {
     issues.push({ path: "payload.deprecatedAt", message: "is present, as null or as an instant" });
-  } else if (deprecatedAt !== null && !isModelVersionInstant(deprecatedAt)) {
+  } else if (deprecatedAt !== null && !isInstant(deprecatedAt)) {
     issues.push({
       path: "payload.deprecatedAt",
       message: "is null or an ISO-8601 instant in UTC with milliseconds",
@@ -5652,7 +5718,7 @@ function priceIntervalIssues(entry: unknown, path: string): LedgerValidationIssu
   }
 
   const effectiveFrom = row["effectiveFrom"];
-  const fromReadable = isModelVersionInstant(effectiveFrom);
+  const fromReadable = isInstant(effectiveFrom);
   if (!fromReadable) {
     issues.push({
       path: path + ".effectiveFrom",
@@ -5663,7 +5729,7 @@ function priceIntervalIssues(entry: unknown, path: string): LedgerValidationIssu
   const effectiveTo = row["effectiveTo"];
   if (!("effectiveTo" in row)) {
     issues.push({ path: path + ".effectiveTo", message: "is present, as null or as an instant" });
-  } else if (effectiveTo !== null && !isModelVersionInstant(effectiveTo)) {
+  } else if (effectiveTo !== null && !isInstant(effectiveTo)) {
     issues.push({
       path: path + ".effectiveTo",
       message: "is null or an ISO-8601 instant in UTC with milliseconds, in its canonical form",

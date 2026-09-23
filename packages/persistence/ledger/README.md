@@ -40,6 +40,7 @@ ledger.close();
 | `getEventByIdempotencyKey(key)` | One record by idempotency key, or null. |
 | `listEvents(query?)` | Sequence-ordered page. Filters: task, type, emitter, destination state. |
 | `getTask(taskId)` / `listTasks(query?)` | Derived task read model, ordered by task id. |
+| `getTaskRevision(taskId, revisionNumber)` | One revision as the revision read model holds it — its id, envelope digest and envelope reference — or null. What recovery holds a restated opening's revision to (P-15/D1). A coordinate that is not one is a `LedgerQueryError`. |
 | `getTaskSubmission(clientScope, clientRequestKey)` | The row one client key produced — the task, its revision and the envelope digest — or null. Both halves are held to `TASK_CLIENT_KEY_PATTERN` first; a key the fold could never have written is a `LedgerQueryError`. |
 | `getWorker(identity)` / `listWorkers(query?)` | Derived worker read model, ordered by identity. |
 | `getExecutionRoute(taskId, attempt)` / `listExecutionRoutes(taskId)` | The route an attempt was admitted on, keyed by the pair. Null, or empty, when nothing recorded one. |
@@ -548,6 +549,10 @@ What the door computes:
   or a different flat assignment, is refused.
 - **The coordinate is new** → `1 + MAX(attempt)` over every event of the task,
   **legacy rows included**, and `1` for a task with no events at all.
+- **The coordinate is not open but already holds events** (P-15/D1, ADR 0105) →
+  their flat attempt is reused. That is the intake's `TASK_DISCOVERED`, written at
+  revision 1, attempt 1 before any opening, so intake, opening and discovery are one
+  attempt. Events of one coordinate at two flat attempts refuse the opening.
 
 Three refusals sit around it, all `LedgerValidationError` with a `path` — never a
 `SqliteError` from an index (F-2's standard, ADR 0072):
@@ -695,6 +700,16 @@ number, an object, an empty string and an explicit `null` are all refused, and
 the refusal shows a string only when it is shaped like an identifier. The door
 and `applyEventToSnapshot` read through one function and throw the same issue,
 so `rebuildReadModel` refuses a stored history holding one in the door's words.
+
+Since P-15/D1 (ADR 0105) the two instants are held to more than text: `acceptedAt`,
+when present, and `terminalAt`, when present and not null, are the canonical instant
+— ISO-8601 with milliseconds in UTC ending in `Z`, the form that round-trips — or
+refused at their key. P-18 orders them as text, which is time order only in that
+form, so an offset or a missing millisecond is refused and never normalized. The
+segment an intention announces is held to its transport the same way: a
+`transportKind` outside `TRANSPORT_KINDS`, absent, null or empty, is refused at
+`payload.segment.transportKind`, and `applyEventToSnapshot` throws the same issue
+(`segmentTransportRefusal`), so a rebuild refuses such a history by name.
 
 ### The result reference, by cohort (migration 22)
 

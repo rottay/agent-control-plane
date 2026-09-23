@@ -612,11 +612,16 @@ function doctored(
   overrides: {
     readonly firstEvent?: (json: Record<string, unknown>) => Record<string, unknown>;
     readonly byKey?: (key: string) => { readonly canonicalJson: string } | null;
+    readonly revision?: (row: ReturnType<LifecycleRecoveryPort["getTaskRevision"]>) => ReturnType<LifecycleRecoveryPort["getTaskRevision"]>;
   },
 ): LifecycleRecoveryPort {
   return {
     getTask: (taskId) => ledger.getTask(taskId),
     getExecutionRoute: (taskId, attempt) => ledger.getExecutionRoute(taskId, attempt),
+    getTaskRevision: (taskId, revisionNumber) => {
+      const row = ledger.getTaskRevision(taskId, revisionNumber);
+      return overrides.revision === undefined ? row : overrides.revision(row);
+    },
     getEventByIdempotencyKey: (key) =>
       overrides.byKey === undefined ? ledger.getEventByIdempotencyKey(key) : overrides.byKey(key),
     getEventBySequence: (sequence) => {
@@ -742,13 +747,17 @@ describe("P-15/B: restateInvocation reads an opening-first V2 task (ADR 0102)", 
     });
   });
 
-  it("N-B-8: an intake-first task stays unreadable until P-15/D (ADR 0087 Ten)", () => {
-    // P-15/D owns the intake → opening → discovery continuity (adjudication v2
-    // C2). Until then an intake-first task — whose first event is a discovery
-    // under the intake transition — is refused by name here, never read.
+  it("N-B-8, inverted by P-15/D1 (ADR 0105): an intake-first task is read through the opening that follows its intake", () => {
+    // B refused an intake-first task by name until D owned the intake → opening →
+    // discovery continuity (adjudication v2 C2). D1 reads it: the first event is the
+    // intake, the opening is found under its V2 key at the intake's coordinate, and its
+    // revision record must be the intake's. The task is the opening-first one seeded
+    // above, with its first event replaced by the intake that would have preceded it.
     const taskId = "b4b4b4b4-0000-4000-8000-0000000000b6";
-    const { ledger } = seedV2("p15b-restate-intake", taskId);
-    const intake = {
+    const { ledger, invocation } = seedV2("p15b-restate-intake", taskId);
+    const revision = invocation.revision;
+    if (revision === undefined) throw new Error("expected a revision");
+    const intakeFor = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
       contractVersion: CONTRACT_VERSION,
       eventId: deterministicUuid("intake/" + taskId),
       taskId,
@@ -757,8 +766,8 @@ describe("P-15/B: restateInvocation reads an opening-first V2 task (ADR 0102)", 
       idempotencyKey: buildV2IdempotencyKey({
         stream: "control_plane_events",
         taskId,
-        revisionNumber: 1,
-        attemptNumber: 1,
+        revisionNumber: revision.revisionNumber,
+        attemptNumber: revision.attemptNumber,
         transitionId: "intake",
       }),
       type: "TASK_DISCOVERED",
@@ -770,18 +779,96 @@ describe("P-15/B: restateInvocation reads an opening-first V2 task (ADR 0102)", 
       correlationId: null,
       causationId: null,
       payload: {
-        revisionId: deterministicUuid("revision/" + taskId + "/1"),
-        revisionNumber: 1,
-        attemptNumber: 1,
-        envelopeSha256: "e".repeat(64),
+        revisionId: revision.revisionId,
+        revisionNumber: revision.revisionNumber,
+        attemptNumber: revision.attemptNumber,
+        envelopeSha256: revision.envelopeSha256,
+        restoredFromRevisionId: null,
+        envelopeArtifactReferenceId: revision.envelopeArtifactReferenceId,
         initiativeId: TEST_INITIATIVE_ID,
+        clientScope: EMITTED_BY,
+        clientRequestKey: "intake-0001",
+        roadmapVersionId: null,
+        stepId: null,
+        role: "implementer",
+        commitPolicy: "NO_COMMIT",
+        resolution: {
+          assignmentId: "routing:GLOBAL:implementer:0@1",
+          assignmentVersion: 1,
+          slot: 0,
+          modelVersionId: "claude-opus-5@2026-06-01",
+          provider: TEST_ROUTE.provider,
+          model: TEST_ROUTE.model,
+          release: "2026-06-01",
+          transportKind: TEST_ROUTE.transportKind,
+          watermarks: [
+            {
+              projectionName: "routing_assignment_read_model",
+              sourceStream: "registry_events",
+              appliedThroughSequence: 1,
+              eventCount: 1,
+              sourceHeadSha256: "a".repeat(64),
+            },
+          ],
+        },
+        ...overrides,
       },
-    };
-    const port = doctored(ledger, { firstEvent: () => intake });
-    expect(restateInvocation(port, taskId, 1)).toEqual({
+    });
+
+    const recovered = restateInvocation(doctored(ledger, { firstEvent: () => intakeFor() }), taskId, 1);
+    expect(recovered).toMatchObject({ ok: true });
+    if (recovered.ok) expect(recovered.context.invocation).toEqual(invocation);
+
+    // The opening must be there, and carry the intake's revision, field by field.
+    expect(restateInvocation(doctored(ledger, { firstEvent: () => intakeFor(), byKey: () => null }), taskId, 1)).toEqual({
       ok: false,
       refusal: "DISCOVERY_UNREADABLE",
-      at: "task.firstSequence",
+      at: "attempt.opening",
     });
+    for (const [field, value] of [
+      ["revisionId", "00000000-0000-4000-8000-00000000abcd"],
+      ["envelopeSha256", "f".repeat(64)],
+      ["envelopeArtifactReferenceId", "another-reference"],
+    ] as const) {
+      expect(restateInvocation(doctored(ledger, { firstEvent: () => intakeFor({ [field]: value }) }), taskId, 1)).toEqual({
+        ok: false,
+        refusal: "DISCOVERY_UNREADABLE",
+        at: "attempt.opening." + field,
+      });
+    }
+  });
+
+  it("B-N1 (P-15/D1): the opening's revision is held to the revision read model, field by field, and a mismatch is unreadable, not a digest mismatch", () => {
+    // The submission digest's preimage is the task, the attempt, the instant, the
+    // initiative and the route: no revision field enters it, so a revision the read
+    // model disagrees with is an opening this door cannot attribute (decision 119's
+    // correction, applied to the revision), never SUBMISSION_DIGEST_MISMATCH.
+    const taskId = "b4b4b4b4-0000-4000-8000-0000000000b7";
+    const { ledger } = seedV2("p15d1-restate-revision", taskId);
+    expect(restateInvocation(doctored(ledger, { revision: () => null }), taskId, 1)).toEqual({
+      ok: false,
+      refusal: "DISCOVERY_UNREADABLE",
+      at: "attempt.revision",
+    });
+    const variants: readonly (readonly [string, unknown])[] = [
+      ["revisionId", "00000000-0000-4000-8000-00000000abcd"],
+      ["revisionId", ""],
+      ["envelopeSha256", "f".repeat(64)],
+      ["envelopeSha256", ""],
+      ["envelopeArtifactReferenceId", null],
+      ["envelopeArtifactReferenceId", "another-reference"],
+    ];
+    for (const [field, value] of variants) {
+      const port = doctored(ledger, {
+        revision: (row) => (row === null ? null : ({ ...row, [field]: value } as typeof row)),
+      });
+      expect({ field, value, outcome: restateInvocation(port, taskId, 1) }).toEqual({
+        field,
+        value,
+        outcome: { ok: false, refusal: "DISCOVERY_UNREADABLE", at: "attempt.revision." + field },
+      });
+    }
+    // And the undoctored read model agrees, so the refusals above are the fields'.
+    expect(restateInvocation(ledger, taskId, 1).ok).toBe(true);
   });
 });

@@ -9,6 +9,27 @@
   producer" sentences of ADRs 0073, 0074, 0076, 0077 and 0079. Their files are
   not touched.
 
+## Errata, 2026-09-23
+
+**4** and **5** below are **AMENDED** by P-15 escalón D1, recorded in ADR 0105
+(decision 132), for the one task this record did not have: a task that entered
+through the intake (P-14/C, ADR 0087).
+
+- **4.** The opening is the task's first event **unless the task entered through the
+  intake**. There the intake's `TASK_DISCOVERED` is first and already left the task
+  `DISCOVERED`, so the opening is the same event — same transition, key, id and
+  payload — out of `DISCOVERED` instead of out of no state, and the discovery follows
+  it as before: intake → opening → discovery, one attempt.
+- **5.** The ledger does not assign `1 + MAX(attempt)` to an opening whose coordinate
+  already holds events: it reuses their flat attempt (the intake's), and refuses the
+  opening when they hold two. The producer proposes by the same rule. Continuity reads
+  an intake-first task's first event as the intake and holds every fact it shares with
+  the invocation to it, then rebuilds the opening.
+
+Nothing else in this record changes. The "fails closed" line on `restateInvocation`
+was already superseded by ADR 0102 for opening-first tasks, and ADR 0105 extends the
+recovery to intake-first ones.
+
 ## Context
 
 Escalones A–F and CORR-2 delivered the protocol at the ledger and store level:

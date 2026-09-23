@@ -11266,6 +11266,52 @@ const P15R_WRITE_SET = [
   "docs/audit/implementation/packets/index.md",
 ];
 
+/**
+ * P-15 escalón D, sub-cut D1: the ledger's hardening, the opening's reuse rule, the
+ * recorded-task reader and the intake -> opening -> discovery continuity (adjudication
+ * v2 C2; B's note N1; C Fable (i) and v2; ADR 0105).
+ *
+ * **What lands.** The ledger door reuses a coordinate's flat attempt when the
+ * coordinate already holds events (the intake's discovery), refuses a segment
+ * transport outside `TRANSPORT_KINDS`, holds `acceptedAt` and `terminalAt` to the
+ * canonical instant at the door and in the fold, and gains `getTaskRevision`;
+ * `isInstant` has one home in the ledger package, on its barrel. The runtime opens an intake-first task out
+ * of `DISCOVERED`, reads it back whole (`readRecordedTask`, off the barrel until D3),
+ * holds continuity to the intake, and recovers it, with the revision cross-checked
+ * against its read model. ADR 0080 §4/§5 carry an errata.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` (2.9.0); `MIGRATIONS` (23);
+ * `API_CONTRACT_VERSION`; `CONTRACTS_SCHEMA_EXPORTS`; `RUNTIME_PUBLIC_EXPORTS`;
+ * `PATH_SCOPED_LAWS` (152): D1 adds no path-scoped law. The ADR corpus 104 -> 105.
+ *
+ * **Twenty-one paths; four are new to the fence** -- the reader, its leaf and its
+ * suite, and ADR 0105. The DT's widening added the ledger barrel, which exports the
+ * one `isInstant` so the reader holds the intake's instant to the canonical form.
+ */
+const P15D1_WRITE_SET = [
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/domains/runtime/src/recorded-task/index.ts",
+  "packages/domains/runtime/src/recorded-task/types/index.ts",
+  "packages/domains/runtime/test/recorded-task/index.test.ts",
+  "packages/domains/runtime/src/core/events/index.ts",
+  "packages/domains/runtime/src/core/step-executor/index.ts",
+  "packages/domains/runtime/src/lifecycle-operation/index.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/domains/runtime/test/lifecycle-operation/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/audit/architecture/database/execution/index.md",
+  "docs/architecture/0105-the-daemon-consumes-a-recorded-task-and-appends-the-whole-chain.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/architecture/0080-the-producer-speaks-the-v2-coordinate.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11501,6 +11547,7 @@ const WRITE_SET = [
   ...P15B_WRITE_SET,
   ...P15C_WRITE_SET,
   ...P15R_WRITE_SET,
+  ...P15D1_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

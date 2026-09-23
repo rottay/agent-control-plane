@@ -8780,17 +8780,20 @@ describe("every attempt opens with its own identity, assigned once", () => {
         payload: revisionPayload({ revisionNumber: 1, attemptNumber: 1 }),
       }),
     );
+    // The revision event already sits on (1, 1) at flat attempt 1, so the opening of
+    // that coordinate reuses 1 rather than taking the next number (P-15/D1, ADR 0105);
+    // before the reuse rule this opening proposed 2.
     ledger.append(
       attemptOpening({
         taskId,
-        attempt: 2,
+        attempt: 1,
         transitionId: "attempt.open",
         fromState: ATTEMPT_TASK_STATE,
         payload: {
           revisionNumber: 1,
           attemptNumber: 1,
           invocationId: "inv-1",
-          legacyAttemptNumber: 2,
+          legacyAttemptNumber: 1,
         },
       }),
     );
@@ -18113,3 +18116,251 @@ function secondCatalogVersionAt(effectiveFrom: string): Record<string, unknown> 
 function createHashHex(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
+
+describe("P-15/D1 ledger hardening: the opening's reuse rule, the segment's transport, the transition's instants (ADR 0105)", () => {
+  it("N-D7: a coordinate holding events at two flat attempts refuses its opening, with zero delta", () => {
+    const ledger = open(temporaryDatabase());
+    plantEnvelopeReference(ledger);
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, attempt: 1, transitionId: "revise", payload: revisionPayload() }));
+    // Tolerated without an attempt row (ADR 0073): a V2 event of the same coordinate
+    // under another flat attempt.
+    ledger.append(
+      makeEvent({
+        taskId,
+        attempt: 2,
+        transitionId: "classify",
+        type: "TASK_CLASSIFIED",
+        fromState: "DISCOVERED",
+        toState: "DT_CLASSIFIED",
+        payload: { revisionNumber: 1, attemptNumber: 1 },
+      }),
+    );
+    const before = ledger.status();
+    for (const attempt of [1, 2, 3]) {
+      const refused = refusalOf(() =>
+        ledger.append(attemptOpening({ taskId, attempt, transitionId: "attempt.open", fromState: "DT_CLASSIFIED" })),
+      );
+      expect(refused.path).toBe("attempt");
+      expect(refused.message).toContain("already holds events at the flat attempts 1, 2");
+    }
+    expect(ledger.status().eventCount).toBe(before.eventCount);
+    expect(ledger.status().headEventSha256).toBe(before.headEventSha256);
+    ledger.close();
+  });
+
+  it("reuses the coordinate's flat attempt, and a fresh coordinate still takes one past the highest", () => {
+    const ledger = open(temporaryDatabase());
+    plantEnvelopeReference(ledger);
+    const taskId = randomUUID();
+    const revision = revisionPayload();
+    const revisionId = revision["revisionId"] as string;
+    ledger.append(makeEvent({ taskId, attempt: 1, transitionId: "revise", payload: revision }));
+    const one = refusalOf(() =>
+      ledger.append(attemptOpening({ taskId, attempt: 2, transitionId: "attempt.open", fromState: ATTEMPT_TASK_STATE, revisionId })),
+    );
+    expect(one.message).toContain("is assigned the flat attempt 1, which its own earlier events already carry, and this event proposes 2");
+    expect(
+      ledger.append(
+        attemptOpening({ taskId, attempt: 1, transitionId: "attempt.open", fromState: ATTEMPT_TASK_STATE, invocationId: "inv-1", revisionId }),
+      )
+        .inserted,
+    ).toBe(true);
+    // Another attempt of the same revision has no event yet: one past the highest.
+    const fresh = refusalOf(() =>
+      ledger.append(
+        attemptOpening({ taskId, attempt: 1, attemptNumber: 2, transitionId: "attempt.open.2", fromState: ATTEMPT_TASK_STATE, revisionId }),
+      ),
+    );
+    expect(fresh.message).toContain("is assigned the flat attempt 2, which is one past this task's highest");
+    ledger.close();
+  });
+
+  it("C Fable (i): a segment's transport absent, null, empty, mistyped or foreign is refused at its path; each word of the vocabulary lands", () => {
+    const ABSENT = Symbol("absent");
+    for (const value of [ABSENT, null, "", 7, "cli", "api_key", "CARRIER_PIGEON", "API_KEY "]) {
+      const ledger = open(temporaryDatabase());
+      const taskId = randomUUID();
+      seedOpenAttempt(ledger, taskId);
+      const segment = segmentRecord();
+      if (value === ABSENT) Reflect.deleteProperty(segment, "transportKind");
+      else segment["transportKind"] = value;
+      const before = ledger.status();
+      const cell = value === ABSENT ? "<absent>" : JSON.stringify(value);
+      const refused = refusalOf(() =>
+        ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1", segment })),
+      );
+      expect({ cell, path: refused.path }).toEqual({ cell, path: "payload.segment.transportKind" });
+      expect(ledger.status().eventCount).toBe(before.eventCount);
+      ledger.close();
+    }
+    for (const transportKind of ["CLI_SUBSCRIPTION", "API_KEY", "LOCAL_OR_SELF_HOSTED"]) {
+      const ledger = open(temporaryDatabase());
+      const taskId = randomUUID();
+      seedOpenAttempt(ledger, taskId);
+      const segment = segmentRecord({ overrides: { transportKind } });
+      expect(ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1", segment })).inserted).toBe(true);
+      ledger.close();
+    }
+  });
+
+  it("C Fable v2: acceptedAt and terminalAt are the canonical instant or refused at their key, never normalized, with zero delta", () => {
+    const nonCanonical: readonly unknown[] = [
+      "",
+      7,
+      "2026-09-12T11:00:00.000+02:00",
+      "2026-09-12T09:00:00Z",
+      "2026-09-12T09:00:00.000z",
+      "2026-02-30T00:00:00.000Z",
+    ];
+    for (const value of [null, ...nonCanonical]) {
+      const ledger = open(temporaryDatabase());
+      const taskId = randomUUID();
+      seedDelivery(ledger, taskId);
+      const before = ledger.status();
+      const refused = refusalOf(() =>
+        ledger.append(
+          dispatchOutcome({
+            taskId,
+            transitionId: "inflight",
+            dispatchAttemptId: "dsp-1",
+            dispatchState: "INFLIGHT",
+            externalHandle: "handle-1",
+            overrides: { acceptedAt: value },
+          }),
+        ),
+      );
+      expect({ value, path: refused.path }).toEqual({ value, path: "payload.outcome.acceptedAt" });
+      expect(ledger.status().eventCount).toBe(before.eventCount);
+      ledger.close();
+    }
+    for (const value of nonCanonical) {
+      const ledger = open(temporaryDatabase());
+      const taskId = randomUUID();
+      seedDelivery(ledger, taskId);
+      const before = ledger.status();
+      const refused = refusalOf(() =>
+        ledger.append(
+          dispatchOutcome({
+            taskId,
+            transitionId: "abandon",
+            dispatchAttemptId: "dsp-1",
+            dispatchState: "ABANDONED",
+            overrides: { terminalAt: value },
+          }),
+        ),
+      );
+      expect({ value, path: refused.path }).toEqual({ value, path: "payload.outcome.terminalAt" });
+      expect(ledger.status().eventCount).toBe(before.eventCount);
+      ledger.close();
+    }
+    // The control: both in the canonical form land, and the delivery reads them back.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedDelivery(ledger, taskId);
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "inflight",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "INFLIGHT",
+        externalHandle: "handle-1",
+        acceptedAt: "2026-09-12T09:00:01.000Z",
+      }),
+    );
+    ledger.append(
+      dispatchOutcome({
+        taskId,
+        transitionId: "settle",
+        dispatchAttemptId: "dsp-1",
+        dispatchState: "SETTLED",
+        terminalAt: "2026-09-12T09:05:00.000Z",
+        effectOutcomeStatus: "OUTCOME_UNKNOWN",
+      }),
+    );
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    ledger.close();
+  });
+
+  it("verifier C1: a usage observation's instant is the ledger's one check, so a date that does not exist is refused", () => {
+    // The shape alone admitted February 30th; `isInstant` round-trips it through Date.
+    for (const occurredAt of ["2026-02-30T00:00:00.000Z", "2026-09-12T11:00:00.000+02:00", "2026-09-12T09:00:00Z"]) {
+      const path = temporaryDatabase();
+      const ledger = open(path);
+      const taskId = randomUUID();
+      const effectId = seedDelivery(ledger, taskId);
+      ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+      const before = ledger.status();
+      const refused = refusalOf(() =>
+        ledger.append(usageObservation({ taskId, transitionId: "obs-1", effectId, overrides: { occurredAt } })),
+      );
+      expect({ occurredAt, path: refused.path }).toEqual({ occurredAt, path: "payload.usageObservation.occurredAt" });
+      expect(ledger.status().eventCount).toBe(before.eventCount);
+      ledger.close();
+      expect(usageRows(path, "SELECT * FROM usage_observation_read_model")).toEqual([]);
+    }
+    // The control: the canonical instant lands.
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const effectId = seedDelivery(ledger, taskId);
+    ledger.append(usageStream({ taskId, transitionId: "stream-1" }));
+    expect(ledger.append(usageObservation({ taskId, transitionId: "obs-1", effectId })).inserted).toBe(true);
+    ledger.close();
+  });
+
+  it("getTaskRevision reads one revision by coordinate, or null, and refuses a coordinate that is not one", () => {
+    const ledger = open(temporaryDatabase());
+    plantEnvelopeReference(ledger);
+    const taskId = randomUUID();
+    const payload = revisionPayload();
+    ledger.append(makeEvent({ taskId, attempt: 1, transitionId: "revise", payload }));
+    expect(ledger.getTaskRevision(taskId, 1)).toMatchObject({
+      taskId,
+      revisionNumber: 1,
+      revisionId: payload["revisionId"],
+      envelopeSha256: REVISION_ENVELOPE,
+      envelopeArtifactReferenceId: ENVELOPE_REFERENCE,
+    });
+    expect(ledger.getTaskRevision(taskId, 2)).toBeNull();
+    expect(ledger.getTaskRevision(randomUUID(), 1)).toBeNull();
+    for (const [id, revision] of [
+      ["", 1],
+      [taskId, 0],
+      [taskId, 1.5],
+      [taskId, -1],
+    ] as const) {
+      expect(caught(() => ledger.getTaskRevision(id, revision))).toBeInstanceOf(LedgerQueryError);
+    }
+    ledger.close();
+  });
+
+  it("verifyIntegrity names a stored registry version whose effective_from is not the canonical instant", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    seedModelVersions(ledger);
+    ledger.appendRegistryEvent(makePriceTableDocument([priceInterval()]));
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    ledger.close();
+    // History from before the registry's parse: planted past the door, on the chain,
+    // with an offset instant in the document and in the column alike.
+    const planted = secondCatalogVersionAt("2026-09-05T14:00:00.000+02:00");
+    plantRegistryRow(
+      path,
+      {
+        subjectKind: "DOCUMENT",
+        documentKind: "PRICE_TABLE",
+        artifactEventKind: null,
+        documentId: CATALOG,
+        documentVersion: 2,
+        parentDocumentVersion: 1,
+        contentDigest: planted["contentDigest"] as string,
+      },
+      planted,
+    );
+    const reopened = open(path);
+    const problems = reopened.verifyIntegrity().problems;
+    expect(problems.map((problem) => problem.kind)).toContain("EVENT_CONTRACT");
+    expect(detailsOf(problems)).toContain("registry sequence");
+    reopened.close();
+  });
+});

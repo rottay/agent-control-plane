@@ -46,6 +46,7 @@ import {
   PRE_CATALOG_PIN_CONTRACT_VERSIONS,
   nextEffectProjection,
   nextExecutionRouteSegmentProjection,
+  segmentTransportRefusal,
   requestSha256,
   nextExecutionRouteProjection,
   initiativeRegistrationPayloadOf,
@@ -1845,7 +1846,7 @@ function segment(overrides: Record<string, unknown> = {}): Record<string, unknow
     modelResolutionStatus: "RESOLVED",
     modelVersionId: "claude-opus-5-20260101",
     accountId: "acct-1",
-    transportKind: "cli",
+    transportKind: "CLI_SUBSCRIPTION",
     capabilityPolicyVersion: "policy-1",
     ...overrides,
   };
@@ -3164,6 +3165,70 @@ describe("a resolution reads three ways, and present-invalid is not absent (CORR
     );
     expect(snapshot.dispatchAttempts.get("dsp-1")?.dispatchState).toBe("SETTLED");
     expect(snapshot.effects.get(OCCURRENCE_EFFECT)?.outcomeStatus).toBe("SUCCEEDED");
+  });
+
+  it("P-15/D1: a transition instant outside the canonical form is refused by the fold in the door's words, never normalized", () => {
+    const spellings: readonly unknown[] = [
+      "",
+      "2026-09-12T11:00:00.000+02:00",
+      "2026-09-12T09:00:00Z",
+      "2026-09-12T09:00:00.000z",
+      "2026-02-30T00:00:00.000Z",
+    ];
+    const cases: readonly (readonly [string, Record<string, unknown>])[] = [
+      ...spellings.map((value) => ["acceptedAt", { dispatchState: "INFLIGHT", acceptedAt: value, externalHandle: "h-1" }] as const),
+      ...spellings.map((value) => ["terminalAt", { dispatchState: "SETTLED", terminalAt: value }] as const),
+    ];
+    for (const [key, record] of cases) {
+      const snapshot = snapshotWithDelivery();
+      const event = outcomeEvent(record);
+      const reading = dispatchOutcomeRecord(event, 3);
+      const label = key + " = " + JSON.stringify(record[key]);
+      expect(reading?.kind === "refused" ? reading.path : "not refused", label).toBe("payload.outcome." + key);
+      expect(() => {
+        applyEventToSnapshot(snapshot, event, 3, EVENT_SHA256);
+      }, label).toThrow(LedgerValidationError);
+      expect(snapshot.dispatchAttempts.get("dsp-1")?.dispatchState, label).toBe("INTENDED");
+    }
+    // A non-terminal state may carry terminalAt null, and the canonical forms read.
+    expect(dispatchOutcomeRecord(outcomeEvent({ dispatchState: "INFLIGHT", terminalAt: null, acceptedAt: SETTLED_AT, externalHandle: "h-1" }), 3)?.kind).toBe(
+      "record",
+    );
+  });
+
+  it("P-15/D1: a segment transport outside the vocabulary is refused by the fold in the door's words, never projected as text", () => {
+    // Decision 56: a rebuild of a stored history holding one refuses by name here,
+    // rather than projecting no segment and dying later on the foreign key of the
+    // rows that name it.
+    const ABSENT = Symbol("absent");
+    for (const transportKind of [ABSENT, null, "", 7, "cli", "api_key", "CARRIER_PIGEON", "API_KEY "]) {
+      const record = segment();
+      if (transportKind === ABSENT) Reflect.deleteProperty(record, "transportKind");
+      else record["transportKind"] = transportKind;
+      const event = executionEvent("EFFECT_INTENDED", { revisionNumber: 1, attemptNumber: 1, segment: record });
+      const label = transportKind === ABSENT ? "<absent>" : JSON.stringify(transportKind);
+      const refusal = segmentTransportRefusal(event);
+      expect(refusal?.path, label).toBe("payload.segment.transportKind");
+      expect(nextExecutionRouteSegmentProjection(event, 1), label).toBeNull();
+      const snapshot = createProjectionSnapshot();
+      let thrown: unknown = null;
+      try {
+        applyEventToSnapshot(snapshot, event, 1, EVENT_SHA256);
+      } catch (error: unknown) {
+        thrown = error;
+      }
+      expect(thrown, label).toBeInstanceOf(LedgerValidationError);
+      expect((thrown as LedgerValidationError).issues[0], label).toEqual(refusal);
+      expect(snapshot.routeSegments.size, label).toBe(0);
+    }
+    // The control: each word of the vocabulary reads, and the fold projects it.
+    for (const transportKind of ["CLI_SUBSCRIPTION", "API_KEY", "LOCAL_OR_SELF_HOSTED"]) {
+      const event = executionEvent("EFFECT_INTENDED", { revisionNumber: 1, attemptNumber: 1, segment: segment({ transportKind }) });
+      expect(segmentTransportRefusal(event)).toBeNull();
+      expect(nextExecutionRouteSegmentProjection(event, 1)?.transportKind).toBe(transportKind);
+    }
+    // Another type, or an intention with no segment object, is not the transport's to judge.
+    expect(segmentTransportRefusal(executionEvent("EFFECT_INTENDED", { revisionNumber: 1, attemptNumber: 1 }))).toBeNull();
   });
 });
 

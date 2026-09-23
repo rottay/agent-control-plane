@@ -34,6 +34,7 @@ import {
 import type { ScenarioRoot } from "../../../src/toy/repository/index.js";
 import {
   ATTEMPT_OPENING_STEP,
+  INTAKE_ATTEMPT_OPENING_STEP,
   buildDispatchIntentionEvent,
   buildDispatchTransitionEvent,
   buildEffectIntentionEvent,
@@ -982,6 +983,19 @@ describe("P-G-1: the real walk speaks the V2 coordinate end to end", () => {
     expect(nextStep(context, "DISCOVERED")).toBe(planStep(0));
     appendPlanStep(context, planStep(0));
     expect(nextStep(context, "DISCOVERED")).toBe(planStep(1));
+  });
+
+  it("P-15/D1: a task DISCOVERED with no opening under its key is intake-first — the opening comes first, out of DISCOVERED", () => {
+    const { context } = v2ContextFor("p15d1-navigate", "40404040-4040-4040-8040-404040404012");
+    // The ledger holds no event of this task, so `DISCOVERED` here stands for the
+    // state an intake leaves: the opening is absent under its V2 key.
+    expect(nextStep(context, "DISCOVERED")).toBe(INTAKE_ATTEMPT_OPENING_STEP);
+    // An opening-first task is never read this way: once the opening is there, the
+    // discovery follows, as before.
+    appendPlanStep(context, ATTEMPT_OPENING_STEP);
+    expect(nextStep(context, "DISCOVERED")).toBe(planStep(0));
+    // A V1 walk never enters the revision branch at all.
+    expect(nextStep({ ...context, invocation: invocationFor("40404040-4040-4040-8040-404040404012") }, "DISCOVERED")).toBe(planStep(1));
   });
 });
 

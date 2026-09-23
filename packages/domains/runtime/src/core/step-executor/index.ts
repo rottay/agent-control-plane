@@ -1,5 +1,7 @@
+import { ControlPlaneEvent as ControlPlaneEventSchema } from "@acp/contracts";
 import type { ControlPlaneEvent, ResolvedRoute, TaskState } from "@acp/contracts";
-import { canonicalJsonStringify } from "@acp/ledger";
+import { canonicalJsonStringify, taskIntakePayloadOf } from "@acp/ledger";
+import type { TaskIntakePayload } from "@acp/ledger";
 
 import type {
   DurableInvocation,
@@ -9,7 +11,13 @@ import type {
 import type { CheckpointPort } from "../../checkpoint/index.js";
 import { deriveEventCoordinate } from "../coordinates/index.js";
 
-import { ATTEMPT_OPENING_STEP, buildEvent, causalPredecessorOf, operationForStep } from "../events/index.js";
+import {
+  ATTEMPT_OPENING_STEP,
+  INTAKE_ATTEMPT_OPENING_STEP,
+  buildEvent,
+  causalPredecessorOf,
+  operationForStep,
+} from "../events/index.js";
 import { INTENT_STEP, OUTCOME_STEP, planStep } from "../lifecycle/index.js";
 import type { PlanStep } from "../lifecycle/index.js";
 import { LifecyclePlanError, PostconditionUnknownError, SupervisorError } from "../../errors/index.js";
@@ -179,9 +187,29 @@ export function assertInvocationContinuity(context: BeatContext): void {
   // so the discovery is rebuilt too once it exists: that is where a V2 walk
   // binds what was asked for, and a foreign submission resuming past it
   // refuses exactly as a V1 one does at step 0.
+  // An intake-first task (P-15/D1, ADR 0105; ADR 0080 §4 as amended): the first
+  // event is the intake, which no invocation can rebuild — the door wrote it, with
+  // the client's key and the resolution. So it is read instead, and every fact it
+  // shares with this invocation is held to it: the task, the flat attempt, the
+  // instant the submission was taken at, the initiative and the revision record.
+  // Then the opening, which this invocation does rebuild, out of `DISCOVERED`.
+  const intake = invocation.revision === undefined ? null : readIntake(recorded.canonicalJson);
+  if (intake !== null) {
+    assertIntakeMatches(context, intake);
+    const opening = buildEvent({ invocation, step: INTAKE_ATTEMPT_OPENING_STEP, emittedBy, initiativeId, plan, route });
+    const recordedOpening = ledger.getEventByIdempotencyKey(opening.idempotencyKey);
+    if (recordedOpening !== null && recordedOpening.canonicalJson !== canonicalJsonStringify(opening)) {
+      throw new SupervisorError(
+        "refusing to resume: this attempt was opened by a different invocation," +
+          " and continuing would finish one request's work under another request's identity",
+      );
+    }
+  }
+
   const first = invocation.revision === undefined ? planStep(0) : ATTEMPT_OPENING_STEP;
-  const rebuilt = buildEvent({ invocation, step: first, emittedBy, initiativeId, plan, route });
-  if (recorded.canonicalJson !== canonicalJsonStringify(rebuilt)) {
+  const rebuilt =
+    intake === null ? buildEvent({ invocation, step: first, emittedBy, initiativeId, plan, route }) : null;
+  if (rebuilt !== null && recorded.canonicalJson !== canonicalJsonStringify(rebuilt)) {
     throw new SupervisorError(
       "refusing to resume: these coordinates were begun by a different" +
         " invocation, and continuing would finish one request's work under" +
@@ -197,6 +225,62 @@ export function assertInvocationContinuity(context: BeatContext): void {
       "refusing to resume: this attempt was discovered under a different" +
         " submission, and continuing would finish one request's work under" +
         " another request's identity",
+    );
+  }
+}
+
+/** The intake a task's first event records, if it is one: the event and its payload. */
+interface RecordedIntake {
+  readonly event: ControlPlaneEvent;
+  readonly payload: TaskIntakePayload;
+}
+
+/**
+ * Read a first event as an intake, or `null` when it is not one.
+ *
+ * Through the contract and then through the fold's own reading of the intake
+ * payload (`taskIntakePayloadOf`), so this module restates no part of it.
+ */
+function readIntake(canonicalJson: string): RecordedIntake | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(canonicalJson);
+  } catch {
+    return null;
+  }
+  const parsed = ControlPlaneEventSchema.safeParse(raw);
+  if (!parsed.success) return null;
+  const payload = taskIntakePayloadOf(parsed.data);
+  return payload === null ? null : { event: parsed.data, payload };
+}
+
+/**
+ * Hold an intake-first task's first event to the invocation resuming it.
+ *
+ * The intake carries no submission digest — the route is elected after it — so
+ * what binds the two is every fact they share. A difference in any one is another
+ * request, and refused like one.
+ */
+function assertIntakeMatches(context: BeatContext, intake: RecordedIntake): void {
+  const { invocation, initiativeId } = context;
+  const revision = invocation.revision;
+  const { event, payload } = intake;
+  const agrees =
+    revision !== undefined &&
+    event.taskId === invocation.taskId &&
+    event.attempt === invocation.attempt &&
+    event.occurredAt === invocation.submittedAt &&
+    payload.initiativeId === initiativeId &&
+    payload.revisionId === revision.revisionId &&
+    payload.revisionNumber === revision.revisionNumber &&
+    payload.attemptNumber === revision.attemptNumber &&
+    payload.envelopeSha256 === revision.envelopeSha256 &&
+    payload.envelopeArtifactReferenceId === revision.envelopeArtifactReferenceId;
+  if (!agrees) {
+    throw new SupervisorError(
+      "refusing to resume: this task entered through an intake that records another" +
+        " request, and continuing would finish one request's work under another" +
+        " request's identity",
     );
   }
 }
@@ -255,6 +339,17 @@ export function nextStep(context: BeatContext, current: TaskState | null): PlanS
   // this block, so its navigation is exactly what it was.
   if (context.invocation.revision !== undefined) {
     if (current === null) return ATTEMPT_OPENING_STEP;
+    // A task that entered through the intake is `DISCOVERED` before any opening
+    // (P-15/D1): the opening comes first, out of that state, and the discovery
+    // after it. An opening-first task always has its opening by now.
+    if (current === INTAKE_ATTEMPT_OPENING_STEP.fromState) {
+      const openingKey = deriveEventCoordinate(
+        context.invocation,
+        INTAKE_ATTEMPT_OPENING_STEP.transitionId,
+        INTAKE_ATTEMPT_OPENING_STEP.index,
+      ).idempotencyKey;
+      if (context.ledger.getEventByIdempotencyKey(openingKey) === null) return INTAKE_ATTEMPT_OPENING_STEP;
+    }
     const discovery = stepFrom(context.plan, null);
     if (current === discovery.toState) {
       const key = deriveEventCoordinate(
@@ -489,8 +584,23 @@ function assertCausalPredecessor(
 function assertOpeningProposal(context: BeatContext, openingKey: string): void {
   if (context.ledger.getEventByIdempotencyKey(openingKey) !== null) return;
 
+  // The ledger's reuse rule, read from the same evidence (P-15/D1, ADR 0105): a
+  // coordinate that already holds events keeps their flat attempt. The one producer
+  // that writes a coordinate before its opening is the intake, so a task whose first
+  // event is the intake of this coordinate is assigned the intake's flat attempt;
+  // every other opening is `1 + MAX(attempt)`, as before.
   const task = context.ledger.getTask(context.invocation.taskId);
-  const assigned = (task === null ? 0 : task.latestAttempt) + 1;
+  const first = task === null ? null : context.ledger.getEventBySequence(task.firstSequence);
+  const intake = first === null ? null : readIntake(first.canonicalJson);
+  const revision = context.invocation.revision;
+  const reused =
+    intake !== null &&
+    revision !== undefined &&
+    intake.payload.revisionNumber === revision.revisionNumber &&
+    intake.payload.attemptNumber === revision.attemptNumber
+      ? intake.event.attempt
+      : null;
+  const assigned = reused ?? (task === null ? 0 : task.latestAttempt) + 1;
   if (assigned !== context.invocation.attempt) {
     throw new SupervisorError(
       "refusing to open this attempt: the ledger would assign it the flat attempt " +

@@ -580,6 +580,14 @@ export {
 export { taskIntakePayloadOf } from "./projection/index.js";
 
 /**
+ * The ledger's one canonical-instant check (P-15/D1, ADR 0105): ISO-8601 with
+ * milliseconds in UTC ending in `Z`, and a real date that round-trips. Exported so a
+ * reader outside this package holds an instant to the form the ledger compares as
+ * text, rather than restating the check.
+ */
+export { isInstant } from "./projection/index.js";
+
+/**
  * P-06/CORR: the prompt occurrence record's closed key set (ADR 0096).
  *
  * The door refuses a key this grammar does not declare, and `@acp/runtime`'s

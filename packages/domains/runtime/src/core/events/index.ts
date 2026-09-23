@@ -314,6 +314,23 @@ export const ATTEMPT_OPENING_STEP: PlanStep = Object.freeze({
 });
 
 /**
+ * The same opening, for a task that entered through the intake (P-15/D1, ADR 0105;
+ * ADR 0080 §4 as amended).
+ *
+ * The intake's `TASK_DISCOVERED` is the task's first event and already left it
+ * `DISCOVERED`, so the opening is a same-state passthrough out of that state rather
+ * than the event that creates the task; the contract refuses a same-state event
+ * only for `TASK_STATE_CHANGED`. Everything else is the opening above: the same
+ * transition, the same index, so the same key and event id, and the same payload.
+ * The ledger reuses the intake's flat attempt for it, so the intake, this opening
+ * and the discovery that follows are one attempt.
+ */
+export const INTAKE_ATTEMPT_OPENING_STEP: PlanStep = Object.freeze({
+  ...ATTEMPT_OPENING_STEP,
+  fromState: planStep(0).toState,
+});
+
+/**
  * Build the attempt's opening, field by field.
  *
  * The payload is B's grammar and nothing else: the revision record, the

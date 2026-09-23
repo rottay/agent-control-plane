@@ -176,6 +176,8 @@ import {
   usageSettlementKey,
   usageSettlementObservationKey,
   usageSettlementSourceHeadKey,
+  isInstant,
+  segmentTransportRefusal,
 } from "../projection/index.js";
 import {
   DISPATCH_STATE_TRANSITIONS,
@@ -528,9 +530,6 @@ const CAUSATION_STREAMS: readonly CausationStream[] = [
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
-/** ISO-8601 with milliseconds, in UTC. The contract's one instant form. */
-const INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-
 function isCausationStream(value: unknown): value is CausationStream {
   return typeof value === "string" && CAUSATION_STREAMS.includes(value as CausationStream);
 }
@@ -646,13 +645,6 @@ function appendContentDigest(canonicalJson: string, causation: CausationRef | nu
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** An instant in the contract's one form, and a real date rather than a shape. */
-function isInstant(value: unknown): value is string {
-  if (typeof value !== "string" || !INSTANT_PATTERN.test(value)) return false;
-  const parsed = new Date(value);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
 }
 
 function isBoundedIdentifier(value: unknown): value is string {
@@ -4160,6 +4152,11 @@ export class Ledger {
    * `1 + MAX(attempt)` of that task's events is assigned, legacy ones included
    * (with no events: 1)."
    *
+   * **Amended by P-15/D1 (ADR 0105):** when events of that same coordinate already
+   * exist — an intake's discovery, written before any opening — their flat attempt is
+   * reused rather than `1 + MAX(attempt)` assigned, and two distinct flat attempts on
+   * one coordinate refuse the opening.
+   *
    * **The producer proposes and this door verifies.** That is the one reading
    * the shape of an append admits, and it is adjudicated rather than invented.
    * An event arrives *signed*: `canonicalJson` and therefore `event_sha256`
@@ -4345,10 +4342,38 @@ export class Ledger {
     // `1 + MAX(attempt)` over every event of this task, legacy rows included,
     // because the flat counter is monotone per task and a legacy event holds
     // one. A task with no events at all is assigned 1.
+    //
+    // **Unless the coordinate already has events** (P-15/D1, ADR 0105; streams
+    // §1.1, execution §3 as amended). A task that entered through the intake holds its
+    // `TASK_DISCOVERED` at (revision 1, attempt 1) before any opening, under a flat
+    // attempt of its own; the opening of that coordinate reuses that number rather
+    // than taking the next one, so the intake, the opening and the discovery are one
+    // attempt. Events of one coordinate at two flat attempts are two answers to one
+    // question, and the opening is refused rather than choosing between them.
+    const prior = (
+      this.#stmt(
+        "SELECT DISTINCT attempt FROM control_plane_events " +
+          "WHERE task_id = ? AND revision_number = ? AND attempt_number = ? ORDER BY attempt",
+      ).all(event.taskId, revisionNumber, attemptNumber) as { readonly attempt: number }[]
+    ).map((row) => row.attempt);
+    if (prior.length > 1) {
+      throw new LedgerValidationError([
+        {
+          path: "attempt",
+          message:
+            "attempt " +
+            where +
+            " already holds events at the flat attempts " +
+            prior.map(String).join(", ") +
+            ", and one coordinate has one flat attempt; the opening is not written",
+        },
+      ]);
+    }
+    const reused = prior[0];
     const head = this.#stmt(
       "SELECT MAX(attempt) AS highest FROM control_plane_events WHERE task_id = ?",
     ).get(event.taskId) as { readonly highest: number | null };
-    const expected = (head.highest ?? 0) + 1;
+    const expected = reused ?? (head.highest ?? 0) + 1;
 
     // The cap, checked on the COMPUTED value and before the comparison below.
     // Reversing the two would make the contract's own parse refuse the event
@@ -4379,7 +4404,9 @@ export class Ledger {
             where +
             " is assigned the flat attempt " +
             String(expected) +
-            ", which is one past this task's highest, and this event proposes " +
+            (reused === undefined
+              ? ", which is one past this task's highest, and this event proposes "
+              : ", which its own earlier events already carry, and this event proposes ") +
             String(event.attempt),
         },
       ]);
@@ -4479,6 +4506,15 @@ export class Ledger {
     // refused by name here: the fold projects no row for it, and the row that
     // named it would then reach `fk_…__execution_route_segment_read_model` as
     // an abort nobody can attribute to an event (F-2's standard).
+    // The transport by name first (P-15/D1, ADR 0105): absent, null, empty or a word
+    // outside the contract's vocabulary is refused at its own path, never carried as
+    // text. The fold reads it as the same word or projects no row.
+    // `segmentTransportRefusal` is the fold's own reading, so the door and a rebuild
+    // refuse with one issue.
+    const transportRefusal = segmentTransportRefusal(event);
+    if (transportRefusal !== null) {
+      throw new LedgerValidationError([{ path: transportRefusal.path, message: transportRefusal.message }]);
+    }
     const segment = nextExecutionRouteSegmentProjection(event, 0);
     if (segment === null) {
       throw new LedgerValidationError([
@@ -10936,6 +10972,29 @@ export class Ledger {
     return row === undefined ? null : effectRowToModel(row);
   }
 
+  /**
+   * One revision of one task, as the revision read model holds it, or null (P-15/D1,
+   * ADR 0105; B's verification note N1).
+   *
+   * What recovery holds a restated invocation's revision fields against: the id, the
+   * envelope digest and the envelope's reference are read from the row the intake or
+   * the opening folded, rather than trusted as whatever non-empty text an event
+   * carried. By coordinate, from one read, with no clock and no write.
+   */
+  getTaskRevision(taskId: string, revisionNumber: number): TaskRevisionReadModel | null {
+    this.#assertOpen("getTaskRevision");
+    if (typeof taskId !== "string" || taskId.length === 0) {
+      throw new LedgerQueryError("taskId must be a non-empty string");
+    }
+    if (!Number.isSafeInteger(revisionNumber) || revisionNumber < 1) {
+      throw new LedgerQueryError("revisionNumber must be a positive integer");
+    }
+    const row = this.#stmt(
+      "SELECT * FROM task_revision_read_model WHERE task_id = ? AND revision_number = ?",
+    ).get(taskId, revisionNumber) as TaskRevisionRow | undefined;
+    return row === undefined ? null : taskRevisionRowToModel(row);
+  }
+
   getExecutionRoute(taskId: string, attempt: number): ExecutionRouteReadModel | null {
     this.#assertOpen("getExecutionRoute");
     if (!Number.isInteger(attempt) || attempt < 1) {
@@ -11249,7 +11308,7 @@ export class Ledger {
       ]);
     }
     const activatedAt = meta.get(ACCOUNT_INTEGRITY_ACTIVATED_AT) ?? "";
-    if (!INSTANT_PATTERN.test(activatedAt)) {
+    if (!isInstant(activatedAt)) {
       throw new LedgerIntegrityError([
         "ledger_meta holds an account integrity activation instant that is not an instant",
       ]);
