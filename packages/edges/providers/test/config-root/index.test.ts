@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   BASE_ENV_KEYS,
   PROVIDER_CONFIG_ENV,
+  PROVIDER_EXTRA_ENV,
   admitConfigRoot,
   admitWorkdir,
   allowedEnvKeys,
@@ -97,12 +98,55 @@ describe("a config root is admitted, never assumed", () => {
 });
 
 describe("the environment is built, never inherited", () => {
-  it("allows exactly four variables per provider", () => {
+  it("allows four variables per provider, and five for claude (USER, ADR 0101)", () => {
     for (const provider of PROVIDER_NAMES) {
       expect(allowedEnvKeys(provider)).toEqual(
-        [...BASE_ENV_KEYS, PROVIDER_CONFIG_ENV[provider]].sort(),
+        [...BASE_ENV_KEYS, PROVIDER_CONFIG_ENV[provider], ...PROVIDER_EXTRA_ENV[provider]].sort(),
       );
-      expect(allowedEnvKeys(provider)).toHaveLength(4);
+    }
+    expect(allowedEnvKeys("claude")).toEqual(["CLAUDE_CONFIG_DIR", "HOME", "LC_ALL", "PATH", "USER"]);
+    expect(allowedEnvKeys("kimi")).toHaveLength(4);
+    expect(allowedEnvKeys("codex")).toHaveLength(4);
+    expect(PROVIDER_EXTRA_ENV).toEqual({ claude: ["USER"], kimi: [], codex: [] });
+  });
+
+  it("gives claude the USER of the parent, and kimi and codex never", () => {
+    const root = drillRoot();
+    const prior = process.env["USER"];
+    process.env["USER"] = "acp-" + "fixture-login";
+    try {
+      expect(buildEnv("claude", admitConfigRoot(root, CONTEXT))["USER"]).toBe("acp-fixture-login");
+      for (const provider of ["kimi", "codex"] as const) {
+        expect(Object.hasOwn(buildEnv(provider, admitConfigRoot(root, CONTEXT)), "USER")).toBe(false);
+      }
+    } finally {
+      if (prior === undefined) delete process.env["USER"];
+      else process.env["USER"] = prior;
+    }
+  });
+
+  it("leaves USER absent when the parent has none: never an empty string, never invented", () => {
+    const root = drillRoot();
+    const prior = process.env["USER"];
+    delete process.env["USER"];
+    try {
+      const env = buildEnv("claude", admitConfigRoot(root, CONTEXT));
+      expect(Object.hasOwn(env, "USER")).toBe(false);
+      expect(Object.keys(env).every((key) => allowedEnvKeys("claude").includes(key))).toBe(true);
+    } finally {
+      if (prior !== undefined) process.env["USER"] = prior;
+    }
+  });
+
+  it("copies an extra only when the parent's value is a string, so an empty string travels as itself", () => {
+    const root = drillRoot();
+    const prior = process.env["USER"];
+    process.env["USER"] = "";
+    try {
+      expect(buildEnv("claude", admitConfigRoot(root, CONTEXT))["USER"]).toBe("");
+    } finally {
+      if (prior === undefined) delete process.env["USER"];
+      else process.env["USER"] = prior;
     }
   });
 
@@ -134,6 +178,9 @@ describe("the environment is built, never inherited", () => {
     try {
       const env = buildEnv("kimi", admitConfigRoot(root, CONTEXT));
       expect(Object.hasOwn(env, "ACP_P4A_SHOULD_NOT_TRAVEL")).toBe(false);
+      // The extras path copies its own keys and no other.
+      const claude = buildEnv("claude", admitConfigRoot(root, CONTEXT));
+      expect(Object.hasOwn(claude, "ACP_P4A_SHOULD_NOT_TRAVEL")).toBe(false);
     } finally {
       delete process.env["ACP_P4A_SHOULD_NOT_TRAVEL"];
     }

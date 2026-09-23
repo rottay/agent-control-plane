@@ -116,6 +116,7 @@ new records from `_template.md`, which carries the required fields.
 | 0098 | [An effect records its result by reference, with its outcome, and SUCCEEDED requires it](0098-an-effect-records-its-result-by-reference-with-its-outcome.md) | accepted |
 | 0099 | [A transport, a process and an operation are three facts, and output bytes live on the private side](0099-a-transport-a-process-and-an-operation-are-three-facts.md) | accepted |
 | 0100 | [An effect answers with a published result and its response occurrence](0100-an-effect-answers-with-a-published-result-and-its-response-occurrence.md) | accepted |
+| 0101 | [The Claude adapter speaks the observed CLI](0101-the-claude-adapter-speaks-the-observed-cli.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

@@ -40,12 +40,30 @@ export const PROVIDER_CONFIG_ENV: Readonly<Record<ProviderName, string>> = Objec
   codex: "CODEX_HOME",
 });
 
-/** Variables every provider gets, and the only ones. */
+/** Variables every provider gets. */
 export const BASE_ENV_KEYS: readonly string[] = Object.freeze(["HOME", "LC_ALL", "PATH"]);
+
+/**
+ * The variables one provider needs beyond the base and its configuration root
+ * (P-15 escalón A, ADR 0101).
+ *
+ * Claude gets `USER`: without it the CLI reports "Not logged in" even with a valid
+ * configuration root, because the keychain entry it reads is keyed by the login
+ * name. Under `env -i HOME PATH CLAUDE_CONFIG_DIR`, adding `USER` alone flipped
+ * `auth status` to logged in, and no other of the 51 parent variables did. `USER`
+ * is a login name, not a secret. Kimi and Codex get nothing extra.
+ */
+export const PROVIDER_EXTRA_ENV: Readonly<Record<ProviderName, readonly string[]>> = Object.freeze({
+  claude: Object.freeze(["USER"]),
+  kimi: Object.freeze([]),
+  codex: Object.freeze([]),
+});
 
 /** The complete allowlist for one provider, sorted, for equality pinning. */
 export function allowedEnvKeys(provider: ProviderName): readonly string[] {
-  return Object.freeze([...BASE_ENV_KEYS, PROVIDER_CONFIG_ENV[provider]].sort());
+  return Object.freeze(
+    [...BASE_ENV_KEYS, PROVIDER_CONFIG_ENV[provider], ...PROVIDER_EXTRA_ENV[provider]].sort(),
+  );
 }
 
 function admitDirectory(
@@ -108,6 +126,12 @@ export function buildEnv(
 ): Readonly<Record<string, string>> {
   const env: Record<string, string> = {};
   for (const key of BASE_ENV_KEYS) {
+    const value = process.env[key];
+    if (typeof value === "string") env[key] = value;
+  }
+  // The same way, key by key: an extra absent from the parent stays absent, never
+  // an empty string and never invented.
+  for (const key of PROVIDER_EXTRA_ENV[provider]) {
     const value = process.env[key];
     if (typeof value === "string") env[key] = value;
   }

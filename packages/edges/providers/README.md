@@ -36,7 +36,7 @@ absent so one cannot come back alongside its directory.
 
 | Provider | Surface | Framing | Built against |
 | --- | --- | --- | --- |
-| `claudeAdapter` | `claude -p --output-format stream-json` | line-delimited records | the documented headless `stream-json` surface |
+| `claudeAdapter` | `claude -p --output-format stream-json --verbose` | line-delimited records | the headless `stream-json` surface, and two captured runs (ADR 0099, ADR 0101) |
 | `kimiAdapter` | `kimi acp` | NDJSON, stable ACP v1 | a pinned ACP v1 schema |
 | `codexAdapter` | `codex app-server --listen stdio://` | **UNKNOWN** | the offline schema the Codex CLI generates for its own protocol |
 
@@ -52,6 +52,33 @@ signals. It imports neither the session controller nor any process module nor
 `node:child_process`, so it cannot participate in the boundary it is kept
 outside of. The fence asserts it: the first two per provider file, the third as
 the package-wide single-spawn-site law.
+
+**The Claude argv, flag by flag (P-15 escalón A, ADR 0101).** Every session is
+`-p --output-format stream-json --verbose --model <alias> --session-id <name>
+--no-session-persistence --strict-mcp-config --mcp-config {"mcpServers":{}}`:
+
+- `--verbose` because `stream-json` under `-p` requires it;
+- `--session-id` is `claudeSessionId(taskId, attempt)`, a version 5 UUID per attempt,
+  from `src/session-name/`, the one providers file admitted to `node:crypto`;
+- nothing is persisted to resume;
+- no MCP server of the account reaches a worker.
+
+A reviewer adds `--permission-mode plan --restricted --tools
+Glob,Grep,Read,WebFetch,WebSearch`. A `--resume` is admitted only with the
+attempt's own name; any other value is refused before a spawn with
+`PROTOCOL_UNSUPPORTED`, and the port never asks for one. The smoke profile's
+flags (`--tools ""`, `--max-turns`, `--safe-mode`, `--max-budget-usd`) are not
+worker defaults. The two captures passed `--verbose`, `--no-session-persistence`
+and the empty MCP configuration. What they did not observe — this exact argv,
+`--session-id` with persistence off, the reviewer's `--tools` list — is listed
+as unproven in ADR 0101.
+
+**The environment.** Built key by key, never inherited: `HOME`, `LC_ALL`, `PATH`
+and the provider's configuration variable, four for every provider, plus
+`PROVIDER_EXTRA_ENV`. That adds `USER` for Claude alone, since without it the CLI
+reports "Not logged in" under a valid configuration root; Kimi and Codex get
+nothing extra. An extra the parent does not have stays absent and is never
+invented.
 
 Every parser is an **allowlist**: it claims an exact set of methods or record
 types and answers everything else with a classified refusal — `UNKNOWN_EVENT`
@@ -100,7 +127,9 @@ the terminal; they never report a process exit, because they own no process
 ## One process boundary
 
 `src/process/spawn/index.ts` is the only file that imports `node:child_process`, and
-`src/session/index.ts` is its only caller. Both facts are asserted by the
+`src/session/index.ts` is its only caller. In the same way,
+`src/session-name/index.ts` is the only file that imports `node:crypto`, for the
+one SHA-1 a version 5 UUID is defined over (L-P15A-1). Both facts are asserted by the
 architecture fence, not merely intended. Two spawners drift, and the drift is
 discovered only when they disagree about how to stop something.
 

@@ -11030,6 +11030,48 @@ const P07D_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-15 escalón A: the Claude adapter speaks the observed CLI (ND-8, ND-9, C8;
+ * ADR 0101).
+ *
+ * **What lands.** Claude's environment gains `USER`, the one variable the
+ * authentication diagnosis showed the CLI needs, through a per-provider extra
+ * that Kimi and Codex leave empty. Its argv gains `--verbose`,
+ * `--no-session-persistence` and `--strict-mcp-config` with an empty
+ * `--mcp-config`, and a reviewer gains `--tools` with the read-only allowlist.
+ * `--session-id` becomes a version 5 UUID over the task and the attempt, from a new
+ * leaf, `providers/src/session-name/`, the one providers file admitted to
+ * `node:crypto`. A `--resume` naming any other session is refused before a spawn
+ * with `PROTOCOL_UNSUPPORTED`.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 149 -> **150** for L-P15A-1;
+ * `PROVIDERS_PUBLIC_EXPORTS` 88 -> **91** (`claudeSessionId`,
+ * `CLAUDE_SESSION_UUID_NAMESPACE`, `PROVIDER_EXTRA_ENV`); `PROVIDERS_ENV_ALLOWLIST`
+ * claude 4 -> **5** (`USER`), amended in its row. The ADR corpus 100 -> 101.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION`; `CONTRACTS_SCHEMA_EXPORTS` 161;
+ * `RUNTIME_PUBLIC_EXPORTS` 285; `MIGRATIONS` 22; `ADAPTER_ERROR_CODES` (no new
+ * word); `API_CLIENT_SHAPE` and `LOCAL_CLIENT_SHAPE`; L-B4A-3; L-P07C-1; L-P32C-1.
+ *
+ * **Thirteen paths; three are new to the fence** -- the leaf, its suite and ADR
+ * 0101.
+ */
+const P15A_WRITE_SET = [
+  "packages/edges/providers/src/config-root/index.ts",
+  "packages/edges/providers/src/claude/index.ts",
+  "packages/edges/providers/src/session-name/index.ts",
+  "packages/edges/providers/src/index.ts",
+  "packages/edges/providers/README.md",
+  "packages/edges/providers/test/config-root/index.test.ts",
+  "packages/edges/providers/test/claude/index.test.ts",
+  "packages/edges/providers/test/session-name/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0101-the-claude-adapter-speaks-the-observed-cli.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11261,6 +11303,7 @@ const WRITE_SET = [
   ...P07B_WRITE_SET,
   ...P07C_WRITE_SET,
   ...P07D_WRITE_SET,
+  ...P15A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -12693,6 +12736,13 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the result recorder runs before the marker, on the completed branch only, behind a sink that never throws",
     scope: "packages/domains/runtime/src/execution-effects/index.ts",
+  },
+  // P-15 escalón A. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 149 -> 150 for L-P15A-1. The env allowlist is
+  // amended in its own row and adds none.
+  {
+    law: "the Claude session name is the only node:crypto site in providers",
+    scope: "packages/edges/providers/src/**",
   },
 ];
 
@@ -20751,6 +20801,8 @@ const PROVIDERS_FORBIDDEN_BUILTINS = [
 
 /** Exactly one file spawns, and exactly one file calls it. */
 const PROVIDERS_SPAWN_SITE = "packages/edges/providers/src/process/spawn/index.ts";
+/** Exactly one file hashes: the Claude session name's SHA-1 (L-P15A-1, ADR 0101). */
+const PROVIDERS_CRYPTO_SITE = "packages/edges/providers/src/session-name/index.ts";
 const PROVIDERS_SPAWN_CALLER = "packages/edges/providers/src/session/index.ts";
 
 /**
@@ -20809,6 +20861,7 @@ const PROVIDERS_PUBLIC_EXPORTS = [
   "shapePayload",
   "BASE_ENV_KEYS",
   "PROVIDER_CONFIG_ENV",
+  "PROVIDER_EXTRA_ENV",
   "admitConfigRoot",
   "admitWorkdir",
   "allowedEnvKeys",
@@ -20859,6 +20912,8 @@ const PROVIDERS_PUBLIC_EXPORTS = [
   // P4B
   "CLAUDE_STREAM_PROTOCOL",
   "claudeAdapter",
+  "CLAUDE_SESSION_UUID_NAMESPACE",
+  "claudeSessionId",
   // P4C
   "KIMI_ACP_PROTOCOL",
   "KIMI_ACP_PROTOCOL_VERSION",
@@ -20869,9 +20924,15 @@ const PROVIDERS_PUBLIC_EXPORTS = [
   "codexAdapter",
 ];
 
-/** The environment allowlist, pinned so a fourth variable cannot appear. */
+/**
+ * The environment allowlist, pinned so an unlisted variable cannot appear.
+ *
+ * AMENDED by P-15 escalón A (ADR 0101), in this row: claude gains `USER`, the
+ * login name its keychain entry is keyed by, through `PROVIDER_EXTRA_ENV`. Kimi and
+ * Codex stay at four.
+ */
 const PROVIDERS_ENV_ALLOWLIST = {
-  claude: ["CLAUDE_CONFIG_DIR", "HOME", "LC_ALL", "PATH"],
+  claude: ["CLAUDE_CONFIG_DIR", "HOME", "LC_ALL", "PATH", "USER"],
   kimi: ["HOME", "KIMI_CODE_HOME", "LC_ALL", "PATH"],
   codex: ["CODEX_HOME", "HOME", "LC_ALL", "PATH"],
 };
@@ -20907,11 +20968,13 @@ if (tracked.status === 0) {
     for (const name of importSpecifiers(content)) {
       const relative = name.startsWith("./") || name.startsWith("../");
       const spawnHere = name === "node:child_process" && relativePath === PROVIDERS_SPAWN_SITE;
+      const cryptoHere = name === "node:crypto" && relativePath === PROVIDERS_CRYPTO_SITE;
       const allowed =
         relative ||
         PROVIDERS_ALLOWED_PACKAGES.has(name) ||
         PROVIDERS_ALLOWED_BUILTINS.has(name) ||
         spawnHere ||
+        cryptoHere ||
         (isTest && PROVIDERS_TEST_ONLY_IMPORTS.has(name));
       if (!allowed) {
         fail(relativePath + " imports " + name + ", which adapters may not use");
@@ -21150,10 +21213,41 @@ if (adaptersConfigRoot !== null) {
   const permitted = new Set(Object.values(PROVIDERS_ENV_ALLOWLIST).flat());
   const baseBlock = adaptersConfigRoot.match(/BASE_ENV_KEYS[^=]*=\s*Object\.freeze\(\[([^\]]*)\]/);
   const providerBlock = adaptersConfigRoot.match(/PROVIDER_CONFIG_ENV[^=]*=\s*Object\.freeze\(\{([^}]*)\}/);
+  const extraBlock = adaptersConfigRoot.match(/PROVIDER_EXTRA_ENV[^=]*=\s*Object\.freeze\(\{([\s\S]*?)\n\}\);/);
   const declaredKeys = [
     ...[...(baseBlock?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]),
     ...[...(providerBlock?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]),
+    ...[...(extraBlock?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]),
   ];
+  // The extras, provider by provider: each provider's declared extras are exactly
+  // its pinned allowlist minus the base and its configuration variable, so `USER`
+  // cannot drift to Kimi or Codex and a sixth claude variable cannot appear.
+  if (extraBlock === null) {
+    fail("packages/edges/providers/src/config-root/index.ts no longer declares PROVIDER_EXTRA_ENV");
+  } else {
+    const baseKeys = [...(baseBlock?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    for (const [provider, keys] of Object.entries(PROVIDERS_ENV_ALLOWLIST)) {
+      const line = new RegExp("\\b" + provider + ":\\s*Object\\.freeze\\(\\[([^\\]]*)\\]\\)").exec(extraBlock[1]);
+      if (line === null) {
+        fail("PROVIDER_EXTRA_ENV declares no extras line for " + provider);
+        continue;
+      }
+      const extras = [...line[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
+      const configKey = new RegExp("\\b" + provider + ':\\s*"([^"]+)"').exec(providerBlock?.[1] ?? "")?.[1];
+      const expected = keys.filter((key) => !baseKeys.includes(key) && key !== configKey).sort();
+      if (JSON.stringify(extras) !== JSON.stringify(expected)) {
+        fail(
+          "PROVIDER_EXTRA_ENV gives " +
+            provider +
+            " [" +
+            extras.join(", ") +
+            "], and its pinned allowlist admits [" +
+            expected.join(", ") +
+            "] beyond the base and its configuration variable",
+        );
+      }
+    }
+  }
   if (declaredKeys.length === 0) {
     fail("packages/edges/providers/src/config-root/index.ts declares no environment allowlist");
   }
@@ -21162,7 +21256,79 @@ if (adaptersConfigRoot !== null) {
       fail("packages/edges/providers/src/config-root/index.ts names " + key + ", outside the env allowlist");
     }
   }
-  notes.push("the adapter environment allowlist is exactly four variables per provider");
+  notes.push("the adapter environment allowlist is exactly four variables per provider, five for claude (USER)");
+}
+
+// L-P15A-1 -- the Claude session name's leaf is the only `node:crypto` site in
+// providers (P-15 escalón A, ADR 0101).
+//
+// Version 5 UUIDs are SHA-1 over a namespace and a name, and a provider cannot
+// reach the runtime's coordinates or carry a hash in from the kernel. So one pure
+// leaf hashes, the same way one file spawns: `session-name/index.ts` imports
+// `node:crypto`, calls `createHash("sha1")` once, and names no randomness, clock or
+// environment. Every other providers source is refused `node:crypto` and every
+// hashing or minting name, by path, so a second site cannot appear quietly. Tests
+// keep `node:crypto` through `PROVIDERS_TEST_ONLY_IMPORTS`; this law reads `src/`.
+// Its own row: `PATH_SCOPED_LAWS` 149 -> 150.
+const PROVIDERS_CRYPTO_NAMES = /\b(?:createHash|createHmac|randomUUID|randomBytes|getRandomValues|webcrypto|subtle)\b/;
+{
+  let cryptoScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!relativePath.startsWith("packages/edges/providers/src/")) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      if (relativePath === PROVIDERS_CRYPTO_SITE) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      cryptoScanned += 1;
+      const code = stripComments(content);
+      if (importSpecifiers(content).some((name) => name === "node:crypto" || name === "crypto")) {
+        fail(relativePath + " imports node:crypto; only " + PROVIDERS_CRYPTO_SITE + " may, for the session name");
+      }
+      const named = code.match(PROVIDERS_CRYPTO_NAMES);
+      if (named !== null) {
+        fail(
+          relativePath +
+            " names " +
+            named[0] +
+            "; providers hash in one leaf, " +
+            PROVIDERS_CRYPTO_SITE +
+            ", and mint nothing",
+        );
+      }
+    }
+  }
+  const site = readIfPresent(PROVIDERS_CRYPTO_SITE);
+  if (site === null) {
+    fail(PROVIDERS_CRYPTO_SITE + " is missing; the Claude session name has no leaf to hash in");
+  } else {
+    const code = stripComments(site);
+    const imports = importSpecifiers(site);
+    if (!imports.includes("node:crypto")) {
+      fail(PROVIDERS_CRYPTO_SITE + " no longer imports node:crypto; its admission to L-P15A-1 is stale");
+    }
+    const hashes = [...code.matchAll(/\bcreateHash\(([^)]*)\)/g)].map((match) => match[1]?.trim());
+    if (hashes.length !== 1 || hashes[0] !== '"sha1"') {
+      fail(
+        PROVIDERS_CRYPTO_SITE +
+          " calls createHash " +
+          String(hashes.length) +
+          " time(s) with [" +
+          hashes.join(", ") +
+          "]; it hashes once, with \"sha1\", which is what a version 5 UUID is defined over",
+      );
+    }
+    for (const forbidden of ["createHmac", "randomUUID", "randomBytes", "getRandomValues", "Math.random", "Date.now", "new Date(", "process.env"]) {
+      if (code.includes(forbidden)) {
+        fail(PROVIDERS_CRYPTO_SITE + " names " + forbidden + "; the session name is a pure function of the task and the attempt");
+      }
+    }
+  }
+  requireScope("the Claude session name is the only node:crypto site in providers", cryptoScanned);
+  notes.push(
+    "one providers source hashes, " + PROVIDERS_CRYPTO_SITE + ", once with sha1, over " + String(cryptoScanned) + " others",
+  );
 }
 
 // The server may not reach @acp/contracts. `packages/entrypoints/gateway/src/mappers/index.ts`

@@ -76,6 +76,7 @@ export {
 export {
   BASE_ENV_KEYS,
   PROVIDER_CONFIG_ENV,
+  PROVIDER_EXTRA_ENV,
   admitConfigRoot,
   admitWorkdir,
   allowedEnvKeys,
@@ -152,6 +153,11 @@ export { LOCAL_TRANSPORT_KIND, admitLocalRoute, localExecutionEvents } from "./l
 // warranty about the provider's protocol is what no authorized evidence could
 // establish.
 export { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "./claude/index.js";
+
+// P-15 escalón A (ADR 0101): the Claude CLI's per-attempt session name, a version 5
+// UUID over the task and the attempt, from the one providers file admitted to
+// `node:crypto`.
+export { CLAUDE_SESSION_UUID_NAMESPACE, claudeSessionId } from "./session-name/index.js";
 
 // P4C: the Kimi ACP descriptor, built against stable ACP v1 NDJSON. Live
 // conformance is unclaimed and every Kimi capability leaves P4 `UNKNOWN`.

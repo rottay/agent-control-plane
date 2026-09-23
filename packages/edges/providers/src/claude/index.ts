@@ -12,7 +12,9 @@ import type {
 } from "../contract/index.js";
 import { unknownCapabilities } from "../contract/index.js";
 import { buildEnv } from "../config-root/index.js";
+import { AdapterError } from "../errors/index.js";
 import { isReportableTokenCount } from "../events/index.js";
+import { claudeSessionId } from "../session-name/index.js";
 
 /**
  * The Claude headless descriptor and stream-json parser.
@@ -73,33 +75,73 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Build the argv for one headless session.
+ * The MCP configuration every worker session is started with: no servers.
+ *
+ * With `--strict-mcp-config`, the CLI uses only this one, so an MCP server
+ * configured on the account never reaches a worker. Both captures reported
+ * `init.mcp_servers: []` under it.
+ */
+const EMPTY_MCP_CONFIG = '{"mcpServers":{}}';
+
+/**
+ * Build the argv for one headless session (P-15 escalón A, ADR 0101).
  *
  * Array form throughout: no shell, and no value is ever interpolated into a
- * command string. Session flags come only from the help-confirmed set.
+ * command string. Each flag and its evidence:
+ *
+ * - `--verbose`, always: the binary carries the string `requires --verbose` for
+ *   `stream-json` under `-p`, and both captures passed it and produced a
+ *   well-formed stream.
+ * - `--session-id`, the attempt's version 5 name (`claudeSessionId`), never the task
+ *   id, which every attempt shared. The CLI requires a UUID (stated in the recorded
+ *   `--help` (2.1.280), behaviour not observed); passing one was not observed.
+ * - `--no-session-persistence`: nothing is saved to resume ("only works with
+ *   --print"; stated in the recorded `--help` (2.1.280), behaviour not observed),
+ *   so no provider transcript is written under the account's configuration root.
+ *   Both captures passed it.
+ * - `--strict-mcp-config` with an empty `--mcp-config`: no MCP server of the
+ *   account reaches a worker.
+ * - a reviewer adds `--permission-mode plan --restricted` and `--tools` with the
+ *   read-only allowlist, a CLI-side allowlist (stated in the recorded
+ *   `--help` (2.1.280), behaviour not observed).
+ *
+ * `--resume` replaces `--session-id` only when the request carries the same name
+ * this attempt would be given. Any other value — a different id, an empty string,
+ * a value of another type — is refused with `PROTOCOL_UNSUPPORTED` before argv
+ * exists, so no spawn happens. The port never sets `resumeSessionId` (a reattach is
+ * an in-process rejoin, and a cross-process one is `REATTACH_UNAVAILABLE`), so this
+ * branch is unreachable from it today, and with persistence off a resume would find
+ * nothing: it is the typed, id-checked shape and nothing proven.
  */
 function buildArgv(request: SessionRequest): readonly string[] {
+  const sessionId = claudeSessionId(request.taskId, request.attempt);
   const argv: string[] = [
     "-p",
     "--output-format",
     "stream-json",
+    "--verbose",
     "--model",
     request.modelAlias,
   ];
 
-  if (request.resumeSessionId !== null) {
-    argv.push("--resume", request.resumeSessionId);
+  if (request.resumeSessionId === null) {
+    argv.push("--session-id", sessionId);
+  } else if (request.resumeSessionId === sessionId) {
+    argv.push("--resume", sessionId);
   } else {
-    argv.push("--session-id", request.taskId);
+    throw new AdapterError("PROTOCOL_UNSUPPORTED", { provider: "claude", taskId: request.taskId });
   }
+
+  argv.push("--no-session-persistence", "--strict-mcp-config", "--mcp-config", EMPTY_MCP_CONFIG);
 
   if (isReviewerIdentity(request.identity)) {
     // The provider-native layer, added because Claude has one. It is the
     // polite layer: the load-bearing guarantee is the structural scan before
     // spawn and the write-class kill during the stream, which hold whatever
-    // these flags do. Both values are the safe ones the pair-aware scan
-    // accepts, so this argv can never itself enable a write.
-    argv.push("--permission-mode", "plan", "--restricted");
+    // these flags do. Both pair values are the safe ones the pair-aware scan
+    // accepts, so this argv can never itself enable a write. How `--tools`
+    // interacts with `--restricted` is unobserved.
+    argv.push("--permission-mode", "plan", "--restricted", "--tools", READ_ONLY_TOOL_ALLOWLIST.join(","));
   }
 
   return Object.freeze(argv);
@@ -304,8 +346,9 @@ export const claudeAdapter: ProviderAdapter = {
     return {
       provider: "claude",
       argv: buildArgv(request),
-      // Key by key from the P4A allowlist: CLAUDE_CONFIG_DIR plus PATH, HOME
-      // and LC_ALL. `process.env` is never spread, here or anywhere.
+      // Key by key from the allowlist: CLAUDE_CONFIG_DIR plus PATH, HOME, LC_ALL
+      // and, for Claude alone, USER (ADR 0101). `process.env` is never spread,
+      // here or anywhere.
       env: buildEnv("claude", request.configRoot),
       cwd: request.workdir,
       // V2-B1c. The argv above is `-p` with **no positional prompt**, which is

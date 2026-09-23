@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { allowedEnvKeys } from "../../src/config-root/index.js";
+import { claudeSessionId } from "../../src/session-name/index.js";
 import type {
   AdmittedBinary,
   AdmittedConfigRoot,
@@ -124,30 +125,88 @@ const ASSISTANT = JSON.stringify({
 const RESULT = JSON.stringify({ type: "result", subtype: "success" });
 
 describe("the descriptor is exactly what was authorized", () => {
-  it("builds headless stream-json argv with the model and a session id", () => {
+  it("builds the observed headless argv, with the attempt's session name (ADR 0101)", () => {
     const descriptor = claudeAdapter.describe(request(IMPLEMENTER));
     expect([...descriptor.argv]).toEqual([
       "-p",
       "--output-format",
       "stream-json",
+      "--verbose",
       "--model",
       "opus",
       "--session-id",
-      TASK,
+      "39de475b-2696-5df6-b64b-88336de7d72c",
+      "--no-session-persistence",
+      "--strict-mcp-config",
+      "--mcp-config",
+      '{"mcpServers":{}}',
     ]);
   });
 
-  it("uses --resume instead of --session-id when resuming", () => {
-    const descriptor = claudeAdapter.describe(
-      request(IMPLEMENTER, { resumeSessionId: "prior-session" }),
-    );
-    expect([...descriptor.argv]).toContain("--resume");
-    expect([...descriptor.argv]).toContain("prior-session");
-    expect([...descriptor.argv]).not.toContain("--session-id");
+  it("names each attempt's own session, never the task id", () => {
+    const first = claudeAdapter.describe(request(IMPLEMENTER, { attempt: 1 })).argv;
+    const second = claudeAdapter.describe(request(IMPLEMENTER, { attempt: 2 })).argv;
+    const idOf = (argv: readonly string[]): string | undefined => argv[argv.indexOf("--session-id") + 1];
+    expect(idOf(first)).toBe(claudeSessionId(TASK, 1));
+    expect(idOf(second)).toBe(claudeSessionId(TASK, 2));
+    expect(idOf(first)).not.toBe(idOf(second));
+    expect([...first, ...second]).not.toContain(TASK);
   });
 
-  it("forwards exactly the allowlisted environment and nothing else", () => {
+  it("carries none of the smoke profile's flags", () => {
+    for (const identity of [IMPLEMENTER, REVIEWER]) {
+      const argv = [...claudeAdapter.describe(request(identity)).argv];
+      for (const flag of ["--safe-mode", "--max-turns", "--max-budget-usd", "--dangerously-skip-permissions"]) {
+        expect({ identity, flag, present: argv.includes(flag) }).toEqual({ identity, flag, present: false });
+      }
+      // `--tools ""` would take every tool away from an implementer.
+      expect(argv).not.toContain("");
+    }
+    expect([...claudeAdapter.describe(request(IMPLEMENTER)).argv]).not.toContain("--tools");
+  });
+
+  it("uses --resume with the attempt's own session name, and no --session-id", () => {
+    const own = claudeSessionId(TASK, 1);
+    const descriptor = claudeAdapter.describe(request(IMPLEMENTER, { resumeSessionId: own }));
+    const argv = [...descriptor.argv];
+    expect(argv.slice(argv.indexOf("--resume"), argv.indexOf("--resume") + 2)).toEqual(["--resume", own]);
+    expect(argv).not.toContain("--session-id");
+    expect(argv).toContain("--no-session-persistence");
+  });
+
+  it("refuses a --resume naming any other session before argv exists: another attempt's, the task id, empty or not a string", () => {
+    const others: readonly unknown[] = [claudeSessionId(TASK, 2), TASK, "prior-session", "", 42, {}];
+    for (const other of others) {
+      let refusal: unknown = null;
+      try {
+        claudeAdapter.describe(request(IMPLEMENTER, { resumeSessionId: other as string }));
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal, JSON.stringify(other)).toBeInstanceOf(AdapterError);
+      expect((refusal as AdapterError).code).toBe("PROTOCOL_UNSUPPORTED");
+    }
+  });
+
+  it("a mismatched --resume never becomes a process: startSession refuses before the spawn", () => {
+    const marker = join(drillRoot(), "spawned");
+    const spawning: ProviderAdapter = {
+      ...claudeAdapter,
+      describe(asked: SessionRequest) {
+        const real = claudeAdapter.describe(asked);
+        return { ...real, argv: ["-e", "require('node:fs').writeFileSync(" + JSON.stringify(marker) + ", 'x')"] };
+      },
+    };
+    expect(() =>
+      startSession(spawning, request(IMPLEMENTER, { resumeSessionId: claudeSessionId(TASK, 2) })),
+    ).toThrow(AdapterError);
+    expect(readdirSync(dirname(marker))).toEqual([]);
+  });
+
+  it("forwards exactly the allowlisted environment, USER included, and nothing else", () => {
     process.env["ACP_P4B_SHOULD_NOT_TRAVEL"] = "leaked";
+    const priorUser = process.env["USER"];
+    process.env["USER"] = "acp-" + "fixture-login";
     try {
       const descriptor = claudeAdapter.describe(request(IMPLEMENTER));
       expect(Object.keys(descriptor.env).sort()).toEqual(
@@ -160,19 +219,38 @@ describe("the descriptor is exactly what was authorized", () => {
         });
       }
       expect(descriptor.env["CLAUDE_CONFIG_DIR"]).toBe(descriptor.cwd);
+      expect(descriptor.env["USER"]).toBe("acp-fixture-login");
       expect(Object.hasOwn(descriptor.env, "ACP_P4B_SHOULD_NOT_TRAVEL")).toBe(false);
       expect(Object.hasOwn(descriptor.env, "KIMI_CODE_HOME")).toBe(false);
       expect(Object.hasOwn(descriptor.env, "CODEX_HOME")).toBe(false);
     } finally {
       delete process.env["ACP_P4B_SHOULD_NOT_TRAVEL"];
+      if (priorUser === undefined) delete process.env["USER"];
+      else process.env["USER"] = priorUser;
     }
   });
 
-  it("adds the native read-only layer for a reviewer, and still passes the structural scan", () => {
+  it("adds the native read-only layer for a reviewer, with the tool allowlist, and still passes the structural scan", () => {
     const descriptor = claudeAdapter.describe(request(REVIEWER));
-    expect([...descriptor.argv]).toContain("--restricted");
-    expect([...descriptor.argv]).toContain("--permission-mode");
-    expect([...descriptor.argv]).toContain("plan");
+    expect([...descriptor.argv]).toEqual([
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--model",
+      "opus",
+      "--session-id",
+      "39de475b-2696-5df6-b64b-88336de7d72c",
+      "--no-session-persistence",
+      "--strict-mcp-config",
+      "--mcp-config",
+      '{"mcpServers":{}}',
+      "--permission-mode",
+      "plan",
+      "--restricted",
+      "--tools",
+      "Glob,Grep,Read,WebFetch,WebSearch",
+    ]);
     // The polite layer must never itself trip the load-bearing one, including
     // in the two-token spelling it uses.
     expect(descriptorEnablesWrites(descriptor.argv)).toBe(false);
