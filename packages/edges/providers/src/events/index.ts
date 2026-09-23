@@ -130,6 +130,12 @@ export function toNormalized(
       });
     case "write":
       return null;
+    // Private signals (P-07 escalón C): the session intercepts both before this
+    // function is reached, and null here keeps a missed interception from ever
+    // turning output bytes or a verdict into an event.
+    case "output":
+    case "operation":
+      return null;
   }
 }
 

@@ -17,7 +17,9 @@ import { AdapterError } from "../../src/errors/index.js";
 import type { NormalizedEvent } from "../../src/events/index.js";
 import { admitBinary } from "../../src/process/spawn/index.js";
 import { descriptorEnablesWrites, isReadOnlyIdentity, startSession } from "../../src/session/index.js";
-import { fakeAdapter, fakeProviderArgv } from "../testing/index.js";
+import { claudeAdapter } from "../../src/claude/index.js";
+import { fakeAdapter, fakeProviderArgv, scriptedAdapter } from "../testing/index.js";
+import { CAPTURED_AUTH_FAILURE, CAPTURED_SUCCESS } from "../testing/claude-capture/index.js";
 import type { FakeScript } from "../testing/index.js";
 
 const TMP_ROOT = realpathSync(tmpdir());
@@ -645,5 +647,132 @@ describe("delivering the instruction", () => {
     expect(unsupported.delivery).toEqual({ kind: "UNSUPPORTED", reason: "HANDSHAKE_REQUIRED" });
     // Three declarations, two reasons, one refusal point (P-06/C).
     expect(modality.delivery).toEqual({ kind: "UNSUPPORTED", reason: "MODALITY_UNSUPPORTED" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-07 escalón C — the sink, the verdict and the exit, through a real child
+// (ADR 0099)
+// ---------------------------------------------------------------------------
+
+/** One Claude-parsed session over a scripted child, drained, with what it reports. */
+async function claudeRun(
+  script: FakeScript,
+  sink?: (delta: string) => void,
+): Promise<{
+  readonly events: NormalizedEvent[];
+  readonly exit: ReturnType<ReturnType<typeof startSession>["exit"]>;
+  readonly operation: ReturnType<ReturnType<typeof startSession>["operation"]>;
+  readonly state: string;
+  readonly health: string;
+  readonly thrown: unknown;
+}> {
+  const session = startSession(scriptedAdapter(claudeAdapter, script), request(IMPLEMENTER, script), sink);
+  ownedPids.push(session.pid);
+  const events: NormalizedEvent[] = [];
+  let thrown: unknown = null;
+  try {
+    for await (const event of session.events()) events.push(event);
+  } catch (error) {
+    thrown = error;
+  }
+  await session.settled();
+  const state = session.state;
+  const health = JSON.stringify(session.health());
+  await session.close();
+  return { events, exit: session.exit(), operation: session.operation(), state, health, thrown };
+}
+
+const SENTINEL = "sentinel-" + randomUUID();
+
+/** A synthetic Claude stream whose one assistant text block carries the sentinel. */
+function sentinelStream(): readonly string[] {
+  const assistant = JSON.parse(CAPTURED_SUCCESS[3] ?? "{}") as Record<string, unknown>;
+  (assistant["message"] as Record<string, unknown>)["content"] = [{ type: "text", text: SENTINEL }];
+  return [CAPTURED_SUCCESS[1] ?? "", JSON.stringify(assistant), CAPTURED_SUCCESS[5] ?? ""];
+}
+
+describe("P-07 C: a session hands output to its sink and nowhere else, and reports the exit and the verdict", () => {
+  it("OBS sample 1 replay: exit 1, operation FAILED, and the CLI's error text reaches no event and no health report", async () => {
+    const sunk: string[] = [];
+    const run = await claudeRun({ lines: CAPTURED_AUTH_FAILURE, exitCode: 1 }, (delta) => sunk.push(delta));
+    expect(run.exit).toEqual({ exitCode: 1, signal: null });
+    expect(run.operation).toBe("FAILED");
+    expect(sunk).toEqual([]);
+    expect(JSON.stringify(run.events)).not.toContain("Not logged in");
+    expect(run.health).not.toContain("Not logged in");
+  });
+
+  it("OBS sample 2 replay: exit 0, operation SUCCEEDED, the sink receives exactly \"ok\", and the thinking signature is nowhere", async () => {
+    const sunk: string[] = [];
+    const run = await claudeRun({ lines: CAPTURED_SUCCESS, exitCode: 0 }, (delta) => sunk.push(delta));
+    expect(run.exit).toEqual({ exitCode: 0, signal: null });
+    expect(run.operation).toBe("SUCCEEDED");
+    expect(sunk).toEqual(["ok"]);
+    for (const surface of [JSON.stringify(run.events), run.health, JSON.stringify(sunk)]) {
+      expect(surface).not.toContain("fixture-signature");
+    }
+  });
+
+  it("SYN sentinel: output reaches the sink exactly once and no event, health report or error", async () => {
+    const sunk: string[] = [];
+    const run = await claudeRun({ lines: sentinelStream(), exitCode: 0 }, (delta) => sunk.push(delta));
+    // Positive control: the sentinel WAS produced, so the absences below mean something.
+    expect(sunk).toEqual([SENTINEL]);
+    expect(JSON.stringify(run.events)).not.toContain(SENTINEL);
+    expect(run.health).not.toContain(SENTINEL);
+    expect(JSON.stringify(run.thrown)).not.toContain(SENTINEL);
+  });
+
+  it("SYN legacy: without a sink the same child is unchanged — the text is dropped and every event is the same", async () => {
+    const withSink = await claudeRun({ lines: sentinelStream(), exitCode: 0 }, () => undefined);
+    const without = await claudeRun({ lines: sentinelStream(), exitCode: 0 });
+    expect(without.events.map((event) => [event.name, event.payload])).toEqual(
+      withSink.events.map((event) => [event.name, event.payload]),
+    );
+    expect(without.operation).toBe("SUCCEEDED");
+    expect(JSON.stringify(without.events)).not.toContain(SENTINEL);
+  });
+
+  it("SYN: a child that ends by its own SIGTERM after its result reports the signal, not an exit code", async () => {
+    const run = await claudeRun({ lines: CAPTURED_SUCCESS, exitCode: 0, selfSignal: "SIGTERM" });
+    expect(run.exit).toEqual({ exitCode: null, signal: "SIGTERM" });
+    expect(run.operation).toBe("SUCCEEDED");
+  });
+
+  it("SYN C6(e): a malformed record on a live child fails the session, and the exit is our ladder's SIGKILL", async () => {
+    const run = await claudeRun({ lines: [CAPTURED_SUCCESS[1] ?? "", "{not json"], exitCode: 0, lingerMs: 5_000 });
+    expect(run.state).toBe("FAILED");
+    expect(run.exit).toEqual({ exitCode: null, signal: "SIGKILL" });
+  });
+
+  it("SYN Q-C3: a second verdict in one session fails it with MALFORMED_EVENT, never overwritten", async () => {
+    const run = await claudeRun({
+      lines: [CAPTURED_AUTH_FAILURE[0] ?? "", CAPTURED_AUTH_FAILURE[2] ?? "", CAPTURED_SUCCESS[5] ?? ""],
+      exitCode: 0,
+      lingerMs: 5_000,
+    });
+    expect(run.state).toBe("FAILED");
+    expect(run.health).toContain("MALFORMED_EVENT");
+    // The first verdict is held; the second one is what failed the session.
+    expect(run.operation).toBe("FAILED");
+  });
+
+  it("a sink that throws fails the session, classified MALFORMED_EVENT", async () => {
+    const run = await claudeRun({ lines: CAPTURED_SUCCESS, exitCode: 0, lingerMs: 5_000 }, () => {
+      throw new Error("a sink that throws");
+    });
+    expect(run.state).toBe("FAILED");
+    expect(run.health).toContain("MALFORMED_EVENT");
+    expect(run.health).not.toContain("a sink that throws");
+  });
+
+  it("no exit is reported before one is observed: null, never a fabricated 0", () => {
+    const script: FakeScript = { lines: CAPTURED_SUCCESS, exitCode: 0, lingerMs: 5_000 };
+    const session = startSession(scriptedAdapter(claudeAdapter, script), request(IMPLEMENTER, script));
+    ownedPids.push(session.pid);
+    expect(session.exit()).toBeNull();
+    expect(session.operation()).toBeNull();
+    return session.close();
   });
 });

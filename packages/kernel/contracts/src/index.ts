@@ -161,6 +161,7 @@ export type {
 export type { ResultStatus, ResultRefusal, ResultContract } from "./schemas/index.js";
 export type { GuardViolation } from "./schemas/index.js";
 export type {
+  ExecutionOutputSink,
   ExecutionRefused,
   ExecutionSession,
   ModelExecutionPort,

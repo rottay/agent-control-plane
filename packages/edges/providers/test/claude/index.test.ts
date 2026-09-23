@@ -22,6 +22,7 @@ import { descriptorEnablesWrites, startSession } from "../../src/session/index.j
 import { fakeProviderArgv } from "../testing/index.js";
 import type { FakeScript } from "../testing/index.js";
 import { CLAUDE_STREAM_PROTOCOL, claudeAdapter } from "../../src/claude/index.js";
+import { CAPTURED_AUTH_FAILURE, CAPTURED_SUCCESS } from "../testing/claude-capture/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
 const PACKAGE_ROOT = resolve(HERE, "..", "..");
@@ -513,5 +514,154 @@ describe("how this transport takes an instruction (V2-B1c)", () => {
     // performed by `startSession`; this method still does no I/O.
     const descriptor = claudeAdapter.describe(request(IMPLEMENTER));
     expect(descriptor.delivery).toEqual({ kind: "STDIN" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-07 escalón C — what the two captured streams prove (ADR 0099)
+// ---------------------------------------------------------------------------
+
+/** Parse a whole stream, either in one chunk or split at every byte offset. */
+function signalsOf(lines: readonly string[], splitAt?: number): readonly unknown[] {
+  const stream = lines.map((line) => line + "\n").join("");
+  const chunks = splitAt === undefined ? [stream] : [stream.slice(0, splitAt), stream.slice(splitAt)];
+  let cursor = EMPTY_CURSOR;
+  const out: unknown[] = [];
+  for (const chunk of chunks) {
+    const outcome = claudeAdapter.parse(chunk, cursor);
+    if (!outcome.ok) return [{ refused: outcome.code }];
+    out.push(...outcome.events);
+    cursor = outcome.cursor;
+  }
+  return out;
+}
+
+/** A captured record, as an object a test may change one field of. */
+function record(line: string | undefined): Record<string, unknown> {
+  if (line === undefined) throw new Error("the fixture holds the record");
+  return JSON.parse(line) as Record<string, unknown>;
+}
+
+describe("P-07 C: the captured Claude streams, parsed (OBS)", () => {
+  it("OBS sample 1: started, a zero step, no output, SUCCESS as a token, and the operation FAILED — at every split", () => {
+    const expected = [
+      { kind: "started", resolvedModel: "claude-haiku-4-5-20251001", protocolVersion: CLAUDE_STREAM_PROTOCOL },
+      { kind: "step", tokensUsed: 0, stepIndex: 1 },
+      { kind: "state", toState: "SUCCESS" },
+      { kind: "operation", status: "FAILED" },
+    ];
+    expect(signalsOf(CAPTURED_AUTH_FAILURE)).toEqual(expected);
+    const length = CAPTURED_AUTH_FAILURE.map((line) => line + "\n").join("").length;
+    for (let at = 1; at < length; at += 1) {
+      expect(signalsOf(CAPTURED_AUTH_FAILURE, at), "split at " + String(at)).toEqual(expected);
+    }
+    // The error text the CLI flagged `is_api_error_message` is not output.
+    expect(JSON.stringify(signalsOf(CAPTURED_AUTH_FAILURE))).not.toContain("Not logged in");
+  });
+
+  it("OBS sample 2: commands_changed and rate_limit_event carry no signal, thinking is not output, and the operation SUCCEEDED", () => {
+    const signals = signalsOf(CAPTURED_SUCCESS);
+    expect(signals).toEqual([
+      { kind: "started", resolvedModel: "claude-haiku-4-5-20251001", protocolVersion: CLAUDE_STREAM_PROTOCOL },
+      { kind: "step", tokensUsed: 1, stepIndex: 2 },
+      { kind: "step", tokensUsed: 1, stepIndex: 3 },
+      { kind: "output", text: "ok" },
+      { kind: "state", toState: "SUCCESS" },
+      { kind: "operation", status: "SUCCEEDED" },
+    ]);
+    // The thinking block's opaque signature is not output and is carried nowhere.
+    expect(JSON.stringify(signals)).not.toContain("fixture-signature");
+    // No pressure: a rate_limit_event is recognized and never mapped to quota pressure.
+    expect(signals.some((signal) => (signal as { kind: string }).kind === "pressure")).toBe(false);
+  });
+
+  it("positive control: the same result record without is_error says nothing about the operation", () => {
+    const result = record(CAPTURED_AUTH_FAILURE[2]);
+    delete result["is_error"];
+    expect(signalsOf([JSON.stringify(result)])).toEqual([{ kind: "state", toState: "SUCCESS" }]);
+  });
+
+  it("is_error present and not a boolean is refused, never read as absent (the NULL lesson, value by value)", () => {
+    for (const value of [null, "true", 1, 0, {}, []]) {
+      const result = record(CAPTURED_SUCCESS[5]);
+      result["is_error"] = value;
+      expect(signalsOf([JSON.stringify(result)]), JSON.stringify(value)).toEqual([{ refused: "MALFORMED_EVENT" }]);
+    }
+  });
+
+  it("is_api_error_message: absent or false is output, true is excluded, anything else is refused", () => {
+    const assistant = (flag: unknown): string => {
+      const value = record(CAPTURED_SUCCESS[3]);
+      if (flag === undefined) delete value["is_api_error_message"];
+      else value["is_api_error_message"] = flag;
+      return JSON.stringify(value);
+    };
+    expect(signalsOf([assistant(undefined)])).toContainEqual({ kind: "output", text: "ok" });
+    expect(signalsOf([assistant(false)])).toContainEqual({ kind: "output", text: "ok" });
+    expect(signalsOf([assistant(true)]).some((signal) => (signal as { kind: string }).kind === "output")).toBe(false);
+    for (const value of [null, "true", 1]) {
+      expect(signalsOf([assistant(value)]), JSON.stringify(value)).toEqual([{ refused: "MALFORMED_EVENT" }]);
+    }
+  });
+
+  it("a text block whose text is absent, null or not a string is refused; an empty text is no output", () => {
+    const withBlock = (block: Record<string, unknown>): string => {
+      const value = record(CAPTURED_SUCCESS[3]);
+      (value["message"] as Record<string, unknown>)["content"] = [block];
+      return JSON.stringify(value);
+    };
+    for (const block of [{ type: "text" }, { type: "text", text: null }, { type: "text", text: 7 }]) {
+      expect(signalsOf([withBlock(block)]), JSON.stringify(block)).toEqual([{ refused: "MALFORMED_EVENT" }]);
+    }
+    expect(signalsOf([withBlock({ type: "text", text: "" })]).some((signal) => (signal as { kind: string }).kind === "output")).toBe(false);
+    // Two text blocks are two deltas, in order.
+    const value = record(CAPTURED_SUCCESS[3]);
+    (value["message"] as Record<string, unknown>)["content"] = [{ type: "text", text: "a" }, { type: "thinking", thinking: "" }, { type: "text", text: "b" }];
+    expect(signalsOf([JSON.stringify(value)]).filter((signal) => (signal as { kind: string }).kind === "output")).toEqual([
+      { kind: "output", text: "a" },
+      { kind: "output", text: "b" },
+    ]);
+  });
+
+  it("rate_limit_event is no-signal only with the observed status \"allowed\"; any other is refused, never pressure", () => {
+    const withStatus = (status: unknown): string => {
+      const value = record(CAPTURED_SUCCESS[4]);
+      const info = value["rate_limit_info"] as Record<string, unknown>;
+      if (status === undefined) delete info["status"];
+      else info["status"] = status;
+      return JSON.stringify(value);
+    };
+    // Positive control: the observed record.
+    expect(signalsOf([CAPTURED_SUCCESS[4] ?? ""])).toEqual([]);
+    for (const status of [undefined, null, 1, "rejected", "allowed_warning", ""]) {
+      expect(signalsOf([withStatus(status)]), JSON.stringify(status)).toEqual([{ refused: "UNKNOWN_EVENT" }]);
+    }
+    const noInfo = record(CAPTURED_SUCCESS[4]);
+    delete noInfo["rate_limit_info"];
+    expect(signalsOf([JSON.stringify(noInfo)])).toEqual([{ refused: "UNKNOWN_EVENT" }]);
+  });
+
+  it("a content that is present and not an array, or a block that is not an object, is refused; other block types are skipped", () => {
+    const withContent = (content: unknown): string => {
+      const value = record(CAPTURED_SUCCESS[3]);
+      const message = value["message"] as Record<string, unknown>;
+      if (content === undefined) delete message["content"];
+      else message["content"] = content;
+      return JSON.stringify(value);
+    };
+    for (const content of [null, "ok", 7, { type: "text", text: "ok" }]) {
+      expect(signalsOf([withContent(content)]), JSON.stringify(content)).toEqual([{ refused: "MALFORMED_EVENT" }]);
+    }
+    for (const block of [null, "ok", 7, ["text"]]) {
+      expect(signalsOf([withContent([block])]), JSON.stringify(block)).toEqual([{ refused: "MALFORMED_EVENT" }]);
+    }
+    // Absent content is no output, and a block of another type is skipped.
+    expect(signalsOf([withContent(undefined)]).some((signal) => (signal as { kind: string }).kind === "output")).toBe(false);
+    expect(signalsOf([withContent([{ type: "image" }, { type: "text", text: "ok" }])])).toContainEqual({ kind: "output", text: "ok" });
+  });
+
+  it("any other system subtype or record type still fails closed", () => {
+    expect(signalsOf([JSON.stringify({ type: "system", subtype: "unheard_of" })])).toEqual([{ refused: "UNKNOWN_EVENT" }]);
+    expect(signalsOf([JSON.stringify({ type: "rate_limit_event_v2" })])).toEqual([{ refused: "UNKNOWN_EVENT" }]);
   });
 });

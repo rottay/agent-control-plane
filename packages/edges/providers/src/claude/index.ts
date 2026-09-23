@@ -115,6 +115,28 @@ function outputTokens(message: unknown): number | null {
 }
 
 /**
+ * The output text of one assistant message: its `text` blocks, in order, each
+ * non-empty text once. `null` when a present value has the wrong shape — a
+ * `content` that is not an array, a block that is not an object, or a `text`
+ * block without a string — which is refused, never read as no text. An absent
+ * `content` is no output, and a block of another type is skipped.
+ */
+function outputTexts(message: Record<string, unknown>): readonly string[] | null {
+  const content = message["content"];
+  if (content === undefined) return [];
+  if (!Array.isArray(content)) return null;
+  const texts: string[] = [];
+  for (const block of content) {
+    if (!isRecord(block)) return null;
+    if (block["type"] !== "text") continue;
+    const text = block["text"];
+    if (typeof text !== "string") return null;
+    if (text.length > 0) texts.push(text);
+  }
+  return texts;
+}
+
+/**
  * Does this assistant message use a tool outside the read-only allowlist?
  *
  * The signal is emitted whatever the identity; only a reviewer session turns it
@@ -178,6 +200,12 @@ function readRecord(raw: string, stepIndex: number): RecordOutcome {
         // A classified reason only. Never the prompt, the URL or the code.
         return { ok: true, signals: [{ kind: "authRequired", reason: "LOGIN_REQUIRED" }] };
       }
+      if (subtype === "commands_changed") {
+        // Observed as the first record of the captured success sample (CLI
+        // 2.1.280, 2026-09-22; P-07 escalón C, ADR 0099). Recognized, and it says
+        // nothing about the session: no signal.
+        return { ok: true, signals: [] };
+      }
       return { ok: false, code: "UNKNOWN_EVENT" };
     }
 
@@ -193,6 +221,21 @@ function readRecord(raw: string, stepIndex: number): RecordOutcome {
       if (tokens !== null) signals.push({ kind: "step", tokensUsed: tokens, stepIndex });
       // An assistant message that reports no usage is not an error and not a
       // step; it simply carries no measurement.
+
+      // Output text (P-07 escalón C, ADR 0099): the `text` blocks of the message,
+      // in stream order, for the caller's private sink. Not a `thinking` block —
+      // the captured success sample carries one with an opaque signature, and it
+      // is not output. Not a record the CLI flags as an API error message — the
+      // captured failure sample carries its error text there, and it is not the
+      // operation's output. `is_api_error_message` is read present-invalid: absent
+      // or false is an ordinary message, true is excluded, anything else refuses.
+      const apiError = parsed["is_api_error_message"];
+      if (apiError !== undefined && typeof apiError !== "boolean") return { ok: false, code: "MALFORMED_EVENT" };
+      if (apiError !== true) {
+        const texts = outputTexts(message);
+        if (texts === null) return { ok: false, code: "MALFORMED_EVENT" };
+        for (const text of texts) signals.push({ kind: "output", text });
+      }
       return { ok: true, signals };
     }
 
@@ -201,16 +244,39 @@ function readRecord(raw: string, stepIndex: number): RecordOutcome {
       // measurement of its own.
       return { ok: true, signals: [] };
 
+    case "rate_limit_event": {
+      // Observed in the captured success sample, with `status: "allowed"`, and
+      // recognized as carrying no signal only in that form. Any other status —
+      // absent, not a string, or a word never observed — is an event this parser
+      // has no evidence for, so it fails closed. It is NEVER mapped to quota
+      // pressure: a mapping would be a capability claim (ADR 0099).
+      const info = parsed["rate_limit_info"];
+      if (!isRecord(info) || info["status"] !== "allowed") return { ok: false, code: "UNKNOWN_EVENT" };
+      return { ok: true, signals: [] };
+    }
+
     case "result": {
       const subtype = parsed["subtype"];
       if (typeof subtype !== "string" || subtype === "") {
         return { ok: false, code: "MALFORMED_EVENT" };
       }
-      // `subtype` stays an open provider-state token, deliberately. Inventing a
-      // closed enum here would assert knowledge of the provider's state space
-      // that no evidence P4 may gather could support — the capability-overclaim
-      // shape this phase exists to prevent.
-      return { ok: true, signals: [{ kind: "state", toState: subtype.toUpperCase() }] };
+      // `subtype` stays an open provider-state token, deliberately, and it is
+      // NOT a verdict: the captured failure sample (CLI 2.1.280, 2026-09-22)
+      // carries `subtype: "success"` on an operation that failed. What the
+      // operation said is `is_error`, read on the evidence of the two captured
+      // samples and nothing else (P-07 escalón C, ADR 0099):
+      //   - `true`  → FAILED    (sample 1: "Not logged in", exit 1);
+      //   - `false` → SUCCEEDED (sample 2: result "ok", exit 0);
+      //   - absent  → no operation signal (every earlier synthetic stream);
+      //   - anything else → MALFORMED_EVENT, never read as absent (ADR 0079).
+      // The crossed pairs — `true` with exit 0, `false` with exit 1 — were not
+      // observed; the exit is a separate fact the session reports.
+      const signals: ProviderSignal[] = [{ kind: "state", toState: subtype.toUpperCase() }];
+      const isError = parsed["is_error"];
+      if (isError !== undefined && typeof isError !== "boolean") return { ok: false, code: "MALFORMED_EVENT" };
+      if (isError === true) signals.push({ kind: "operation", status: "FAILED" });
+      if (isError === false) signals.push({ kind: "operation", status: "SUCCEEDED" });
+      return { ok: true, signals };
     }
 
     default:

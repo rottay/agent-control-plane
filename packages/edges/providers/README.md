@@ -92,7 +92,10 @@ client library is imported here, and nothing on the CLI path can reach an API
 key. A port constructed for CLI only refuses the other two kinds with a
 classified refusal. Both non-CLI clients receive the composed instruction, and the
 port refuses a non-text class and a credential-shaped instruction before calling
-either one (ADR 0096).
+either one (ADR 0096). Their `text` chunks go to the caller's output sink, never
+to the trail, and an `operationResult` chunk is held and emitted in order before
+the terminal; they never report a process exit, because they own no process
+(ADR 0099).
 
 ## One process boundary
 
@@ -184,10 +187,15 @@ it, so nothing a request carries is forwarded: not a command line, a working
 directory, a patch body, an absolute path, an elicitation prompt, a tool
 argument, an account identifier or an error message. Only classified tokens
 drawn from closed, schema-derived sets travel, and a refusal detail names a
-frame position rather than quoting what it failed on. Content deltas are
-deliberately **unclaimed** by every parser: they carry content, the normalized
-vocabulary has no content event, and these adapters are control-plane observers
-rather than transcript pipes.
+frame position rather than quoting what it failed on. Output text never becomes
+an event: the normalized vocabulary has no content event, and these adapters are
+control-plane observers rather than transcript pipes. Since P-07 escalón C (ADR
+0099) the Claude parser reads the `text` blocks of each assistant record as a
+private `output` signal, and the session hands them to the caller's
+`ExecutionOutputSink` and nowhere else; without a sink they are dropped. The
+parser also reads `is_error` on the captured `result` record as the operation's
+verdict, a private `operation` signal the session holds once. Codex and Kimi
+claim neither.
 
 ## Testing
 

@@ -43,6 +43,12 @@ export interface FakeScript {
   readonly ignoreSigint?: boolean;
   /** Delay before exiting, in milliseconds. */
   readonly lingerMs?: number;
+  /**
+   * End by the child's own signal instead of an exit code (P-07 escalón C): a
+   * child that dies of a signal it raised is a different fact from one our
+   * ladder killed, and the session must report which.
+   */
+  readonly selfSignal?: "SIGTERM" | "SIGINT";
 }
 
 /** The Node program the fake runs. Written as argv, never as a shell string. */
@@ -52,9 +58,16 @@ export function fakeProviderArgv(script: FakeScript): readonly string[] {
     "const out = " + (script.toStderr === true ? "process.stderr" : "process.stdout") + ";",
     "const lines = " + JSON.stringify([...script.lines]) + ";",
     "for (const line of lines) out.write(line + '\\n');",
-    script.lingerMs !== undefined && script.lingerMs > 0
-      ? "setTimeout(() => process.exit(" + String(script.exitCode) + "), " + String(script.lingerMs) + ");"
-      : "process.exit(" + String(script.exitCode) + ");",
+    script.selfSignal !== undefined
+      ? // Raised only once the output has been flushed, so the stream is whole.
+        "out.write('', () => setTimeout(() => process.kill(process.pid, " +
+        JSON.stringify(script.selfSignal) +
+        "), " +
+        String(script.lingerMs ?? 0) +
+        "));"
+      : script.lingerMs !== undefined && script.lingerMs > 0
+        ? "setTimeout(() => process.exit(" + String(script.exitCode) + "), " + String(script.lingerMs) + ");"
+        : "process.exit(" + String(script.exitCode) + ");",
   ].join("\n");
   return Object.freeze(["-e", program]);
 }

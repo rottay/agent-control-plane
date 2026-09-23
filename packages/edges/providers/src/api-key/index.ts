@@ -1,5 +1,5 @@
 import { ExecutionEvent } from "@acp/contracts";
-import type { ExecutionRefused, ResolvedRoute, WorkerIdentityString } from "@acp/contracts";
+import type { ExecutionOutputSink, ExecutionRefused, ResolvedRoute, WorkerIdentityString } from "@acp/contracts";
 
 import { AdapterError } from "../errors/index.js";
 
@@ -64,7 +64,8 @@ export interface ApiStreamRequest {
  * than the CLI's in exactly two places — `text` and `toolUse` — because a
  * streaming API reports deltas and tool calls that a headless CLI's landed
  * parsers do not surface. A chunk this union cannot express is a STOP escalated
- * to the DT, never a reason to widen `@acp/contracts`.
+ * to the DT, never a reason to widen `@acp/contracts`. A `text` delta never
+ * becomes an event: it goes to the caller's private sink (P-07 escalón C).
  */
 export type ApiStreamChunk =
   | { readonly kind: "started"; readonly resolvedModel: string; readonly protocolVersion: string }
@@ -75,7 +76,17 @@ export type ApiStreamChunk =
   | { readonly kind: "state"; readonly toState: string }
   | { readonly kind: "usage"; readonly stepIndex: number; readonly tokensUsed: number }
   | { readonly kind: "checkpoint"; readonly digest: string }
-  | { readonly kind: "authRequired"; readonly reason: string };
+  | { readonly kind: "authRequired"; readonly reason: string }
+  /**
+   * What the operation itself said about its outcome, in the result contract's
+   * vocabulary, at most once (P-07 escalón C, ADR 0099). The port holds it and
+   * emits it in the fixed order before the terminal. No client produces it in
+   * P-07; a real one arrives in P-15.
+   */
+  | {
+      readonly kind: "operationResult";
+      readonly status: Extract<ExecutionEvent, { readonly kind: "operationResult" }>["status"];
+    };
 
 /**
  * The owned streaming client interface.
@@ -144,13 +155,35 @@ export function admitApiRoute(
  * shape of the stream, so that one completion-and-failure law serves both
  * transports instead of each transport inventing its own.
  */
-function toExecutionEvent(chunk: ApiStreamChunk, route: ResolvedRoute): ExecutionEvent {
-  const candidate: ExecutionEvent =
-    chunk.kind === "started"
-      ? // The route is echoed and the provider's own resolution travels beside
-        // it, verbatim. The adapter never rewrites one to match the other.
-        { kind: "started", route, resolvedModel: chunk.resolvedModel, protocolVersion: chunk.protocolVersion }
-      : chunk;
+function toExecutionEvent(chunk: Exclude<ApiStreamChunk, { readonly kind: "text" }>, route: ResolvedRoute): ExecutionEvent {
+  // An exhaustive switch over the kinds this transport admits, and nothing else
+  // (P-07 escalón C, ADR 0099). The client is typed, but what it yields at run
+  // time is not: a `processExited`, `completed` or `error` it emitted would parse
+  // as an `ExecutionEvent` and slip a fact only the port may state into the
+  // middle of the stream. So a kind outside this list is refused by name here,
+  // the one place a chunk becomes an event.
+  let candidate: ExecutionEvent;
+  switch (chunk.kind) {
+    case "started":
+      // The route is echoed and the provider's own resolution travels beside
+      // it, verbatim. The adapter never rewrites one to match the other.
+      candidate = { kind: "started", route, resolvedModel: chunk.resolvedModel, protocolVersion: chunk.protocolVersion };
+      break;
+    case "toolUse":
+    case "write":
+    case "state":
+    case "usage":
+    case "checkpoint":
+    case "authRequired":
+    case "operationResult":
+      candidate = chunk;
+      break;
+    default: {
+      const unreachable: never = chunk;
+      void unreachable;
+      throw new AdapterError("MALFORMED_EVENT", { provider: route.provider, taskId: "" });
+    }
+  }
 
   const parsed = ExecutionEvent.safeParse(candidate);
   if (!parsed.success) {
@@ -173,8 +206,16 @@ export async function* apiExecutionEvents(
   binding: ApiKeyBinding,
   route: ResolvedRoute,
   request: ApiStreamRequest,
+  sink?: ExecutionOutputSink,
 ): AsyncIterable<ExecutionEvent> {
   for await (const chunk of binding.client.stream(request)) {
+    // Output text goes to the caller's private sink and yields nothing: the
+    // boundary's events carry no output bytes (P-07 escalón C, ADR 0099).
+    // Without a sink the delta is dropped.
+    if (chunk.kind === "text") {
+      sink?.(chunk.delta);
+      continue;
+    }
     yield toExecutionEvent(chunk, route);
   }
 }

@@ -6,6 +6,7 @@ import {
   findCredentialViolations,
 } from "@acp/contracts";
 import type {
+  ExecutionOutputSink,
   ExecutionRefusal,
   ExecutionRefused,
   ExecutionSession,
@@ -107,11 +108,15 @@ import { startSession } from "../session/index.js";
  *    the port filters one, but because it is never handed one. The contract's
  *    `write` kind is reachable by other transports; on this one it is a gap,
  *    reported rather than papered over.
- * 2. **`completed` is synthesized here, not reported.** No CLI provider signal
- *    carries completion. The port's law is that a session reaching `CLOSED`
- *    cleanly emits exactly one `completed`, carrying the last `stepIndex` the
- *    stream reported, so usage can be reconciled against it. A session that
- *    ends in `FAILED` emits `error` instead, and never both.
+ * 2. **Three facts, synthesized here and never fused** (P-07 escalón C, ADR
+ *    0099). `completed` is transport success and nothing more: no CLI provider
+ *    signal carries completion, so a session reaching `CLOSED` cleanly emits
+ *    exactly one, carrying the last `stepIndex` the stream reported; a session
+ *    that ends in `FAILED` emits `error` instead, and never both. Before that one
+ *    terminal come, in this order and only when observed, `processExited` — how
+ *    the child ended, including the ladder's own SIGKILL on a failed session —
+ *    and `operationResult` — what the operation said. Absent means not
+ *    observable: never exit 0, never success.
  */
 
 /** The admitted transport values for one account. */
@@ -379,18 +384,44 @@ class StreamFailure extends Error {}
  * exactly the path this packet adds. The CLI leg passes the entry's running
  * value; the API and local legs pass nothing, because neither can reattach.
  */
+/**
+ * What a transport knows once its stream has ended (P-07 escalón C, ADR 0099):
+ * the failure it could not raise, how its process ended when it owns one, and
+ * what the operation said when it said anything. `null` is "not observed", never
+ * a default.
+ */
+interface StreamEnd {
+  readonly failure: string | null;
+  readonly exit: { readonly exitCode: number | null; readonly signal: string | null } | null;
+  readonly operation: "SUCCEEDED" | "FAILED" | null;
+}
+
+/** The end of a stream whose transport owns no process and reports nothing more. */
+const NOTHING_MORE: StreamEnd = Object.freeze({ failure: null, exit: null, operation: null });
+
 async function* terminated(
   inner: AsyncIterable<ExecutionEvent>,
-  finish: () => Promise<string | null>,
+  finish: () => Promise<StreamEnd>,
   seed = 0,
 ): AsyncIterable<ExecutionEvent> {
   let lastStepIndex = seed;
+  // An operation fact the transport reported in-stream is held, not yielded, so
+  // it is emitted in the fixed order — after the process fact, before the one
+  // terminal — and at most once.
+  let reported: "SUCCEEDED" | "FAILED" | null = null;
   try {
     for await (const event of inner) {
       if (event.kind === "usage") lastStepIndex = event.stepIndex;
+      if (event.kind === "operationResult") {
+        if (reported !== null) throw new StreamFailure("the operation reported its outcome twice");
+        reported = event.status;
+        continue;
+      }
       yield event;
     }
   } catch (error: unknown) {
+    // No `processExited` on this path: the stream failed before its process
+    // was observed to end, and an absent exit is NOT_OBSERVABLE, never 0.
     if (error instanceof StreamFailure) {
       yield errorEvent(error.message);
       return;
@@ -399,11 +430,20 @@ async function* terminated(
     return;
   }
 
-  const failure = await finish();
-  if (failure !== null) {
-    yield errorEvent(failure);
+  const end = await finish();
+  if (end.exit !== null) {
+    yield { kind: "processExited", exitCode: end.exit.exitCode, signal: end.exit.signal };
+  }
+  if (end.failure !== null) {
+    yield errorEvent(end.failure);
     return;
   }
+  if (reported !== null && end.operation !== null) {
+    yield errorEvent("the operation reported its outcome twice");
+    return;
+  }
+  const operation = reported ?? end.operation;
+  if (operation !== null) yield { kind: "operationResult", status: operation };
   yield { kind: "completed", stepIndex: lastStepIndex };
 }
 
@@ -476,17 +516,24 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
     sessionId: string,
     entry: HarnessEntry,
   ): AsyncIterable<ExecutionEvent> {
-    const finish = async (): Promise<string | null> => {
+    const finish = async (): Promise<StreamEnd> => {
       if (session.state === "FAILED") {
         // The session tore its own child down; wait for that to finish before
         // reporting, so a caller that stops reading here is not racing a kill.
+        // The exit is then the ladder's own SIGKILL, or the child's own status
+        // when it had already ended. A failed session's verdict is not reported:
+        // the session did not end in a state that vouches for it.
         await session.settled();
         harness.release(sessionId);
-        return "session failed: " + (session.health().classifiedError ?? "UNCLASSIFIED");
+        return {
+          failure: "session failed: " + (session.health().classifiedError ?? "UNCLASSIFIED"),
+          exit: session.exit(),
+          operation: null,
+        };
       }
       await session.close();
       harness.release(sessionId);
-      return null;
+      return { failure: null, exit: session.exit(), operation: session.operation() };
     };
     try {
       yield* terminated(cliEvents(session, route, entry), finish, entry.lastStepIndex);
@@ -504,7 +551,11 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
     // another would make every caller write two paths. It also makes a throw a
     // rejection rather than a synchronous blow-up mid-await-chain.
     // eslint-disable-next-line @typescript-eslint/require-await
-    async start(route: ResolvedRoute, request: ExecutionRequest): Promise<ExecutionSession | ExecutionRefused> {
+    async start(
+      route: ResolvedRoute,
+      request: ExecutionRequest,
+      sink?: ExecutionOutputSink,
+    ): Promise<ExecutionSession | ExecutionRefused> {
       const parsedRoute = ResolvedRoute.safeParse(route);
       if (!parsedRoute.success) return refuse("ROUTE_INVALID", "route." + firstPath(parsedRoute.error));
       const parsedRequest = ExecutionRequest.safeParse(request);
@@ -573,8 +624,8 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
             // producer. `finish` has nothing to add: an API stream that ended
             // without throwing ended cleanly.
             terminated(
-              apiExecutionEvents(admittedApi.binding, admitted, apiRequest),
-              () => Promise.resolve(null),
+              apiExecutionEvents(admittedApi.binding, admitted, apiRequest, sink),
+              () => Promise.resolve(NOTHING_MORE),
             ),
         });
         }
@@ -611,8 +662,8 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
             // producer: a local stream that ended without throwing ended
             // cleanly, exactly like the API one.
             terminated(
-              localExecutionEvents(admittedLocal.binding, admitted, localRequest),
-              () => Promise.resolve(null),
+              localExecutionEvents(admittedLocal.binding, admitted, localRequest, sink),
+              () => Promise.resolve(NOTHING_MORE),
             ),
         });
         }
@@ -656,7 +707,11 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
           held.route.accountId === admitted.accountId &&
           held.route.transportKind === admitted.transportKind &&
           held.route.capabilityPolicyVersion === admitted.capabilityPolicyVersion &&
-          held.route.resolvedAt === admitted.resolvedAt;
+          held.route.resolvedAt === admitted.resolvedAt &&
+          // The sink is bound when the child is spawned (P-07 escalón C, ADR 0099).
+          // A rejoin asking for one would get only the tail of the output, and an
+          // assembler fed a tail would build an incomplete result, so it is refused.
+          sink === undefined;
         if (!rejoinable) return refuse("REATTACH_UNAVAILABLE", "request.reattach");
 
         // Granted. No binding lookup and no `startSession`: the child was
@@ -714,7 +769,7 @@ export function createExecutionPort(input: ExecutionPortInput): ModelExecutionPo
 
       let session: AdapterSession;
       try {
-        session = startSession(binding.adapter, sessionRequest);
+        session = startSession(binding.adapter, sessionRequest, sink);
       } catch (error: unknown) {
         // A refused spawn is a transport that cannot serve this route. The
         // adapter's own classified code travels in `at`; it is ours, not the

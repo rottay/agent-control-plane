@@ -21,6 +21,10 @@ import {
   Uuid,
 } from "../primitives/index.js";
 import { ControlPlaneEventType } from "../control-plane-event/index.js";
+// The status vocabulary of an operation's result has one home, the result
+// contract; the port's `operationResult` reads it rather than restating it
+// (P-07 escalón C, ADR 0099, L-P07A-1 amended).
+import { RESULT_STATUSES } from "../result/index.js";
 import { WorkerIdentityString } from "../worker-identity/index.js";
 import type { HealthProbe } from "../worker-slot/index.js";
 
@@ -261,6 +265,18 @@ export type ResolvedRoute = z.infer<typeof ResolvedRoute>;
  * They are deliberately both present: `route.model` is the alias the router
  * chose, `resolvedModel` is what the provider actually bound, and comparing
  * them is the evidence that no adapter silently substituted a model.
+ *
+ * **Three facts, never fused** (contratos §4.2; P-07 escalón C, ADR 0099).
+ * `completed` is transport success and nothing more. `processExited` is how the
+ * child process ended, and `operationResult` is what the operation itself said.
+ * Neither of the two is terminal; when present they come in that order, before
+ * the one terminal (`completed` or `error`). An absent `processExited` means the
+ * exit was not observable — never exit 0 — and an absent `operationResult` means
+ * the operation's verdict was not observed.
+ *
+ * **Output text does not cross here.** The union carries no output bytes: they go
+ * to the caller's private `ExecutionOutputSink`, and whatever the sink receives
+ * enters no event.
  */
 export const ExecutionEvent = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -269,11 +285,6 @@ export const ExecutionEvent = z.discriminatedUnion("kind", [
     /** The provider's exact resolution of `route.model`. */
     resolvedModel: z.string().min(1).max(120),
     protocolVersion: z.string().min(1).max(40),
-  }),
-  z.strictObject({
-    kind: z.literal("text"),
-    /** One delta, as it arrived. Never an accumulated transcript. */
-    delta: z.string().max(16_384),
   }),
   z.strictObject({
     kind: z.literal("toolUse"),
@@ -336,6 +347,35 @@ export const ExecutionEvent = z.discriminatedUnion("kind", [
     kind: z.literal("completed"),
     /** The last step the transport reported, for reconciliation against usage. */
     stepIndex: z.number().int().nonnegative().max(100_000),
+  }),
+  /**
+   * How the child process ended, as observed: its exit code **or** the signal
+   * that ended it, exactly one of the two. Not terminal. Only a transport that
+   * owns a process can observe it; absent, the exit was not observable.
+   */
+  z
+    .strictObject({
+      kind: z.literal("processExited"),
+      exitCode: z.number().int().min(0).max(255).nullable(),
+      signal: z.string().max(16).regex(/^SIG[A-Z0-9]+$/).nullable(),
+    })
+    .superRefine((value, ctx) => {
+      if ((value.exitCode === null) === (value.signal === null)) {
+        ctx.addIssue({
+          code: "custom",
+          message: "a process ends with an exit code or a signal, exactly one of the two",
+          path: ["exitCode"],
+        });
+      }
+    }),
+  /**
+   * What the operation itself said about its outcome, in the result contract's
+   * vocabulary and nothing else: no vendor token, no bytes, no digest. Not
+   * terminal.
+   */
+  z.strictObject({
+    kind: z.literal("operationResult"),
+    status: z.enum(RESULT_STATUSES),
   }),
 ]);
 export type ExecutionEvent = z.infer<typeof ExecutionEvent>;
@@ -424,6 +464,17 @@ export const ExecutionRequest = z.strictObject({
 });
 export type ExecutionRequest = z.infer<typeof ExecutionRequest>;
 
+/**
+ * Where an execution's output text goes: the private side of the boundary
+ * (P-07 escalón C, ADR 0099).
+ *
+ * The sink receives output text only, delta by delta and in order. It carries no
+ * instruction and no metadata, and whatever it receives enters no event. It is an
+ * argument of `start`, never a field of `ExecutionRequest`, because a request is a
+ * strict object the ledger may see and output bytes are not.
+ */
+export type ExecutionOutputSink = (delta: string) => void;
+
 /** A refusal from the boundary, carrying a closed reason and where it failed. */
 export interface ExecutionRefused {
   readonly ok: false;
@@ -474,8 +525,17 @@ export interface ExecutionSession {
  *    with the control plane. A transport adapter is a mouth, not a mind.
  */
 export interface ModelExecutionPort {
-  /** Begin, or rejoin, an execution on exactly this route. */
-  start(route: ResolvedRoute, request: ExecutionRequest): Promise<ExecutionSession | ExecutionRefused>;
+  /**
+   * Begin, or rejoin, an execution on exactly this route.
+   *
+   * `sink`, when given, receives the execution's output text, delta by delta,
+   * and nothing else (P-07 escalón C, ADR 0099).
+   */
+  start(
+    route: ResolvedRoute,
+    request: ExecutionRequest,
+    sink?: ExecutionOutputSink,
+  ): Promise<ExecutionSession | ExecutionRefused>;
   /** Ask a running execution to stop. Idempotent; never kills a foreign process. */
   interrupt(sessionId: string): Promise<void>;
   /** Read-only reachability, for the transport this port serves. */

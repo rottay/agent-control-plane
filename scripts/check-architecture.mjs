@@ -10921,6 +10921,65 @@ const P07B_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-07 escalón C: a transport, a process and an operation are three facts, and
+ * output bytes live on the private side (contratos §4.2; adjudication v2 C6-C8;
+ * ADR 0099).
+ *
+ * **What lands.** `ExecutionEvent` loses `text` and gains two non-terminal members,
+ * `processExited` (an exit code or a signal, exactly one) and `operationResult` (the
+ * result contract's status, read from `RESULT_STATUSES`), emitted in that order
+ * before the one terminal; `completed` stays transport success only. `start` takes an
+ * optional third argument, `ExecutionOutputSink`, and output text reaches the caller
+ * there and nowhere else. The Claude parser reads the assistant `text` blocks as a
+ * private output signal and `result.is_error` as the operation's verdict, on the
+ * evidence of the two captured samples (fixture `test/testing/claude-capture/`), and
+ * recognizes `system/commands_changed` and `rate_limit_event` as no-signal records.
+ * The session holds the verdict once and the process handle the exit; the API and
+ * local legs route `text` to the sink and may report the verdict, never an exit.
+ *
+ * **Pins that move.** `CONTRACTS_SCHEMA_EXPORTS` 160 -> **161** (`ExecutionOutputSink`,
+ * a type). `PATH_SCOPED_LAWS` 147 -> **148** for L-P07C-1. L-P07A-1 is amended IN ITS
+ * OWN ROW: `execution-boundary/index.ts` is admitted for `RESULT_STATUSES` alone, in
+ * one import form. The ADR corpus 98 -> 99.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` 2.8.0 (`ExecutionEvent` is a port
+ * shape with no version); `API_CONTRACT_VERSION`; `MIGRATIONS` 22; the event
+ * vocabulary 35; `PROVIDERS_PUBLIC_EXPORTS` 88 and `RUNTIME_PUBLIC_EXPORTS` 285 (no
+ * new named export); L-B4A-3 at three reattach refusals (a rejoin asking for a sink is
+ * refused inside the existing conjunction); `API_CLIENT_SHAPE` and
+ * `LOCAL_CLIENT_SHAPE` (the chunk unions widen, the interfaces do not).
+ *
+ * **Twenty-five paths; two are new to the fence** -- the capture fixture and ADR 0099.
+ */
+const P07C_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/edges/providers/src/contract/index.ts",
+  "packages/edges/providers/src/claude/index.ts",
+  "packages/edges/providers/src/events/index.ts",
+  "packages/edges/providers/src/session/index.ts",
+  "packages/edges/providers/src/process/handle/index.ts",
+  "packages/edges/providers/src/execution-port/index.ts",
+  "packages/edges/providers/src/api-key/index.ts",
+  "packages/edges/providers/src/local/index.ts",
+  "packages/edges/providers/README.md",
+  "packages/edges/providers/test/testing/claude-capture/index.ts",
+  "packages/edges/providers/test/testing/index.ts",
+  "packages/edges/providers/test/claude/index.test.ts",
+  "packages/edges/providers/test/session/index.test.ts",
+  "packages/edges/providers/test/events/index.test.ts",
+  "packages/edges/providers/test/harness/index.test.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0099-a-transport-a-process-and-an-operation-are-three-facts.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11150,6 +11209,7 @@ const WRITE_SET = [
   ...P06CORR_WRITE_SET,
   ...P07A_WRITE_SET,
   ...P07B_WRITE_SET,
+  ...P07C_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -12566,6 +12626,13 @@ const PATH_SCOPED_LAWS = [
   // amendment is in that law's own row and adds none.
   {
     law: "the result contract is named by its own concept and the contracts barrels, and by nothing else",
+    scope: "packages/*/*/src/**",
+  },
+  // P-07 escalón C. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 147 -> 148 for L-P07C-1. The L-P07A-1
+  // amendment is in that law's own row and adds none.
+  {
+    law: "output bytes live on the private side, in named files only",
     scope: "packages/*/*/src/**",
   },
 ];
@@ -20236,6 +20303,9 @@ if (accountsIndex === null) {
   "EXIT_USAGE",
   "ExceptionalState",
   "ExecutionEvent",
+  // P-07 escalón C (ADR 0099): the type of the private output sink `start` takes.
+  // A type only; no value of it reaches a barrel.
+  "ExecutionOutputSink",
   "ExecutionRefusal",
   "ExecutionRefused",
   "ExecutionRequest",
@@ -27228,27 +27298,45 @@ const CONTENT_CONTRACT_CALLERS = [
 // on an import of the module's path, a separate check inside this same block so the
 // admission cannot widen silently. Same row, same `requireScope`: `PATH_SCOPED_LAWS`
 // does not move.
+//
+// AMENDED by P-07 escalón C (ADR 0099), in this row: the execution boundary's
+// `operationResult.status` reads the two statuses from the contract, never a copy.
+// So `execution-boundary/index.ts` joins the sites, admitted one name wide as the
+// ledger is. The readers become a map from each file to its one lawful import form:
+// the ledger reads the package barrel and imports no path; the boundary sits inside
+// the contracts package, where the barrel would be a self-cycle, so its one admitted
+// form is exactly the relative import of `RESULT_STATUSES` from `../result/index.js`.
+// Same row, same `requireScope`: `PATH_SCOPED_LAWS` does not move.
 const RESULT_CONTRACT_SITES = [
   "packages/kernel/contracts/src/schemas/result/index.ts",
   "packages/kernel/contracts/src/schemas/result/types/index.ts",
   "packages/persistence/ledger/src/projection/index.ts",
+  "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
 ];
-const RESULT_STATUS_READER = "packages/persistence/ledger/src/projection/index.ts";
+const RESULT_STATUS_READERS = {
+  "packages/persistence/ledger/src/projection/index.ts": null,
+  "packages/kernel/contracts/src/schemas/execution-boundary/index.ts":
+    'import { RESULT_STATUSES } from "../result/index.js";',
+};
 {
   let resultScanned = 0;
-  {
-    const code = stripComments(readIfPresent(RESULT_STATUS_READER) ?? "");
+  for (const [reader, admittedImport] of Object.entries(RESULT_STATUS_READERS)) {
+    const code = stripComments(readIfPresent(reader) ?? "");
     if (!/\bRESULT_STATUSES\b/.test(code)) {
-      fail(RESULT_STATUS_READER + " no longer reads RESULT_STATUSES; its admission to L-P07A-1 is stale");
+      fail(reader + " no longer reads RESULT_STATUSES; its admission to L-P07A-1 is stale");
     }
+    if (admittedImport !== null && !code.includes(admittedImport)) {
+      fail(reader + " no longer imports RESULT_STATUSES in its one admitted form: " + admittedImport);
+    }
+    const rest = admittedImport === null ? code : code.split(admittedImport).join("");
     if (
-      /["'](?:[^"'\n]*\/)?result\/index\.js["']/.test(code) ||
-      /\b(?:ResultContractSchema|ResultContract|RESULT_CONTRACT_VERSION|RESULT_REFUSALS)\b/.test(code)
+      /["'](?:[^"'\n]*\/)?result\/index\.js["']/.test(rest) ||
+      /\b(?:ResultContractSchema|ResultContract|RESULT_CONTRACT_VERSION|RESULT_REFUSALS)\b/.test(rest)
     ) {
       fail(
-        RESULT_STATUS_READER +
-          " is admitted to the result contract for RESULT_STATUSES alone, and names more of it; the outcome" +
-          " grammar reads the two result-bearing statuses and nothing else",
+        reader +
+          " is admitted to the result contract for RESULT_STATUSES alone, and names more of it; it reads the" +
+          " two result-bearing statuses and nothing else",
       );
     }
   }
@@ -27269,9 +27357,9 @@ const RESULT_STATUS_READER = "packages/persistence/ledger/src/projection/index.t
       ) {
         fail(
           relativePath +
-            " names the result contract; it is exported by the contracts barrels and read by one grammar only --" +
-            " escalon B's door records a result by reference, the ledger's outcome grammar alone names its" +
-            " statuses, and no assembler builds one until D",
+            " names the result contract; it is exported by the contracts barrels and its statuses are read by" +
+            " two readers only -- the ledger's outcome grammar (escalon B) and the execution boundary's" +
+            " operationResult (escalon C) -- and no assembler builds one until D",
         );
       }
     }
@@ -27282,8 +27370,8 @@ const RESULT_STATUS_READER = "packages/persistence/ledger/src/projection/index.t
   );
   notes.push(
     "no production source outside the result concept and the contracts barrels names the result contract, and " +
-      RESULT_STATUS_READER +
-      " is admitted for RESULT_STATUSES alone",
+      Object.keys(RESULT_STATUS_READERS).join(" and ") +
+      " are admitted for RESULT_STATUSES alone",
   );
 }
 
@@ -27414,6 +27502,93 @@ function functionBody(source, declaration) {
     "three readers of an instruction's content blocks over " +
       String(blockScanned) +
       " other sources, and the one composer records nothing",
+  );
+}
+
+// L-P07C-1 -- output bytes live on the private side, in named files only (P-07
+// escalón C, ADR 0099).
+//
+// Output text no longer crosses the boundary as an event: it travels as a private
+// `output` signal inside providers and reaches the caller only through the
+// `ExecutionOutputSink` passed to `start`. On L-P06C-1's mould, containment rather
+// than a word ban:
+//   1. exactly seven tracked `src/` files -- plus the two contracts barrels, which
+//      re-export the sink as a type -- may name the output signal or the sink type:
+//      the boundary declaring it, the providers contract typing it, the Claude
+//      parser producing it, the session routing it, the port and the API and local
+//      legs threading it. Escalón D amends this row to admit its assembler;
+//   2. inside the session, the one function that hands output to the sink names no
+//      recorder, no event builder and no error;
+//   3. the boundary's sentence that the sink's content enters no event stays where
+//      it is, because the ban and its words live together.
+// A bare `sink(` call is not the test: a function can only reach output text by
+// being handed a value of the sink's type, and an unrelated edge (the tools'
+// frame writers) calls its own sinks by that name.
+const OUTPUT_SITES = [
+  "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+  "packages/edges/providers/src/contract/index.ts",
+  "packages/edges/providers/src/claude/index.ts",
+  "packages/edges/providers/src/session/index.ts",
+  "packages/edges/providers/src/execution-port/index.ts",
+  "packages/edges/providers/src/api-key/index.ts",
+  "packages/edges/providers/src/local/index.ts",
+];
+const OUTPUT_ROUTER = "packages/edges/providers/src/session/index.ts";
+const OUTPUT_RECORDING_NAMES = /\b(?:shapePayload|normalizedEvent|toNormalized|AdapterError|health)\b/;
+{
+  let outputScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      if (OUTPUT_SITES.includes(relativePath)) continue;
+      if (CONTENT_CONTRACT_BARRELS.includes(relativePath)) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      outputScanned += 1;
+      const code = stripComments(content);
+      if (/\bExecutionOutputSink\b/.test(code) || /kind:\s*"output"/.test(code)) {
+        fail(
+          relativePath +
+            " names the output signal or the output sink; output bytes live on the private side, in the seven" +
+            " named files only, and reach no event, checkpoint, log or error",
+        );
+      }
+    }
+  }
+  const router = readIfPresent(OUTPUT_ROUTER);
+  if (router === null) {
+    fail(OUTPUT_ROUTER + " is missing; L-P07C-1 has no router to hold the output in");
+  } else {
+    const body = functionBody(stripComments(router), "private deliverOutput(");
+    if (body === null) {
+      fail(OUTPUT_ROUTER + " no longer declares deliverOutput; the function this law contains has moved");
+    } else {
+      const named = body.match(BLOCK_RECORDING_NAMES) ?? body.match(OUTPUT_RECORDING_NAMES);
+      if (named !== null) {
+        fail(
+          OUTPUT_ROUTER +
+            " names " +
+            named[0] +
+            " inside deliverOutput; the function that hands output to the sink records nothing, because output" +
+            " text enters no event, health report, error or log",
+        );
+      }
+    }
+  }
+  const boundary = readIfPresent(INSTRUCTION_BOUNDARY);
+  if (boundary === null || !/whatever it receives enters no event/.test(boundary)) {
+    fail(
+      INSTRUCTION_BOUNDARY +
+        " no longer carries the sentence L-P07C-1 is the enforcement of; the ban and its words live together",
+    );
+  }
+  requireScope("output bytes live on the private side, in named files only", outputScanned);
+  notes.push(
+    "seven named files handle output bytes over " +
+      String(outputScanned) +
+      " other sources, and the session's router records nothing",
   );
 }
 

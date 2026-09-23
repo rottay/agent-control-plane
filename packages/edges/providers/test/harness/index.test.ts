@@ -72,6 +72,9 @@ function fakeSession(pid: number, state: SessionState = "STARTING"): FakeSession
     },
     health: (): HealthProbe => ({ status: "UNKNOWN", checkedAt: AT, latencyMs: null, classifiedError: null }),
     settled: (): Promise<void> => Promise.resolve(),
+    // No process and no verdict: the harness never asks either (P-07 escalón C).
+    exit: () => null,
+    operation: () => null,
   };
   return session;
 }

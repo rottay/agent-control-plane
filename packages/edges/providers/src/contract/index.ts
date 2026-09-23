@@ -1,5 +1,5 @@
 import { CLI_SUBSCRIPTION_PROVIDERS } from "@acp/contracts";
-import type { PROVIDER_PRESSURES, WorkerIdentityString } from "@acp/contracts";
+import type { ExecutionEvent, PROVIDER_PRESSURES, WorkerIdentityString } from "@acp/contracts";
 
 import { AdapterError } from "../errors/index.js";
 
@@ -315,7 +315,22 @@ export type ProviderSignal =
    */
   | { readonly kind: "pressure"; readonly pressure: ProviderPressure }
   /** A write-class action. Fatal for a reviewer identity. */
-  | { readonly kind: "write"; readonly target: string };
+  | { readonly kind: "write"; readonly target: string }
+  /**
+   * Output text, as the provider produced it (P-07 escalón C, ADR 0099).
+   *
+   * Private: the session hands it to the caller's sink and it is never normalized,
+   * so it reaches no event, no health report and no error.
+   */
+  | { readonly kind: "output"; readonly text: string }
+  /**
+   * What the operation itself said about its outcome, in the result contract's
+   * vocabulary. Held by the session, at most once, and never normalized.
+   */
+  | {
+      readonly kind: "operation";
+      readonly status: Extract<ExecutionEvent, { readonly kind: "operationResult" }>["status"];
+    };
 
 export type CapabilityOutcome =
   | { readonly ok: true; readonly capabilities: readonly CapabilityRecord[]; readonly protocolVersion: string }

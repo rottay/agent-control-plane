@@ -224,6 +224,7 @@ export {
   ExecutionRequest,
 } from "./execution-boundary/index.js";
 export type {
+  ExecutionOutputSink,
   ExecutionRefused,
   ExecutionSession,
   ModelExecutionPort,

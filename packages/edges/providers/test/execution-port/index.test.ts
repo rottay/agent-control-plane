@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { CLI_SUBSCRIPTION_PROVIDERS, ExecutionEvent, PROVIDER_PRESSURES } from "@acp/contracts";
-import type { ExecutionRequest, ModelExecutionPort, ResolvedRoute } from "@acp/contracts";
+import type { ExecutionOutputSink, ExecutionRequest, ModelExecutionPort, ResolvedRoute } from "@acp/contracts";
 import { afterAll, describe, expect, it } from "vitest";
 
 import type {
@@ -29,7 +29,8 @@ import { KIMI_ACP_PROTOCOL, kimiAdapter } from "../../src/kimi/index.js";
 import type { LocalBinding, LocalChatChunk, LocalChatRequest } from "../../src/local/index.js";
 import type { AgentHarness } from "../../src/harness/index.js";
 import { createAgentHarness } from "../../src/harness/index.js";
-import { fakeApiClient, fakeLocalClient, scriptedAdapter } from "../testing/index.js";
+import { fakeAdapter, fakeApiClient, fakeLocalClient, scriptedAdapter } from "../testing/index.js";
+import { CAPTURED_AUTH_FAILURE, CAPTURED_SUCCESS } from "../testing/claude-capture/index.js";
 import type { FakeScript } from "../testing/index.js";
 
 /**
@@ -129,8 +130,9 @@ async function drain(
   port: ModelExecutionPort,
   routeValue: ResolvedRoute,
   requestValue: ExecutionRequest = request(),
+  sink?: ExecutionOutputSink,
 ): Promise<readonly ExecutionEvent[]> {
-  const started = await port.start(routeValue, requestValue);
+  const started = await port.start(routeValue, requestValue, sink);
   if (!started.ok) throw new Error("expected a session, got " + started.refusal + " at " + started.at);
   const events: ExecutionEvent[] = [];
   for await (const event of started.events()) events.push(event);
@@ -216,8 +218,28 @@ async function trailFor(provider: ProviderName): Promise<readonly ExecutionEvent
  */
 const SHARED_KINDS = ["started", "usage", "state", "completed"];
 
+/** The two per-transport facts of P-07 escalón C, which the shared projection sets aside. */
+const PER_LEG_KINDS: readonly string[] = ["processExited", "operationResult"];
+
+/** A trail without the per-transport facts: the transport intersection. */
+function shared(trail: readonly ExecutionEvent[]): readonly ExecutionEvent[] {
+  return trail.filter((event) => !PER_LEG_KINDS.includes(event.kind));
+}
+
 function assertSharedTrail(leg: string, trail: readonly ExecutionEvent[], expected: ResolvedRoute): void {
-  expect({ leg, kinds: trail.map((event) => event.kind) }).toEqual({ leg, kinds: SHARED_KINDS });
+  expect({ leg, kinds: shared(trail).map((event) => event.kind) }).toEqual({ leg, kinds: SHARED_KINDS });
+  // The process fact, per leg (P-07 escalón C, ADR 0099): a CLI child that exited
+  // cleanly reports exit 0 directly before `completed`; an API or local leg owns
+  // no process and reports none. None of these synthetic scripts says what the
+  // operation decided, so no leg reports `operationResult`.
+  const processFacts = trail.filter((event) => event.kind === "processExited");
+  if (leg.startsWith("cli")) {
+    expect({ leg, processFacts }).toEqual({ leg, processFacts: [{ kind: "processExited", exitCode: 0, signal: null }] });
+    expect({ leg, beforeTerminal: trail.at(-2)?.kind }).toEqual({ leg, beforeTerminal: "processExited" });
+  } else {
+    expect({ leg, processFacts }).toEqual({ leg, processFacts: [] });
+  }
+  expect({ leg, operation: trail.some((event) => event.kind === "operationResult") }).toEqual({ leg, operation: false });
 
   // Every event the boundary emitted is a valid `ExecutionEvent`. The port
   // parses before it yields, so this re-check is cheap; it is here because a
@@ -406,12 +428,13 @@ describe("the same fixture runs through an API_KEY adapter", () => {
     });
   });
 
-  it("expresses the two kinds the CLI transport cannot", async () => {
+  it("expresses the kinds the CLI transport cannot, and hands text to the sink rather than the trail", async () => {
     // `text` and `toolUse` are API-transport kinds: the landed CLI parsers
     // emit neither, which is why the shared scenario above is the intersection
     // rather than the union. They are drilled here instead of being smuggled
     // into the shared fixture, where they would have made the CLI legs fail
     // for a reason that has nothing to do with conformance.
+    const sunk: string[] = [];
     const trail = await drain(
       dualPort([
         { kind: "started", resolvedModel: API_MODEL, protocolVersion: API_PROTOCOL },
@@ -423,11 +446,15 @@ describe("the same fixture runs through an API_KEY adapter", () => {
         { kind: "usage", stepIndex: 3, tokensUsed: 99 },
       ]),
       apiRoute(),
+      request(),
+      (delta) => sunk.push(delta),
     );
 
+    // P-07 escalón C (ADR 0099): the text delta went to the sink, not the trail.
+    expect(sunk).toEqual(["one delta, not a transcript"]);
+    expect(JSON.stringify(trail)).not.toContain("one delta");
     expect(trail.map((event) => event.kind)).toEqual([
       "started",
-      "text",
       "toolUse",
       "write",
       "checkpoint",
@@ -575,12 +602,18 @@ describe("the dual-transport acceptance bullet", () => {
     legs["api/" + API_PROVIDER] = (await drain(dualPort(), apiRoute())).map((event) => event.kind);
     legs["local/" + LOCAL_PROVIDER] = (await drain(localPort(), localRoute())).map((event) => event.kind);
 
-    const distinct = new Set(Object.values(legs).map((kinds) => kinds.join(",")));
+    // Compared over the shared projection: since P-07 escalón C the raw trails
+    // legitimately differ by the process fact, which only the CLI leg observes.
+    const projected = (kinds: readonly string[]): string => kinds.filter((kind) => !PER_LEG_KINDS.includes(kind)).join(",");
+    const distinct = new Set(Object.values(legs).map(projected));
     expect({ legs: Object.keys(legs).length, distinctTrails: distinct.size }).toEqual({
       legs: 3,
       distinctTrails: 1,
     });
     expect([...distinct][0]).toBe(SHARED_KINDS.join(","));
+    expect(legs["cli/claude"]).toEqual(["started", "usage", "state", "processExited", "completed"]);
+    expect(legs["api/" + API_PROVIDER]).toEqual(SHARED_KINDS);
+    expect(legs["local/" + LOCAL_PROVIDER]).toEqual(SHARED_KINDS);
   });
 });
 
@@ -635,6 +668,7 @@ describe("credentials are unrepresentable at this boundary", () => {
     // The fake spends the secret into the one place a leak would show: the
     // stream's own content. If any of it reached the trail, the scan below
     // would find it.
+    const sunk: string[] = [];
     const trail = await drain(
       dualPort(
         [
@@ -645,6 +679,8 @@ describe("credentials are unrepresentable at this boundary", () => {
         secret,
       ),
       apiRoute(),
+      request(),
+      (delta) => sunk.push(delta),
     );
 
     // Redaction by unrepresentability rather than by filtering: no member of
@@ -653,7 +689,10 @@ describe("credentials are unrepresentable at this boundary", () => {
     // not the mechanism.
     expect(JSON.stringify(trail)).not.toContain(secret);
     expect(JSON.stringify(trail)).not.toContain("sk-");
-    expect(trail.map((event) => event.kind)).toEqual(["started", "text", "usage", "completed"]);
+    expect(JSON.stringify(sunk)).not.toContain(secret);
+    // The delta reached the sink (P-07 escalón C), and the trail carries no text.
+    expect(sunk).toEqual(["a delta that does not name the key"]);
+    expect(trail.map((event) => event.kind)).toEqual(["started", "usage", "completed"]);
   });
 
   it("never surfaces a secret the local client implementation holds", async () => {
@@ -663,6 +702,7 @@ describe("credentials are unrepresentable at this boundary", () => {
     // proof matters most — and the `secret` parameter that threads through
     // `localPort` is only evidence when a test actually spends it.
     const secret = "lk-p84-do-not-emit-9876543210";
+    const sunk: string[] = [];
     const trail = await drain(
       localPort(
         [
@@ -673,6 +713,8 @@ describe("credentials are unrepresentable at this boundary", () => {
         secret,
       ),
       localRoute(),
+      request(),
+      (delta) => sunk.push(delta),
     );
 
     // Same mechanism, same evidence: no member of `LocalChatRequest` or
@@ -680,7 +722,9 @@ describe("credentials are unrepresentable at this boundary", () => {
     // has nothing to strip.
     expect(JSON.stringify(trail)).not.toContain(secret);
     expect(JSON.stringify(trail)).not.toContain("lk-");
-    expect(trail.map((event) => event.kind)).toEqual(["started", "text", "usage", "completed"]);
+    expect(JSON.stringify(sunk)).not.toContain(secret);
+    expect(sunk).toEqual(["a delta that does not name the token"]);
+    expect(trail.map((event) => event.kind)).toEqual(["started", "usage", "completed"]);
   });
 });
 
@@ -891,8 +935,8 @@ describe("what this transport can and cannot say", () => {
     // is unreported, and the enforcement plane must not rely on seeing it here.
     expect(trail.some((event) => event.kind === "write")).toBe(false);
     // The rest of the trail is unaffected: the measurement on the same record
-    // still arrives.
-    expect(trail.map((event) => event.kind)).toEqual(["started", "usage", "state", "completed"]);
+    // still arrives, and the child's clean exit before the terminal (P-07 C).
+    expect(trail.map((event) => event.kind)).toEqual(["started", "usage", "state", "processExited", "completed"]);
   });
 
   it("ends in a classified error, not a completed, when the session fails", async () => {
@@ -1056,8 +1100,9 @@ describe("the owned session lifecycle", () => {
     expect(rest.filter((event) => event.kind === "started")).toEqual([]);
     const union = [...taken, ...rest];
     expect(union.filter((event) => event.kind === "started")).toHaveLength(1);
-    // A2: the union is the scenario, in order, once each.
-    expect(union.map((event) => event.kind)).toEqual(["started", "usage", "state", "completed"]);
+    // A2: the union is the scenario, in order, once each — with the child's exit
+    // before the terminal since P-07 escalón C.
+    expect(union.map((event) => event.kind)).toEqual(["started", "usage", "state", "processExited", "completed"]);
     // Same process throughout, and it is gone once the rejoined stream ended.
     expect(pidWhileAbandoned).toBe(harness.live()[0]?.pid ?? pidWhileAbandoned);
     expect(harness.live()).toEqual([]);
@@ -1359,6 +1404,221 @@ describe("P-06/CORR: the API and local legs carry the composed instruction", () 
       expect(outcome).toEqual({ ok: false, refusal: "TRANSPORT_UNAVAILABLE", at: "request.instructions" });
       expect(JSON.stringify(outcome)).not.toContain(secret);
       expect(seen).toHaveLength(0);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// P-07 escalón C — three facts, never fused, and the output on the private side
+// (ADR 0099)
+// ---------------------------------------------------------------------------
+
+/** A port over one Claude-parsed CLI child running `script`. */
+function captured(script: FakeScript): ModelExecutionPort {
+  const root = drillRoot();
+  return portFor({
+    "acct-primary": {
+      adapter: scriptedAdapter(claudeAdapter, script),
+      binary: NODE,
+      configRoot: root as AdmittedConfigRoot,
+      workdir: root as AdmittedWorkdir,
+      limits: limits(),
+    },
+  });
+}
+
+/** Replace the `is_error` of the captured result record, or delete it. */
+function resultWith(isError: boolean | undefined): string {
+  const result = JSON.parse(CAPTURED_SUCCESS[5] ?? "{}") as Record<string, unknown>;
+  if (isError === undefined) delete result["is_error"];
+  else result["is_error"] = isError;
+  return JSON.stringify(result);
+}
+
+/** The fixed order: the process fact, then the operation fact, then exactly one terminal, last. */
+function assertFactOrder(trail: readonly ExecutionEvent[]): void {
+  const kinds = trail.map((event) => event.kind);
+  const terminals = kinds.filter((kind) => kind === "completed" || kind === "error");
+  expect(terminals).toHaveLength(1);
+  const terminal = kinds.length - 1;
+  expect(kinds[terminal] === "completed" || kinds[terminal] === "error").toBe(true);
+  const exited = kinds.indexOf("processExited");
+  const operation = kinds.indexOf("operationResult");
+  if (exited !== -1 && operation !== -1) expect(exited).toBeLessThan(operation);
+  if (exited !== -1) expect(exited).toBeLessThan(terminal);
+  if (operation !== -1) expect(operation).toBeLessThan(terminal);
+  expect(kinds.filter((kind) => kind === "processExited").length).toBeLessThanOrEqual(1);
+  expect(kinds.filter((kind) => kind === "operationResult").length).toBeLessThanOrEqual(1);
+  for (const event of trail) expect(ExecutionEvent.safeParse(event).success).toBe(true);
+}
+
+describe("P-07 C: a transport, a process and an operation are three facts", () => {
+  it("OBS sample 1: transport success, a non-zero exit and a failed operation, none fused", async () => {
+    const trail = await drain(captured({ lines: CAPTURED_AUTH_FAILURE, exitCode: 1 }), route());
+    expect(trail.map((event) => event.kind)).toEqual([
+      "started",
+      "usage",
+      "state",
+      "processExited",
+      "operationResult",
+      "completed",
+    ]);
+    expect(trail.find((event) => event.kind === "processExited")).toEqual({ kind: "processExited", exitCode: 1, signal: null });
+    expect(trail.find((event) => event.kind === "operationResult")).toEqual({ kind: "operationResult", status: "FAILED" });
+    // The subtype stays a token, never a verdict.
+    expect(trail.find((event) => event.kind === "state")).toEqual({ kind: "state", toState: "SUCCESS" });
+    assertFactOrder(trail);
+  });
+
+  it("OBS sample 2: the sink receives exactly \"ok\", exit 0, operation SUCCEEDED, and the signature is nowhere", async () => {
+    const sunk: string[] = [];
+    const trail = await drain(captured({ lines: CAPTURED_SUCCESS, exitCode: 0 }), route(), request(), (delta) => sunk.push(delta));
+    expect(trail.map((event) => event.kind)).toEqual([
+      "started",
+      "usage",
+      "usage",
+      "state",
+      "processExited",
+      "operationResult",
+      "completed",
+    ]);
+    expect(trail.find((event) => event.kind === "started")).toMatchObject({ resolvedModel: "claude-haiku-4-5-20251001" });
+    expect(trail.find((event) => event.kind === "processExited")).toEqual({ kind: "processExited", exitCode: 0, signal: null });
+    expect(trail.find((event) => event.kind === "operationResult")).toEqual({ kind: "operationResult", status: "SUCCEEDED" });
+    expect(sunk).toEqual(["ok"]);
+    expect(JSON.stringify(trail)).not.toContain('"ok"');
+    for (const surface of [JSON.stringify(trail), JSON.stringify(sunk)]) expect(surface).not.toContain("fixture-signature");
+    assertFactOrder(trail);
+  });
+
+  it("SYN (unobserved): is_error true with exit 0 is three facts too — exit 0, FAILED, completed", async () => {
+    const lines = [CAPTURED_SUCCESS[1] ?? "", resultWith(true)];
+    const trail = await drain(captured({ lines, exitCode: 0 }), route());
+    expect(trail.slice(-3)).toEqual([
+      { kind: "processExited", exitCode: 0, signal: null },
+      { kind: "operationResult", status: "FAILED" },
+      { kind: "completed", stepIndex: 0 },
+    ]);
+    assertFactOrder(trail);
+  });
+
+  it("SYN: a result with no is_error and exit 1 reports the exit, no verdict, and still completes — C does not decide", async () => {
+    const lines = [CAPTURED_SUCCESS[1] ?? "", resultWith(undefined)];
+    const trail = await drain(captured({ lines, exitCode: 1 }), route());
+    expect(trail.map((event) => event.kind)).toEqual(["started", "state", "processExited", "completed"]);
+    expect(trail.find((event) => event.kind === "processExited")).toEqual({ kind: "processExited", exitCode: 1, signal: null });
+    assertFactOrder(trail);
+  });
+
+  it("SYN: a failed session reports our ladder's SIGKILL before its error", async () => {
+    const lines = [CAPTURED_SUCCESS[1] ?? "", "{not json"];
+    const trail = await drain(captured({ lines, exitCode: 0, lingerMs: 5_000 }), route());
+    expect(trail.slice(-2)).toEqual([
+      { kind: "processExited", exitCode: null, signal: "SIGKILL" },
+      expect.objectContaining({ kind: "error", refusal: "TRANSPORT_UNAVAILABLE" }),
+    ]);
+    expect(trail.some((event) => event.kind === "operationResult")).toBe(false);
+    assertFactOrder(trail);
+  });
+
+  it("the throw path reports an error and no process fact: not observable, never 0", async () => {
+    // A checkpoint whose digest is not a digest fails the contract inside the
+    // stream, which is the port's own throw path.
+    const bad = JSON.stringify({ type: "checkpoint", digest: "not-a-digest" });
+    const started = JSON.stringify({ type: "started", resolvedModel: "m-1", protocolVersion: "1" });
+    const trail = await drain(portFor({ "acct-primary": binding(fakeAdapter, [started, bad]) }), route());
+    expect(trail.at(-1)?.kind).toBe("error");
+    expect(trail.some((event) => event.kind === "processExited")).toBe(false);
+    assertFactOrder(trail);
+  });
+
+  it("Q-C4: a rejoin that asks for a sink is refused, because the sink was bound at spawn", async () => {
+    const { port } = ownedPort({ lingerMs: 5_000 });
+    const first = await port.start(route(), request(), () => undefined);
+    if (!first.ok) throw new Error("expected a session, got " + first.refusal);
+    const taken = await takeThenAbandon(first, 1);
+    expect(taken.map((event) => event.kind)).toEqual(["started"]);
+    expect(await port.start(route(), request({ reattach: first.sessionId }), () => undefined)).toEqual({
+      ok: false,
+      refusal: "REATTACH_UNAVAILABLE",
+      at: "request.reattach",
+    });
+    // Positive control: the same rejoin without a sink is granted.
+    const rejoined = await port.start(route(), request({ reattach: first.sessionId }));
+    expect(rejoined.ok).toBe(true);
+    await port.interrupt(first.sessionId);
+  });
+});
+
+describe("P-07 C: the API and local legs report the operation fact in order, and never a process fact", () => {
+  for (const leg of ["api", "local"] as const) {
+    const portWith = (chunks: readonly (ApiStreamChunk | LocalChatChunk)[]): ModelExecutionPort =>
+      leg === "api" ? dualPort(chunks as readonly ApiStreamChunk[]) : localPort(chunks as readonly LocalChatChunk[]);
+    const legRoute = (): ResolvedRoute => (leg === "api" ? apiRoute() : localRoute());
+    const opening = leg === "api" ? API_SCENARIO[0] : LOCAL_SCENARIO[0];
+
+    it(leg + ": an operationResult chunk is held and emitted after every other event, before the terminal", async () => {
+      const trail = await drain(
+        portWith([
+          opening!,
+          { kind: "operationResult", status: "SUCCEEDED" },
+          { kind: "usage", stepIndex: 0, tokensUsed: TOKENS },
+        ]),
+        legRoute(),
+      );
+      expect(trail.map((event) => event.kind)).toEqual(["started", "usage", "operationResult", "completed"]);
+      expect(trail.some((event) => event.kind === "processExited")).toBe(false);
+      assertFactOrder(trail);
+    });
+
+    it(leg + ": a second operationResult chunk fails the stream rather than overwriting the first", async () => {
+      const trail = await drain(
+        portWith([
+          opening!,
+          { kind: "operationResult", status: "SUCCEEDED" },
+          { kind: "operationResult", status: "FAILED" },
+        ]),
+        legRoute(),
+      );
+      expect(trail.map((event) => event.kind)).toEqual(["started", "error"]);
+      assertFactOrder(trail);
+    });
+
+    it(leg + ": an operationResult chunk with an absent, null or foreign status is refused, never read as no verdict", async () => {
+      for (const status of [undefined, null, "SUCCESS", "CANCELLED"]) {
+        const chunk = (status === undefined ? { kind: "operationResult" } : { kind: "operationResult", status }) as unknown as ApiStreamChunk;
+        const trail = await drain(portWith([opening!, chunk]), legRoute());
+        expect(trail.map((event) => event.kind), String(status)).toEqual(["started", "error"]);
+      }
+    });
+
+    it(leg + ": a client that emits processExited, completed or error mid-stream fails the stream, and none of it is admitted", async () => {
+      const foreign = [
+        { kind: "processExited", exitCode: 0, signal: null },
+        { kind: "completed", stepIndex: 0 },
+        { kind: "error", refusal: "TRANSPORT_UNAVAILABLE", detail: "said by the client" },
+      ];
+      for (const chunk of foreign) {
+        const trail = await drain(
+          portWith([opening!, chunk as unknown as ApiStreamChunk, { kind: "usage", stepIndex: 0, tokensUsed: TOKENS }]),
+          legRoute(),
+        );
+        expect(trail.map((event) => event.kind), chunk.kind).toEqual(["started", "error"]);
+        expect(trail.at(-1), chunk.kind).toEqual(expect.objectContaining({ kind: "error", detail: "MALFORMED_EVENT" }));
+        expect(JSON.stringify(trail), chunk.kind).not.toContain("said by the client");
+      }
+    });
+
+    it(leg + ": text goes to the sink and never to the trail, and the trail has no process fact", async () => {
+      const sunk: string[] = [];
+      const trail = await drain(
+        portWith([opening!, { kind: "text", delta: "a" }, { kind: "text", delta: "b" }]),
+        legRoute(),
+        request(),
+        (delta) => sunk.push(delta),
+      );
+      expect(sunk).toEqual(["a", "b"]);
+      expect(trail.map((event) => event.kind)).toEqual(["started", "completed"]);
     });
   }
 });

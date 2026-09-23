@@ -1,6 +1,6 @@
 import { StringDecoder } from "node:string_decoder";
 
-import type { HealthProbe, WorkerIdentityString } from "@acp/contracts";
+import type { ExecutionOutputSink, HealthProbe, WorkerIdentityString } from "@acp/contracts";
 import { findCredentialViolations, parseWorkerIdentity } from "@acp/contracts";
 
 import type {
@@ -58,6 +58,13 @@ export interface AdapterSession {
    * success path.
    */
   settled(): Promise<void>;
+  /**
+   * How the child ended, as observed, or null when no exit has been observed —
+   * never a fabricated 0 (P-07 escalón C, ADR 0099).
+   */
+  exit(): { readonly exitCode: number | null; readonly signal: string | null } | null;
+  /** What the operation said about its outcome, at most once, or null when it said nothing. */
+  operation(): "SUCCEEDED" | "FAILED" | null;
 }
 
 /** Is this identity structurally forbidden from causing a write? */
@@ -88,11 +95,16 @@ class Session implements AdapterSession {
   private pumping = false;
   /** Resolves once a terminal failure has finished tearing the child down. */
   private teardown: Promise<void> | null = null;
+  /** The caller's private sink for output text, bound at spawn (P-07 escalón C). */
+  private readonly sink: ExecutionOutputSink | undefined;
+  /** The operation's verdict, held once. */
+  private verdict: "SUCCEEDED" | "FAILED" | null = null;
 
-  constructor(adapter: ProviderAdapter, request: SessionRequest, handle: ProcessHandle) {
+  constructor(adapter: ProviderAdapter, request: SessionRequest, handle: ProcessHandle, sink?: ExecutionOutputSink) {
     this.adapter = adapter;
     this.request = request;
     this.handle = handle;
+    this.sink = sink;
     this.pid = handle.pid;
     this.provider = adapter.provider;
     this.context = { provider: adapter.provider, taskId: request.taskId };
@@ -134,6 +146,20 @@ class Session implements AdapterSession {
 
     const events: NormalizedEvent[] = [];
     for (const signal of outcome.events) {
+      // The two private signals are intercepted before anything normalizes: the
+      // output text goes to the caller's sink and nowhere else, and the verdict is
+      // held on the session (P-07 escalón C, ADR 0099).
+      if (signal.kind === "output") {
+        this.deliverOutput(signal.text);
+        continue;
+      }
+      if (signal.kind === "operation") {
+        // A second verdict in one session is not overwritten: it fails the
+        // session, because nothing observed says which of the two to believe.
+        if (this.verdict !== null) throw new AdapterError("MALFORMED_EVENT", this.context);
+        this.verdict = signal.status;
+        continue;
+      }
       if (signal.kind === "write" && this.readOnly) {
         // Layer 2, and the layer the receipts rest on: a reviewer session that
         // produces a write-class signal is killed, whatever the provider's own
@@ -148,6 +174,29 @@ class Session implements AdapterSession {
       );
     }
     return events;
+  }
+
+  /**
+   * Hand one delta of output text to the caller's sink, and do nothing else with
+   * it. Without a sink the text is dropped, which is the legacy path. This
+   * function names no recorder, no event builder and no error: the fence holds
+   * that (L-P07C-1).
+   *
+   * A sink that throws fails the session, classified `MALFORMED_EVENT`: the throw
+   * surfaces inside the stream's digest, whose catch classifies anything that is
+   * not an adapter error that way. The caller's sink must not throw — escalón D's
+   * assembler included.
+   */
+  private deliverOutput(text: string): void {
+    this.sink?.(text);
+  }
+
+  exit(): { readonly exitCode: number | null; readonly signal: string | null } | null {
+    return this.handle.exitStatus();
+  }
+
+  operation(): "SUCCEEDED" | "FAILED" | null {
+    return this.verdict;
   }
 
   /**
@@ -299,7 +348,11 @@ class Session implements AdapterSession {
  * today's silent no-op into a silent block until the step's timeout -- a worse
  * failure, and a harder one to see.
  */
-export function startSession(adapter: ProviderAdapter, request: SessionRequest): AdapterSession {
+export function startSession(
+  adapter: ProviderAdapter,
+  request: SessionRequest,
+  sink?: ExecutionOutputSink,
+): AdapterSession {
   const context = { provider: adapter.provider, taskId: request.taskId };
   const descriptor = adapter.describe(request);
 
@@ -356,7 +409,7 @@ export function startSession(adapter: ProviderAdapter, request: SessionRequest):
   // cross exactly this boundary and are recorded nowhere.
   spawned.child.stdin.end(request.instructions);
 
-  const session = new Session(adapter, request, handle);
+  const session = new Session(adapter, request, handle, sink);
   session.transition("STARTING");
   return session;
 }

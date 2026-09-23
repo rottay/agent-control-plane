@@ -110,3 +110,18 @@ describe("token counts are bounded, not trusted", () => {
     }
   });
 });
+
+describe("the private signals never become events (P-07 escalón C, ADR 0099)", () => {
+  it("maps output text and an operation verdict to nothing at all", () => {
+    const privateSignals: readonly ProviderSignal[] = [
+      { kind: "output", text: "private output" },
+      { kind: "operation", status: "SUCCEEDED" },
+      { kind: "operation", status: "FAILED" },
+    ];
+    for (const signal of privateSignals) {
+      expect(toNormalized(signal, "claude", TASK), signal.kind).toBeNull();
+    }
+    // Positive control: a signal with a mapping still maps.
+    expect(toNormalized({ kind: "state", toState: "SUCCESS" }, "claude", TASK)).not.toBeNull();
+  });
+});

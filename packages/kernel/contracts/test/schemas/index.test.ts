@@ -2026,7 +2026,6 @@ describe("ExecutionEvent", () => {
 
   it("accepts the rest of the normalized vocabulary", () => {
     const cases: readonly unknown[] = [
-      { kind: "text", delta: "hello" },
       { kind: "toolUse", tool: "read_file", detail: "packages/contracts" },
       { kind: "checkpoint", digest: SHA256 },
       { kind: "authRequired", reason: "subscription session expired" },
@@ -2100,21 +2099,71 @@ describe("ExecutionEvent", () => {
     expect(ExecutionEvent.safeParse({ kind: "pressure", provider: "codex" }).success).toBe(false);
   });
 
-  it("is exactly the eleven normalized variants", () => {
+  it("is exactly the twelve normalized variants", () => {
+    // P-07 escalón C (ADR 0099): `text` left the union — output bytes go to the
+    // caller's private sink — and `processExited` and `operationResult` joined it.
     const kinds = ExecutionEvent.options.map((option) => option.shape.kind.value);
     expect([...kinds].sort()).toEqual([
       "authRequired",
       "checkpoint",
       "completed",
       "error",
+      "operationResult",
       "pressure",
+      "processExited",
       "started",
       "state",
-      "text",
       "toolUse",
       "usage",
       "write",
     ]);
+  });
+
+  it("P-07 C: refuses a text delta, which travels to the sink and never as an event", () => {
+    expect(ExecutionEvent.safeParse({ kind: "text", delta: "hello" }).success).toBe(false);
+  });
+
+  it("P-07 C: processExited carries an exit code or a signal, exactly one, each field present and bounded", () => {
+    const exited = (value: Record<string, unknown>): boolean =>
+      ExecutionEvent.safeParse({ kind: "processExited", ...value }).success;
+    // Positive controls: each of the two lawful shapes, and each bound.
+    expect(exited({ exitCode: 0, signal: null })).toBe(true);
+    expect(exited({ exitCode: 1, signal: null })).toBe(true);
+    expect(exited({ exitCode: 255, signal: null })).toBe(true);
+    expect(exited({ exitCode: null, signal: "SIGKILL" })).toBe(true);
+    expect(exited({ exitCode: null, signal: "SIGTERM" })).toBe(true);
+    // Neither, and both.
+    expect(exited({ exitCode: null, signal: null })).toBe(false);
+    expect(exited({ exitCode: 0, signal: "SIGKILL" })).toBe(false);
+    // Absent is not null: every key is present (the NULL lesson, field by field).
+    expect(exited({ signal: "SIGKILL" })).toBe(false);
+    expect(exited({ exitCode: 1 })).toBe(false);
+    expect(exited({})).toBe(false);
+    // Out of range, or not a signal name.
+    expect(exited({ exitCode: 256, signal: null })).toBe(false);
+    expect(exited({ exitCode: -1, signal: null })).toBe(false);
+    expect(exited({ exitCode: 1.5, signal: null })).toBe(false);
+    expect(exited({ exitCode: "1", signal: null })).toBe(false);
+    expect(exited({ exitCode: null, signal: "KILL" })).toBe(false);
+    expect(exited({ exitCode: null, signal: "" })).toBe(false);
+    expect(exited({ exitCode: null, signal: "SIG" + "A".repeat(14) })).toBe(false);
+    expect(exited({ exitCode: null, signal: "sigkill" })).toBe(false);
+    // And no other key.
+    expect(exited({ exitCode: 0, signal: null, detail: "x" })).toBe(false);
+  });
+
+  it("P-07 C: operationResult is the result contract's status and nothing else", () => {
+    const result = (value: Record<string, unknown>): boolean =>
+      ExecutionEvent.safeParse({ kind: "operationResult", ...value }).success;
+    expect(result({ status: "SUCCEEDED" })).toBe(true);
+    expect(result({ status: "FAILED" })).toBe(true);
+    // Absent, null, a vendor token, another vocabulary's word, and an extra key.
+    expect(result({})).toBe(false);
+    expect(result({ status: null })).toBe(false);
+    expect(result({ status: "SUCCESS" })).toBe(false);
+    expect(result({ status: "CANCELLED" })).toBe(false);
+    expect(result({ status: "is_error" })).toBe(false);
+    expect(result({ status: "FAILED", detail: "Not logged in" })).toBe(false);
   });
 });
 

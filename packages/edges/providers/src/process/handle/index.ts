@@ -33,6 +33,8 @@ export class ProcessHandle {
   private readonly context: { readonly provider: string; readonly taskId: string };
   private reaped = false;
   private readonly steps: LadderStep[] = [];
+  /** How the child ended, once `close` reported it; null until then. */
+  private status: { readonly exitCode: number | null; readonly signal: string | null } | null = null;
 
   constructor(
     spawned: SpawnedProcess,
@@ -43,6 +45,21 @@ export class ProcessHandle {
     this.pid = spawned.pid;
     this.limits = limits;
     this.context = context;
+    // Recorded from `close`, which fires after the exit and after stdio closed,
+    // so a stream that ended cleanly always finds a status here (P-07 escalón C).
+    spawned.child.once("close", (code: number | null, signal: NodeJS.Signals | null) => {
+      this.status = Object.freeze({ exitCode: code, signal });
+    });
+  }
+
+  /**
+   * How the child ended, as observed: its exit code or the signal that ended it,
+   * or null when no exit has been observed — never a fabricated 0 (P-07 escalón
+   * C, ADR 0099). A kill by this handle's own ladder is reported as the signal
+   * that ended the child, which is a fact about our kill.
+   */
+  exitStatus(): { readonly exitCode: number | null; readonly signal: string | null } | null {
+    return this.status;
   }
 
   get isReaped(): boolean {

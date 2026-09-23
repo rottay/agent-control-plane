@@ -789,10 +789,13 @@ async function walk(
   };
 }
 
+/** The two per-transport facts of P-07 escalón C, which the neutral projection sets aside. */
+const PER_LEG_KINDS: readonly string[] = ["processExited", "operationResult"];
+
 /** The transport-neutral projection the two legs must agree on. */
 function normalized(trail: readonly ExecutionEvent[]): Record<string, unknown> {
   return {
-    kinds: trail.map((event) => event.kind),
+    kinds: trail.map((event) => event.kind).filter((kind) => !PER_LEG_KINDS.includes(kind)),
     everyEventValid: trail.every((event) => ExecutionEvent.safeParse(event).success),
     usageTotal: trail.reduce((sum, event) => (event.kind === "usage" ? sum + event.tokensUsed : sum), 0),
     completed: trail.filter((event) => event.kind === "completed").length,
@@ -857,6 +860,17 @@ describe("one scenario through both legs of the assembled path", () => {
     expect({ leg: "cli", ...normalized(cli.trail) }).toEqual({ leg: "cli", ...expected });
     expect({ leg: "api", ...normalized(api.trail) }).toEqual({ leg: "api", ...expected });
     expect(normalized(cli.trail)).toEqual(normalized(api.trail));
+    // The three facts per leg (P-07 escalón C, ADR 0099): the CLI child's clean
+    // exit directly before `completed`; the API leg owns no process and reports
+    // none; neither scripted stream said what the operation decided.
+    expect(cli.trail.filter((event) => event.kind === "processExited")).toEqual([
+      { kind: "processExited", exitCode: 0, signal: null },
+    ]);
+    expect(cli.trail.at(-2)?.kind).toBe("processExited");
+    expect(api.trail.some((event) => event.kind === "processExited")).toBe(false);
+    for (const trail of [cli.trail, api.trail]) {
+      expect(trail.some((event) => event.kind === "operationResult")).toBe(false);
+    }
 
     // The provider's own resolution travels verbatim on both legs, beside the
     // route each leg was handed -- the route is echoed, never restated.
@@ -919,7 +933,9 @@ describe("one scenario through both legs of the assembled path", () => {
         probe: "DONE",
       });
       const marker: unknown = JSON.parse(done.markerJson);
-      expect(marker).toMatchObject({ operationId, eventCount: SHARED_KINDS.length });
+      // Leg-specific since P-07 escalón C: the CLI trail carries its child's exit.
+      const eventCount = SHARED_KINDS.length + (leg === "cli" ? 1 : 0);
+      expect(marker).toMatchObject({ operationId, eventCount });
       expect((marker as { trailSha256: string }).trailSha256).toMatch(/^[0-9a-f]{64}$/);
       expect((marker as { operationDigest: string }).operationDigest).toMatch(/^[0-9a-f]{64}$/);
     }
@@ -1098,18 +1114,25 @@ describe("one scenario through both legs of the assembled path", () => {
 
   it("is not vacuous: a diverging API script is caught by the same comparison", async () => {
     // The discriminating control. An API stream that speaks one more kind
-    // than the CLI leg can -- a text delta -- still walks to a checkpoint, and
+    // than the CLI leg can -- a tool use -- still walks to a checkpoint, and
     // the equality above is exactly what refuses to call the two legs equal.
+    // A text delta served here until P-07 escalón C; it now goes to the sink and
+    // never to the trail, so it would leave the two legs equal and this control
+    // vacuous.
     const route = resolvedCliRoute();
     const cli = await walk("b1b-control-cli", cliPort(), route);
     const diverging = await walk(
       "b1b-control-api",
-      apiPort([API_SCENARIO[0]!, { kind: "text", delta: "a delta the CLI leg cannot say" }, ...API_SCENARIO.slice(1)]),
+      apiPort([
+        API_SCENARIO[0]!,
+        { kind: "toolUse", tool: "search", detail: "a kind the CLI leg cannot say" },
+        ...API_SCENARIO.slice(1),
+      ]),
       { ...route, transportKind: "API_KEY" },
     );
     expect(diverging.state).toBe("CHECKPOINTED");
     expect(normalized(diverging.trail)).not.toEqual(normalized(cli.trail));
-    expect(normalized(diverging.trail)["kinds"]).toEqual(["started", "text", "usage", "state", "completed"]);
+    expect(normalized(diverging.trail)["kinds"]).toEqual(["started", "toolUse", "usage", "state", "completed"]);
   });
 
   it("refuses the API route by transport when the port is built the way the daemon builds it", async () => {
@@ -4700,7 +4723,8 @@ describe("the acceptance proof: a child returns what it received (contratos sect
     // itself wrote. The walk completed normally around it.
     expect(readFileSync(echoPath, "utf8")).toBe(composed.instructions);
     expect(done.state).toBe("CHECKPOINTED");
-    expect(done.trail.map((event) => event.kind)).toEqual(SHARED_KINDS);
+    // The CLI child's exit before the terminal (P-07 escalón C).
+    expect(done.trail.map((event) => event.kind)).toEqual(["started", "usage", "state", "processExited", "completed"]);
   }, 60_000);
 
   it("N-P06-14: the delivered instruction reaches no event body, no evidence and no trail", async () => {
