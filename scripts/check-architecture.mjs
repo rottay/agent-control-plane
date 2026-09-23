@@ -11450,6 +11450,37 @@ const P15D3_WRITE_SET = [
   "docs/audit/decisions/index.md",
 ];
 
+/**
+ * P-15 escalón D4 -- the door-to-result drill and the bookkeeping (ADR 0105;
+ * decisions 143-145).
+ *
+ * The acceptance of `parallelism :143`: the compiled CLI publishes the registry,
+ * registers the initiative and enters the task; the recorded daemon form runs it
+ * through the packaged entry, the real port and the real Claude adapter against a
+ * synthetic echo child; an independent reader opens the ledger and the private plane.
+ * Replay, V1 byte-identity (a literal lifted from the pre-D3 source) and two
+ * end-to-end refusals are its controls. L-P07C-1's stated limit names the whole
+ * family, and its row holds its own text to it (N-D21). The packets index carries
+ * P-15's progress, D3's obligations in the P-18 row and quota blindness in the P-19
+ * row.
+ *
+ * **Pins.** None move: `PATH_SCOPED_LAWS` 153 (N-D21 lives inside L-P07C-1's row),
+ * `RUNTIME_PUBLIC_EXPORTS` 296, `CONTRACTS_SCHEMA_EXPORTS` 166.
+ *
+ * **Eight paths; none is new.** Two are comment and prose only: the arbiter's flush
+ * comment names the renewal flush, and the daemon README the nested marker path.
+ */
+const P15D4_WRITE_SET = [
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/src/arbiter/index.ts",
+  "packages/entrypoints/daemon/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0105-the-daemon-consumes-a-recorded-task-and-appends-the-whole-chain.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11688,6 +11719,7 @@ const WRITE_SET = [
   ...P15D1_WRITE_SET,
   ...P15D2_WRITE_SET,
   ...P15D3_WRITE_SET,
+  ...P15D4_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -28464,9 +28496,15 @@ function functionBody(source, declaration) {
 //      because a spread can carry a sink the count does not see. The admitted caller
 //      holds exactly one such call, and it is three plain arguments with no spread;
 //      the clause fails too if that call disappears while a result recorder exists,
-//      so the list cannot go stale. Stated limit: an aliased callee (`const s =
-//      port.start.bind(port)`, a destructured `start`) is not a `start` callee in the
-//      tree and is not seen.
+//      so the list cannot go stale. Stated limit, the whole family (AMENDED by P-15
+//      escalón D4, ADR 0105, decision 144; the P-07/D Fable v2 note): a `start`
+//      reached other than as a direct `.start` or `["start"]` callee is not seen —
+//      Function.prototype invocation (`port.start.bind(port)`, `.call`, `.apply`),
+//      `Reflect.apply(port.start, …)`, a destructured or assigned `start`
+//      (`const { start } = port`, `const s = port.start`), a computed key through an
+//      identifier (`port[key]`), and a template with substitution
+//      (`` port[`st${"art"}`] ``). No behaviour is claimed over them; the row's own
+//      text is held to naming each (N-D21, below).
 // Same row, same `requireScope`: `PATH_SCOPED_LAWS` does not move.
 const OUTPUT_SITES = [
   "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
@@ -28608,6 +28646,32 @@ const START_SINK_CALLERS = ["packages/domains/runtime/src/execution-effects/inde
     }
   }
   if (startScanned === 0) fail("L-P07C-1's F1 clause parsed no src file; the call-shape check looked at nothing");
+  // N-D21 (P-15 escalón D4, decision 144): the stated limit names the whole family,
+  // in this row's own words — the ban and its limit live together, on L-P06C-1's
+  // mould. Read from this file, between the row's "Stated limit" and its closing line.
+  {
+    const self = readIfPresent("scripts/check-architecture.mjs") ?? "";
+    const rowAt = self.indexOf("// L-P07C-1 -- output bytes live on the private side");
+    const limitAt = self.indexOf("Stated limit, the whole family", rowAt);
+    const endAt = self.indexOf("// Same row, same `requireScope`", limitAt);
+    const limit = rowAt === -1 || limitAt === -1 || endAt === -1 ? "" : self.slice(limitAt, endAt);
+    // Each form as a whole token, never a substring: `.apply` must be named in its
+    // own backticks, not found inside `Reflect.apply` (P-15/D4 v2, verifier N1).
+    const family = [
+      [".bind", /\.bind\(/],
+      [".call", /`\.call`/],
+      [".apply", /`\.apply`/],
+      ["Reflect.apply", /`Reflect\.apply\(/],
+      ["destructured", /\bdestructured\b/],
+      ["assigned", /\bassigned\b/],
+      ["computed key", /\bcomputed key\b/],
+      ["template with substitution", /\btemplate with substitution\b/],
+    ];
+    const unnamed = family.filter(([, pattern]) => !pattern.test(limit)).map(([form]) => form);
+    if (unnamed.length > 0) {
+      fail("L-P07C-1's stated limit no longer names the whole family of unseen start callees: " + unnamed.join(", "));
+    }
+  }
   const sinkCaller = stripComments(readIfPresent(START_SINK_CALLERS[0]) ?? "");
   if (/\brecordResult\b/.test(sinkCaller) && startSinkCalls !== 1) {
     fail(

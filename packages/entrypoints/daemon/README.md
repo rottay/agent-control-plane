@@ -166,6 +166,9 @@ read back from the ledger, never restated. It runs one walk under
 
 The start creates the evidence directory beside the ledger — `executions/`, mode
 0700, only if it is absent — and the runtime admits it or the start is refused.
+The walk's markers go one level deeper, at
+`executions/executions/<operationId>.json`, because the evidence port writes under
+its root's own `executions/`.
 The walk records its whole chain through the runtime's execution chain: the price
 pin, the effect, the delivery, the prompt, the usage stream, the result and the
 response. A recorded walk writes no `TOKEN_USAGE_RECORDED`, so V1 quota does not

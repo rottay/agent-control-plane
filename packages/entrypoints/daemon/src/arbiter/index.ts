@@ -279,8 +279,9 @@ export function createArbiter(options: ArbiterOptions): Arbiter {
     // P-15 escalón D3 (ADR 0105, decision 139). Under a revision nothing of the
     // coordinate may reach the ledger before its opening, and a recorded task
     // exists before its walk opens the attempt. So the events stay queued until the
-    // opening is on record, found by its own derived key, and a later flush — the
-    // release, or the violation path — appends them, once.
+    // opening is on record, found by its own derived key, and the first flush after
+    // it — the next renewal, the release or the violation path, whichever comes
+    // first; renewals flush too — appends them, once.
     if (invocation.revision !== undefined) {
       const opening = deriveEventCoordinate(invocation, ATTEMPT_OPENING_STEP.transitionId, ATTEMPT_OPENING_STEP.index);
       if (ledger.getEventByIdempotencyKey(opening.idempotencyKey) === null) return 0;

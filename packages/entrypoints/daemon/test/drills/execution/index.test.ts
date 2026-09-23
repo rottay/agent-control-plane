@@ -89,9 +89,10 @@ import type {
   ScenarioRoot,
   UsageSample,
 } from "@acp/runtime";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { leaseStorePath } from "../../../src/arbiter/index.js";
+import { runPackagedEntry } from "../../../src/bin/acp-daemon/index.js";
 import { canonicalSubmission, canonicalSubmissionDigest } from "../../../src/daemon-child/index.js";
 import type { DaemonExecutionConfig, DaemonSubmission } from "../../../src/daemon-child/index.js";
 import { resolveDaemonRoot } from "../../../src/paths/index.js";
@@ -5621,4 +5622,549 @@ describe("P-07 escalón D: an effect answers with a published result, end to end
     expect(world.ledger.listEvents({ limit: 500 }).events.filter((entry) => entry.event.type === "DISPATCH_OUTCOME_RECORDED")).toHaveLength(1);
     expect(world.ledger.verifyIntegrity().ok).toBe(true);
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón D4: door to result (ADR 0105, decisions 143-145)
+// ---------------------------------------------------------------------------
+
+/**
+ * The acceptance of `parallelism :143`, read literally: "Caso real de puerta a
+ * resultado y consumo trazable en el perfil. No sustituirlo por una llamada directa
+ * al puerto desde un test."
+ *
+ * Every record reaches the operator's ledger through a real door. The compiled CLI
+ * — spawned, never imported — publishes the model version, the routing assignment
+ * and the price catalog (`acp registry`), registers the initiative (`acp
+ * initiative`) and enters the task (`acp intake`). The recorded daemon form runs it
+ * through the packaged entry (`runPackagedEntry([…])`), the real
+ * execution port and the real Claude adapter's argv, against a synthetic echo
+ * child: a script that reads the instruction on stdin, keeps it in a side file it
+ * owns, and answers in the captured stream-json shape — the success sample's five
+ * record kinds: `system/commands_changed`, `init`, the assistant text, an allowed
+ * `rate_limit_event` and the `result`. It is no provider, reaches
+ * no network and spends nothing. Then an independent reader opens the ledger and the
+ * private plane itself.
+ *
+ * The one thing the test does by hand is create the empty ledger file: no door
+ * creates one, because it is not a task operation (ND-D4-6). Every record after it
+ * goes through a door.
+ */
+const D4_REPO_ROOT = resolve(fileURLToPath(import.meta.url), "..", "..", "..", "..", "..", "..", "..");
+const D4_CLI_ENTRY = join(D4_REPO_ROOT, "packages", "entrypoints", "cli", "dist", "index.js");
+const D4_OWNER = "claude/opus/coordinator/01";
+const D4_OPERATOR = "claude/opus/implementer/01";
+const D4_INITIATIVE = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7ad401";
+const D4_MODEL = "claude-opus-5@2026-06-01";
+const D4_CATALOG = "catalog-d4";
+const D4_RULES_FROM = "2026-09-01T00:00:00.000Z";
+const D4_ACCOUNT = "acct-d4-door";
+const D4_WRITTEN = "docs/d4.md";
+const D4_INSTRUCTION = "Echo this recorded instruction back, and nothing else.";
+
+interface D4Invocation {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/** The compiled `acp`, spawned as an operator would run it. */
+function acp(args: readonly string[]): D4Invocation {
+  const ran = spawnSync(process.execPath, [D4_CLI_ENTRY, ...args], { cwd: D4_REPO_ROOT, encoding: "utf8" });
+  return { status: ran.status, stdout: ran.stdout, stderr: ran.stderr };
+}
+
+/** A canonical, owner-only directory for this drill. */
+function d4Directory(): string {
+  const created = realpathSync(mkdtempSync(join(TMP_ROOT, "acp-d4-")));
+  chmodSync(created, 0o700);
+  temporaries.push(created);
+  return created;
+}
+
+function d4Write(directory: string, name: string, document: unknown): string {
+  const path = join(directory, name);
+  writeFileSync(path, JSON.stringify(document), { encoding: "utf8", mode: 0o600 });
+  return path;
+}
+
+/** Publish, register and enter, each through its door; returns the operator ledger and the task. */
+function d4ThroughTheDoors(options: { readonly priced: boolean }): { readonly databasePath: string; readonly taskId: string } {
+  const directory = d4Directory();
+  const databasePath = join(directory, "control-plane.sqlite");
+  // The one act no door performs: an empty ledger file (ND-D4-6).
+  openLedger(databasePath).close();
+  const registry = (name: string, document: Record<string, unknown>): void => {
+    const published = acp(["registry", "--database", databasePath, "--format", "json", "--request", d4Write(directory, name, document)]);
+    expect({ name, status: published.status, stderr: published.stderr }).toEqual({ name, status: 0, stderr: "" });
+  };
+  const version = (documentKind: string, documentId: string, payload: Record<string, unknown>): Record<string, unknown> => ({
+    documentKind,
+    documentId,
+    documentVersion: 1,
+    parentDocumentVersion: null,
+    effectiveFrom: D4_RULES_FROM,
+    recordedBy: D4_OWNER,
+    payload,
+  });
+  registry(
+    "model.json",
+    version("MODEL_VERSION", D4_MODEL, {
+      provider: "claude",
+      model: "claude-opus-5",
+      release: "2026-06-01",
+      status: "ACTIVE",
+      contextTokens: 200000,
+      policyVersion: "2026.09.0",
+      deprecatedAt: null,
+      eligibleRoles: ["implementer"],
+      transports: ["CLI_SUBSCRIPTION"],
+    }),
+  );
+  registry(
+    "routing.json",
+    version("ROUTING_ASSIGNMENT_GLOBAL", "routing:GLOBAL:implementer:0", {
+      role: "implementer",
+      slot: 0,
+      provider: "claude",
+      modelVersionId: D4_MODEL,
+      fallbacks: [],
+    }),
+  );
+  if (options.priced) {
+    registry(
+      "catalog.json",
+      version("PRICE_TABLE", D4_CATALOG, {
+        intervals: [
+          {
+            provider: "claude",
+            modelVersionId: D4_MODEL,
+            transportKind: "CLI_SUBSCRIPTION",
+            tokenClass: "output",
+            currency: "USD",
+            effectiveFrom: D4_RULES_FROM,
+            effectiveTo: null,
+            pricePerMillionNanos: 75_000_000_000,
+          },
+        ],
+      }),
+    );
+  }
+  const initiative = acp([
+    "initiative",
+    "--database",
+    databasePath,
+    "--format",
+    "json",
+    "--request",
+    d4Write(directory, "initiative.json", {
+      initiativeId: D4_INITIATIVE,
+      slug: "acp-p15-d4",
+      title: "The P-15 door-to-result drill",
+      objective: "Run one recorded task from its door to its result.",
+      recordedBy: D4_OWNER,
+    }),
+  ]);
+  expect({ status: initiative.status, stderr: initiative.stderr }).toEqual({ status: 0, stderr: "" });
+  const taskId = randomUUID();
+  const intake = acp([
+    "intake",
+    "--database",
+    databasePath,
+    "--format",
+    "json",
+    "--request",
+    d4Write(directory, "intake.json", {
+      envelope: {
+        ...envelopeFor(taskId, D4_INITIATIVE, [D4_WRITTEN]),
+        objective: D4_INSTRUCTION,
+        content: fixtureContent(D4_INSTRUCTION),
+        readSet: [D4_WRITTEN],
+      },
+      clientScope: D4_OPERATOR,
+      clientRequestKey: "d4-" + taskId,
+      roadmapVersionId: null,
+      stepId: null,
+      role: "implementer",
+      slot: 0,
+      transportKind: "CLI_SUBSCRIPTION",
+      recordedBy: D4_OPERATOR,
+    }),
+  ]);
+  expect({ status: intake.status, stderr: intake.stderr }).toEqual({ status: 0, stderr: "" });
+  return { databasePath, taskId };
+}
+
+/** A git worktree holding the one path the envelope declares, committed. */
+function d4Worktree(): string {
+  const directory = d4Directory();
+  const git = (...args: string[]): void => {
+    spawnSync("/usr/bin/git", args, { cwd: directory, encoding: "utf8" });
+  };
+  git("init", "--quiet");
+  git("config", "user.email", "drill@example.invalid");
+  git("config", "user.name", "drill");
+  mkdirSync(join(directory, "docs"), { recursive: true });
+  writeFileSync(join(directory, D4_WRITTEN), "the door-to-result drill\n", "utf8");
+  git("add", "-A");
+  git("commit", "-q", "-m", "fixture base");
+  return directory;
+}
+
+/**
+ * The synthetic echo child, behind the real Claude adapter's argv.
+ *
+ * It appends one line to a spawn log (so a replay can prove it was not started),
+ * keeps the instruction it read on stdin in a side file — never on stdout, which the
+ * adapter parses — and answers in the captured stream-json shape, all five of the success
+ * sample's record kinds in its order: `system/commands_changed`, `init`, an assistant text
+ * record echoing the instruction, an allowed `rate_limit_event`, then a result carrying
+ * `is_error`, the session id the adapter named on its argv, and one four-class usage.
+ */
+function d4EchoChild(options: { readonly isError: boolean }): {
+  readonly binary: string;
+  readonly echoFile: string;
+  readonly spawnLog: string;
+} {
+  const directory = d4Directory();
+  const echoFile = join(directory, "instruction.txt");
+  const spawnLog = join(directory, "spawns.log");
+  const binary = join(directory, "fake-claude");
+  const program = [
+    "#!" + realpathSync(process.execPath),
+    "const fs = require('node:fs');",
+    "fs.appendFileSync(" + JSON.stringify(spawnLog) + ", 'spawned\\n');",
+    "const chunks = [];",
+    "process.stdin.on('data', (c) => chunks.push(c));",
+    "process.stdin.on('end', () => {",
+    "  const text = Buffer.concat(chunks).toString('utf8');",
+    "  fs.writeFileSync(" + JSON.stringify(echoFile) + ", text);",
+    "  const at = process.argv.indexOf('--session-id');",
+    "  const session = at >= 0 ? process.argv[at + 1] : 'session-d4';",
+    "  const out = (value) => process.stdout.write(JSON.stringify(value) + '\\n');",
+    // The captured success sample's five record kinds, in its order (P-15/D4 v2).
+    "  out({ type: 'system', subtype: 'commands_changed' });",
+    "  out({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601' });",
+    "  out({ type: 'assistant', message: { id: 'msg_d4_1', content: [{ type: 'text', text }] } });",
+    "  out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } });",
+    "  out({ type: 'result', subtype: 'success', is_error: " + String(options.isError) + ", session_id: session,",
+    "    usage: { input_tokens: 5, output_tokens: 7, cache_creation_input_tokens: 11, cache_read_input_tokens: 13 } });",
+    "  process.exit(" + (options.isError ? "1" : "0") + ");",
+    "});",
+  ].join("\n");
+  writeFileSync(binary, program + "\n", { mode: 0o700 });
+  return { binary, echoFile, spawnLog };
+}
+
+/** The recorded form's config file, owner-only, as launchd would hand it over. */
+function d4ConfigFile(databasePath: string, taskId: string, binary: string, catalogDocumentId: string): string {
+  const directory = d4Directory();
+  return d4Write(directory, "daemon.json", {
+    mode: "SQLITE_SUPERVISOR",
+    databasePath,
+    taskId,
+    emittedBy: D4_OPERATOR,
+    holdOpen: false,
+    checkPorts: false,
+    execution: {
+      route: {
+        provider: "claude",
+        model: "claude-opus-5",
+        accountId: D4_ACCOUNT,
+        transportKind: "CLI_SUBSCRIPTION",
+        capabilityPolicyVersion: "2026-09-03.1",
+        resolvedAt: D4_RULES_FROM,
+      },
+      bindings: [
+        {
+          accountId: D4_ACCOUNT,
+          transportKind: "CLI_SUBSCRIPTION",
+          provider: "claude",
+          binary,
+          configRoot: d4Directory(),
+          workdir: d4Worktree(),
+          limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+        },
+      ],
+      catalogDocumentId,
+    },
+  });
+}
+
+interface D4Event {
+  readonly sequence: number;
+  readonly type: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+}
+
+/** Every event of the task, read back by a reader of its own. */
+function d4Events(ledger: Ledger, taskId: string): readonly D4Event[] {
+  return ledger
+    .listEvents({ taskId, limit: 500 })
+    .events.map((record) => ({ sequence: record.sequence, type: record.event.type, payload: record.event.payload }));
+}
+
+const D4_CHAIN = [
+  "EFFECT_INTENDED",
+  "DISPATCH_INTENDED",
+  "DISPATCH_OUTCOME_RECORDED",
+  "PROMPT_OCCURRENCE_RECORDED",
+  "USAGE_STREAM_DECLARED",
+  "USAGE_OBSERVATION_RECORDED",
+  "DISPATCH_OUTCOME_RECORDED",
+  "RESPONSE_OCCURRENCE_RECORDED",
+];
+
+describe("P-15/D4: a recorded task, from its door to its result (parallelism :143)", () => {
+  beforeAll(() => {
+    // The package's own build, not the repository typecheck: the drill spawns what
+    // an operator runs, and an order-dependent dist would be an order-dependent pass.
+    const packageManager = process.env["npm_execpath"];
+    const built =
+      packageManager === undefined
+        ? spawnSync("pnpm", ["--filter", "@acp/cli", "build"], { cwd: D4_REPO_ROOT, encoding: "utf8" })
+        : spawnSync(process.execPath, [packageManager, "--filter", "@acp/cli", "build"], { cwd: D4_REPO_ROOT, encoding: "utf8" });
+    if (built.status !== 0) throw new Error("could not build the CLI: " + (built.stderr || built.stdout));
+  }, 300_000);
+
+  it("PC-D1/PC-D2: the whole chain and the answer are read back independently, and a replay spends nothing", async () => {
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true });
+    const child = d4EchoChild({ isError: false });
+    const config = d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG);
+
+    await expect(runPackagedEntry([config])).resolves.toBe(0);
+
+    // The child ran once, and what it was handed is the instruction the envelope carries.
+    expect(readFileSync(child.spawnLog, "utf8")).toBe("spawned\n");
+    expect(readFileSync(child.echoFile, "utf8")).toBe(D4_INSTRUCTION);
+
+    const ledger = openLedger(databasePath);
+    ledgers.push(ledger);
+    const events = d4Events(ledger, taskId);
+    const types = events.map((event) => event.type);
+    // The door's intake, the walk's opening at the intake's flat attempt, the plan
+    // with the chain between its INTENT and OUTCOME, and the checkpoint.
+    expect(types[0]).toBe("TASK_DISCOVERED");
+    expect(types[1]).toBe("TASK_ATTEMPT_OPENED");
+    const intent = types.indexOf("RUN_STARTED");
+    expect(types.slice(intent + 1, intent + 1 + D4_CHAIN.length)).toEqual(D4_CHAIN);
+    expect(types).toContain("CHECKPOINT_WRITTEN");
+    expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
+    expect(types).not.toContain("TOKEN_USAGE_RECORDED");
+
+    const chain = events.slice(intent + 1, intent + 1 + D4_CHAIN.length);
+    // The pin is the catalog's version in force.
+    expect(chain[1]?.payload["dispatch"]).toMatchObject({ catalogDocumentId: D4_CATALOG, catalogVersion: 1 });
+    // The prompt occurrence's digest is the instruction's, recomputed here only.
+    expect(chain[3]?.payload["promptOccurrence"]).toMatchObject({
+      promptSha256: createHash("sha256").update(D4_INSTRUCTION, "utf8").digest("hex"),
+      promptBytes: Buffer.byteLength(D4_INSTRUCTION, "utf8"),
+    });
+    // Exactly one observation: CUMULATIVE, final, the child's four classes.
+    expect(types.filter((type) => type === "USAGE_OBSERVATION_RECORDED")).toHaveLength(1);
+    expect(chain[5]?.payload["usageObservation"]).toMatchObject({
+      reportKind: "CUMULATIVE",
+      isFinal: 1,
+      inputTokens: 5,
+      outputTokens: 7,
+      cacheWriteTokens: 11,
+      cacheReadTokens: 13,
+      totalTokens: 36,
+    });
+    const settled = chain[6]?.payload["outcome"] as Readonly<Record<string, unknown>>;
+    expect(settled).toMatchObject({ dispatchState: "SETTLED", effectOutcomeStatus: "SUCCEEDED" });
+
+    // The RESPONSE bytes, read from the private plane by this suite's own plane.
+    const leaseStore = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(databasePath), {
+      incarnationId: randomUUID(),
+      createdAt: D4_RULES_FROM,
+    });
+    try {
+      const plane = openArtifactPlane({ ledger, leaseStore, ledgerPath: databasePath });
+      const read = plane.read({
+        artifactReferenceId: String(settled["resultArtifactReferenceId"]),
+        scopeKind: "TASK",
+        scopeId: taskId,
+      });
+      expect(read.verb).toBe("READ");
+      if (read.verb === "READ") {
+        expect(createHash("sha256").update(read.content).digest("hex")).toBe(settled["resultSha256"]);
+        const document = ResultContractSchema.parse(JSON.parse(read.content.toString("utf8")));
+        expect(document.status).toBe("SUCCEEDED");
+        expect(document.blocks.map((block) => block.text).join("")).toBe(D4_INSTRUCTION);
+      }
+    } finally {
+      leaseStore.close();
+    }
+
+    // Integrity, and a rebuild that reproduces the read models it folded.
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    const effectId = String((chain[0]?.payload["effect"] as Readonly<Record<string, unknown>>)["effectId"]);
+    const readModels = (): string =>
+      JSON.stringify([
+        ledger.getTask(taskId),
+        ledger.getEffect(effectId),
+        ledger.listDispatchAttempts(effectId),
+        ledger.getTaskRevision(taskId, 1),
+      ]);
+    const before = readModels();
+    ledger.rebuildReadModel();
+    expect(readModels()).toBe(before);
+    ledger.close();
+
+    // PC-D2, ND-D4-1: a replay on the same {L, taskId} appends only its own lease
+    // grant and revocation — a fresh fence is a fresh fact — and nothing of the plan
+    // or the chain; the child is not started, and the task is still CHECKPOINTED.
+    await expect(runPackagedEntry([config])).resolves.toBe(0);
+    expect(readFileSync(child.spawnLog, "utf8")).toBe("spawned\n");
+    const replayed = openLedger(databasePath);
+    ledgers.push(replayed);
+    const after = d4Events(replayed, taskId);
+    expect(after.slice(0, events.length)).toEqual(events);
+    expect(after.slice(events.length).map((event) => event.type)).toEqual(["LEASE_ACQUIRED", "LEASE_REVOKED"]);
+    expect(replayed.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
+    expect(replayed.verifyIntegrity().problems).toEqual([]);
+  }, 180_000);
+
+  it("N-D10: a catalog that prices nothing in force refuses before any spend, and the task settles FAILED", async () => {
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: false });
+    const child = d4EchoChild({ isError: false });
+    // The supervisor settles the failure and then rethrows it, classified, as every
+    // failing walk does: the start rejects, and TASK_FAILED is already durable.
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG)])).rejects.toMatchObject({
+      name: "DispatchRefusedError",
+      at: "catalogDocumentId",
+    });
+    expect(existsSync(child.spawnLog)).toBe(false);
+    const ledger = openLedger(databasePath);
+    ledgers.push(ledger);
+    const types = d4Events(ledger, taskId).map((event) => event.type);
+    for (const absent of ["EFFECT_INTENDED", "DISPATCH_INTENDED", "PROMPT_OCCURRENCE_RECORDED", "USAGE_STREAM_DECLARED"]) {
+      expect(types, absent).not.toContain(absent);
+    }
+    expect(ledger.getTask(taskId)?.currentState).toBe("FAILED");
+    expect(types).not.toContain("CHECKPOINT_WRITTEN");
+  }, 180_000);
+
+  it("N-D12: an answer the operation marks as an error is recorded with its response, and the task never checkpoints", async () => {
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true });
+    const child = d4EchoChild({ isError: true });
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG)])).rejects.toMatchObject({
+      name: "OperationFailedError",
+    });
+    expect(readFileSync(child.spawnLog, "utf8")).toBe("spawned\n");
+    const ledger = openLedger(databasePath);
+    ledgers.push(ledger);
+    const events = d4Events(ledger, taskId);
+    const types = events.map((event) => event.type);
+    const settled = events.find(
+      (event) => event.type === "DISPATCH_OUTCOME_RECORDED" && (event.payload["outcome"] as Record<string, unknown>)["dispatchState"] === "SETTLED",
+    );
+    expect(settled?.payload["outcome"]).toMatchObject({ effectOutcomeStatus: "FAILED" });
+    expect(types).toContain("RESPONSE_OCCURRENCE_RECORDED");
+    expect(types).not.toContain("CHECKPOINT_WRITTEN");
+    expect(ledger.getTask(taskId)?.currentState).toBe("FAILED");
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+  }, 180_000);
+});
+
+/**
+ * PC-D3 (ND-D4-2): the inline V1 walk's bytes did not move under D3.
+ *
+ * One inline walk, every input fixed — the task, the instant, the scenario, the
+ * route, the clock, and a worktree at a fixed path committed at a fixed date so its
+ * head is one sha — and its event trail hashed without the lease rows, whose ids and
+ * fences are the daemon's own lease store's (shared by every drill in this project)
+ * and not the walk's. The literal was lifted by running this same test over the
+ * pre-D3 source: `git archive be3b06f` into the session scratchpad, read-only on the
+ * repository, with this file copied in and run there (ADR 0105, D4).
+ */
+const D4_V1_TRAIL_SHA256 = "f61ca58bf709f90d8c25066d45dc234c4eced0275fab37bc4f5d02f52de8ed93";
+
+describe("P-15/D4 PC-D3: the inline V1 walk is byte-identical to the one before D3", () => {
+  it("hashes the same trail, lease rows aside, as the pre-D3 source", async () => {
+    const worktree = join(TMP_ROOT, "acp-d4-v1-worktree");
+    rmSync(worktree, { recursive: true, force: true });
+    mkdirSync(join(worktree, "docs"), { recursive: true, mode: 0o700 });
+    chmodSync(worktree, 0o700);
+    temporaries.push(worktree);
+    const env = { ...process.env, GIT_AUTHOR_DATE: "2026-09-01T00:00:00Z", GIT_COMMITTER_DATE: "2026-09-01T00:00:00Z" };
+    const git = (...args: string[]): void => {
+      spawnSync("/usr/bin/git", args, { cwd: worktree, encoding: "utf8", env });
+    };
+    git("init", "--quiet", "--initial-branch=main");
+    git("config", "user.email", "drill@example.invalid");
+    git("config", "user.name", "drill");
+    writeFileSync(join(worktree, D4_WRITTEN), "the V1 control\n", "utf8");
+    git("add", "-A");
+    git("commit", "-q", "-m", "fixture base");
+
+    const child = d4EchoChild({ isError: false });
+    const taskId = "d4d4d4d4-0000-4000-8000-0000000000d1";
+    const scenarioId = b4aScenarioId("d4-v1-identity");
+    const execution: DaemonExecutionConfig = {
+      route: {
+        provider: "claude",
+        model: "opus",
+        accountId: D4_ACCOUNT,
+        transportKind: "CLI_SUBSCRIPTION",
+        capabilityPolicyVersion: "2026-09-03.1",
+        resolvedAt: RESOLVED_AT,
+      },
+      bindings: [
+        {
+          accountId: D4_ACCOUNT,
+          transportKind: "CLI_SUBSCRIPTION",
+          provider: "claude",
+          binary: child.binary,
+          configRoot: d4Directory(),
+          workdir: worktree,
+          limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+        },
+      ],
+    };
+    const envelope = { ...envelopeFor(taskId, INITIATIVE_ID, [D4_WRITTEN]), objective: D4_INSTRUCTION, content: fixtureContent(D4_INSTRUCTION) } as TaskEnvelope;
+    await stopDaemon(
+      await startDaemon({
+        mode: "SQLITE_SUPERVISOR",
+        scenarioId,
+        emittedBy: EMITTED_BY,
+        taskId,
+        attempt: 1,
+        submittedAt: SUBMITTED_AT,
+        submissionDigest: canonicalSubmissionDigest({
+          taskId,
+          attempt: 1,
+          submittedAt: SUBMITTED_AT,
+          initiativeId: INITIATIVE_ID,
+          route: execution.route,
+        }),
+        initiativeId: INITIATIVE_ID,
+        checkPorts: false,
+        clock: () => SUBMITTED_AT,
+        execution,
+        envelope,
+      }),
+    );
+    const ledger = openLedger(scenarioLedgerPath(resolveScenarioRoot(scenarioId)));
+    ledgers.push(ledger);
+    const trail = ledger
+      .listEvents({ taskId, limit: 500 })
+      .events.filter((record) => !record.event.type.startsWith("LEASE_"))
+      .map((record) => record.canonicalJson);
+    expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
+    // The pin is portable, proven rather than assumed (P-15/D4 v2, Fable C1): no event
+    // it hashes carries the temporary root, the scenario root or the child's directory,
+    // so the digest cannot depend on where either tree was run.
+    const scenarioRoot = resolveScenarioRoot(scenarioId);
+    for (const [label, path] of [
+      ["temporary root", TMP_ROOT],
+      ["scenario root", scenarioRoot],
+      ["child directory", resolve(child.binary, "..")],
+      ["worktree", worktree],
+    ] as const) {
+      expect(trail.some((json) => json.includes(path)), label).toBe(false);
+    }
+    expect(createHash("sha256").update(trail.join("\n"), "utf8").digest("hex")).toBe(D4_V1_TRAIL_SHA256);
+  }, 180_000);
 });

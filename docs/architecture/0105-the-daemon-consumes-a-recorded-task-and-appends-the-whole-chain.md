@@ -1,8 +1,7 @@
 # ADR 0105 — The daemon consumes a recorded task and appends the whole chain
 
-- Status: accepted in part (P-15 escalón D, sub-cuts D1 to D3, recorded 2026-09-23). D is
-  landed in four commits, D1 to D4; each adds its own section below, and this record
-  is complete when D4 lands.
+- Status: accepted (P-15 escalón D, sub-cuts D1 to D4, recorded 2026-09-23). D landed in
+  four commits, D1 to D4, each with its own section below.
 - Supersedes: none.
 - Superseded-by: none.
 - Amends: ADR 0080 §4 and §5, by an errata section in that record (D1). The
@@ -483,7 +482,93 @@ object.
 - **Codex and Kimi** declare no usage source (ND-D2-1 (b)), so a recorded walk on them is
   refused at the start; an API or local route is refused at the port as today.
 
-## D4 — to be recorded with D4
+## D4 — decisions 143 to 145
+
+### Twelve — door to result (decision 143; `parallelism :143`)
+
+The acceptance, read literally: "Caso real de puerta a resultado y consumo trazable en el
+perfil. No sustituirlo por una llamada directa al puerto desde un test." The drill in
+`daemon/test/drills/execution` does it with nothing substituted:
+
+- **The doors.** The compiled CLI — built through its package's own build script and
+  spawned as an operator runs it, never imported — publishes the model version, the
+  routing assignment and the price catalog (`acp registry`), registers the initiative
+  (`acp initiative`) and enters the task (`acp intake`). The one act the test performs
+  by hand is creating the empty ledger file: no door creates one, because it is not a
+  task operation (ND-D4-6). Every record after it goes through a door.
+- **The daemon.** The recorded form runs through the packaged entry,
+  `runPackagedEntry([<config path>])` — launchd's one argument, an owner-only config
+  file — into `startRecordedDaemon`, the real execution port and the real Claude
+  adapter's argv.
+- **The child.** A synthetic echo child, never a provider: it reads the instruction on
+  stdin, keeps it in a side file it owns, logs each spawn, and answers in the captured
+  stream-json shape — the success sample's five record kinds in its order:
+  `system/commands_changed`, `init`, an assistant text record echoing the instruction, an
+  allowed `rate_limit_event`, and a result with `is_error`, the session id from its argv
+  and one four-class usage.
+- **The read-back.** An independent reader opens the ledger and the private plane
+  itself: the intake, the opening at the intake's flat attempt, the chain between the
+  INTENT and the OUTCOME in its order, the pin at the catalog's version in force, the
+  prompt digest recomputed by the test alone, exactly one `CUMULATIVE` final
+  observation with the child's classes, `SETTLED`/`SUCCEEDED` with the pair, the
+  RESPONSE bytes hashing to the pair's digest and decoding to a result whose text is the
+  instruction, no `TOKEN_USAGE_RECORDED`, integrity clean, and a rebuild that
+  reproduces the task, effect, delivery and revision read models byte for byte.
+
+**The controls.**
+
+- **Replay (PC-D2; ND-D4-1).** The daemon run again on the same `{L, taskId}` starts no
+  child (the spawn log is unchanged) and appends nothing of the plan or the chain; the
+  task stays `CHECKPOINTED`. It appends exactly two events: its own `LEASE_ACQUIRED` and
+  `LEASE_REVOKED`. That is the lease's design, not a leak — every start takes a fresh
+  fenced lease on the worktree, and a fresh fence is a fresh fact; under a revision
+  whose opening is on record the arbiter records it at once.
+- **V1 byte identity (PC-D3; ND-D4-2).** One inline V1 walk with every input fixed — the
+  task, the instant, the scenario, the route, the clock, and a worktree at a fixed path
+  committed at a fixed date so its head is one sha — hashes its event trail, without the
+  lease rows, whose ids and fences are the daemon's own lease store's and shared by
+  every drill. No event it hashes carries the temporary root, the scenario root, the
+  child's directory or the worktree, and the test asserts so: the pin is portable, not
+  assumed to be. The literal, `f61ca58b…8ed93`, was lifted by running this same test over
+  the pre-D3 source: `git archive be3b06f` into the session scratchpad (read-only on the
+  repository), the workspace links copied, the tree built, this file copied in and run
+  there. The current tree reproduces it: D3 moved no V1 byte.
+- **N-D10, end to end.** A catalog with no version in force: the start rejects with
+  `DispatchRefusedError` at `catalogDocumentId` after the supervisor settled
+  `TASK_FAILED`; the child never ran (no spawn log), and no effect, delivery, prompt or
+  stream exists.
+- **N-D12, end to end.** An answer the operation marks `is_error`: `SETTLED` with the
+  effect `FAILED`, the response occurrence recorded, `TASK_FAILED`, no checkpoint, and
+  the start rejects with `OperationFailedError`. A failing walk's start rejects after its
+  settlement, as every failing walk does.
+
+The other negatives stay where D1 to D3 put them (see Verification).
+
+### Thirteen — L-P07C-1's stated limit names the family (decision 144)
+
+The F1 clause reads `start` callees from the syntax tree: `.start` and `["start"]`. Its
+stated limit named two examples; it now names the family the P-07/D Fable v2 note asked
+for — Function.prototype invocation (`.bind`, `.call`, `.apply`), `Reflect.apply`, a
+destructured or assigned `start`, a computed key through an identifier, and a template
+with substitution — in its row, and claims no behaviour over them. The row holds its own
+text to naming each (N-D21), so the limit cannot be trimmed back to examples without a
+fence failure. ADR 0100 is not edited; this record carries it. `PATH_SCOPED_LAWS` stays
+153.
+
+### Fourteen — the bookkeeping (decision 145)
+
+- The packets index marks P-15's progress (A, B, C, R, D1 to D3 delivered, D4 in
+  review); the P-18 row carries D3's obligations — a reader over deliveries left
+  `INTENDED` and over `SETTLED` ones with no terminal or marker, a V2-aware overdue
+  predicate, and the deferred-lease frontier; the P-19 row carries the quota blindness
+  (V2 walks from D3; Codex and Kimi on V1 since D2).
+- This record is accepted, and the architecture index says so.
+- **A lapsed promise, re-pointed.** The P-06 row said the envelope's `objective` retires
+  "with the next bump". The next bumps were 2.8.0 and 2.9.0, and neither carried it: the
+  field is still in `task-envelope`. The P-06 and P-15 rows now name the bump that owns
+  it — P-16/A's, 2.10.0, owner P-16/A — so it is no longer a promise nobody holds.
+- The arbiter's flush comment names the renewal flush, and the daemon README the nested
+  marker path, `executions/executions/<operationId>.json`.
 
 ## Verification (D1)
 
@@ -499,3 +584,34 @@ object.
 - `runtime/test/core/events`, `runtime/test/core/step-executor`: the intake-first
   opening and its navigation.
 - `runtime/test/lifecycle-operation`: N-B-8 inverted; B-N1 per field.
+
+## Verification (D2)
+
+- `contracts/test/schemas`: the usage member's classes, total and refinement, NULL per
+  field; the vocabularies' move.
+- `providers/test/{claude,codex,kimi,events,execution-port}`: one report per run from the
+  result, none from assistant records; Codex and Kimi report none; N-D17 through the port.
+- `ledger/test/{migrations,usage-settlement}`: the CHECK text equal to the constants.
+- `daemon/test/{fallback,drills/index,drills/execution}`: one spend row per run.
+
+## Verification (D3)
+
+- `runtime/test/execution-chain`: the chain's order on a real intaken ledger, the pin
+  refusals with zero delta, the delivery on record refused, refused start, failed session,
+  N-D12, N-D13, N-D15, open deliveries read and never closed.
+- `runtime/test/{execution-effects,failure,evidence-root}`: all-or-none hooks (N-D14,
+  N-D16), the two errors' classification, the evidence root over the shared vector table.
+- `providers/test/config-root`, `contracts/test/schemas`: the same table, strict.
+- `daemon/test/composition/walk`: a V2 walk through the wrapper to `CHECKPOINTED`, the
+  conformance gate under the coordinate, the descriptor digest (Fable N3).
+- `daemon/test/arbiter`: V2 lease events queued until the opening, appended once, none
+  orphaned.
+- `daemon/test/bin/acp-daemon`: the recorded config door (N-D1, N-D19), a fresh recorded
+  task through `runDaemonChild` to `CHECKPOINTED`, product paths in any case refused before
+  anything is created.
+
+## Verification (D4)
+
+- `daemon/test/drills/execution`, "P-15/D4": PC-D1, PC-D2, PC-D3, N-D10 and N-D12 through
+  the compiled CLI doors and the packaged entry, as in Twelve.
+- The fence: L-P07C-1's limit family and its N-D21 self-check.
