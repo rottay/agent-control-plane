@@ -68,6 +68,20 @@ export type {
   ContentBlock,
   InstructionContent,
 } from "./content-block/index.js";
+// P-07 escalón A: the result contract v1 (contratos §4.2, ADR 0097). An effect's status
+// and its ordered output blocks, in the content contract's own block shape. Inert: no
+// door records it and no assembler builds it until escalones B–D (L-P07A-1). The
+// schema is `…Schema` and the three types live in the concept's leaf, on the
+// content contract's precedent.
+export {
+  RESULT_CONTRACT_VERSION,
+  RESULT_STATUSES,
+  RESULT_BLOCK_LIST_MAX,
+  RESULT_AGGREGATE_MAX_BYTES,
+  RESULT_REFUSALS,
+  ResultContractSchema,
+} from "./result/index.js";
+export type { ResultStatus, ResultRefusal, ResultContract } from "./result/index.js";
 export {
   EXIT_OK,
   EXIT_USAGE,

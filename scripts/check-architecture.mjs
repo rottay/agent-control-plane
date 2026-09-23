@@ -10819,6 +10819,46 @@ const P06CORR_WRITE_SET = [
   "packages/edges/providers/README.md",
 ];
 
+/**
+ * P-07 escalón A: the result contract v1, frozen and inert (contratos §4.2, ADR 0097).
+ *
+ * **What lands.** `schemas/result/`: the result of one effect -- `effectId`, a two-word
+ * `status`, the ordered output blocks and a usage reference -- as one `strictObject`
+ * whose blocks are the content contract's own `ContentBlockSchema` (D3). `SUCCEEDED`
+ * carries at least one block, `usageReference` is the effect's id (C5), block ids are
+ * unique and the aggregate is held to the content constant it aliases unit for unit
+ * (C4). Its three types live in the concept's leaf. No producer, no door, no table.
+ *
+ * **Pins that move.** `CONTRACTS_SCHEMA_EXPORTS` 151 -> **160** (six values, three
+ * types). `PATH_SCOPED_LAWS` 146 -> **147** for L-P07A-1, which admits no caller.
+ * L-P06A-1 is amended IN ITS OWN ROW to admit the result module as a consumer of the
+ * one shape (`CONTENT_CONTRACT_CALLERS` 3 -> 4), adding no row. The ADR corpus 96 -> 97.
+ *
+ * **Pins that do NOT move.** `CONTRACT_VERSION` 2.7.0 and `SUPPORTED_CONTRACT_VERSIONS`
+ * (6): the document carries its own `resultContractVersion`, and no event, table or
+ * preimage carries it yet (ADR 0093 Ten's reason; B moves to 2.8.0).
+ * `API_CONTRACT_VERSION`, `MIGRATIONS` 21, `PROJECTOR_VERSION` 1, every other package's
+ * export pin. L-P06C-1 is untouched by construction: the result module's code names
+ * neither a block's reference field nor an instruction's content list.
+ *
+ * **Eleven paths; four are new to the fence** -- the concept, its type leaf, its suite
+ * and ADR 0097. The eleventh is the packets index, P-06's row only, recording its
+ * delivery.
+ */
+const P07A_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/result/index.ts",
+  "packages/kernel/contracts/src/schemas/result/types/index.ts",
+  "packages/kernel/contracts/test/schemas/result/index.test.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0097-a-result-is-an-ordered-list-of-output-blocks-under-its-effect.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11046,6 +11086,7 @@ const WRITE_SET = [
   ...P06B_WRITE_SET,
   ...P06C_WRITE_SET,
   ...P06CORR_WRITE_SET,
+  ...P07A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -12455,6 +12496,13 @@ const PATH_SCOPED_LAWS = [
   // as `CONTRACTS_SCHEMA_EXPORTS` adds none.
   {
     law: "a resolved content block enters no event, stream frame, checkpoint, telemetry attribute or log line",
+    scope: "packages/*/*/src/**",
+  },
+  // P-07 escalón A. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 146 -> 147 for L-P07A-1. The L-P06A-1
+  // amendment is in that law's own row and adds none.
+  {
+    law: "the result contract is named by its own concept and the contracts barrels, and by nothing else",
     scope: "packages/*/*/src/**",
   },
 ];
@@ -20023,6 +20071,19 @@ if (accountsIndex === null) {
   "INSTRUCTIONS_MAX_CHARS",
   "InstructionContent",
   "InstructionContentSchema",
+  // P-07 escalón A. Nine names: the result contract v1's version, its two-word status
+  // vocabulary, its refusal words, the list's two bounds -- each an alias of the
+  // content constant in the same unit -- the schema, and the three types its leaf
+  // declares (ADR 0097). Not a bump: the document carries its own version.
+  "RESULT_AGGREGATE_MAX_BYTES",
+  "RESULT_BLOCK_LIST_MAX",
+  "RESULT_CONTRACT_VERSION",
+  "RESULT_REFUSALS",
+  "RESULT_STATUSES",
+  "ResultContract",
+  "ResultContractSchema",
+  "ResultRefusal",
+  "ResultStatus",
   "CHECKPOINT_MAX_BYTES",
   "CLI_SUBSCRIPTION_PROVIDERS",
   "CONTRACT_VERSION",
@@ -27017,6 +27078,12 @@ const PRICE_CATALOG_BARREL = "packages/persistence/ledger/src/index.ts";
 // prevent. It builds no content list and validates no blocks, so the sentence the
 // law protects -- one shape, not three formats per client -- is untouched. Same
 // row, same `requireScope`: `PATH_SCOPED_LAWS` does not move for this either.
+//
+// AMENDED A THIRD TIME by P-07/A (ADR 0097): the result contract joins the callers.
+// Its output blocks are `ContentBlockSchema` itself rather than a second block shape,
+// which is the sentence this law protects read in the other direction -- one shape
+// for what goes in and what comes out. It builds no content list and resolves no
+// reference. Same row, same `requireScope`.
 const CONTENT_CONTRACT_SITES = [
   "packages/kernel/contracts/src/schemas/content-block/index.ts",
   "packages/kernel/contracts/src/schemas/content-block/types/index.ts",
@@ -27032,6 +27099,9 @@ const CONTENT_CONTRACT_CALLERS = [
   "packages/domains/runtime/src/intake/index.ts",
   // P-06/C: the vocabulary and the bounds, never a content list.
   "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+  // P-07/A (ADR 0097): the result contract's blocks ARE `ContentBlockSchema`, so it
+  // consumes the one shape and builds no content list -- D3's reading of §4.1.
+  "packages/kernel/contracts/src/schemas/result/index.ts",
 ];
 {
   let contentScanned = 0;
@@ -27073,6 +27143,54 @@ const CONTENT_CONTRACT_CALLERS = [
     "no production source outside the content-block concept, the contracts barrels and the two consumers" +
       " P-06/B wires names the content contract",
   );
+}
+
+// L-P07A-1 -- the result contract stays inert until an assembler consumes it (P-07
+// escalón A, ADR 0097).
+//
+// Contratos §4.2 fixes one shape for an effect's result. Until escalón D assembles
+// one, a caller would build a result that no door records and no reader reads -- the
+// same inertness L-P06A-1 held the content contract under, on its original "admits no
+// caller" form. So no `src/` outside the concept -- the module AND its type leaf --
+// and the two contracts barrels imports the module's path or names the contract. D
+// amends this in its own row when the assembler consumes it.
+//
+// The path match is anchored on a quote and a `/` before `result/`, so a
+// `tool-result/index.js`-style path does not bite.
+const RESULT_CONTRACT_SITES = [
+  "packages/kernel/contracts/src/schemas/result/index.ts",
+  "packages/kernel/contracts/src/schemas/result/types/index.ts",
+];
+{
+  let resultScanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      if (RESULT_CONTRACT_SITES.includes(relativePath)) continue;
+      if (CONTENT_CONTRACT_BARRELS.includes(relativePath)) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      resultScanned += 1;
+      const code = stripComments(content);
+      if (
+        /["'](?:[^"'\n]*\/)?result\/index\.js["']/.test(code) ||
+        /\b(?:ResultContractSchema|ResultContract|RESULT_CONTRACT_VERSION|RESULT_STATUSES|RESULT_REFUSALS)\b/.test(code)
+      ) {
+        fail(
+          relativePath +
+            " names the result contract; it is exported by the contracts barrels and consumed by nothing yet," +
+            " because no door records a result until escalon B and no assembler builds one until D",
+        );
+      }
+    }
+  }
+  requireScope(
+    "the result contract is named by its own concept and the contracts barrels, and by nothing else",
+    resultScanned,
+  );
+  notes.push("no production source outside the result concept and the contracts barrels names the result contract");
 }
 
 // L-P06C-1 -- a content block reaches no record, not even as a digest (P-06/C,

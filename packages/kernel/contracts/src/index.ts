@@ -31,6 +31,12 @@ export {
   CONTENT_BLOCK_REFUSALS,
   ContentBlockSchema,
   InstructionContentSchema,
+  RESULT_CONTRACT_VERSION,
+  RESULT_STATUSES,
+  RESULT_BLOCK_LIST_MAX,
+  RESULT_AGGREGATE_MAX_BYTES,
+  RESULT_REFUSALS,
+  ResultContractSchema,
   EXIT_OK,
   EXIT_USAGE,
   TOKENS_USED_MAX,
@@ -152,6 +158,7 @@ export type {
   ContentBlock,
   InstructionContent,
 } from "./schemas/index.js";
+export type { ResultStatus, ResultRefusal, ResultContract } from "./schemas/index.js";
 export type { GuardViolation } from "./schemas/index.js";
 export type {
   ExecutionRefused,

@@ -55,6 +55,7 @@ this table against the barrel.
 | `bounded-identifier` | the one grammar a configured name must satisfy, shared by the tool edge and the recorder |
 | `artifact-record` | artifacts §2's vocabularies and the six strict shapes of an artifact event in the registry stream |
 | `content-block` | contratos §4.1's content contract v1: one ordered list of discriminated blocks, with the bounds a request is held to |
+| `result` | contratos §4.2's result contract v1: an effect's status and its ordered output blocks, in the content contract's own block shape |
 
 ## The instruction's content, contract v1
 
@@ -89,6 +90,28 @@ type may not share one name across two files, so the value is renamed and the
 collision never arises. The rename is this concept's alone; the package's other
 modules keep their merged names, and ADR 0093 carries the compiler probes that show
 what the constraint actually is.
+
+## The result contract, v1
+
+Contratos §4.2 gives an effect's result its `effect_id`, a `status`, the **ordered
+list** of output blocks and a usage reference, and demands a valid, recoverable
+result for `SUCCEEDED`. `result` is that shape (P-07 escalón A, ADR 0097). Its blocks
+are `ContentBlockSchema` itself, so a block's rules — kind, media type, reference,
+length, ceiling, tool-result links — are the content contract's and are not restated.
+
+The result's own rules: `status` is `SUCCEEDED` or `FAILED`; `SUCCEEDED` carries at
+least one block and `FAILED` may carry none; `usageReference` is the effect's own id,
+because usage is settled per effect; a `blockId` names one block; and the aggregate is
+held to `RESULT_AGGREGATE_MAX_BYTES`. The list's bounds, `RESULT_BLOCK_LIST_MAX` and
+`RESULT_AGGREGATE_MAX_BYTES`, alias the content constants unit for unit. A long answer
+is split into text blocks of at most 4 000 characters, up to 100 blocks, and beyond
+that travels as one `document` by reference: over any bound is a refusal, never a
+truncation. The document carries its own `resultContractVersion`, so no
+`CONTRACT_VERSION` moves for it.
+
+**Inert, by law.** `L-P07A-1` admits no caller outside the concept and this package's
+barrels: assembling, recording and publishing a result are escalones B–D's. Its types
+live in `result/types/index.ts`, on the content contract's precedent.
 
 ## The laws these shapes carry
 
