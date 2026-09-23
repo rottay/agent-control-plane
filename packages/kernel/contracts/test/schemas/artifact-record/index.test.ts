@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -220,5 +224,49 @@ describe("the contract computes no identity", () => {
     const withBlock = intention({ intendedReference: reference() });
     expect(ArtifactRegistryEvent.parse(withBlock)).toEqual(withBlock);
     expect(Object.keys((ArtifactRegistryEvent.parse(intention()) as { payload: object }).payload)).not.toContain("intendedReference");
+  });
+});
+
+/** The captured canonical-instant matrix (P-15 escalón I, ADR 0106), read from disk; absent or malformed fails loudly. */
+function canonicalInstantVectors(path: string): readonly { readonly vector: string | number | null; readonly canonical: boolean; readonly arbiter: string | null }[] {
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const vectors = (parsed as { readonly vectors?: unknown }).vectors;
+  if (!Array.isArray(vectors) || vectors.length === 0) throw new Error("the canonical-instant matrix carries no vectors");
+  return vectors.map((entry: unknown, index) => {
+    const { vector, canonical, arbiter } = entry as Record<string, unknown>;
+    if (
+      !(typeof vector === "string" || typeof vector === "number" || vector === null) ||
+      typeof canonical !== "boolean" ||
+      !(typeof arbiter === "string" || arbiter === null)
+    ) {
+      throw new Error("the canonical-instant matrix's row " + String(index) + " is malformed");
+    }
+    return { vector, canonical, arbiter };
+  });
+}
+
+describe("P-15/I: the artifact record's instants read the one predicate, verdict for verdict", () => {
+  const TABLE = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "canonical-instant-vectors", "index.json");
+
+  it("occurredAt, recordedAt and a reference's expiresAt reproduce every captured verdict", () => {
+    for (const row of canonicalInstantVectors(TABLE)) {
+      const label = String(row.vector);
+      // Both instants at once, so the ordering rule between them cannot refuse a
+      // vector the instant rule admitted.
+      const both = ArtifactRegistryEvent.safeParse({ ...intention(), occurredAt: row.vector, recordedAt: row.vector });
+      for (const field of ["occurredAt", "recordedAt"]) {
+        const admitted = both.success || !both.error.issues.some((issue) => issue.path[0] === field);
+        expect(admitted, label + " " + field).toBe(row.canonical);
+      }
+      const expires = ArtifactRegistryEvent.safeParse(
+        event(
+          "PUBLICATION_SUCCEEDED",
+          { commandId: "cmd-1", contentSha256: CONTENT, blobGeneration: 1, artifactPinId: "pin-1", reference: reference({ expiresAt: row.vector }) },
+          { subjectOrdinal: 2, parentSubjectOrdinal: 1 },
+        ),
+      );
+      const refusedAtExpiry = !expires.success && expires.error.issues.some((issue) => issue.path.includes("expiresAt"));
+      expect(refusedAtExpiry, label).toBe(!row.canonical);
+    }
   });
 });

@@ -3176,3 +3176,53 @@ describe("the tool call's wire contract", () => {
     );
   });
 });
+
+/** The captured canonical-instant matrix (P-15 escalón I, ADR 0106), read from disk; absent or malformed fails loudly. */
+function canonicalInstantVectors(path: string): readonly { readonly vector: string | number | null; readonly canonical: boolean; readonly arbiter: string | null }[] {
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const vectors = (parsed as { readonly vectors?: unknown }).vectors;
+  if (!Array.isArray(vectors) || vectors.length === 0) throw new Error("the canonical-instant matrix carries no vectors");
+  return vectors.map((entry: unknown, index) => {
+    const { vector, canonical, arbiter } = entry as Record<string, unknown>;
+    if (
+      !(typeof vector === "string" || typeof vector === "number" || vector === null) ||
+      typeof canonical !== "boolean" ||
+      !(typeof arbiter === "string" || arbiter === null)
+    ) {
+      throw new Error("the canonical-instant matrix's row " + String(index) + " is malformed");
+    }
+    return { vector, canonical, arbiter };
+  });
+}
+
+describe("P-15/I: the registry instant reads contracts' canonical instant, verdict for verdict", () => {
+  const TABLE = resolve(dirname(fileURLToPath(import.meta.url)), "../../../contracts/test/testing/canonical-instant-vectors/index.json");
+
+  it("RegistryPublicationRequest.effectiveFrom reproduces every captured verdict", () => {
+    for (const row of canonicalInstantVectors(TABLE)) {
+      const parsed = RegistryPublicationRequest.safeParse({
+        documentKind: "MODEL_VERSION",
+        documentId: "claude-opus-5@2026-06-01",
+        documentVersion: 1,
+        parentDocumentVersion: null,
+        effectiveFrom: row.vector,
+        recordedBy: "claude/opus/coordinator/01",
+        payload: {},
+      });
+      const admitted = parsed.success || !parsed.error.issues.some((issue) => issue.path[0] === "effectiveFrom");
+      expect(admitted, String(row.vector)).toBe(row.canonical);
+    }
+  });
+
+  it("the protocol's Timestamp is the contract's: HealthResponse.observedAt reproduces its captured verdicts", () => {
+    const parsed: unknown = JSON.parse(readFileSync(TABLE, "utf8"));
+    const rows = (parsed as { readonly timestamps?: unknown }).timestamps;
+    if (!Array.isArray(rows) || rows.length === 0) throw new Error("the matrix carries no Timestamp vectors");
+    for (const entry of rows as readonly { readonly vector: unknown; readonly timestamp: unknown }[]) {
+      if (typeof entry.timestamp !== "boolean") throw new Error("a Timestamp row is malformed");
+      const result = HealthResponse.safeParse({ observedAt: entry.vector });
+      const admitted = result.success || !result.error.issues.some((issue) => issue.path[0] === "observedAt");
+      expect(admitted, String(entry.vector)).toBe(entry.timestamp);
+    }
+  });
+});

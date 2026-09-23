@@ -7,6 +7,7 @@ import {
   TRANSPORT_KINDS,
   WORKER_ROLES,
   parseWorkerIdentity,
+  isCanonicalInstant as isInstant,
   type ArtifactRegistryEvent,
   type ControlPlaneEvent,
   type InitiativeEvent,
@@ -4215,22 +4216,14 @@ const OUTBOX_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-
 const OUTBOX_WORD_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 /**
- * ISO-8601 with milliseconds, in UTC, ending in `Z`: the contract's one instant
- * form, and the only form in which text order is time order.
- *
- * The one home of this grammar in the ledger package (P-15/D1, ADR 0105), read only
- * through `isInstant` below. Here and not in `../ledger/index.ts` because the door
- * imports this module, so the fold and the door read one definition; every other
- * instant predicate of the package was folded into it.
+ * The ledger's `isInstant` is `@acp/contracts`' `isCanonicalInstant`, re-exported under
+ * the name the ledger's callers and its barrel have always used (P-15 escalón I, ADR
+ * 0106): ISO-8601 with milliseconds, in UTC, ending in `Z`, a real date, the only form in
+ * which text order is time order. D1 made this module the ledger's one home of the rule;
+ * I moves the rule itself to contracts, the one predicate, so the fold and the door still
+ * read one definition, and it is no longer the ledger's own.
  */
-const INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-
-/** An instant in the canonical form, and a real date rather than a shape: it round-trips through `Date`. */
-export function isInstant(value: unknown): value is string {
-  if (typeof value !== "string" || !INSTANT_PATTERN.test(value)) return false;
-  const parsed = new Date(value);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
-}
+export { isInstant };
 
 /** The longest reference a target id or a response handle may be. */
 const OUTBOX_REFERENCE_MAX = 512;

@@ -1,7 +1,7 @@
 import { join } from "node:path";
 
 import type { Lease } from "@acp/contracts";
-import { CONTRACT_VERSION } from "@acp/contracts";
+import { CONTRACT_VERSION, isCanonicalInstant } from "@acp/contracts";
 import type { LeaseDecision, LeaseRow, LeaseStore } from "@acp/ledger";
 import type { DurableInvocation, EnforcementEvent, LedgerPort } from "@acp/runtime";
 import {
@@ -76,9 +76,6 @@ import type { DaemonRoot } from "../paths/index.js";
  * start. A verdict can then only ever be *ignored*, never misapplied.
  */
 
-/** The canonical UTC form: `YYYY-MM-DDTHH:MM:SS.sssZ`, exactly 24 characters. */
-const CANONICAL_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-
 /**
  * The one instant form this plane hands the lease store.
  *
@@ -100,6 +97,15 @@ const CANONICAL_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
  * guessing** when the input is not an instant at all. The alternative — a
  * format guard inside the store — would amend a committed module, and the
  * caller that owns the semantics is this one.
+ *
+ * The output is held to `@acp/contracts`' `isCanonicalInstant`, the one predicate
+ * (P-15 escalón I, ADR 0106); the input stays lenient on purpose, since
+ * normalising is this function's role. **A named finding, not fixed here**
+ * (decision 147): that leniency admits impossible calendar dates by rolling them
+ * over — February 30th becomes March 2nd, hour 24 the next midnight — because
+ * `Date.parse` does. Tightening it changes what the lease door admits; the owner
+ * is P-18, whose packet row carries it. Latent rather than open: in production
+ * `now` is the composition's own clock and every `expiresAt` derives from it.
  */
 export function canonicalInstant(value: string, field: string): string {
   const ms = Date.parse(value);
@@ -107,7 +113,7 @@ export function canonicalInstant(value: string, field: string): string {
     throw new StartupError(field + " is not an instant: the lease store orders text, not guesses");
   }
   const canonical = new Date(ms).toISOString();
-  if (!CANONICAL_INSTANT.test(canonical)) {
+  if (!isCanonicalInstant(canonical)) {
     throw new StartupError(field + " has no canonical UTC form");
   }
   return canonical;

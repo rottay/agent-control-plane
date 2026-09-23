@@ -36,7 +36,7 @@ this table against the barrel.
 
 | Module | What it declares |
 | --- | --- |
-| `primitives` | the shared scalars — `CONTRACT_VERSION`, timestamps, uuids, repo-relative paths |
+| `primitives` | the shared scalars — `CONTRACT_VERSION`, timestamps, uuids, repo-relative paths — and the one canonical-instant predicate and schema, `isCanonicalInstant` and `CanonicalInstant` |
 | `credential-guards` | the credential and transcript scanners, and the refinement that attaches them |
 | `shared-references` | opaque references: a digest paired with the path it names |
 | `worker-identity` | the worker role vocabulary and the identity string it composes |

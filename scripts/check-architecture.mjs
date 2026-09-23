@@ -11481,6 +11481,50 @@ const P15D4_WRITE_SET = [
   "docs/audit/implementation/packets/index.md",
 ];
 
+/**
+ * P-15 escalón I -- one canonical-instant authority (ADR 0106; decisions 146-148).
+ *
+ * The canonical instant — ISO-8601 in UTC with milliseconds and a real calendar
+ * date — had four copies in `src`: the ledger's `isInstant`, the protocol's registry
+ * instant (introduced by P-15/R), the artifact record's `Instant` and the lease
+ * arbiter's output check. They fold into one predicate and one schema in contracts'
+ * `primitives`, `isCanonicalInstant` and `CanonicalInstant`; the ledger re-exports
+ * the predicate under its old name. Behaviour-neutral per consumer, proved by
+ * differential tests against verdicts captured from the pre-change code (a JSON
+ * matrix read from disk). The protocol's duplicate `Timestamp` is folded too, and
+ * the runtime's lease `isInstant` — the `Timestamp` rule — is renamed
+ * `isLeaseTimestamp`, unchanged. L-P15I-1 keeps a fifth copy from appearing.
+ *
+ * **Pins that move.** `CONTRACTS_SCHEMA_EXPORTS` 166 -> **169** (the predicate, the
+ * schema, and `Timestamp`, exported for the protocol's fold); `PATH_SCOPED_LAWS`
+ * 153 -> **154**.
+ *
+ * **Twenty paths; two are new.** The twentieth, the packets index, carries the
+ * owner rows v2 added: the accounts grammar to P-19 and the arbiter rollover to P-18.
+ */
+const P15I_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/src/schemas/artifact-record/index.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/test/schemas/artifact-record/index.test.ts",
+  "packages/kernel/contracts/test/testing/canonical-instant-vectors/index.json",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/domains/runtime/src/enforcement/index.ts",
+  "packages/entrypoints/daemon/src/arbiter/index.ts",
+  "packages/entrypoints/daemon/test/arbiter/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0106-one-canonical-instant-authority.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11720,6 +11764,7 @@ const WRITE_SET = [
   ...P15D2_WRITE_SET,
   ...P15D3_WRITE_SET,
   ...P15D4_WRITE_SET,
+  ...P15I_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13178,6 +13223,12 @@ const PATH_SCOPED_LAWS = [
   // path-shaped surface adds one row: the register and the `requireScope` call sites
   // both move 152 -> 153 for L-P15D-2. L-B7T-2 and L-P06C-1 are amended in their own
   // rows and add none.
+  // P-15 escalón I. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 153 -> 154 for L-P15I-1.
+  {
+    law: "one canonical-instant predicate in src",
+    scope: "packages/*/*/src/**",
+  },
   {
     law: "the production walk records the result through the execution chain",
     scope: "packages/entrypoints/daemon/src/composition/walk/index.ts, packages/domains/runtime/src/execution-chain/index.ts",
@@ -17814,9 +17865,169 @@ if (endpointSource === null) {
  * The files checked below necessarily NAME the things they must not do, in
  * order to explain why they do not do them. A check that cannot tell code from
  * prose fails on its own documentation, which P2C already learned once.
+ *
+ * String-aware since P-15 escalón I v2 (ADR 0106 §Three). The two regular
+ * expressions it replaced treated a `//` or a `/*` inside a string, a template or a
+ * regular-expression literal as a comment, so `const u = "a//b"; <anything>` hid
+ * the rest of its line from every law that reads through here. It now scans:
+ * quoted strings and templates (with `${…}` read as code) and regular-expression
+ * literals are copied whole, and a comment is only a comment outside them. A `//`
+ * right after a `:` is still not a comment, as before, so a URL in prose survives.
+ * The self-check below is the positive control: a stripper that regressed would
+ * fail the fence, not quietly widen or narrow what 190-odd laws read.
+ *
+ * **The limit, inherited by every law that reads through here** (P-15/I v3,
+ * verifier 06). Whether a `/` opens a regular expression or divides is a
+ * heuristic over the previous token, not a parse. A regex literal after `)`
+ * (`if (s) /a\/*b/.test(s)`, read as a division) or after a keyword outside the
+ * set below, and a JSX closing tag `</…>` followed on the same line by a string
+ * holding `"/"`, `///` or `/*`, can put the scan out of step; a later `//` or `/*`
+ * is then read as a comment and the code after it is hidden. The old stripper hid
+ * the same cases, so this is no regression — over all 470 tracked `.ts`, `.tsx`,
+ * `.mjs` and `.js` files v2 never hides code v1 showed — but "a comment is a
+ * comment only outside strings" holds only where the `/` is classified right. The
+ * expected-limitation control below pins one such case, so a fix is visible.
  */
 function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+  // Declared inside, not beside: laws above this point call the hoisted function
+  // before a module-level constant here would be initialised.
+  const regexAfterWords = new Set([
+    "return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw", "yield", "await", "instanceof",
+  ]);
+  const length = source.length;
+  let at = 0;
+  const scan = (closeOnBrace) => {
+    let out = "";
+    let last = "";
+    let word = "";
+    let depth = 0;
+    while (at < length) {
+      const char = source[at];
+      const next = source[at + 1];
+      if (char === "/" && next === "/" && source[at - 1] !== ":") {
+        const end = source.indexOf("\n", at);
+        at = end === -1 ? length : end;
+        continue;
+      }
+      if (char === "/" && next === "*") {
+        const end = source.indexOf("*/", at + 2);
+        at = end === -1 ? length : end + 2;
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        const start = at;
+        at += 1;
+        while (at < length && source[at] !== char && source[at] !== "\n") at += source[at] === "\\" ? 2 : 1;
+        at += 1;
+        out += source.slice(start, at);
+        last = char;
+        word = "";
+        continue;
+      }
+      if (char === "`") {
+        out += char;
+        at += 1;
+        while (at < length && source[at] !== "`") {
+          if (source[at] === "\\") {
+            out += source.slice(at, at + 2);
+            at += 2;
+          } else if (source[at] === "$" && source[at + 1] === "{") {
+            out += "${";
+            at += 2;
+            out += scan(true);
+            out += "}";
+            at += 1;
+          } else {
+            out += source[at];
+            at += 1;
+          }
+        }
+        out += "`";
+        at += 1;
+        last = "`";
+        word = "";
+        continue;
+      }
+      if (char === "/" && (last === "" || "(,=:[!&|?{};+-*%<>~^".includes(last) || regexAfterWords.has(word))) {
+        const start = at;
+        let inClass = false;
+        at += 1;
+        while (at < length && source[at] !== "\n") {
+          const inner = source[at];
+          if (inner === "\\") {
+            at += 2;
+            continue;
+          }
+          at += 1;
+          if (inClass) {
+            if (inner === "]") inClass = false;
+          } else if (inner === "[") {
+            inClass = true;
+          } else if (inner === "/") {
+            break;
+          }
+        }
+        while (at < length && /[a-z]/.test(source[at])) at += 1;
+        out += source.slice(start, at);
+        last = "/";
+        word = "";
+        continue;
+      }
+      if (closeOnBrace) {
+        if (char === "{") depth += 1;
+        if (char === "}") {
+          if (depth === 0) return out;
+          depth -= 1;
+        }
+      }
+      out += char;
+      at += 1;
+      if (/[A-Za-z0-9_$]/.test(char)) {
+        word = /[A-Za-z0-9_$]/.test(last) ? word + char : char;
+        last = char;
+      } else if (!/\s/.test(char)) {
+        last = char;
+        word = "";
+      }
+    }
+    return out;
+  };
+  return scan(false);
+}
+{
+  // [source, text that must survive, text that must go]
+  const controls = [
+    ['const u = "a//b"; const kept = 1;', ["const kept = 1"], []],
+    ['const o = "/*"; kept(); const c = "*/";', ["kept()"], []],
+    ["call(); // gone", ["call();"], ["gone"]],
+    ["/* gone */ kept", ["kept"], ["gone"]],
+    ["const r = /\\/\\/x/; kept();", ["kept()"], []],
+    ['const t = `${"//"} kept`; after();', ["kept", "after()"], []],
+    ["const q = a / b; // gone\nnext();", ["a / b", "next()"], ["gone"]],
+    ["const s = 'it\\'s // here'; kept();", ["kept()"], []],
+    ["return /[/]x/.test(y) && kept();", ["kept()"], []],
+    ["see https://example.com/a; // gone", ["https://example.com/a"], ["gone"]],
+  ];
+  for (const [source, survive, gone] of controls) {
+    const stripped = stripComments(source);
+    for (const text of survive) {
+      if (!stripped.includes(text)) fail("stripComments lost code it must keep: " + JSON.stringify(text) + " from " + JSON.stringify(source));
+    }
+    for (const text of gone) {
+      if (stripped.includes(text)) fail("stripComments kept a comment it must drop: " + JSON.stringify(text) + " from " + JSON.stringify(source));
+    }
+  }
+  // The expected limitation (S01): a regex after `)` is read as a division, its
+  // `/*` opens a comment, and the next line is hidden. When this stops holding,
+  // the stripper improved: update this control and ADR 0106 §Three together.
+  if (stripComments("if (s) /a\\/*b/.test(s);\nhidden();").includes("hidden()")) {
+    fail("stripComments no longer hides the S01 case; a stated limit was fixed, so update this control and ADR 0106 §Three");
+  }
+  notes.push(
+    "comments are stripped outside strings, templates and regular expressions, over " +
+      String(controls.length) +
+      " controls and one expected limitation",
+  );
 }
 //
 // Through P2C no production module could reach the server handle at all. P2D
@@ -20810,6 +21021,13 @@ if (accountsIndex === null) {
   // providers' config-root admission so the runtime's evidence root reads the same
   // set. Data only. 165 -> 166.
   "PRODUCT_PATH_MARKERS",
+  // P-15 escalón I (ADR 0106, decision 146): the one canonical-instant predicate and
+  // its schema, which the ledger, the protocol, the artifact record and the lease
+  // arbiter read instead of their own copies; and `Timestamp`, exported so the
+  // protocol reads the contract's rather than declaring a second one. 166 -> 169.
+  "isCanonicalInstant",
+  "CanonicalInstant",
+  "Timestamp",
   "CHECKPOINT_MAX_BYTES",
   "CLI_SUBSCRIPTION_PROVIDERS",
   "CONTRACT_VERSION",
@@ -29056,6 +29274,87 @@ const CHAIN_WALK_SITE = "packages/entrypoints/daemon/src/composition/walk/index.
     }
   }
   notes.push("the production walk records the result, the delivery's settlement and the response through the execution chain");
+}
+
+// L-P15I-1 -- one canonical-instant predicate in src (P-15 escalón I, ADR 0106;
+// decision 148).
+//
+// Four copies of the canonical instant's rule arose in eighteen days, one inside
+// P-15 itself, and D1 had to re-home one. So the rule lives in contracts'
+// `primitives` alone: over every tracked `packages/*/*/src/` `.ts` and `.tsx`
+// file, comments stripped, no other file may hold the grammar or the round-trip
+// that makes a date real. What the matcher sees, all text-level:
+//
+// - the grammar's distinguishing text, three digits then `Z`, in a regex literal
+//   or as an escaped string: `\d{3}`, `\\d{3}`, `[0-9]{3}`, `\d\d\d`, `\\d\\d\\d`
+//   or `[0-9][0-9][0-9]`, followed by `Z` or `[Z]`;
+// - a `toISOString()` result compared by `===`, `!==`, `==` or `!=`: the direct
+//   call in either order, where a reversed operand is matched only as a plain
+//   dotted or called chain (`d.toISOString() === v`, `v === d.toISOString()`,
+//   `v === new Date(v).toISOString()`);
+// - zod's own spelling of the predicate, `datetime({ … precision: 3 … })`, as
+//   `z.iso.datetime` or `z.string().datetime` -- a complete second predicate that
+//   agrees with the home on every vector the verifier tried.
+//
+// AMENDED by P-15/I v2 (verifier 06, Fable C3): the first cut matched two tokens
+// and named two spellings; the verifier's bite showed reversed operands, loose
+// equality, the escaped-string grammar, `[Z]` and the zod spelling all passing.
+// Those are matched now, and `stripComments` became string-aware, because a `//`
+// or `/*` inside a string hid the rest of the line from this law and every other.
+//
+// Stated limit, the family NOT seen, each re-bitten on a disposable copy and still
+// passing: a round-trip through an intermediate variable (`const s =
+// d.toISOString(); s === v`); a comparison that is not an equality operator
+// (`Object.is(…)`, `.localeCompare(v) === 0`, `.slice(0) === v`); another method
+// with the same output (`toJSON()`, `Date.prototype.toISOString.call(d)`); the
+// grammar assembled at runtime (string concatenation, `String.fromCharCode`, a
+// digit class other than those above); another spelling of the `Z` (`/…z/i`,
+// `(?:Z)`, `\x5A`, `[Zz]`); optional chaining or bracket access
+// (`toISOString?.()`, `?.toISOString()`, `["toISOString"]()`); a reversed operand
+// holding whitespace, a cast, `?`, quotes or extra parentheses
+// (`new Date(v as string).toISOString()`, `(new Date(v)).toISOString()`); zod's
+// precision given by a constant or an options object rather than the literal
+// `precision: 3`; code `stripComments` hides (its docblock states that limit once,
+// for every law that reads through it); and anything in a `.js`/`.mts` file under
+// `src`, which the naming and write-set laws refuse on their own. No behaviour is
+// claimed over them.
+//
+// The offset-bearing `Timestamp` family (accounts, telemetry) holds none of these
+// tokens and is outside the law by its own grammar. The lease arbiter's
+// `toISOString()` normalises and compares nothing, so no exception is named.
+const CANONICAL_INSTANT_HOME = "packages/kernel/contracts/src/schemas/primitives/index.ts";
+{
+  let instantScanned = 0;
+  const GRAMMAR = /(?:\\{1,2}d\{3\}|\[0-9\]\{3\}|(?:\\{1,2}d){3}|(?:\[0-9\]){3})(?:Z|\[Z\])/;
+  const ROUND_TRIP = /toISOString\s*\(\s*\)\s*[!=]==?|[!=]==?\s*(?:new\s+)?[\w$.()[\]]*\.toISOString\s*\(/;
+  const ZOD_PRECISION = /datetime\s*\(\s*\{[^}]*precision\s*:\s*3/;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      if (relativePath === CANONICAL_INSTANT_HOME) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      instantScanned += 1;
+      const code = stripComments(content);
+      if (GRAMMAR.test(code) || ROUND_TRIP.test(code) || ZOD_PRECISION.test(code)) {
+        fail(
+          relativePath +
+            " holds its own canonical-instant rule; the one predicate is @acp/contracts' isCanonicalInstant," +
+            " and a second copy is how two answers to one instant come to disagree",
+        );
+      }
+    }
+  }
+  const home = stripComments(readIfPresent(CANONICAL_INSTANT_HOME) ?? "");
+  if (!home.includes("export function isCanonicalInstant(")) {
+    fail(CANONICAL_INSTANT_HOME + " no longer defines isCanonicalInstant; the law has no authority to protect");
+  } else if (!GRAMMAR.test(home) || !ROUND_TRIP.test(home)) {
+    fail(CANONICAL_INSTANT_HOME + " no longer holds the grammar and the round-trip the law matches; it would match nothing");
+  }
+  requireScope("one canonical-instant predicate in src", instantScanned);
+  notes.push("the canonical instant has one predicate, in " + CANONICAL_INSTANT_HOME + ", over " + String(instantScanned) + " other sources");
 }
 
 // L-P32A-2 -- the settlement fold reads no clock, no environment and no

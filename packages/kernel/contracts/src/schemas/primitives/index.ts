@@ -167,6 +167,34 @@ export const GitCommitSha = z
 
 export const Timestamp = z.iso.datetime({ offset: true });
 
+/** The canonical instant's grammar. Module-private: nobody builds a second predicate from it. */
+const CANONICAL_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/**
+ * The canonical instant — the one predicate (P-15 escalón I, ADR 0106; decision 146).
+ *
+ * ISO-8601 in UTC with exactly three fraction digits and an uppercase `Z`, and a real
+ * calendar date: the form a round-trip through `Date` reproduces, so an impossible date
+ * such as February 30th, hour 24 or a leap second is refused rather than rolled over.
+ * Stricter than `Timestamp`, which admits offsets. It is the form instants must take
+ * wherever they are compared or ordered as text, since text order is time order in this
+ * form alone.
+ *
+ * The ledger's `isInstant`, the protocol's registry instant, the artifact record's
+ * instants and the lease arbiter's output check were four copies of this rule; they now
+ * read this one (L-P15I-1 keeps a fifth from appearing).
+ */
+export function isCanonicalInstant(value: unknown): value is string {
+  if (typeof value !== "string" || !CANONICAL_INSTANT_PATTERN.test(value)) return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
+}
+
+/** The canonical instant as a schema: the predicate, called once, with one refusal message. */
+export const CanonicalInstant = z.string().refine(isCanonicalInstant, {
+  message: "expected the canonical instant: ISO-8601 in UTC with milliseconds, a real calendar date",
+});
+
 export const Uuid = z.uuid();
 
 /**

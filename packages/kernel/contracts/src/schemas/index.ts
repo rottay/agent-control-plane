@@ -28,6 +28,9 @@ export {
   SUPPORTED_CONTRACT_VERSIONS,
   AdmittedContractVersion,
   utf8ByteLength,
+  isCanonicalInstant,
+  CanonicalInstant,
+  Timestamp,
 } from "./primitives/index.js";
 export {
   BOUNDED_IDENTIFIER,

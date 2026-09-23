@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,7 @@ import {
 import {
   GENESIS_SHA256,
   DELIVERED_ARTIFACT_EVENT_KINDS,
+  isInstant,
   LedgerArtifactEncryptionConflictError,
   LedgerCanonicalizationError,
   LedgerEventIdConflictError,
@@ -18362,5 +18363,52 @@ describe("P-15/D1 ledger hardening: the opening's reuse rule, the segment's tran
     expect(problems.map((problem) => problem.kind)).toContain("EVENT_CONTRACT");
     expect(detailsOf(problems)).toContain("registry sequence");
     reopened.close();
+  });
+});
+
+/** The captured canonical-instant matrix (P-15 escalón I, ADR 0106), read from disk; absent or malformed fails loudly. */
+function canonicalInstantVectors(path: string): readonly { readonly vector: string | number | null; readonly canonical: boolean; readonly arbiter: string | null }[] {
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const vectors = (parsed as { readonly vectors?: unknown }).vectors;
+  if (!Array.isArray(vectors) || vectors.length === 0) throw new Error("the canonical-instant matrix carries no vectors");
+  return vectors.map((entry: unknown, index) => {
+    const { vector, canonical, arbiter } = entry as Record<string, unknown>;
+    if (
+      !(typeof vector === "string" || typeof vector === "number" || vector === null) ||
+      typeof canonical !== "boolean" ||
+      !(typeof arbiter === "string" || arbiter === null)
+    ) {
+      throw new Error("the canonical-instant matrix's row " + String(index) + " is malformed");
+    }
+    return { vector, canonical, arbiter };
+  });
+}
+
+describe("P-15/I: the ledger's isInstant is contracts' canonical instant, verdict for verdict", () => {
+  const TABLE = join(dirname(fileURLToPath(import.meta.url)), "../../../../kernel/contracts/test/testing/canonical-instant-vectors/index.json");
+
+  it("the barrel's isInstant and the registry door's instant fields reproduce every captured verdict", () => {
+    const ledger = open(temporaryDatabase());
+    try {
+      for (const row of canonicalInstantVectors(TABLE)) {
+        const label = String(row.vector);
+        expect(isInstant(row.vector), label).toBe(row.canonical);
+        // The door, through a document refused for another reason as well, so every
+        // vector is judged and nothing is appended: the question is only whether
+        // effectiveFrom is among the refusals.
+        let issues: readonly { readonly path: string }[] = [];
+        try {
+          ledger.appendRegistryEvent({ ...makeRegistryDocument(), effectiveFrom: row.vector, contentDigest: "not-a-digest" });
+        } catch (error: unknown) {
+          if (!(error instanceof LedgerValidationError)) throw error;
+          issues = error.issues as readonly { readonly path: string }[];
+        }
+        expect(issues.some((issue) => issue.path === "contentDigest"), label).toBe(true);
+        expect(issues.some((issue) => issue.path === "effectiveFrom"), label).toBe(!row.canonical);
+      }
+      expect(ledger.status().eventCount).toBe(0);
+    } finally {
+      ledger.close();
+    }
   });
 });

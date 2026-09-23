@@ -201,8 +201,12 @@ function event(type: EnforcementEventType, payload: Record<string, string>): Enf
  * keeps its `Timestamp` schema module-private, and mirroring the grammar here
  * would be a fourth copy of a rule this repository has already had to
  * reconcile twice. Borrowing the field's parser borrows the rule itself.
+ *
+ * Named for that rule since P-15 escalón I (ADR 0106): it was `isInstant`, the name
+ * of the ledger's canonical-instant check, which is a stricter rule. Renamed only; it
+ * admits exactly what it did.
  */
-function isInstant(value: unknown): value is string {
+function isLeaseTimestamp(value: unknown): value is string {
   return Lease.shape.expiresAt.safeParse(value).success;
 }
 
@@ -261,7 +265,7 @@ function validateLeaseSet(leases: unknown, now: unknown, at: string): Enforcemen
       return refuse("LEASE_INVALID", at + ".leases[" + String(index) + "]");
     }
   }
-  if (!isInstant(now)) return refuse("INSTANT_INVALID", at + ".now");
+  if (!isLeaseTimestamp(now)) return refuse("INSTANT_INVALID", at + ".now");
   return null;
 }
 
@@ -362,7 +366,7 @@ export function renewLease(
 
   const invalid = validateLeaseSet(fields["leases"], fields["now"], "request");
   if (invalid !== null) return invalid;
-  if (!isInstant(fields["expiresAt"])) return refuse("INSTANT_INVALID", "request.expiresAt");
+  if (!isLeaseTimestamp(fields["expiresAt"])) return refuse("INSTANT_INVALID", "request.expiresAt");
   // The holder is an identity, admitted by the contract's own parser rather
   // than by a `typeof` check — the same borrowed-parser discipline the lease
   // set and the instants use.

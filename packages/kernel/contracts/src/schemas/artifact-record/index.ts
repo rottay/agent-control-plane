@@ -30,7 +30,7 @@
 
 import { z } from "zod";
 import { attachGuards } from "../credential-guards/index.js";
-import { ContractVersion, Sha256Hex, Uuid } from "../primitives/index.js";
+import { CanonicalInstant, ContractVersion, Sha256Hex, Uuid } from "../primitives/index.js";
 import { WorkerIdentityString } from "../worker-identity/index.js";
 
 // ---------------------------------------------------------------------------
@@ -128,19 +128,12 @@ export type PinHolderKind = z.infer<typeof PinHolderKind>;
 const Identifier = z.string().min(1).max(512);
 
 /**
- * The one instant form the registry stores: ISO-8601 in UTC with milliseconds,
- * and a real date rather than a shape. Stricter than `Timestamp`, which admits
- * an offset: the ledger orders these lexicographically and records
- * `first_published_at` verbatim, so two spellings of one instant would be two
- * facts.
+ * The one instant form the registry stores: the canonical instant (P-15 escalón I,
+ * ADR 0106), read from `primitives`, the one predicate. Stricter than `Timestamp`,
+ * which admits an offset: the ledger orders these lexicographically and records
+ * `first_published_at` verbatim, so two spellings of one instant would be two facts.
  */
-const Instant = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, "expected an ISO-8601 UTC instant with milliseconds")
-  .refine((value) => {
-    const parsed = new Date(value);
-    return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === value;
-  }, "expected a real calendar instant");
+const Instant = CanonicalInstant;
 
 const Count = z.number().int().positive();
 

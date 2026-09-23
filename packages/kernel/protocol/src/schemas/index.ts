@@ -19,6 +19,8 @@ import {
   BoundedIdentifier,
   WorkerIdentityString,
   WorkerRole,
+  CanonicalInstant,
+  Timestamp,
   findCredentialViolations,
   findTranscriptViolations,
 } from "@acp/contracts";
@@ -96,7 +98,8 @@ const Sha256Hex = z
 
 const Uuid = z.uuid();
 
-const Timestamp = z.iso.datetime({ offset: true });
+// `Timestamp` is `@acp/contracts`' own, imported above rather than declared a second
+// time here (P-15 escalón I, ADR 0106, decision 147): the same zod call, one place.
 
 /** A ledger sequence. Positions start at one. */
 const Sequence = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -2172,19 +2175,6 @@ const PublishableDocumentKindDto = z.enum(["MODEL_VERSION", "PRICE_TABLE", "ROUT
 const RegistryDocumentId = z.string().regex(/^[!-~]{1,256}$/);
 
 /**
- * The instant a version rules from, in the one canonical form the registry holds
- * and compares as text: ISO-8601 with milliseconds, in UTC, ending in `Z`, and the
- * form a round-trip through `Date` reproduces. Not `Timestamp`, which admits
- * offsets: an instant in another spelling is refused here rather than normalized.
- */
-const CanonicalInstant = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
-  .refine((value) => !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value, {
-    message: "expected the canonical instant, ISO-8601 with milliseconds in UTC",
-  });
-
-/**
  * What an operator sends to publish one registry version (P-15/R, ADR 0104).
  *
  * **The operator's fields and nothing the door derives.** The digest, the
@@ -2207,6 +2197,9 @@ export const RegistryPublicationRequest = z
     documentId: RegistryDocumentId,
     documentVersion: Sequence,
     parentDocumentVersion: Sequence.nullable(),
+    // The instant a version rules from, in the one canonical form the registry holds
+    // and compares as text: `@acp/contracts`' `CanonicalInstant`, the one predicate
+    // (P-15 escalón I, ADR 0106). Not `Timestamp`, which admits offsets.
     effectiveFrom: CanonicalInstant,
     recordedBy: WorkerIdentityString,
     payload: z.record(z.string(), z.unknown()),

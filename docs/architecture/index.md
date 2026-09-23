@@ -121,6 +121,7 @@ new records from `_template.md`, which carries the required fields.
 | 0103 | [A delivery pins the price catalog version it will be valued against](0103-a-delivery-pins-the-price-catalog-version-it-will-be-valued-against.md) | accepted |
 | 0104 | [Registry configuration is published through one door that derives its digest](0104-registry-configuration-is-published-through-one-door-that-derives-its-digest.md) | accepted |
 | 0105 | [The daemon consumes a recorded task and appends the whole chain](0105-the-daemon-consumes-a-recorded-task-and-appends-the-whole-chain.md) | accepted |
+| 0106 | [One canonical-instant authority](0106-one-canonical-instant-authority.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

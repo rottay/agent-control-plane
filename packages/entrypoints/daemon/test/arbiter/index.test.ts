@@ -1,6 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { openLeaseStore } from "@acp/ledger";
 import type { LeaseStore } from "@acp/ledger";
@@ -10,6 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { canonicalInstant, createArbiter } from "../../src/arbiter/index.js";
 import type { ArbiterOptions } from "../../src/arbiter/index.js";
+import { StartupError } from "../../src/errors/index.js";
 import type { ProcessFacts, ProcessInspector } from "../../src/identity-probe/index.js";
 
 /**
@@ -631,5 +633,45 @@ describe("under a revision, lease events carry the coordinate and wait for the a
     const [acquired] = ledger.appended as { idempotencyKey: string; payload: Record<string, unknown> }[];
     expect(Object.keys(acquired?.payload ?? {}).sort()).toEqual(["acquiredAt", "expiresAt", "holder", "leaseId", "worktreePath"]);
     expect(acquired?.idempotencyKey.startsWith("v2/")).toBe(false);
+  });
+});
+
+/** The captured canonical-instant matrix (P-15 escalón I, ADR 0106), read from disk; absent or malformed fails loudly. */
+function canonicalInstantVectors(path: string): readonly { readonly vector: string | number | null; readonly canonical: boolean; readonly arbiter: string | null }[] {
+  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const vectors = (parsed as { readonly vectors?: unknown }).vectors;
+  if (!Array.isArray(vectors) || vectors.length === 0) throw new Error("the canonical-instant matrix carries no vectors");
+  return vectors.map((entry: unknown, index) => {
+    const { vector, canonical, arbiter } = entry as Record<string, unknown>;
+    if (
+      !(typeof vector === "string" || typeof vector === "number" || vector === null) ||
+      typeof canonical !== "boolean" ||
+      !(typeof arbiter === "string" || arbiter === null)
+    ) {
+      throw new Error("the canonical-instant matrix's row " + String(index) + " is malformed");
+    }
+    return { vector, canonical, arbiter };
+  });
+}
+
+describe("P-15/I: the arbiter's normalisation is pinned as captured, its output checked by the one predicate", () => {
+  const TABLE = join(dirname(fileURLToPath(import.meta.url)), "../../../../kernel/contracts/test/testing/canonical-instant-vectors/index.json");
+
+  it("maps every vector to the captured canonical output, or refuses it with StartupError", () => {
+    for (const row of canonicalInstantVectors(TABLE)) {
+      const label = String(row.vector);
+      if (row.arbiter === null) {
+        expect(() => canonicalInstant(row.vector as string, "now"), label).toThrow(StartupError);
+      } else {
+        expect(canonicalInstant(row.vector as string, "now"), label).toBe(row.arbiter);
+        // A canonical input is its own output.
+        if (row.canonical) expect(row.arbiter, label).toBe(row.vector);
+      }
+    }
+  });
+
+  it("names the finding it does not fix: an impossible date is rolled over, not refused (decision 147)", () => {
+    expect(canonicalInstant("2026-02-30T00:00:00.000Z", "now")).toBe("2026-03-02T00:00:00.000Z");
+    expect(canonicalInstant("2026-09-23T24:00:00.000Z", "now")).toBe("2026-09-24T00:00:00.000Z");
   });
 });

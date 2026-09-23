@@ -81,6 +81,9 @@ import {
   USAGE_REPORT_KINDS,
   USAGE_SOURCE_CLASSES,
   PRODUCT_PATH_MARKERS,
+  CanonicalInstant,
+  Timestamp,
+  isCanonicalInstant,
 } from "../../src/index.js";
 import type { DriverAccepted, DriverOutcome } from "../../src/index.js";
 
@@ -3285,5 +3288,75 @@ describe("the version moves for the dispatch pin cohort (P-15 escalón C, ADR 01
     }
     expect(AdmittedContractVersion.safeParse("2.9.0").success).toBe(true);
     expect(TaskEnvelope.safeParse(envelope({ contractVersion: "2.8.0" })).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón I: one canonical-instant authority (ADR 0106, decisions 146-148)
+// ---------------------------------------------------------------------------
+
+describe("P-15/I: the canonical instant is one predicate and one schema, and its verdicts are the captured ones", () => {
+  // The matrix whose verdicts were captured by running the four pre-change copies
+  // (the ledger's isInstant, the protocol's registry instant, the artifact record's
+  // instant and the arbiter's normaliser) at c1bb414, before any source moved. JSON,
+  // read from disk, for the vector table's reason: another package's suite reads it
+  // too, and a foreign TS leaf is outside a test project's rootDir (TS6059).
+  const Vector = z.strictObject({
+    vector: z.union([z.string(), z.number(), z.null()]),
+    canonical: z.boolean(),
+    arbiter: z.string().nullable(),
+  });
+  const Table = z.strictObject({
+    vectorTableVersion: z.literal(1),
+    capturedFrom: z.string().min(1),
+    vectors: z.array(Vector).min(1),
+    timestampCapturedFrom: z.string().min(1),
+    timestamps: z
+      .array(z.strictObject({ vector: z.union([z.string(), z.number(), z.null()]), timestamp: z.boolean() }))
+      .min(1),
+  });
+  const TABLE = resolve(dirname(fileURLToPath(import.meta.url)), "..", "testing", "canonical-instant-vectors", "index.json");
+
+  it("parses the captured matrix strictly, and it holds both verdicts and both edges of the calendar", () => {
+    const table = Table.parse(JSON.parse(readFileSync(TABLE, "utf8")));
+    expect(table.vectors.some((row) => row.canonical)).toBe(true);
+    expect(table.vectors.some((row) => !row.canonical)).toBe(true);
+    for (const edge of ["0000-01-01T00:00:00.000Z", "9999-12-31T23:59:59.999Z", "2026-02-30T00:00:00.000Z"]) {
+      expect(table.vectors.map((row) => row.vector)).toContain(edge);
+    }
+    // A malformed copy is refused, never read as an empty table.
+    expect(Table.safeParse({ ...table, vectors: [{ vector: "x", canonical: "yes", arbiter: null }] }).success).toBe(false);
+  });
+
+  it("the predicate and the schema reproduce every captured verdict, and refuse what JSON cannot carry", () => {
+    const table = Table.parse(JSON.parse(readFileSync(TABLE, "utf8")));
+    for (const row of table.vectors) {
+      expect(isCanonicalInstant(row.vector), String(row.vector)).toBe(row.canonical);
+      expect(CanonicalInstant.safeParse(row.vector).success, String(row.vector)).toBe(row.canonical);
+    }
+    for (const extra of [undefined, new Date(0), {}, ["2026-09-23T12:00:00.000Z"]]) {
+      expect(isCanonicalInstant(extra)).toBe(false);
+      expect(CanonicalInstant.safeParse(extra).success).toBe(false);
+    }
+  });
+
+  it("Timestamp, now exported for the protocol's fold, reproduces its captured verdicts", () => {
+    const table = Table.parse(JSON.parse(readFileSync(TABLE, "utf8")));
+    for (const row of table.timestamps) {
+      expect(Timestamp.safeParse(row.vector).success, String(row.vector)).toBe(row.timestamp);
+    }
+    // The offset-bearing rule admits what the canonical one refuses, and not the reverse.
+    expect(table.timestamps.some((row) => row.timestamp && !isCanonicalInstant(row.vector))).toBe(true);
+  });
+
+  it("refuses with one message, and the schema calls the predicate rather than restating it", () => {
+    const refused = CanonicalInstant.safeParse("2026-02-30T00:00:00.000Z");
+    expect(refused.success).toBe(false);
+    expect(refused.error?.issues.map((issue) => issue.message)).toEqual([
+      "expected the canonical instant: ISO-8601 in UTC with milliseconds, a real calendar date",
+    ]);
+    expect(CanonicalInstant.safeParse("2026-09-23T12:00:00Z").error?.issues.map((issue) => issue.message)).toEqual([
+      "expected the canonical instant: ISO-8601 in UTC with milliseconds, a real calendar date",
+    ]);
   });
 });
