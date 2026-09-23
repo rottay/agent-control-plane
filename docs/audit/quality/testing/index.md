@@ -325,12 +325,38 @@ lectura privada se audita antes, nunca se agrega después de un fallo.
   transcripciones, variables de entorno, cabeceras, argumentos de herramienta ni
   texto libre de error de un proveedor.
 
+### Lecturas privadas autorizadas
+
+Inventario congelado antes de los fixtures (P-15/F0, decisión 149). Cada fila nombra
+el campo del sink, la transformación permitida y el fixture que la prueba. Una lectura
+que no esté acá no existe, y no se agrega después de un fallo.
+
+| Campo del sink | Clase de contenido | Transformación permitida | Autorización | Fixture |
+| --- | --- | --- | --- | --- |
+| Cuerpo `200` de `GET /api/v1/tasks/:taskId/effects/:effectId/result` | salida del modelo (`RESPONSE`) | el documento de resultado; con `?block=`, los bytes de un bloque verificados contra su digest y su longitud, que también es `RESPONSE`; siempre `Cache-Control: no-store` | el bearer de escritura del gateway | drill P-15/F, PC-F1 (3) y (7), PC-F2 (D-F-1, D-F-2) |
+| `stdout` de `acp result` | salida del modelo (`RESPONSE`) | el mismo documento en JSON; con `--block`, el mismo bloque verificado | acceso de sistema de archivos al ledger y al plane (raíz `0700`, objetos `0600`) | drill P-15/F, PC-F1 (2) y (7) (D-F-1) |
+| Cuerpo de error HTTP de esa ruta | ninguna | `{code, message, detail}`: código cerrado, mensaje fijo y `detail` con la ruta de **campo** o una frase fija; nunca bytes del resultado, rutas del sistema de archivos ni el valor recibido; también con `no-store` | pública | drill P-15/F, PC-F1 (4), N-F-D8 y N-F-D9 (N-F-19, N-F-22) |
+| Error de `acp result` | ninguna | código de salida y `stderr` fijo; `stdout` vacío | pública | drill P-15/F, N-F-D8 y N-F-D9 (N-F-23) |
+| `GET /api/v1/tasks/:taskId/effects` y `acp effects` | ninguna | sólo `apiContractVersion`, `ledgerContractVersion`, `taskId` y, por efecto, `effectId`, `revisionNumber`, `attemptNumber`, `operationOrdinal`, `effectKind`, `intendedAt`, `outcomeStatus`, `outcomeRecordedAt` y `hasResult`; ni digest, ni referencia, ni bytes | pública | drill P-15/F, PC-F1 (1) (F-ND-2) |
+| Todos los demás sinks protegidos de esta sección | ninguna | el centinela de la respuesta no aparece: frames SSE desde el ancla 0, cuerpos de `events`, `tasks/:id`, `overview` y `taskEffects`, `stdout`/`stderr` del gateway, `stderr` de la CLI y todas las filas de todas las tablas del ledger; con control positivo por centinela: S1 **sí** está en las dos lecturas de bloque por referencia (PC-F1 (7)) y S2 **sí** está en los dos documentos con texto en línea (PC-F2). Exclusiones declaradas: la raíz del plane y la raíz de evidencia, que son el lado privado | — | drill P-15/F, PC-F1 (5), (6) y (7), PC-F2 (N-F-21) |
+
+Límites:
+- La excepción cubre sólo la clase `RESPONSE`. Prompt, argumentos de herramienta y
+  resultado de herramienta (`TOOL_RESULT`) no tienen lectura autorizada.
+- Un mismo bearer autoriza escrituras y esta lectura: no hay mínimo privilegio hasta
+  P-36, que mantiene el perfil completo de lectura privada.
+- Precedente fuera de alcance: el objetivo de una iniciativa (`PLAN_DOCUMENT`,
+  `INTERNAL`) se lee por un GET sin guarda (decisiones 75 y 76). No es ninguna de las
+  clases protegidas de esta sección; la clasificación `INTERNAL` por sí sola nunca
+  exigió guarda. No vale la regla «plane privado ⇒ guarda».
+
 ### Cómo se prueba
 
 - Un **sentinela por fuente** en cada sink: prompt, respuesta, resultado de
   herramienta, error, cabeceras, entorno, y etiqueta o ruta.
 - Un inventario `campo del sink → transformación permitida → fixture` vive en la
-  sección de seguridad del contrato de tests.
+  sección de seguridad del contrato de tests; las lecturas privadas autorizadas
+  están en [Lecturas privadas autorizadas](#lecturas-privadas-autorizadas).
 - **Una fuga sintética conocida, o contenido crudo, dentro de un sink protegido es
   `FAIL`.** No existe la salida «el alcance estaba declarado».
 - Lo que **no** se promete: que una expresión regular detecte cualquier secreto
