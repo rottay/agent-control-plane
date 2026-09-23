@@ -11163,13 +11163,14 @@ function assertAdrNumbering() {
   notes.push("ADR corpus: " + String(records.length) + " records, unique, contiguous, indexed");
 }
 
-// Re-pinned in P-02, in the same commit as the edit that moved it: the roadmap
-// gained one paragraph after its review-evidence block, naming `docs/audit/` as
-// the planning source admitted by ADR 0061 and restating that the roadmap keeps
-// operational authority where the two speak. Nothing was deleted. Previous
-// digest: bf4c63b5a230e48f348847d8aee64cb61bd0e5696e9cd35b9531e796333b5a9a.
+// Re-pinned after the owner-ordered parallelization review of 2026-09-22
+// (Codex): the roadmap's «Criterio de paralelización» section was replaced by a
+// pointer to `docs/audit/roadmap/parallelism/index.md` §1. Its five lines were
+// deleted there and their content moved, not lost. The roadmap stays canonical
+// for scope, sequence and gates. Previous digest:
+// feaa94aa1e7ccdbbb8bec18374f44889e6cd267acadfe7b8e204e8064951c052.
 const ROADMAP_SHA256 =
-  "feaa94aa1e7ccdbbb8bec18374f44889e6cd267acadfe7b8e204e8064951c052";
+  "0cc04b82961b6a70997fcb874be4b1c78f559ce9d2e9bc8a6d8c6c751abc5495";
 
 /**
  * The Estado line P7 closure is allowed to have produced.

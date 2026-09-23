@@ -15,6 +15,13 @@ define dependencias de integración, conflictos y paralelismo permitido.
 ## 1. Olas de preparación e integración
 
 Cada ola admite preparación RO paralela; su columna de integración es **serial**.
+**Las olas son una agenda de referencia, no una barrera adicional.** Una flecha
+de la tabla no agrega una dependencia al inventario. En cada cierre el DT vuelve
+a elegir entre los packets realmente elegibles, sin esperar una ola completa y
+sin inventar readiness. La integración sigue siendo serial en `main`; este plan
+no autoriza writers simultáneos, nuevas ramas, worktrees ni cambios de alcance.
+La aceleración se obtiene preparando decisiones, oráculos y verificaciones
+independientes antes de ocupar la ventana de escritura, no omitiéndolos.
 Dependencias, condiciones de habilitación y entregas internas mandan desde
 [packets §1](../../implementation/packets/index.md). Un packet arrancado no es un
 predecesor aceptado. H-5 está cerrado de diseño; P-23 todavía debe implementar y
@@ -42,6 +49,111 @@ de composición completo permanece en P-23/M7. P-34/admisión precede a equipos 
 M11. Desarrollo del scheduler no habilita concurrencia con gasto antes de ese corte.
 No hay obligación de ocupar todos los agentes. No se cuenta dos veces un corte
 temprano cuando después se cierra su packet.
+
+### 1.1 Oportunidades en todo el programa
+
+La tabla aplica el inventario; **no lo reemplaza**. Las dependencias completas,
+incluidas las de habilitación, permanecen en [packets §1 y §1.8](../../implementation/packets/index.md).
+Los IDs de la primera columna identifican el frente, no un permiso de ejecución.
+Las condiciones citadas son anclas para comprobar elegibilidad, no listas
+alternativas exhaustivas de dependencias. Todo adelanto conserva su prueba de
+integración y sus gates de cierre; RO significa sin mutar el checkout ni sus
+derivados, con evidencia y temporales propios declarados.
+
+| Frente | Trabajo paralelo útil | Ventana de implementación y límite que no se adelanta |
+| --- | --- | --- |
+| P-01, P-02, P-03, P-04: base y autoridad | Inventario de destinos de test, oráculos del parser y disponibilidad de runners; no repetir bootstrap aceptado | Respetar dependencias de M0 y autoridad antes de producto. Falta de runner no se convierte en PASS ni detiene preparación independiente. |
+| P-09, P-10, P-08, P-05: persistencia e identidad | Casos adversariales de CAS, restore, duplicados y preimagen con expectativas independientes | Append, migraciones y consumidores tienen dueño serial. No partir transacciones ni publicar identidades provisionales. |
+| P-11, P-12, P-13: errores, proyecciones y composición | Mapas de duplicación, imports/exports y fixture de equivalencia | Sus dependencias permiten elegirlos sin esperar toda la ola 1. El refactor debe cerrar verde antes de mover sus consumidores; los ya aceptados no se reabren por esta tabla. |
+| P-18/protocolo, P-36/local, P-14: acceso privado y bootstrap | Modelo de amenazas, trazado del envelope y negativos de scope/replay | No usar artefactos antes de acceso probado ni ejecución antes del bootstrap. No equivale a recuperación o portabilidad completas. |
+| P-32/captura, P-33/catalogo: uso y precio previos al gasto | Oráculos de clases, epochs, intervalos y ausencia de precio | Su disponibilidad operacional, incluido pin, es precondición del gasto de P-15; no diferirla a los reportes de economía. |
+| P-06, P-07: contenido y resultado | Mientras se corrige contenido, preparar mapa de salida, casos de error y replay. Con contrato aceptado, mapear en paralelo persistencia y transportes | El consumidor implementado exige su predecesor aceptado. Ledger y providers pueden prepararse en paralelo; se escriben por turnos. El cableado espera ambos, sin éxito ficticio por exit 0. |
+| P-15: primera tarea útil | Preparar matriz CLI/API/local, escenarios por puerta, permisos y presupuesto del smoke antes de necesitarlo | P-06/P-07 aceptados y demás dependencias completas. Los fakes verifican contratos, no sustituyen el smoke requerido ni la prueba por puertas reales. |
+| P-16, P-17/efecto: verificación y Git | Matriz de receipts inválidos, política NO_COMMIT y oráculos de SHA/base/tree | El efecto Git se prueba sólo en destino descartable autorizado. No habilitar escritura operativa antes de P-18/recuperación. |
+| P-18/recuperación | Preparar las ocho fronteras, oráculos de efecto incierto y ownership mientras se implementan sus productores | Drills sobre productores reales, incluyendo P-17/efecto para Git. No deducir recuperación del protocolo puro ni reintentar lo incierto. |
+| P-19, P-20: cuotas y handoff | Matrices de reservas, rollups, generaciones y múltiples segmentos, usando contratos aceptados | P-19 exige recuperación; P-20 conserva sus predecesores. Presión con handoff se habilita sólo con N15/P-20 probado; no declarar P-19 completo ignorando esa condición aplicable. |
+| P-21, P-22: daemon y lifecycle | Diseñar pruebas de cola/reap y carreras señal/cancelación/timer antes de su turno | Cola y lifecycle mantienen sus dependencias reales. Concurrencia con gasto espera P-34/admisión; desarrollar el scheduler no concede permiso de operarlo. |
+| P-23: garantías y composición | Oráculos del gate compartido y matriz de compatibilidad; preparar integración con presupuestos | P-23/garantías puede implementarse tras P-15 y la primitiva de contratos, sin esperar artificialmente P-22. El solver y la conformidad completos conservan sus gates de M7. |
+| P-24: herramientas | Schema, paginación y negativos del protocolo tras P-11; mapa de integración con contenido/resultado | No necesita esperar P-20 por estar dibujado después. Integración productiva exige P-06/P-07/P-18/protocolo y los permisos del perfil. |
+| P-25: aislamiento | Comparar mecanismo autorizado y diseñar pruebas de red/filesystem sobre el contrato del proceso | Implementación tras P-21 y elección explícita del mecanismo; ausencia de sandbox declarada no es aislamiento probado. |
+| P-26, P-27: iniciativa, roadmap y DAG | Preparar políticas puras y oráculos de ciclos/revisiones mientras avanza el camino de ejecución | P-26 tras P-14; P-27 tras P-26/P-05. Adelantos ya admitidos por §1: no activan despacho, equipos ni cierran M9; no compiten con migraciones en vuelo. |
+| P-28, P-29: equipos y coordinación | Matriz de aprobación/timeout/revocación y simulación sin efectos | Contratos y predicados pueden prepararse; timers, espera durable, handoff y presupuesto deben existir antes de la integración que los consume. No fabricar stubs para cerrar M9. |
+| P-30, P-31: observabilidad y stream | Oráculos de collector lento/caído, redacción, gaps, epochs y backpressure | P-30 tras P-21/P-18/recuperación, sin esperar todos los equipos M9; P-31 tras P-10/P-12/P-30. Mantener la integración con productores reales y límites de cola. |
+| P-32 completo, P-33 costos, P-34, P-35: economía y evaluación | Escenarios de liquidación, racionales, incertidumbre, admisión y juez independiente | P-32 tras P-19/P-07; costos P-33 tras P-32/P-16 sin afirmar cierre M11. P-34/admisión no espera el cierre económico completo; sus predecesores sí. P-35 conserva presupuesto y cierre de P-29/P-31 aplicables. |
+| P-36 completo: portabilidad | Matriz de backup/restore/retención y conformidad del backend seleccionado | No exige esperar todas las evaluaciones por el número de ola; cierre M12 mantiene P-10/P-18/recuperación/P-23. No agregar segundo backend sólo para ocupar un agente. |
+| P-37: arquitectura | Mapas de extracción y detección de duplicación sobre versiones aceptadas | Extracción incremental necesaria antes de su consumidor, sin mezclar renombrado y nueva semántica. No generar deuda nueva para trasladarla aquí; cierre completo conserva P-29/P-36. |
+| P-38, P-39: distribución y certificación | Preparar instrucciones de instalación, matriz de plataformas, perfil y requisitos de evidencia | P-38 espera P-04/P-37 y superficie estable. P-39 certifica todos los requisitos seleccionados en snapshot congelado; no sustituir la corrida final por reportes parciales. |
+
+No se abre un nuevo corte interno sólo por aparecer una oportunidad: si necesita
+otra frontera de entrega o dependencia, el DT la adjudica conforme al protocolo
+vigente antes de implementar. No cortar un fold, migración, contrato/consumidor o
+invariante para producir dos paquetes artificialmente independientes.
+
+### 1.2 Elegir el siguiente trabajo sin dejar pendientes de calidad
+
+1. Clasificar: **preparación RO**, **implementación elegible** o **cierre/habilitación**.
+   Un borrador preparado no es `DESIGN_READY`, un predecesor en vuelo no es ACCEPT
+   y una feature deshabilitada no es una feature certificada.
+2. Elegir primero el bloqueo del camino hacia la próxima demostración real; luego
+   el paquete elegible que desbloquea más consumidores. Completar antes de iniciar
+   nuevas extracciones o inventarios que no lo desbloquean.
+3. Mantener como máximo un paquete de código abierto y, normalmente, uno siguiente
+   en preparación más un alternativo independiente si hay espera externa. Es un
+   límite de trabajo en vuelo, no nuevos roles ni una flota obligatoria.
+4. No cerrar con defectos, tests pendientes o una excepción arquitectónica nueva
+   para ganar velocidad. Una obligación del paquete no se mueve al siguiente
+   por conveniencia. Los cortes previamente definidos por §1.8 conservan su
+   aceptación propia: completarlos no cancela las obligaciones del paquete dueño.
+5. Un fallo bloquea el cierre y los consumidores afectados. Preparación o trabajo
+   independiente autorizado puede continuar cuando no exista conflicto §2; nunca
+   se usa ese avance para disimular el defecto ni sumar un cierre inexistente.
+6. Pedir temprano permisos de runner, cuenta o smoke. Una respuesta pendiente no
+   autoriza gasto; llenar esa espera con trabajo independiente, no con reiteradas
+   consultas ni una simulación presentada como evidencia real.
+
+### 1.3 Solapamiento seguro del ciclo de entrega
+
+| Momento | En el checkout canónico | Qué se puede solapar |
+| --- | --- | --- |
+| Implementación | Un writer, write-set exacto, tests espejo junto al cambio | Preparación de oráculos y del siguiente brief sobre referencias inmutables; si cambia un contrato leído, revalidar antes de usar el resultado. |
+| SOURCE_READY y verificación | Fuente, tests, autoridad e índice congelados; temporales de prueba declarados | Revisión de comportamiento, arquitectura/datos y seguridad repartida sobre el mismo snapshot. Una batería pesada propia por vez; no builds/typecheck paralelos que escriban dist/caches. |
+| Corrección | Termina la corrida que dependía del snapshot anterior; vuelve el writer con scope acotado | Conservar hallazgos vigentes, no producir un receipt para bytes previos. Revisión enfocada del delta más regresiones y gates exigidos. |
+| Commit y poscommit | DT comprueba identidad completa, receipt y pruebas; integra localmente y comprueba el resultado | Preparación RO del siguiente paso. No mezclar documentación ajena ni otra entrega con el índice auditado. |
+| Próximo paquete | Revalidar base, dependencias, R/W/O/E y autoridad contra el nuevo HEAD | Consumir el mapa ya preparado sin repetir la auditoría general del proyecto. |
+
+Una lectura del árbol que otro cambia sólo sirve como exploración, no como
+auditoría final. Las copias descartables de verificación ya autorizadas no son
+worktrees de implementación; deben tener origen y outputs aislados y no crean
+permiso para otro writer ni para reanudar cambios que invaliden el receipt.
+
+### 1.4 Despacho concreto por instancia del trabajo restante
+
+El DT aplica esta agenda al **estado verificado**, no a una fecha. Abrir varios
+agentes significa repartir objetivos distintos; no pedirles el mismo análisis.
+Normalmente bastan el writer y uno o dos apoyos, rotando de función al congelar
+la entrega. El auditor independiente nunca hereda como verdad el oráculo del
+writer. Si no hay una salida útil o recursos disponibles, no se abre el agente.
+
+| Instancia | Qué despachar en paralelo | Qué debe estar terminado para pasar a la siguiente |
+| --- | --- | --- |
+| Corrección/aceptación de P-06 | Un writer cierra los defectos de contenido, privacidad y estructura. Un mapeador prepara P-07 contra contratos aceptados, sin cambiar el alcance de P-06. Al congelar, un verificador revisa el cambio y ejecuta su batería; el mapeador sólo trabaja RO | Hallazgos materiales resueltos y aceptación exigida satisfecha, no sólo una adjudicación que los renombre. No implementar el consumidor pendiente para eludir este cierre. |
+| P-07, contrato de resultado | Un writer fija contrato/tipos/tests. Un apoyo prepara replay/conflicto y migración; otro prepara las traducciones de terminal de proveedor y negativos. Preauditar las decisiones semánticas antes de usarlas | Contrato aceptado; revalidar ambos mapas contra ese contrato. No inventar dos contratos por separar ledger y transportes. |
+| P-07, ledger y providers | Dos mapas y oráculos RO pueden avanzar independientemente; el único writer implementa por turnos los cortes adjudicados. Mientras uno se verifica, preparar el otro sin compilarlo ni mutar el checkout | Cada corte con sus tests y revisión. El corte runtime espera las dos superficies aceptadas. Si falta evidencia de un proveedor, no fabricar SUCCEEDED; tampoco cerrar como soportado el perfil que la exige. |
+| P-07 runtime y preparación P-15 | Writer integra resultado; apoyo diseña expectativas distintas para cada puerta CLI/API/local y prepara el smoke autorizado. Auditor revisa límites privados y éxito de operación frente a transporte/proceso | P-07 aceptado con garantías completas de su scope. Permisos y pin/uso antes de ejecutar el smoke de P-15. |
+| P-15, primer caso útil | Writer cablea. Apoyo 1 prepara casos de entrada/salida y fallos con oráculos externos; apoyo 2 prepara mapa de receipts y efecto Git para P-16/P-17 sobre especificación, sin ejecutarlos | Caso real de puerta a resultado y consumo trazable en el perfil. No sustituirlo por una llamada directa al puerto desde un test. |
+| P-16/P-17 y recuperación P-18 | Writer implementa en orden. Un apoyo mantiene matriz de ocho fronteras; otro analiza revocación, descendientes y efectos inciertos. Verificar snapshots congelados; una corrida pesada | Receipts válidos, efecto Git probado en destino permitido y matriz de recuperación verde antes de habilitar el efecto operativo. |
+| P-19 y preparación del daemon/handoff | Writer implementa reservas/cuotas. Apoyos separan mapa de cola/reap P-21 y continuidad P-20, leyendo contratos comunes aceptados | No activar presión con handoffs sin N15/P-20. Resolver por separado dependencias de desarrollo y habilitación, sin convertir esa condición en un ciclo artificial ni fingir un cierre completo. |
+| P-21/P-22/P-23 garantías/P-34 admisión | Elegir el próximo corte elegible que desbloquee presupuesto y lifecycle. Un apoyo prepara conformidad del gate compartido y otro el siguiente consumidor (P-20 o telemetría); un solo escritor | Concurrencia con gasto sólo tras enforcement probado. No crear otro gate de garantías dentro del presupuesto o del solver. |
+| Continuidad, herramientas y planificación | Tras las dependencias reales, elegir por bloqueo del perfil entre P-20, P-24/P-25 y P-26/P-27. Un apoyo prepara el frente siguiente; no abrir tres implementaciones. Si el camino principal espera permiso externo, usar un frente independiente ya elegible | Pruebas y arquitectura completas de cada entrega. No consumir una interfaz provisional de otro frente ni partir la migración compartida. |
+| Observabilidad y economía | Con P-21/recuperación aceptados, preparar P-30/P-31 sin esperar todos los equipos. Con P-19/P-07 aceptados, preparar P-32 y luego costos P-33; un apoyo de cada área sólo si sus entradas son estables | Telemetría usa eventos reales y nunca decide facturación; liquidación usa fuentes canónicas. Cierre económico completo y evaluaciones conservan todas las dependencias de §1.1. |
+| Equipos y coordinador P-28/P-29 | Writer integra sobre planificación/receipts/lifecycle/presupuesto aceptados. Apoyo prepara carreras de aprobación y otro revisa simulación/consulta sin efectos, sólo si sus scopes son disjuntos | Esperas, timeout, revocación, handoff y límites funcionan juntos; no cerrar equipos con timers simulados en lugar de los exigidos. |
+| P-35, P-36, P-37, P-38 | Seleccionar por elegibilidad y conflicto entre evaluación, portabilidad y estructura; cada extracción necesaria precede a sus consumidores. RO de instalación y manuales puede acompañar interfaces estables | No cambiar APIs durante una certificación dependiente; ninguna extracción obliga a posponer sus propios tests o documentación. Segundo backend sólo en perfil seleccionado. |
+| P-39 | Fuente e inputs de prueba congelados. Repartir lecturas de arquitectura/datos, seguridad y documentación sobre un mismo snapshot; ejecutar los grupos pesados secuencialmente con un único responsable de corrida | Conjunción de calidad completa. Un FAIL exige corrección y revalidación de lo afectado, no votación entre auditores. UI y cutover no quedan autorizados. |
+
+La preparación de un frente alternativo no desplaza al camino crítico sin una
+razón registrada: bloqueo externo, requisito compartido que desbloquea varios
+consumidores, o eliminación comprobable de retrabajo. No se agregan nuevos
+entregables para justificar más agentes, ni se promete una fecha sólo por abrirlos.
 
 ## 2. Grafo de conflictos al congelar el scope
 
@@ -138,3 +250,50 @@ restore íntegro autorizado para datos, reconciliación/compensación para efect
 Nunca reescribir eventos, reanclar hashes, revivir fence viejo ni reintentar un
 OUTCOME_UNKNOWN. El handoff final informa gates cerradas, evidencia, capacidad
 aún apagada y una siguiente acción segura; nada autoriza publicación o P9.
+
+## 5. Aceptación sin concesiones por paralelización
+
+La autoridad de arquitectura sigue en [arquitectura](../../architecture/index.md),
+la de pruebas en [tests](../../quality/testing/index.md) y el cierre del perfil en
+[calidad §7](../../quality/index.md). Este plan no crea una rúbrica alternativa.
+Antes del receipt, el verificador comprueba para el alcance del paquete:
+
+- Requisitos de aceptación satisfechos y positivos/negativos ejecutados con
+  oráculo independiente; ninguna evidencia requerida en `UNKNOWN` o pendiente.
+- Folder/index, tipos separados por concepto, tests espejo, dependencias entre
+  estratos y autoridad única de contratos/vocabularios; nada de interfaces o
+  utilidades clonadas para que dos agentes puedan trabajar sin coordinarse.
+- Cuando cambia persistencia: diccionario y naming consistentes, claves,
+  constraints, atomicidad, replay/rebuild y migraciones/rewinds probados según el
+  contrato; no sólo DDL que compila ni migraciones numeradas en paralelo.
+- Integración de consumidores pertinentes, incluidos barrels y puertas públicas;
+  mocks sirven para contrato, no para sustituir conformidad o E2E exigidos.
+- Privacidad, refusals fail-closed, límites y limpieza de procesos/temporales
+  propios. Un proceso ajeno bajo presión no se mata para conseguir una corrida.
+- Exactitud de documentación y soporte anunciado. Un subcorte aceptado no declara
+  el packet entero completo, ni habilita efectos pendientes de recuperación.
+
+Los comandos se resuelven desde el runner vigente. Los gates existentes,
+incluida `pnpm check` cuando el cierre la exige, se ejecutan: no se suprimen
+tests, no se rebajan umbrales ni se aceptan fallos ambientales como PASS. Los
+conteos de tests no sustituyen cobertura de escenarios.
+
+Puede reutilizarse evidencia **válida para el mismo snapshot y entorno fijado**
+con su procedencia y exit code; nunca como si otro worker la hubiera ejecutado.
+Un cambio invalida las comprobaciones afectadas y la aceptación del snapshot
+previo. La selección de regresiones no exime los gates completos que el cierre
+requiera. Un cambio documental de autoridad también se coordina fuera de una
+certificación congelada; no se modifica el checker para ocultar un nuevo scope.
+
+## 6. Medir la mejora, no prometerla
+
+Usar el checkpoint/receipt existente, sin construir un sistema de métricas para
+coordinar este desarrollo. Por entrega registrar tiempos de preparación,
+implementación, verificación, espera externa y corrección; cantidad de rondas,
+fallos de integración y si hubo presión de memoria o procesos propios huérfanos.
+No confundir las reservas de agentes del producto con esta coordinación manual.
+
+Después de tres entregas comparables, revisar si la preparación adelantada
+redujo espera/rework sin degradar tests, arquitectura ni estabilidad del host.
+Si produjo especulación obsoleta o más coordinación, reducirla. No estimar un
+porcentaje de ahorro antes de medir ni ocupar todos los agentes por obligación.

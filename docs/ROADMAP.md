@@ -883,11 +883,40 @@ Publicar código fuente hace visible lo construido; no autoriza que opere nada.
 
 ## Criterio de paralelización
 
-Se paraleliza cuando los write-sets, autoridades y derivados sean disjuntos. La
-coordinación paralela nunca puede costar más tokens que el trabajo ahorrado.
-Opus conserva los paths compartidos: contracts, schemas centrales, ledger,
-orchestrator, leases y adapters base. Sonnet recibe hojas disjuntas: fixtures,
-tests, vistas UI y adapters auxiliares. Toda integración pasa por Opus.
+La planificación detallada del programa restante vive en
+[`docs/audit/roadmap/parallelism/index.md`](audit/roadmap/parallelism/index.md):
+matriz de oportunidades de todo el inventario, despacho por instancia, conflictos
+y criterios de salida. La tabla de dependencias conserva su dueño en
+[`docs/audit/implementation/packets/index.md`](audit/implementation/packets/index.md).
+No se mantiene otro grafo ni otra asignación de agentes en esta sección; rige el
+reparto vigente documentado en [`docs/audit/kickoff.md`](audit/kickoff.md).
+
+**Mandato del owner: optimizar tiempos sólo cuando no se compromete calidad.**
+Las olas son un orden sugerido, no dependencias adicionales. En cada cierre el DT
+elige el siguiente trabajo por predecesores aceptados, conflictos reales y valor
+para el próximo caso útil. No necesita esperar una ola completa para preparar o
+integrar un frente independiente elegible.
+
+En la operatoria autorizada de este programa hay **un único writer sobre main**,
+sin nuevas ramas ni worktrees. En paralelo se pueden preparar mapas de impacto,
+oráculos y pruebas propuestas, revisar contratos y auditar snapshots congelados,
+con read-sets, outputs y recursos disjuntos o inmutables según el grafo de
+conflictos. No se certifica una lectura del árbol mientras otro agente lo cambia.
+Una sola batería pesada propia por vez; ninguna compilación simultánea comparte
+derivados. La documentación de autoridad también participa de la congelación.
+
+Cada entrega termina con arquitectura conforme, tests positivos y negativos,
+integración aplicable, revisión independiente y receipt del snapshot exacto antes
+de su commit. **No se avanza un consumidor sobre pendientes de su dependencia ni
+se trasladan defectos, tests o estructura al siguiente paquete para cerrar éste.**
+Los cortes ya previstos conservan sus condiciones de salida; no equivalen al
+paquete completo ni conceden habilitación operativa. Un bloqueo deja abierto lo
+afectado y permite trabajo independiente autorizado, no una excepción de calidad.
+
+Preparar normalmente el siguiente paquete y, ante espera externa, un alternativo
+elegible; no abrir agentes sin una salida útil. Medir espera, verificación y
+retrabajo frente a avance aceptado antes de prometer ahorro. Este ajuste no
+modifica requisitos, gates, perfil, permisos de gasto, publicación, UI ni cutover.
 
 ## Non-goals iniciales
 

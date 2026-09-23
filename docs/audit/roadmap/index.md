@@ -150,6 +150,15 @@ tienen allí un único dueño. La tabla de dependencias sigue en
 **Un solo writer en main**, preparación/auditoría paralela en lectura sobre
 snapshots; ningún worktree, relevo, implementación o gasto queda autorizado aquí.
 
+La tabla de olas no añade dependencias: en cada cierre se elige el siguiente
+packet por sus predecesores aceptados y sus conflictos reales. La
+[matriz de oportunidades y el ciclo de entrega](parallelism/index.md) cubren todo
+el inventario, distinguiendo preparación, implementación y habilitación. El
+objetivo es eliminar espera y retrabajo, no cerrar con defectos o tests pendientes.
+Un consumidor no avanza sobre una aceptación faltante; el trabajo independiente
+puede continuar con su propia autorización. Arquitectura y pruebas no se difieren
+para aparentar paralelismo ni para aumentar el porcentaje de cierre.
+
 ---
 
 ## 6. Cierre honesto de cada hito
