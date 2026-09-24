@@ -33,8 +33,11 @@ import {
   LedgerDatabaseIdentity,
   LedgerStatusResponse,
   MAX_DETAIL_TIMELINE_ITEMS,
+  MAX_TASK_EFFECTS,
   OverviewResponse,
   TaskDetailResponse,
+  TaskEffectResultResponse,
+  TaskEffectsResponse,
   TaskPageResponse,
   TimelineItem,
   ToolCallPageResponse,
@@ -44,6 +47,7 @@ import {
 import { canonicalRows } from "@acp/protocol";
 import type { ApiRouteName, OverviewState } from "@acp/protocol";
 import { payloadKeys } from "@acp/observation";
+import { readEffectResult } from "@acp/runtime";
 import type {
   EventQuery,
   IntegrityReport,
@@ -343,6 +347,141 @@ export function buildTaskDetail(ledger: Ledger, taskId: string): TaskDetailRespo
       recentEvents: recent.map(toTimelineItem),
     },
   });
+}
+
+/**
+ * A task's effects, or null when the ledger holds no such task (P-15/F).
+ *
+ * The CLI's side of the `taskEffects` pairing: ids, coordinates and outcome
+ * words, and whether a result exists — never its reference or its digest.
+ */
+export function buildTaskEffects(ledger: Ledger, taskId: string): TaskEffectsResponse | null {
+  if (ledger.getTask(taskId) === null) return null;
+  const page = ledger.listTaskEffects(taskId, { limit: MAX_TASK_EFFECTS });
+  return TaskEffectsResponse.parse({
+    apiContractVersion: API_VERSION,
+    ledgerContractVersion: LEDGER_VERSION,
+    taskId,
+    truncated: page.truncated,
+    effects: page.effects.map((effect) => ({
+      effectId: effect.effectId,
+      revisionNumber: effect.revisionNumber,
+      attemptNumber: effect.attemptNumber,
+      operationOrdinal: effect.operationOrdinal,
+      effectKind: effect.effectKind,
+      intendedAt: effect.intendedAt,
+      outcomeStatus: effect.outcomeStatus,
+      outcomeRecordedAt: effect.outcomeRecordedAt,
+      // The pair is whole or absent (the ledger's trigger), so its digest's presence
+      // is the answer; the reference itself is never read here (L-P15F-1 (i)).
+      hasResult: effect.resultSha256 !== null,
+    })),
+  });
+}
+
+/**
+ * What the `result` verb answers: the document, or which refusal it is.
+ *
+ * The refusals are the verb's to turn into an exit code and an envelope; this
+ * module only reads, and never prints.
+ */
+export type EffectResultAnswer =
+  | { readonly kind: "DOCUMENT"; readonly response: TaskEffectResultResponse }
+  | { readonly kind: "NOT_FOUND" }
+  | { readonly kind: "BLOCK_REFUSED" }
+  | { readonly kind: "UNREADABLE"; readonly refusal: string };
+
+/**
+ * One effect's result (P-15 escalón F, ADR 0107): the CLI's private read.
+ *
+ * The same runtime reader the gateway's bearer-guarded route calls, and the same
+ * document it answers — the parity suite holds the two equal. On the CLI the
+ * authorization is the operator's own filesystem access to the ledger and to the
+ * private plane beside it (root `0700`, objects `0600`). The text leaves this
+ * function only inside the document it returns: no log, no stream, no stderr.
+ */
+export function buildEffectResult(
+  ledger: Ledger,
+  taskId: string,
+  effectId: string,
+  block: number | null,
+): EffectResultAnswer {
+  const reading = readEffectResult(ledger, { taskId, effectId, block });
+  const base = {
+    apiContractVersion: API_VERSION,
+    ledgerContractVersion: LEDGER_VERSION,
+    taskId,
+    effectId,
+  };
+  switch (reading.kind) {
+    case "NOT_FOUND":
+      return { kind: "NOT_FOUND" };
+    case "BLOCK_REFUSED":
+      return { kind: "BLOCK_REFUSED" };
+    case "RESULT_UNREADABLE":
+      return { kind: "UNREADABLE", refusal: reading.refusal };
+    case "NO_OUTCOME":
+      return {
+        kind: "DOCUMENT",
+        response: TaskEffectResultResponse.parse({
+          ...base,
+          state: "NO_OUTCOME",
+          outcomeStatus: null,
+          outcomeRecordedAt: null,
+          cohort: null,
+          result: null,
+          blockContent: null,
+        }),
+      };
+    case "OUTCOME_UNKNOWN":
+    case "CANCELLED":
+      return {
+        kind: "DOCUMENT",
+        response: TaskEffectResultResponse.parse({
+          ...base,
+          state: reading.kind,
+          outcomeStatus: reading.kind,
+          outcomeRecordedAt: reading.outcomeRecordedAt,
+          cohort: null,
+          result: null,
+          blockContent: null,
+        }),
+      };
+    case "NO_RESULT_RECORDED":
+      return {
+        kind: "DOCUMENT",
+        response: TaskEffectResultResponse.parse({
+          ...base,
+          state: "NO_RESULT_RECORDED",
+          outcomeStatus: reading.status,
+          outcomeRecordedAt: reading.outcomeRecordedAt,
+          cohort: reading.cohort,
+          result: null,
+          blockContent: null,
+        }),
+      };
+    case "RESULT":
+      return {
+        kind: "DOCUMENT",
+        response: TaskEffectResultResponse.parse({
+          ...base,
+          state: "RESULT",
+          outcomeStatus: reading.status,
+          outcomeRecordedAt: reading.outcomeRecordedAt,
+          cohort: "CURRENT",
+          result: {
+            resultSha256: reading.resultSha256,
+            artifactReferenceId: reading.artifactReferenceId,
+            document: reading.document,
+          },
+          blockContent: reading.block,
+        }),
+      };
+    default: {
+      const unreachable: never = reading;
+      return unreachable;
+    }
+  }
 }
 
 export function buildWorkerDetail(

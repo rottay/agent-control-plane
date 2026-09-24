@@ -2,6 +2,8 @@ import {
   ACCOUNT_ACTIONS,
   ACCOUNT_ACTION_NOTE_MAX,
   AccountStatus,
+  CONTENT_BLOCK_LIST_MAX,
+  EFFECT_OUTCOME_STATUSES,
   ConfidenceLevel,
   ControlPlaneEventType,
   ROADMAP_CONTENT_MAX_BYTES,
@@ -20,6 +22,7 @@ import {
   WorkerIdentityString,
   WorkerRole,
   CanonicalInstant,
+  ResultContractSchema,
   Timestamp,
   findCredentialViolations,
   findTranscriptViolations,
@@ -329,6 +332,18 @@ export const API_ERROR_CODES = [
    * a closed vocabulary whose words are approximately right is not closed.
    */
   "SCENARIO_UNCONFIGURED",
+  /**
+   * P-15 escalón F (ADR 0107): this server was started without a bearer token, so
+   * no private read can be authorized.
+   *
+   * The read-side twin of `WRITE_BEARER_UNCONFIGURED`, and told apart from it on
+   * purpose: the one credential authorizes both writes and model-output reads
+   * (decision 150), but a caller asking for a result and told "no write can be
+   * authorized" has been told something about a door it did not knock on. An
+   * operator problem, so 403 like its twin, and not `AUTH_REQUIRED`'s 401: no
+   * header a caller could send would help.
+   */
+  "PRIVATE_READ_UNCONFIGURED",
   "INTERNAL",
 ] as const;
 
@@ -2911,3 +2926,181 @@ export const TaskLifecycleResponse = z
   })
   .superRefine(attachGuards);
 export type TaskLifecycleResponse = z.infer<typeof TaskLifecycleResponse>;
+
+// ---------------------------------------------------------------------------
+// An effect's result, read back (P-15 escalón F, ADR 0107)
+// ---------------------------------------------------------------------------
+
+/**
+ * An effect id: the ledger's own shape, 64 lowercase hex — this module's one sha-256
+ * grammar under the name the route reads it by. Exported to the routes module inside
+ * this package (P-15/F), so the path parameter is this grammar rather than a second
+ * regex; deliberately not on the package barrel.
+ */
+export const EffectIdParam = Sha256Hex;
+const EffectId = EffectIdParam;
+
+/**
+ * An effect's outcome on the wire: `@acp/contracts`' `EFFECT_OUTCOME_STATUSES`, the one
+ * declaration the ledger also re-exports (decision 151). Not restated here.
+ */
+const EffectOutcomeStatusDto = z.enum(EFFECT_OUTCOME_STATUSES);
+
+/**
+ * What a result read answers, one word per branch of the runtime reader. Closed, and
+ * the response's own words: two of them are also outcome words, because an
+ * unresolved outcome is its own answer rather than a failure.
+ */
+export const EFFECT_RESULT_STATES = ["RESULT", "NO_RESULT_RECORDED", "NO_OUTCOME", "OUTCOME_UNKNOWN", "CANCELLED"] as const;
+export type EffectResultState = (typeof EFFECT_RESULT_STATES)[number];
+
+/**
+ * The most effects the effects route lists for one task. A task intends a handful;
+ * a longer one is answered with the first this many and `truncated: true`.
+ */
+export const MAX_TASK_EFFECTS = 1_000;
+
+const TaskEffectSummary = z
+  .strictObject({
+    effectId: EffectId,
+    revisionNumber: z.number().int().positive().max(1_000_000),
+    attemptNumber: Attempt,
+    operationOrdinal: Count,
+    effectKind: z.string().min(1).max(200),
+    intendedAt: Timestamp,
+    outcomeStatus: EffectOutcomeStatusDto.nullable(),
+    outcomeRecordedAt: Timestamp.nullable(),
+    /** Whether the outcome names a result. Never the reference or the digest. */
+    hasResult: z.boolean(),
+  })
+  .superRefine((value, ctx) => {
+    if ((value.outcomeStatus === null) !== (value.outcomeRecordedAt === null)) {
+      ctx.addIssue({ code: "custom", message: "an outcome and its instant are present together or absent together", path: ["outcomeRecordedAt"] });
+    }
+    if (value.hasResult && value.outcomeStatus !== "SUCCEEDED" && value.outcomeStatus !== "FAILED") {
+      ctx.addIssue({ code: "custom", message: "only a SUCCEEDED or FAILED outcome names a result", path: ["hasResult"] });
+    }
+  });
+
+/**
+ * A task's effects, in the order their intentions were recorded (P-15/F).
+ *
+ * A plain read, unguarded like every other GET but the result: ids, coordinates
+ * and outcome words, and whether a result exists. No digest, no reference and no
+ * byte of a result ever appear here — a caller that wants the result asks the
+ * private route with the id this list gave it.
+ */
+export const TaskEffectsResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    taskId: Uuid,
+    effects: z.array(TaskEffectSummary).max(MAX_TASK_EFFECTS),
+    /**
+     * Whether the task has more effects than this list carries (v3, verifier V7).
+     * The list is the first `MAX_TASK_EFFECTS` in intention order; a longer task is
+     * answered, never refused with a 500.
+     */
+    truncated: z.boolean(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.truncated && value.effects.length !== MAX_TASK_EFFECTS) {
+      ctx.addIssue({ code: "custom", message: "a truncated list carries exactly the ceiling", path: ["truncated"] });
+    }
+    attachGuards(value, ctx);
+  });
+export type TaskEffectsResponse = z.infer<typeof TaskEffectsResponse>;
+
+/** The result route's one query parameter: a block of the document to read by its reference. */
+export const TaskEffectResultQuery = z.strictObject({
+  block: DecimalNonNegativeInteger.pipe(z.number().int().nonnegative().max(CONTENT_BLOCK_LIST_MAX - 1)).optional(),
+});
+export type TaskEffectResultQuery = z.infer<typeof TaskEffectResultQuery>;
+
+/**
+ * One effect's result, as both private-read doors answer it (P-15 escalón F,
+ * ADR 0107).
+ *
+ * Every key is present in every state, `null` where the state has nothing to say
+ * (ADR 0093's present-as-null rule), and the refinement holds the table: a
+ * `RESULT` always carries its result and no other state does; an unresolved
+ * outcome is its own word, never null and never a failure; a cohort only where a
+ * result was or could have been recorded; a block's bytes only under a `RESULT`.
+ * The document is the result contract itself, imported — one authority for its
+ * shape (decision 151). A result that cannot be read is never a 200 with a
+ * refusal beside partial data: it is the one error envelope, `LEDGER_INTEGRITY`.
+ */
+export const TaskEffectResultResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    taskId: Uuid,
+    effectId: EffectId,
+    state: z.enum(EFFECT_RESULT_STATES),
+    outcomeStatus: EffectOutcomeStatusDto.nullable(),
+    outcomeRecordedAt: Timestamp.nullable(),
+    cohort: z.enum(["PRE_RESULT", "CURRENT"]).nullable(),
+    result: z
+      .strictObject({
+        resultSha256: Sha256Hex,
+        artifactReferenceId: z.string().min(1).max(200),
+        document: ResultContractSchema,
+      })
+      .nullable(),
+    blockContent: z
+      .strictObject({
+        index: z.number().int().nonnegative().max(CONTENT_BLOCK_LIST_MAX - 1),
+        artifactReferenceId: z.string().min(1).max(200),
+        contentSha256: Sha256Hex,
+        byteLength: Count,
+        mediaType: z.string().min(1).max(200),
+        text: z.string(),
+      })
+      .nullable(),
+  })
+  .superRefine((value, ctx) => {
+    const issue = (path: string, message: string): void => {
+      ctx.addIssue({ code: "custom", message, path: [path] });
+    };
+    const resolved = value.state === "RESULT" || value.state === "NO_RESULT_RECORDED";
+    if ((value.state === "RESULT") !== (value.result !== null)) {
+      issue("result", "a result is present exactly when the state is RESULT");
+    }
+    if (value.blockContent !== null && value.state !== "RESULT") {
+      issue("blockContent", "a block is read only from a RESULT");
+    }
+    if ((value.state === "NO_OUTCOME") !== (value.outcomeStatus === null)) {
+      issue("outcomeStatus", "the outcome is null exactly when no outcome is recorded");
+    }
+    if ((value.outcomeStatus === null) !== (value.outcomeRecordedAt === null)) {
+      issue("outcomeRecordedAt", "an outcome and its instant are present together or absent together");
+    }
+    if ((value.state === "OUTCOME_UNKNOWN" || value.state === "CANCELLED") && value.outcomeStatus !== value.state) {
+      issue("outcomeStatus", "an unresolved outcome is its own word, never null and never a failure");
+    }
+    if (resolved && value.outcomeStatus !== "SUCCEEDED" && value.outcomeStatus !== "FAILED") {
+      issue("outcomeStatus", "a result or its absence belongs to a SUCCEEDED or FAILED outcome");
+    }
+    if (resolved !== (value.cohort !== null)) {
+      issue("cohort", "a cohort is stated exactly where a result was or could have been recorded");
+    }
+    if (value.state === "RESULT" && value.cohort !== "CURRENT") {
+      issue("cohort", "a recorded result is of the current cohort");
+    }
+    if (value.result !== null) {
+      if (value.result.document.effectId !== value.effectId) {
+        issue("result", "the document names another effect");
+      }
+      if (value.result.document.status !== value.outcomeStatus) {
+        issue("result", "the document's status is not the outcome's");
+      }
+    }
+    // Whether the block is the one the document declares at its index is the
+    // runtime reader's check, made against the bytes; the wire holds what it can
+    // see without reading a block's fields a second time (L-P06C-1).
+    if (value.blockContent !== null && utf8ByteLength(value.blockContent.text) !== value.blockContent.byteLength) {
+      issue("blockContent", "the block's text is not its declared length");
+    }
+    attachGuards(value, ctx);
+  });
+export type TaskEffectResultResponse = z.infer<typeof TaskEffectResultResponse>;

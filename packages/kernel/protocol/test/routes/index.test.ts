@@ -4,8 +4,12 @@ import {
   API_ALLOWED_METHODS,
   API_ROUTES,
   API_ROUTE_PATTERNS,
+  API_PRIVATE_READ_ROUTES,
   API_WRITE_ROUTES,
+  isPrivateReadRoute,
   isWriteRoute,
+  taskEffectResultPath,
+  taskEffectsPath,
   accountActionsPath,
   initiativeAgentsPath,
   initiativeEventsPath,
@@ -222,5 +226,43 @@ describe("the task list route takes the sixth write (P-14/C)", () => {
     // The single-task route stays a read: the write is the collection's, and
     // entering a task is not acting on one.
     expect(isWriteRoute("taskById")).toBe(false);
+  });
+});
+
+describe("the effect reads, and the one private read (P-15/F)", () => {
+  const TASK = "3f2a9c1e-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
+  const EFFECT = "a".repeat(64);
+
+  it("adds two reads and no write: the method list and the write table do not move", () => {
+    expect(API_ROUTES.taskEffects).toBe("/api/v1/tasks/:taskId/effects");
+    expect(API_ROUTES.taskEffectResult).toBe("/api/v1/tasks/:taskId/effects/:effectId/result");
+    expect(Object.keys(API_ROUTES)).toHaveLength(22);
+    expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
+    expect(API_WRITE_ROUTES).toHaveLength(6);
+    expect(isWriteRoute("taskEffects")).toBe(false);
+    expect(isWriteRoute("taskEffectResult")).toBe(false);
+  });
+
+  it("names exactly one private read, frozen, and it is not a write", () => {
+    expect([...API_PRIVATE_READ_ROUTES]).toEqual(["taskEffectResult"]);
+    expect(Object.isFrozen(API_PRIVATE_READ_ROUTES)).toBe(true);
+    expect(isPrivateReadRoute("taskEffectResult")).toBe(true);
+    for (const route of Object.keys(API_ROUTES) as (keyof typeof API_ROUTES)[]) {
+      if (route === "taskEffectResult") continue;
+      expect(isPrivateReadRoute(route)).toBe(false);
+    }
+    for (const route of API_PRIVATE_READ_ROUTES) {
+      expect(API_WRITE_ROUTES as readonly string[]).not.toContain(route);
+    }
+  });
+
+  it("builds both paths through the task path's validator, and the effect id by the ledger's shape", () => {
+    expect(taskEffectsPath(TASK)).toBe("/api/v1/tasks/" + TASK + "/effects");
+    expect(taskEffectResultPath(TASK, EFFECT)).toBe("/api/v1/tasks/" + TASK + "/effects/" + EFFECT + "/result");
+    expect(() => taskEffectsPath("not-a-uuid")).toThrow();
+    for (const bad of ["", "a".repeat(63), "a".repeat(65), "A".repeat(64), "a".repeat(32) + "/" + "a".repeat(31), "../" + "a".repeat(61)]) {
+      expect(() => taskEffectResultPath(TASK, bad)).toThrow();
+    }
+    expect(() => taskEffectResultPath("not-a-uuid", EFFECT)).toThrow();
   });
 });

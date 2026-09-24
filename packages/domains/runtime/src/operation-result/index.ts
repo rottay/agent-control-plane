@@ -9,17 +9,29 @@ import {
   findCredentialViolations,
   utf8ByteLength,
 } from "@acp/contracts";
-import type { ContentBlock, ExecutionEvent, ResultStatus } from "@acp/contracts";
-import { ARTIFACT_ACCESS_POLICY_IDS, canonicalJsonStringify, effectOutcomeArrival } from "@acp/ledger";
+import type { ContentBlock, ExecutionEvent, ResultContract, ResultStatus } from "@acp/contracts";
+import {
+  ARTIFACT_ACCESS_POLICY_IDS,
+  LedgerIntegrityError,
+  PRE_RESULT_REFERENCE_CONTRACT_VERSIONS,
+  canonicalJsonStringify,
+  effectOutcomeArrival,
+  readByReference,
+} from "@acp/ledger";
 import type {
   ArtifactEventIdentity,
   ArtifactEventRecord,
   ArtifactPublicationRequest,
   EffectReadModel,
+  Ledger,
 } from "@acp/ledger";
 
 import type {
   ArtifactIdentities,
+  EffectResultBlock,
+  EffectResultReading,
+  EffectResultRequest,
+  EffectResultUnreadable,
   OperationDecision,
   OperationFacts,
   PublishedResult,
@@ -34,6 +46,10 @@ import type {
  */
 export type {
   ArtifactIdentities,
+  EffectResultBlock,
+  EffectResultReading,
+  EffectResultRequest,
+  EffectResultUnreadable,
   OperationDecision,
   OperationDecisionReason,
   OperationFact,
@@ -564,5 +580,217 @@ export function publishResult(input: ResultPublicationInput): PublishedResult {
     resultArtifactReferenceId: referenceId,
     resultSha256: planned.sha256,
     responseBytes: planned.bytes.byteLength,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Reading a result back (P-15 escalón F, ADR 0107)
+// ---------------------------------------------------------------------------
+
+/**
+ * The reader's own words for a result it cannot give back, beside the plane's
+ * sixteen and the root's two (ADR 0107 Two). Closed.
+ *
+ * - `DIGEST_MISMATCH` — the reference names content of another digest than the
+ *   effect's row records.
+ * - `DOCUMENT_INVALID` — the bytes are not UTF-8 JSON, or not a result document v1.
+ * - `DOCUMENT_DISAGREES` — a valid document of another effect or another status
+ *   than the row's. The ledger's door checks class, scope and digest, never the
+ *   document's content, so this is the one line that catches a mis-planted pair.
+ * - `BLOCK_DISAGREES` — a block's bytes are not the digest or the length the
+ *   document declares for them.
+ * - `CLASS_REFUSED` — the reference the row or a block names is not a `RESPONSE`.
+ *   This read serves model output and nothing else (tests §8.1, decision 149):
+ *   a document block naming the task's envelope, with the envelope's own digest
+ *   and length, would otherwise hand the prompt out through the authorized read
+ *   (Fable F post-audit C1).
+ */
+export const EFFECT_RESULT_LOCAL_REFUSALS = [
+  "BLOCK_DISAGREES",
+  "CLASS_REFUSED",
+  "DIGEST_MISMATCH",
+  "DOCUMENT_DISAGREES",
+  "DOCUMENT_INVALID",
+] as const;
+
+/**
+ * Every word a `RESULT_UNREADABLE` may carry, as a total record: a seventeenth
+ * plane refusal, a third root word or a fifth local one fails to compile here
+ * until it is admitted, so no word reaches a door's `detail` unexamined.
+ */
+const UNREADABLE_WORDS: Readonly<Record<EffectResultUnreadable, true>> = Object.freeze({
+  LEASE_HELD: true,
+  LEASE_SUPERSEDED: true,
+  QUIESCENCE_UNPROVEN: true,
+  QUIESCENCE_OF_ANOTHER_PROCESS: true,
+  HELD_FOR_RECLAIM: true,
+  PUBLICATION_IN_FLIGHT: true,
+  PUBLICATION_ALREADY_ABANDONED: true,
+  CONTENT_ABSENT: true,
+  CONTENT_DOES_NOT_VERIFY: true,
+  SYMLINK_REFUSED: true,
+  NO_INTENDED_REFERENCE: true,
+  REFERENCE_REFUSED_BY_DOOR: true,
+  REFERENCE_NOT_READABLE: true,
+  CONTENT_DELETED: true,
+  BLOB_NOT_PUBLISHED: true,
+  ENCRYPTED_AT_REST_NOT_DELIVERED: true,
+  ROOT_ABSENT: true,
+  ROOT_NOT_A_DIRECTORY: true,
+  BLOCK_DISAGREES: true,
+  CLASS_REFUSED: true,
+  DIGEST_MISMATCH: true,
+  DOCUMENT_DISAGREES: true,
+  DOCUMENT_INVALID: true,
+});
+
+function unreadable(refusal: EffectResultUnreadable): EffectResultReading {
+  if (!Object.hasOwn(UNREADABLE_WORDS, refusal)) {
+    throw new LedgerIntegrityError(["a result read refused with a word outside its closed vocabulary"]);
+  }
+  return { kind: "RESULT_UNREADABLE", refusal };
+}
+
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+function decodeStrict(bytes: Uint8Array): string | null {
+  try {
+    return STRICT_UTF8.decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The effect's result, read back by reference behind whatever authorized the
+ * caller (P-15 escalón F, ADR 0107).
+ *
+ * The one reader the two private-read doors call -- the gateway's bearer-guarded
+ * route and the CLI's `result` verb -- and the one place a result document is
+ * parsed on the way out, because this concept is the one L-P07A-1 admits to the
+ * full contract. It decides in this order, and never skips a step:
+ *
+ * 1. the effect, which must exist **under this task**: another task's effect is
+ *    `NOT_FOUND`, the same answer as no effect at all;
+ * 2. no outcome: `NO_OUTCOME`;
+ * 3. the outcome's integrity, which the ledger's triggers already hold: an
+ *    outcome without its instant or its contract version is the ledger
+ *    disagreeing with itself, `LedgerIntegrityError` -- checked before the
+ *    outcome's word is read, so an unresolved outcome missing its instant throws;
+ * 4. `OUTCOME_UNKNOWN` and `CANCELLED`: their own answers, never a failure and
+ *    never a result;
+ * 5. the pair's integrity: half a pair, or a current-cohort `SUCCEEDED` without
+ *    one, is `LedgerIntegrityError`; no pair is `NO_RESULT_RECORDED`, with the
+ *    cohort that explains it;
+ * 6. the pair: the bytes through `readByReference` under the task's scope; the
+ *    reference must be a `RESPONSE` (`CLASS_REFUSED`), its digest the row's
+ *    (`DIGEST_MISMATCH`), and the document, parsed whole, the row's effect and
+ *    status -- any refusal is `RESULT_UNREADABLE` with its word, and no partial
+ *    document is ever returned;
+ * 7. a block, only when asked: it must be a block of this `RESULT` that names
+ *    its own reference (`BLOCK_REFUSED` otherwise), that reference must be a
+ *    `RESPONSE` (`CLASS_REFUSED`), and its bytes must be the digest and the
+ *    length the document declares (`BLOCK_DISAGREES`).
+ *
+ * It reads; it appends nothing, writes nothing and reads no clock.
+ */
+export function readEffectResult(ledger: Ledger, request: EffectResultRequest): EffectResultReading {
+  const effect = ledger.getEffect(request.effectId);
+  if (effect === null || effect.taskId !== request.taskId) {
+    return { kind: "NOT_FOUND" };
+  }
+  const status = effect.outcomeStatus;
+  if (status === null) {
+    return request.block === null ? { kind: "NO_OUTCOME" } : { kind: "BLOCK_REFUSED" };
+  }
+  const recordedAt = effect.outcomeRecordedAt;
+  if (recordedAt === null || effect.outcomeContractVersion === null) {
+    throw new LedgerIntegrityError(["an effect's outcome is recorded without its instant or its contract version"]);
+  }
+  if (status === "OUTCOME_UNKNOWN" || status === "CANCELLED") {
+    return request.block === null ? { kind: status, outcomeRecordedAt: recordedAt } : { kind: "BLOCK_REFUSED" };
+  }
+  const reference = effect.resultArtifactReferenceId;
+  const sha256 = effect.resultSha256;
+  if ((reference === null) !== (sha256 === null)) {
+    throw new LedgerIntegrityError(["an effect's result pair is recorded half: a reference without a digest, or the reverse"]);
+  }
+  if (reference === null || sha256 === null) {
+    const preResult = PRE_RESULT_REFERENCE_CONTRACT_VERSIONS.includes(effect.outcomeContractVersion);
+    if (status === "SUCCEEDED" && !preResult) {
+      throw new LedgerIntegrityError(["a current-cohort SUCCEEDED names no result; the ledger's own triggers forbid it"]);
+    }
+    if (request.block !== null) return { kind: "BLOCK_REFUSED" };
+    return {
+      kind: "NO_RESULT_RECORDED",
+      status,
+      outcomeRecordedAt: recordedAt,
+      cohort: preResult ? "PRE_RESULT" : "CURRENT",
+    };
+  }
+
+  const read = readByReference(ledger, { artifactReferenceId: reference, scopeKind: "TASK", scopeId: request.taskId });
+  if (read.verb !== "READ") return unreadable(read.refusal);
+  // Before the digest and before a byte is decoded: this read serves model output
+  // alone. The ledger's door already refuses a pair of another class at append,
+  // so this line is the reader's own hold on the same rule, not its only guard.
+  if (read.reference.artifactClass !== "RESPONSE") return unreadable("CLASS_REFUSED");
+  if (read.reference.contentSha256 !== sha256) return unreadable("DIGEST_MISMATCH");
+  const text = decodeStrict(read.content);
+  if (text === null) return unreadable("DOCUMENT_INVALID");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return unreadable("DOCUMENT_INVALID");
+  }
+  const admitted = ResultContractSchema.safeParse(parsed);
+  if (!admitted.success) return unreadable("DOCUMENT_INVALID");
+  const document: ResultContract = admitted.data;
+  if (document.effectId !== request.effectId || document.status !== status) {
+    return unreadable("DOCUMENT_DISAGREES");
+  }
+
+  let block: EffectResultBlock | null = null;
+  if (request.block !== null) {
+    const chosen = document.blocks[request.block];
+    if (chosen?.artifactRefId === undefined || chosen.artifactRefId === null) {
+      return { kind: "BLOCK_REFUSED" };
+    }
+    const bytes = readByReference(ledger, {
+      artifactReferenceId: chosen.artifactRefId,
+      scopeKind: "TASK",
+      scopeId: request.taskId,
+    });
+    if (bytes.verb !== "READ") return unreadable(bytes.refusal);
+    // The door checks the pair's class and never a document's content, so this is
+    // the one place a block naming another class -- the task's own envelope, say --
+    // is stopped before its bytes are served (C1).
+    if (bytes.reference.artifactClass !== "RESPONSE") return unreadable("CLASS_REFUSED");
+    // The plane verified the bytes against its reference's digest on the way out;
+    // what is left is whether that reference is the one the document declares.
+    if (bytes.reference.contentSha256 !== chosen.contentSha256 || bytes.content.byteLength !== chosen.byteLength) {
+      return unreadable("BLOCK_DISAGREES");
+    }
+    const blockText = decodeStrict(bytes.content);
+    if (blockText === null) return unreadable("BLOCK_DISAGREES");
+    block = {
+      index: request.block,
+      artifactReferenceId: chosen.artifactRefId,
+      contentSha256: chosen.contentSha256,
+      byteLength: chosen.byteLength,
+      mediaType: chosen.mediaType,
+      text: blockText,
+    };
+  }
+
+  return {
+    kind: "RESULT",
+    status,
+    outcomeRecordedAt: recordedAt,
+    resultSha256: sha256,
+    artifactReferenceId: reference,
+    document,
+    block,
   };
 }

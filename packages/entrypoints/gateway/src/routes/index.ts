@@ -32,6 +32,7 @@ import {
   type ObservationCapabilities,
   OverviewResponse,
   TaskDetailResponse,
+  TaskEffectResultQuery,
   TaskPageResponse,
   TasksQuery,
   WorkerDetailResponse,
@@ -78,6 +79,7 @@ import type { BearerLoadOutcome } from "../bearer/index.js";
 import { recordRoadmapVersion } from "../roadmap-write/index.js";
 import { recordInitiativeRegistration } from "../initiative-write/index.js";
 import { recordTaskIntake } from "../task-intake/index.js";
+import { effectResult, parseEffectIdParam, taskEffects } from "../effect-result/index.js";
 import {
   initiativeDetailDto,
   initiativeSummary,
@@ -349,6 +351,62 @@ function registerGetAndPost(
   });
 }
 
+/**
+ * Register a **private** read: a GET answered only behind the bearer (P-15
+ * escalón F, ADR 0107).
+ *
+ * The twin of `registerGetAndPost`'s guard, applied to a read, and the one
+ * exception to "observation is free on this plane": a route named in
+ * `API_PRIVATE_READ_ROUTES` answers model output, which tests §8.1 admits only
+ * as an explicitly authorized read (decision 149). Structural rather than
+ * remembered, like the write guard: every private route is registered through
+ * this function and nothing else (L-P15F-2), so the guard is inherited by where
+ * the route is written. One credential authorizes writes and these reads alike
+ * until P-36's read policy (decision 150).
+ *
+ * The bearer is checked before any parameter is read, so an unauthenticated
+ * caller learns nothing about what exists. Every answer on the path, a 200 or
+ * an error, carries `Cache-Control: no-store`.
+ */
+function registerPrivateGet(
+  app: FastifyInstance,
+  path: string,
+  handler: (request: FastifyRequest, reply: FastifyReply) => unknown,
+  bearer: BearerLoadOutcome,
+): void {
+  app.get(
+    path,
+    guarded((request, reply) => {
+      reply.header("cache-control", "no-store");
+      // Fail-closed, and told apart from the write door's word: the operator
+      // started this process without a token, so no header would help.
+      if (!bearer.ok) {
+        throw new ApiRouteError(
+          "PRIVATE_READ_UNCONFIGURED",
+          "this server was started without a bearer token, so no private read can be authorized",
+        );
+      }
+      // Missing and wrong are one answer, for the write door's reason.
+      if (!bearer.guard.accepts(headerOf(request, "authorization"))) {
+        throw new ApiRouteError("AUTH_REQUIRED", "a valid Bearer credential is required to read this result");
+      }
+      return handler(request, reply);
+    }),
+  );
+  app.route({
+    method: [...OTHER_METHODS],
+    url: path,
+    handler: (request, reply) => {
+      reply.header("cache-control", "no-store");
+      sendApiError(
+        reply,
+        "METHOD_NOT_ALLOWED",
+        "method " + request.method + " is not allowed on this route; only GET is",
+      );
+    },
+  });
+}
+
 export function registerRoutes(
   app: FastifyInstance,
   source: LedgerSource,
@@ -611,6 +669,8 @@ export function registerRoutes(
   });
 
   app.setNotFoundHandler((request, reply) => {
+    // Framework-routed, like the two handlers in build-server: never cached (P-15/F v3).
+    reply.header("cache-control", "no-store");
     sendApiError(reply, "NOT_FOUND", "no route matches " + request.method + " " + request.url);
   });
   // -------------------------------------------------------------------------
@@ -1160,6 +1220,35 @@ export function registerRoutes(
         body: request.body,
         makeDriver,
       });
+    },
+    bearer,
+  );
+
+  // P-15/F: a task's effects, a plain read like every GET above -- ids,
+  // coordinates and outcome words, never a reference, a digest or a byte.
+  registerGet(app, API_ROUTES.taskEffects, (request) => {
+    assertEmptyQuery(queryOf(request));
+    const taskId = parseTaskIdParam(paramsOf(request)["taskId"] ?? "");
+    const { ledger } = requireOpen(source);
+    const listed = taskEffects(ledger, taskId);
+    if (listed === null) {
+      throw new ApiRouteError("NOT_FOUND", "no task with that id was found");
+    }
+    return listed;
+  });
+
+  // P-15/F: one effect's result, the plane's one private read. Registered
+  // through `registerPrivateGet`, so the bearer is inherited by where this is
+  // written (L-P15F-2).
+  registerPrivateGet(
+    app,
+    API_ROUTES.taskEffectResult,
+    (request) => {
+      const taskId = parseTaskIdParam(paramsOf(request)["taskId"] ?? "");
+      const effectId = parseEffectIdParam(taskId, paramsOf(request)["effectId"] ?? "");
+      const query = parseQuery(TaskEffectResultQuery, queryOf(request));
+      const { ledger } = requireOpen(source);
+      return effectResult(ledger, taskId, effectId, query.block ?? null);
     },
     bearer,
   );

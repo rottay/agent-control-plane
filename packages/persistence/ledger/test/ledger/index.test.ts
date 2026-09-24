@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,6 +46,11 @@ import {
   logicalOperationSha256,
   openLeaseStore,
   openLedger,
+  readByReference,
+  REFERENCE_READ_ROOT_REFUSALS,
+  EFFECT_OUTCOME_STATUSES,
+  ARTIFACT_PLANE_REFUSALS,
+  artifactPlaneRootFor,
   requestSha256,
   sha256Hex,
   measurementStreamIdV1,
@@ -18409,6 +18414,130 @@ describe("P-15/I: the ledger's isInstant is contracts' canonical instant, verdic
       expect(ledger.status().eventCount).toBe(0);
     } finally {
       ledger.close();
+    }
+  });
+});
+
+describe("P-15/F: a task's effects are listed, and a reference is read holding nothing (ADR 0107)", () => {
+  it("lists one task's effects in the order their intentions were recorded, and no other task's", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    const other = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    ledger.append(
+      effectIntention({ taskId, transitionId: "effect-2", invocationId: "inv-1", operationOrdinal: 1, localOperationKey: "step-two" }),
+    );
+
+    const page = ledger.listTaskEffects(taskId, { limit: 10 });
+    expect(page.truncated).toBe(false);
+    const listed = page.effects;
+    expect(listed.map((effect) => effect.effectId)).toEqual([firstEffectId(taskId), firstEffectId(taskId, 1, 1)]);
+    expect(listed.map((effect) => effect.operationOrdinal)).toEqual([0, 1]);
+    expect(listed.every((effect) => effect.taskId === taskId)).toBe(true);
+    expect(listed[0]?.sequence).toBeLessThan(listed[1]?.sequence ?? 0);
+    // Born without an outcome, and the list says so as the row does: null, never a default.
+    expect(listed.map((effect) => effect.outcomeStatus)).toEqual([null, null]);
+    // Another task, and a task the ledger never heard of: empty, never another task's rows.
+    expect(ledger.listTaskEffects(other, { limit: 10 })).toEqual({ effects: [], truncated: false });
+  });
+
+  it("v3 (V7): reads one row past the limit, answers the first `limit` and says whether there are more", () => {
+    const ledger = open(temporaryDatabase());
+    const taskId = randomUUID();
+    seedOpenAttempt(ledger, taskId);
+    ledger.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    ledger.append(
+      effectIntention({ taskId, transitionId: "effect-2", invocationId: "inv-1", operationOrdinal: 1, localOperationKey: "step-two" }),
+    );
+    const first = ledger.listTaskEffects(taskId, { limit: 1 });
+    expect(first.effects.map((effect) => effect.effectId)).toEqual([firstEffectId(taskId)]);
+    expect(first.truncated).toBe(true);
+    const whole = ledger.listTaskEffects(taskId, { limit: 2 });
+    expect(whole.effects).toHaveLength(2);
+    expect(whole.truncated).toBe(false);
+  });
+
+  it("refuses an empty task id rather than listing everything", () => {
+    const ledger = open(temporaryDatabase());
+    expect(() => ledger.listTaskEffects("", { limit: 10 })).toThrow(LedgerQueryError);
+    // v3 (V7): the limit is a positive integer, never defaulted.
+    for (const limit of [0, -1, 1.5, Number.NaN]) {
+      expect(() => ledger.listTaskEffects(randomUUID(), { limit })).toThrow(LedgerQueryError);
+    }
+  });
+
+  it("works read-only", () => {
+    const path = temporaryDatabase();
+    const writer = open(path);
+    const taskId = randomUUID();
+    seedOpenAttempt(writer, taskId);
+    writer.append(effectIntention({ taskId, transitionId: "effect-1", invocationId: "inv-1" }));
+    writer.close();
+    const reader = open(path, { readOnly: true });
+    expect(reader.listTaskEffects(taskId, { limit: 10 }).effects.map((effect) => effect.effectId)).toEqual([firstEffectId(taskId)]);
+  });
+
+  it("answers ROOT_ABSENT when no private root stands, and creates none", () => {
+    const ledger = open(temporaryDatabase());
+    const root = artifactPlaneRootFor(ledger.path);
+    expect(existsSync(root)).toBe(false);
+    const read = readByReference(ledger, { artifactReferenceId: "ref-absent", scopeKind: "TASK", scopeId: randomUUID() });
+    expect(read).toEqual({ verb: "REFUSE", refusal: "ROOT_ABSENT" });
+    expect(existsSync(root)).toBe(false);
+  });
+
+  it("answers ROOT_NOT_A_DIRECTORY for a symbolic link or a file where the root should stand", () => {
+    const linked = open(temporaryDatabase());
+    const target = mkdtempSync(join(tmpdir(), "acp-ledger-elsewhere-"));
+    temporaryDirectories.push(target);
+    symlinkSync(target, artifactPlaneRootFor(linked.path));
+    expect(readByReference(linked, { artifactReferenceId: "ref", scopeKind: "TASK", scopeId: randomUUID() })).toEqual({
+      verb: "REFUSE",
+      refusal: "ROOT_NOT_A_DIRECTORY",
+    });
+    expect(lstatSync(artifactPlaneRootFor(linked.path)).isSymbolicLink()).toBe(true);
+
+    const filed = open(temporaryDatabase());
+    writeFileSync(artifactPlaneRootFor(filed.path), "not a directory");
+    expect(readByReference(filed, { artifactReferenceId: "ref", scopeKind: "TASK", scopeId: randomUUID() })).toEqual({
+      verb: "REFUSE",
+      refusal: "ROOT_NOT_A_DIRECTORY",
+    });
+  });
+
+  it("answers the plane's own word once the root stands: a reference this scope cannot read", () => {
+    const ledger = open(temporaryDatabase());
+    mkdirSync(artifactPlaneRootFor(ledger.path), { mode: 0o700 });
+    expect(readByReference(ledger, { artifactReferenceId: "ref-unknown", scopeKind: "TASK", scopeId: randomUUID() })).toEqual({
+      verb: "REFUSE",
+      refusal: "REFERENCE_NOT_READABLE",
+    });
+  });
+
+  it("re-exports the one effect outcome vocabulary, and both CHECK texts hold exactly it, in order (decision 151)", async () => {
+    const contracts = await import("@acp/contracts");
+    // The same array object, not a copy: the ledger re-exports, it does not restate.
+    expect(EFFECT_OUTCOME_STATUSES).toBe(contracts.EFFECT_OUTCOME_STATUSES);
+    const expected = "IN (" + EFFECT_OUTCOME_STATUSES.map((word) => "'" + word + "'").join(", ") + ")";
+    // The two domain CHECKs execution §6 names -- the attempt's `outcome` and the
+    // effect's `outcome_status`, each `IS NULL OR … IN (…)`. Migration 22's result-pair
+    // CHECK also names `outcome_status IN ('SUCCEEDED', 'FAILED')`, the two
+    // result-bearing statuses, and is not a declaration of this vocabulary.
+    const checks = LEDGER_MIGRATIONS.flatMap((migration) =>
+      [...migration.sql.matchAll(/\bOR (outcome|outcome_status) IN \(([^)]*)\)/g)].map((match) => [match[1], "IN (" + (match[2] ?? "") + ")"]),
+    );
+    expect(checks).toEqual([
+      ["outcome", expected],
+      ["outcome_status", expected],
+    ]);
+  });
+
+  it("keeps the root's two words out of the plane's sixteen", () => {
+    expect([...REFERENCE_READ_ROOT_REFUSALS]).toEqual(["ROOT_ABSENT", "ROOT_NOT_A_DIRECTORY"]);
+    expect(ARTIFACT_PLANE_REFUSALS).toHaveLength(16);
+    for (const word of REFERENCE_READ_ROOT_REFUSALS) {
+      expect(ARTIFACT_PLANE_REFUSALS as readonly string[]).not.toContain(word);
     }
   });
 });

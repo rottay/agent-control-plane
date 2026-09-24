@@ -547,3 +547,8 @@ export { createExecutionChain } from "./execution-chain/index.js";
 // the one helper under a revision, so D3 exports it rather than restating it.
 export { payloadCoordinate } from "./core/coordinates/index.js";
 export type { ExecutionChainInput } from "./execution-chain/index.js";
+// P-15 escalón F (ADR 0107, decision 152): the one reader of an effect's result,
+// which the two private-read doors call -- the gateway's bearer-guarded route and
+// the CLI's `result` verb -- and its request and answer.
+export { readEffectResult } from "./operation-result/index.js";
+export type { EffectResultReading, EffectResultRequest } from "./operation-result/index.js";

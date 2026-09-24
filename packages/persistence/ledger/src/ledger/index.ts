@@ -206,6 +206,7 @@ import {
   type EffectLookupQuery,
   type EffectOutcomeStatus,
   type EffectReadModel,
+  type TaskEffectPage,
   type EventPage,
   type EventQuery,
   type ExecutionEffectKind,
@@ -10970,6 +10971,34 @@ export class Ledger {
       | EffectRow
       | undefined;
     return row === undefined ? null : effectRowToModel(row);
+  }
+
+  /**
+   * A task's effects, in the order the ledger recorded their intentions, at most
+   * `limit` of them (P-15/F, ADR 0107).
+   *
+   * How a caller learns an effect's id without reading an event payload: the
+   * effects route and verb list them, and the result route is keyed by them. Empty
+   * for a task that intended none; the caller tells that apart from an unknown task
+   * by asking for the task. Bounded rather than unbounded: it reads one row past
+   * `limit`, so `truncated` says whether the list is longer than the page, and a
+   * caller never holds more rows than it asked for (v3, verifier V7).
+   */
+  listTaskEffects(taskId: string, options: { readonly limit: number }): TaskEffectPage {
+    this.#assertOpen("listTaskEffects");
+    if (typeof taskId !== "string" || taskId.length === 0) {
+      throw new LedgerQueryError("taskId must be a non-empty string");
+    }
+    const limit = options.limit;
+    if (!Number.isSafeInteger(limit) || limit < 1) {
+      throw new LedgerQueryError("limit must be a positive integer");
+    }
+    const rows = (
+      this.#stmt(
+        "SELECT * FROM effect_read_model WHERE task_id = ? ORDER BY sequence ASC, effect_id ASC LIMIT ?",
+      ).all(taskId, limit + 1) as EffectRow[]
+    ).map(effectRowToModel);
+    return { effects: rows.slice(0, limit), truncated: rows.length > limit };
   }
 
   /**

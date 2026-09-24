@@ -26,7 +26,7 @@ plainly that authentication on the read plane is deliberately out of scope.
 `SERVER_DEFAULT_PORT` is `7517`. The port is not a law; a caller may choose
 another. The bind address is.
 
-## Reads are free; every write is guarded
+## Reads are free but one; every write is guarded
 
 Every route was a read through P8-8C, and `API_ALLOWED_METHODS` still says
 `["GET"]` because that describes the read plane, which did not change. The
@@ -41,6 +41,18 @@ routes that also accept a write are named in a separate frozen table,
 | `taskLifecycle` | `POST /api/v1/tasks/:taskId/lifecycle` | one lifecycle verb against an attempt already running — `CANCEL` or `ATTACH`, through the same operation the CLI door calls |
 | `initiatives` | `POST /api/v1/initiatives` | one initiative, under the caller's own id, through `registerInitiative` — the orchestration `acp initiative` calls too; its objective goes to the private artifact plane and the stream records the digest and the reference |
 | `tasks` | `POST /api/v1/tasks` | one task intake, under the caller's client key and task id, through `intakeTask` — the orchestration `acp intake` calls too; its envelope goes to the private artifact plane, revision 1 names it by reference, and nothing executes the task |
+
+**One read is not free (P-15/F, ADR 0107).** `taskEffectResult`
+(`GET /api/v1/tasks/:taskId/effects/:effectId/result`) answers model output — one
+effect's result, read back by reference through the runtime's `readEffectResult` —
+so it is named in the closed table `API_PRIVATE_READ_ROUTES` and registered through
+`registerPrivateGet`, the read-side twin of the write guard: no bearer configured is
+`403 PRIVATE_READ_UNCONFIGURED`, a missing or wrong one `401 AUTH_REQUIRED`, and
+every answer on the path carries `Cache-Control: no-store`. The same bearer file
+authorizes writes and this read until P-36's read policy. Its sibling
+`taskEffects` (`GET /api/v1/tasks/:taskId/effects`) is a plain read: a task's effect
+ids, coordinates and outcome words, never a reference, a digest or a byte. Both
+live in `effect-result`, which logs nothing and publishes nothing (L-P15F-1).
 
 The fifth (P-14/B) is the portfolio route's own POST: the GET beside it is
 unchanged and unguarded. Its seam, `initiative-write`, decides nothing — it

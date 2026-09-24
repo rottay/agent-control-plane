@@ -1,16 +1,14 @@
 import { createHash } from "node:crypto";
-import { lstatSync } from "node:fs";
 
 import { CONTRACT_VERSION, Initiative, WorkerIdentityString, buildInitiativeIdempotencyKey } from "@acp/contracts";
 import type { InitiativeEvent } from "@acp/contracts";
 
-import type { ArtifactBlobLeaseStore } from "../artifact-lease-store/index.js";
-import { artifactPlaneRootFor, openArtifactPlane } from "../artifact-plane/index.js";
+import { readByReference } from "../artifact-plane/index.js";
 import type {
   ArtifactEventIdentity,
   ArtifactPublicationRequest,
 } from "../artifact-plane/index.js";
-import { LedgerError, LedgerIntegrityError, LedgerQueryError } from "../errors/index.js";
+import { LedgerError, LedgerIntegrityError } from "../errors/index.js";
 import type { Ledger } from "../ledger/index.js";
 import { initiativeRegistrationPayloadOf } from "../projection/index.js";
 import { ARTIFACT_ACCESS_POLICY_IDS } from "../types/index.js";
@@ -510,29 +508,6 @@ export function registerInitiative(input: InitiativeRegistrationInput): Initiati
 // The objective, read back (V3 §3.c)
 // ---------------------------------------------------------------------------
 
-function refuseHolding(): never {
-  throw new LedgerQueryError("an objective reader takes no holding: reading a reference asks the blob lease store nothing");
-}
-
-/**
- * The lease store an objective reader hands the plane: it refuses everything.
- *
- * `read` goes by reference and scope and never asks the lease store, and
- * opening the real one on a read would create and migrate a coordination file
- * on a GET.
- */
-const READER_LEASE_STORE: ArtifactBlobLeaseStore = Object.freeze({
-  incarnation: refuseHolding,
-  read: refuseHolding,
-  readToken: refuseHolding,
-  acquire: refuseHolding,
-  release: refuseHolding,
-  revoke: refuseHolding,
-  takeOver: refuseHolding,
-  listOverdue: refuseHolding,
-  close: (): void => undefined,
-});
-
 /**
  * The objective a registration names, read from the private plane under the
  * initiative's own scope.
@@ -545,32 +520,27 @@ const READER_LEASE_STORE: ArtifactBlobLeaseStore = Object.freeze({
  * bytes the plane cannot produce is the ledger and the plane disagreeing, not an
  * initiative with no objective.
  *
- * Opens the plane over the handle it is given, read-only or not, with a lease
- * store that refuses every holding, and only after the root was seen to stand:
- * the plane would otherwise create it.
+ * Reads through `readByReference` (P-15/F), which checks that the root stands
+ * before it opens the plane over the handle it is given, read-only or not, with
+ * a lease store that refuses every holding: the plane would otherwise create the
+ * root. The refusals and their texts are the ones this reader always threw.
  */
 export function readInitiativeObjective(ledger: Ledger, event: InitiativeEvent): string | null {
   const payload = initiativeRegistrationPayloadOf(event);
   if (payload === null) return null;
 
-  const root = artifactPlaneRootFor(ledger.path);
-  let standing;
-  try {
-    standing = lstatSync(root);
-  } catch {
-    throw new LedgerIntegrityError(["a registration names an objective and the private artifact root is absent"]);
-  }
-  if (standing.isSymbolicLink() || !standing.isDirectory()) {
-    throw new LedgerIntegrityError(["a registration names an objective and the private artifact root is not a directory"]);
-  }
-
-  const plane = openArtifactPlane({ ledger, leaseStore: READER_LEASE_STORE, ledgerPath: ledger.path });
-  const read = plane.read({
+  const read = readByReference(ledger, {
     artifactReferenceId: payload.objectiveArtifactReferenceId,
     scopeKind: "INITIATIVE",
     scopeId: event.initiativeId,
   });
   if (read.verb !== "READ") {
+    if (read.refusal === "ROOT_ABSENT") {
+      throw new LedgerIntegrityError(["a registration names an objective and the private artifact root is absent"]);
+    }
+    if (read.refusal === "ROOT_NOT_A_DIRECTORY") {
+      throw new LedgerIntegrityError(["a registration names an objective and the private artifact root is not a directory"]);
+    }
     throw new LedgerIntegrityError(["a registration names an objective the private plane refuses to read: " + read.refusal]);
   }
   if (read.reference.contentSha256 !== payload.objectiveSha256) {

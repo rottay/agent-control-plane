@@ -32,6 +32,7 @@ export {
   API_BASE_PATH,
   API_ROUTES,
   API_ROUTE_PATTERNS,
+  API_PRIVATE_READ_ROUTES,
   API_WRITE_METHODS,
   API_WRITE_ROUTES,
   initiativePath,
@@ -44,10 +45,14 @@ export {
   toolCallsPath,
   lifecyclePath,
   isWriteRoute,
+  isPrivateReadRoute,
+  taskEffectResultPath,
+  taskEffectsPath,
   workerPath,
 } from "./routes/index.js";
 export type {
   ApiAllowedMethod,
+  ApiPrivateReadRouteName,
   ApiRouteName,
   ApiRoutePattern,
   ApiWriteMethod,
@@ -196,6 +201,13 @@ export {
   // response; no route does (decision 128).
   RegistryPublicationRequest,
   RegistryPublicationResponse,
+  // P-15/F: a task's effects and one effect's result, read back by reference. Both
+  // doors print these, and the result's schema carries the result contract itself.
+  EFFECT_RESULT_STATES,
+  MAX_TASK_EFFECTS,
+  TaskEffectResultQuery,
+  TaskEffectResultResponse,
+  TaskEffectsResponse,
   RollupSummary,
   StreamIntegrityCoverageDto,
   TASK_STATE_COUNT,

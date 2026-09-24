@@ -12,9 +12,9 @@
  */
 
 import type { ResultContract, ResultStatus } from "@acp/contracts";
-import type { ArtifactPlane, Ledger } from "@acp/ledger";
+import type { ArtifactPlane, Ledger, ReferenceReadRefusal } from "@acp/ledger";
 
-import type { OPERATION_DECISION_REASONS, OUTPUT_CONDITIONS } from "../index.js";
+import type { EFFECT_RESULT_LOCAL_REFUSALS, OPERATION_DECISION_REASONS, OUTPUT_CONDITIONS } from "../index.js";
 
 /** Why an operation's result is what it is. Closed. */
 export type OperationDecisionReason = (typeof OPERATION_DECISION_REASONS)[number];
@@ -150,3 +150,58 @@ export type PublishedResult =
       readonly resultSha256: string;
       readonly responseBytes: number;
     };
+
+/**
+ * What a reader of one effect's result asks for (P-15 escalón F, ADR 0107): the
+ * task the caller believes the effect belongs to, the effect, and optionally one
+ * block of its document whose bytes live by reference.
+ */
+export interface EffectResultRequest {
+  readonly taskId: string;
+  readonly effectId: string;
+  /** A block index into the document, or null for the document itself. */
+  readonly block: number | null;
+}
+
+/** Why a result the ledger names cannot be given back: the plane's word, the root's, or the reader's own. */
+export type EffectResultUnreadable = ReferenceReadRefusal | (typeof EFFECT_RESULT_LOCAL_REFUSALS)[number];
+
+/** One block of a result document, read by its own reference and verified. */
+export interface EffectResultBlock {
+  readonly index: number;
+  readonly artifactReferenceId: string;
+  readonly contentSha256: string;
+  readonly byteLength: number;
+  readonly mediaType: string;
+  readonly text: string;
+}
+
+/**
+ * What the reader answers, in the order it decides (ADR 0107 Two). Closed.
+ *
+ * `NOT_FOUND` is also another task's effect: the two are indistinguishable on
+ * purpose. `RESULT_UNREADABLE` is the ledger naming bytes the plane cannot give
+ * back, or a document that disagrees with the row that names it; `BLOCK_REFUSED`
+ * is a block selector that names nothing readable by reference.
+ */
+export type EffectResultReading =
+  | { readonly kind: "NOT_FOUND" }
+  | { readonly kind: "NO_OUTCOME" }
+  | { readonly kind: "OUTCOME_UNKNOWN" | "CANCELLED"; readonly outcomeRecordedAt: string }
+  | {
+      readonly kind: "NO_RESULT_RECORDED";
+      readonly status: ResultStatus;
+      readonly outcomeRecordedAt: string;
+      readonly cohort: "PRE_RESULT" | "CURRENT";
+    }
+  | {
+      readonly kind: "RESULT";
+      readonly status: ResultStatus;
+      readonly outcomeRecordedAt: string;
+      readonly resultSha256: string;
+      readonly artifactReferenceId: string;
+      readonly document: ResultContract;
+      readonly block: EffectResultBlock | null;
+    }
+  | { readonly kind: "RESULT_UNREADABLE"; readonly refusal: EffectResultUnreadable }
+  | { readonly kind: "BLOCK_REFUSED" };

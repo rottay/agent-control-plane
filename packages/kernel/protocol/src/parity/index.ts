@@ -423,6 +423,32 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("latestAttempt", "LEDGER"),
       bind("currentState", "LEDGER"),
     ]),
+    /** A task's effects (P-15/F): every field is a row of the effect read model. */
+    taskEffects: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("taskId", "LEDGER"),
+      bind("effects", "LEDGER"),
+      bind("truncated", "LEDGER"),
+    ]),
+    /**
+     * One effect's result (P-15/F). Ledger-derived like every read: the row names
+     * the pair and the plane gives back the bytes the pair names, so two clients
+     * reading one ledger and one plane answer the same document. `blockContent`
+     * is the block's own bytes by the same rule.
+     */
+    taskEffectResult: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("taskId", "LEDGER"),
+      bind("effectId", "LEDGER"),
+      bind("state", "LEDGER"),
+      bind("outcomeStatus", "LEDGER"),
+      bind("outcomeRecordedAt", "LEDGER"),
+      bind("cohort", "LEDGER"),
+      bind("result", "LEDGER"),
+      bind("blockContent", "LEDGER"),
+    ]),
   });
 
 /** Every route the contract covers, matching the frozen route table exactly. */

@@ -33,9 +33,12 @@ import type {
 } from "../../artifact-lease-store/index.js";
 import type { Ledger } from "../../ledger/index.js";
 import type { ArtifactEventRecord, ArtifactReferenceReadModel } from "../../types/index.js";
-import type { ARTIFACT_PLANE_REFUSALS } from "../index.js";
+import type { ARTIFACT_PLANE_REFUSALS, REFERENCE_READ_ROOT_REFUSALS } from "../index.js";
 
 export type ArtifactPlaneRefusal = (typeof ARTIFACT_PLANE_REFUSALS)[number];
+
+/** What a reader by reference may answer: the plane's sixteen words, or the root's two. */
+export type ReferenceReadRefusal = ArtifactPlaneRefusal | (typeof REFERENCE_READ_ROOT_REFUSALS)[number];
 
 /** The reference a publication records, exactly as the contract shapes it. */
 export type ArtifactReferenceIntent = Extract<
@@ -153,6 +156,11 @@ export type ArtifactReadOutcome =
       readonly reference: ArtifactReferenceReadModel;
     }
   | { readonly verb: "REFUSE"; readonly refusal: ArtifactPlaneRefusal };
+
+/** What `readByReference` answers: the plane's read, or a root that does not stand. */
+export type ReferenceReadOutcome =
+  | Extract<ArtifactReadOutcome, { readonly verb: "READ" }>
+  | { readonly verb: "REFUSE"; readonly refusal: ReferenceReadRefusal };
 
 /**
  * Test-only fault points, one between each two steps of §8 (ADR 0083).

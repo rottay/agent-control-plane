@@ -375,3 +375,16 @@ describe("totality is a function of the live table, not of a number in a comment
     }
   });
 });
+
+describe("the effect reads are paired with their two verbs (P-15/F)", () => {
+  it("pairs effects with taskEffects as a projection and result with taskEffectResult as a document", () => {
+    const pairs = SURFACE_MAP.filter((entry) => entry.route === "taskEffects" || entry.route === "taskEffectResult").map(
+      (entry) => [entry.command, entry.route, entry.method, entry.equivalence],
+    );
+    expect(pairs).toEqual([
+      ["effects", "taskEffects", "GET", "PROJECTION"],
+      ["result", "taskEffectResult", "GET", "DOCUMENT"],
+    ]);
+    expect(surfaceDefects({ entries: SURFACE_MAP, routes: API_ROUTES, writeRoutes: API_WRITE_ROUTES, commands: null })).toEqual([]);
+  });
+});

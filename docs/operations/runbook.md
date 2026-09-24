@@ -163,7 +163,7 @@ The flags are:
 | --- | --- |
 | `--ledger <path>` | required; the ledger to read |
 | `--accounts-file <path>` | optional; the owner's accounts file |
-| `--write-bearer <path>` | optional; the file holding the write token |
+| `--write-bearer <path>` | optional; the file holding the bearer token for writes and for the one private read, `taskEffectResult` |
 | `--port <number>` | optional; rejected unless it parses and is ≤ 65535 |
 
 Every path flag must be absolute. The entry classifies its own refusals —
@@ -178,9 +178,11 @@ surface answers `UNAVAILABLE` with reason `ACCOUNTS_FILE_UNCONFIGURED`. That is
 a true statement about the process, not an error. Which invocation wires the
 path is an operational decision, and it is yours.
 
-**Writes.** Until a start invocation passes `--write-bearer`, every write
-answers **403 `WRITE_BEARER_UNCONFIGURED`** — an unconfigured door is shut, not
-open. With a token file configured, a request that presents no credential and a
+**Writes, and the private read.** Until a start invocation passes `--write-bearer`,
+every write answers **403 `WRITE_BEARER_UNCONFIGURED`**, and the one private read —
+`GET /api/v1/tasks/:taskId/effects/:effectId/result`, which answers model output —
+answers **403 `PRIVATE_READ_UNCONFIGURED`**: an unconfigured door is shut, not
+open. The same token file authorizes both until P-36's read policy (ADR 0107). With a token file configured, a request that presents no credential and a
 request that presents the wrong one both answer **401 `AUTH_REQUIRED`**, and
 they are indistinguishable on purpose: telling them apart would confirm to an
 unauthenticated caller that a header it guessed had the right shape.

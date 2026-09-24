@@ -55,12 +55,22 @@ acp <command> --database <path> [options]
 | `initiative`        | Register one initiative from a request document and print the registration |
 | `intake`            | Enter one task from a request document and print the intake               |
 | `registry`          | Publish one registry version from a request document and print it         |
+| `effects <task-id>` | List one task's effects and whether each recorded a result                 |
+| `result`            | Print one effect's result document, or one block of it, read by reference  |
 
 The table above said eight while there were fourteen: `submission`,
 `switch-decision`, `tool-calls`, `tool-call`, `cancel` and `attach` all landed
 without it. `initiative`, the fifteenth, landed with its row (P-14/B), and
 `intake`, the sixteenth, with its own (P-14/C), and `registry`, the seventeenth,
-with its own (P-15/R). Where each command meets the API — and which three meet
+with its own (P-15/R). `effects` and `result`, the eighteenth and nineteenth,
+landed with theirs (P-15/F): both are reads and open the ledger query-only.
+`result --task <id> --effect <id> [--block <n>]` is the CLI's one **private read**
+(ADR 0107, decision 149): it prints model output, and its authorization is the
+operator's own access to the ledger and the private plane beside it (root `0700`,
+objects `0600`). It prints the document as JSON whatever `--format` says; a refusal
+is an envelope on stderr and a number — `4` for an effect the task does not hold,
+`6` when the plane cannot give the bytes back, `2` for a bad id or a block that is
+not read by reference — and never a partial document. Where each command meets the API — and which three meet
 nothing, because the plane serves no route that plans, decides or publishes
 registry configuration — is declared in
 `SURFACE_MAP` (`packages/kernel/protocol/src/surface-map/index.ts`), the one

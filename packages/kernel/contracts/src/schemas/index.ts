@@ -98,6 +98,10 @@ export {
 } from "./usage-measure/index.js";
 export type { UsageReportKind, UsageSourceClass } from "./usage-measure/index.js";
 export {
+  EFFECT_OUTCOME_STATUSES,
+} from "./effect-outcome/index.js";
+export type { EffectOutcomeStatus } from "./effect-outcome/index.js";
+export {
   PRODUCT_PATH_MARKERS,
 } from "./operator-paths/index.js";
 export {

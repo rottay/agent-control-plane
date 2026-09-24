@@ -78,6 +78,25 @@ than trusting this table.
 
   A reader asking "what can mutate?" gets one short answer; a reader asking
   "is this route a read?" gets the unchanged one.
+- **Every read is free but one, and that one is named.** P-15/F added two reads
+  and moved `API_CONTRACT_VERSION` to `0.19.0`: `taskEffects`, a plain read of a
+  task's effect ids, coordinates and outcome words, and `taskEffectResult`, one
+  effect's result read back by reference. The second answers model output, so it
+  is the one GET a caller must be authorized for, and it is named in a third
+  frozen table, `API_PRIVATE_READ_ROUTES`, rather than by a guard remembered in
+  one handler:
+
+  | Private read route | Method and path | Added by |
+  | --- | --- | --- |
+  | `taskEffectResult` | `GET /api/v1/tasks/:taskId/effects/:effectId/result` | P-15/F |
+
+  Its response, `TaskEffectResultResponse`, carries the document as the result
+  contract's own `ResultContractSchema`, imported from `@acp/contracts` rather
+  than mirrored (decision 151). `PRIVATE_READ_UNCONFIGURED` joined
+  `API_ERROR_CODES` with it, sixteen words, for a server started without a
+  bearer. `EFFECT_RESULT_STATES` names the five answers. The outcome words are
+  `@acp/contracts`' `EFFECT_OUTCOME_STATUSES`, imported: the ledger re-exports the
+  same set, and nothing here restates it.
 - **The CLI/API relation is declared, not assumed.** `SURFACE_MAP` names every
   pairing between a CLI command and an arm of the route table, and every arm or
   command that has no counterpart — each of those with the reason recorded

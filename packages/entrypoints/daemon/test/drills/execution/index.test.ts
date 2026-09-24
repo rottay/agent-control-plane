@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { TaskEnvelope } from "@acp/contracts";
 import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -5688,8 +5688,19 @@ function d4Write(directory: string, name: string, document: unknown): string {
   return path;
 }
 
-/** Publish, register and enter, each through its door; returns the operator ledger and the task. */
-function d4ThroughTheDoors(options: { readonly priced: boolean }): { readonly databasePath: string; readonly taskId: string } {
+/**
+ * Publish, register and enter, each through its door; returns the operator ledger and the task.
+ *
+ * P-15/F reuses it with two options, both defaulting to D4's behaviour: the
+ * instruction the envelope carries, and whether the CLI enters the task or the
+ * caller does -- through the HTTP door -- with the request document returned.
+ */
+function d4ThroughTheDoors(options: {
+  readonly priced: boolean;
+  readonly instruction?: string;
+  readonly intakeBy?: "CLI" | "CALLER";
+}): { readonly databasePath: string; readonly taskId: string; readonly intakeRequest: Record<string, unknown> } {
+  const instruction = options.instruction ?? D4_INSTRUCTION;
   const directory = d4Directory();
   const databasePath = join(directory, "control-plane.sqlite");
   // The one act no door performs: an empty ledger file (ND-D4-6).
@@ -5767,6 +5778,23 @@ function d4ThroughTheDoors(options: { readonly priced: boolean }): { readonly da
   ]);
   expect({ status: initiative.status, stderr: initiative.stderr }).toEqual({ status: 0, stderr: "" });
   const taskId = randomUUID();
+  const intakeRequest = {
+    envelope: {
+      ...envelopeFor(taskId, D4_INITIATIVE, [D4_WRITTEN]),
+      objective: instruction,
+      content: fixtureContent(instruction),
+      readSet: [D4_WRITTEN],
+    },
+    clientScope: D4_OPERATOR,
+    clientRequestKey: "d4-" + taskId,
+    roadmapVersionId: null,
+    stepId: null,
+    role: "implementer",
+    slot: 0,
+    transportKind: "CLI_SUBSCRIPTION",
+    recordedBy: D4_OPERATOR,
+  };
+  if (options.intakeBy === "CALLER") return { databasePath, taskId, intakeRequest };
   const intake = acp([
     "intake",
     "--database",
@@ -5774,25 +5802,10 @@ function d4ThroughTheDoors(options: { readonly priced: boolean }): { readonly da
     "--format",
     "json",
     "--request",
-    d4Write(directory, "intake.json", {
-      envelope: {
-        ...envelopeFor(taskId, D4_INITIATIVE, [D4_WRITTEN]),
-        objective: D4_INSTRUCTION,
-        content: fixtureContent(D4_INSTRUCTION),
-        readSet: [D4_WRITTEN],
-      },
-      clientScope: D4_OPERATOR,
-      clientRequestKey: "d4-" + taskId,
-      roadmapVersionId: null,
-      stepId: null,
-      role: "implementer",
-      slot: 0,
-      transportKind: "CLI_SUBSCRIPTION",
-      recordedBy: D4_OPERATOR,
-    }),
+    d4Write(directory, "intake.json", intakeRequest),
   ]);
   expect({ status: intake.status, stderr: intake.stderr }).toEqual({ status: 0, stderr: "" });
-  return { databasePath, taskId };
+  return { databasePath, taskId, intakeRequest };
 }
 
 /** A git worktree holding the one path the envelope declares, committed. */
@@ -5857,7 +5870,13 @@ function d4EchoChild(options: { readonly isError: boolean }): {
 }
 
 /** The recorded form's config file, owner-only, as launchd would hand it over. */
-function d4ConfigFile(databasePath: string, taskId: string, binary: string, catalogDocumentId: string): string {
+function d4ConfigFile(
+  databasePath: string,
+  taskId: string,
+  binary: string,
+  catalogDocumentId: string,
+  outputBudgetBytes = 65_536,
+): string {
   const directory = d4Directory();
   return d4Write(directory, "daemon.json", {
     mode: "SQLITE_SUPERVISOR",
@@ -5883,7 +5902,7 @@ function d4ConfigFile(databasePath: string, taskId: string, binary: string, cata
           binary,
           configRoot: d4Directory(),
           workdir: d4Worktree(),
-          limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+          limits: { timeoutMs: 20_000, outputBudgetBytes, interruptGraceMs: 200, termGraceMs: 200 },
         },
       ],
       catalogDocumentId,
@@ -6168,3 +6187,494 @@ describe("P-15/D4 PC-D3: the inline V1 walk is byte-identical to the one before 
     expect(createHash("sha256").update(trail.join("\n"), "utf8").digest("hex")).toBe(D4_V1_TRAIL_SHA256);
   }, 180_000);
 });
+
+// ---------------------------------------------------------------------------
+// P-15/F: from the door to the result, read back through both new doors (ADR 0107)
+// ---------------------------------------------------------------------------
+
+/**
+ * The door-to-result drills of P-15/F (contratos §4.3, parallelism :143).
+ *
+ * Every row enters by a real door — the compiled `acp intake`, or `POST /tasks` on
+ * a spawned `acp-server` — runs the recorded daemon through its packaged entry
+ * against a synthetic child behind the real Claude adapter's argv, and reads the
+ * result back through **both** new doors: the compiled `acp effects` and
+ * `acp result`, and the spawned server's `taskEffects` and bearer-guarded
+ * `taskEffectResult`. Nothing reads the result through a port, the ledger or the
+ * plane directly, and the effect id comes from a door. The by-hand acts are D4's
+ * empty ledger file and, in N-F-D9, the byte the drill flips on purpose.
+ *
+ * Each run carries a sentinel in its instruction, which the child echoes into its
+ * answer. The authorized reads must show it (the positive control), and nothing
+ * else may: not the event stream, not a public GET, not the server's own output,
+ * not the CLI's stderr and not one row of the ledger (tests §8.1, decision 149).
+ * The private plane and the daemon's evidence root are the declared private side
+ * and are not swept.
+ */
+const F_GATEWAY_ENTRY = join(D4_REPO_ROOT, "packages", "entrypoints", "gateway", "dist", "bin", "index.js");
+const F_TOKEN = "p15f-drill-bearer-" + "t".repeat(28);
+const F_PAD = "This sentence pads the answer past the block list and says nothing more. ";
+const F_OVERFLOW_AT = 400_000;
+
+/** The answer the padded child gives: the instruction, then plain sentences past the block list. */
+function fPadded(instruction: string): string {
+  let answer = instruction;
+  while (answer.length <= F_OVERFLOW_AT + 50) answer += F_PAD;
+  return answer;
+}
+
+type FChildMode = "ECHO" | "PADDED" | "AUTH_FAILURE" | "ERROR_EXIT_0" | "KILLED";
+
+/**
+ * A synthetic child behind the real Claude adapter's argv, on D4's echo child's
+ * mould. `ECHO` and `PADDED` answer the instruction (the second padded past the
+ * block list); `AUTH_FAILURE` replays the captured authentication failure, exit 1;
+ * `ERROR_EXIT_0` is the crossed pair, `is_error` with exit 0 and the text "boom";
+ * `KILLED` starts an answer and is killed before any result.
+ */
+async function fChild(mode: FChildMode): Promise<{ readonly binary: string; readonly spawnLog: string }> {
+  const directory = d4Directory();
+  const spawnLog = join(directory, "spawns.log");
+  const binary = join(directory, "fake-claude");
+  const captured = mode === "AUTH_FAILURE" ? (await capturedStreams()).CAPTURED_AUTH_FAILURE : [];
+  const program = [
+    "#!" + realpathSync(process.execPath),
+    "const fs = require('node:fs');",
+    "fs.appendFileSync(" + JSON.stringify(spawnLog) + ", 'spawned\\n');",
+    "const chunks = [];",
+    "process.stdin.on('data', (c) => chunks.push(c));",
+    "process.stdin.on('end', () => {",
+    "  const text = Buffer.concat(chunks).toString('utf8');",
+    "  const at = process.argv.indexOf('--session-id');",
+    "  const session = at >= 0 ? process.argv[at + 1] : 'session-f';",
+    "  const out = (value) => process.stdout.write(JSON.stringify(value) + '\\n');",
+    "  const mode = " + JSON.stringify(mode) + ";",
+    "  if (mode === 'AUTH_FAILURE') {",
+    "    for (const line of " + JSON.stringify([...captured]) + ") process.stdout.write(line.split('00000000-0000-4000-8000-000000000001').join(session) + '\\n');",
+    "    process.exit(1);",
+    "  }",
+    "  out({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601' });",
+    "  if (mode === 'KILLED') {",
+    "    out({ type: 'assistant', message: { id: 'msg_f_1', content: [{ type: 'text', text: 'half an answer' }] } });",
+    "    process.kill(process.pid, 'SIGKILL');",
+    "    return;",
+    "  }",
+    "  let answer = mode === 'ERROR_EXIT_0' ? 'boom' : text;",
+    "  if (mode === 'PADDED') { while (answer.length <= " + String(F_OVERFLOW_AT + 50) + ") answer += " + JSON.stringify(F_PAD) + "; }",
+    "  out({ type: 'assistant', message: { id: 'msg_f_1', content: [{ type: 'text', text: answer }] } });",
+    "  out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } });",
+    "  out({ type: 'result', subtype: 'success', is_error: mode === 'ERROR_EXIT_0', session_id: session,",
+    "    usage: { input_tokens: 5, output_tokens: 7, cache_creation_input_tokens: 11, cache_read_input_tokens: 13 } });",
+    // Not `process.exit`: a pipe drains asynchronously, and exiting at once would
+    // cut a padded answer's records short. The process ends when stdout drains.
+    "  process.exitCode = 0;",
+    "});",
+  ].join("\n");
+  writeFileSync(binary, program + "\n", { mode: 0o700 });
+  return { binary, spawnLog };
+}
+
+interface FServer {
+  readonly url: string;
+  readonly output: () => string;
+  readonly stop: () => Promise<void>;
+}
+
+const fServers: FServer[] = [];
+
+/**
+ * The compiled `acp-server`, spawned as an operator runs it, on a loopback port.
+ *
+ * The entry reports no port and this project may not open a socket of its own
+ * (the daemon's import law), so a port is drawn from a high range and a server
+ * that could not bind it — it exits — is retried on another.
+ */
+async function fServer(ledgerPath: string, options: { readonly bearer: boolean }): Promise<FServer> {
+  const args = [F_GATEWAY_ENTRY, "--ledger", ledgerPath];
+  if (options.bearer) {
+    const token = join(d4Directory(), "bearer.token");
+    writeFileSync(token, F_TOKEN + "\n", { encoding: "utf8", mode: 0o600 });
+    args.push("--write-bearer", token);
+  }
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const port = 20_000 + Math.floor(Math.random() * 40_000);
+    const child = spawn(process.execPath, [...args, "--port", String(port)], { cwd: D4_REPO_ROOT, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+    });
+    const exited = new Promise<void>((done) => {
+      child.once("exit", () => {
+        done();
+      });
+    });
+    const url = "http://127.0.0.1:" + String(port);
+    let up = false;
+    for (let tries = 0; tries < 100 && !up && child.exitCode === null; tries += 1) {
+      try {
+        up = (await fetch(url + "/api/v1/health")).status === 200;
+      } catch {
+        await new Promise((settle) => setTimeout(settle, 100));
+      }
+    }
+    if (!up) {
+      if (child.exitCode === null) child.kill("SIGTERM");
+      await exited;
+      continue;
+    }
+    const server: FServer = {
+      url,
+      output: () => output,
+      stop: async () => {
+        if (child.exitCode === null) {
+          child.kill("SIGTERM");
+          await exited;
+        }
+      },
+    };
+    fServers.push(server);
+    return server;
+  }
+  throw new Error("acp-server did not come up on any of five ports");
+}
+
+afterEach(async () => {
+  for (const server of fServers.splice(0)) await server.stop();
+});
+
+interface FResponse {
+  readonly status: number;
+  readonly cacheControl: string | null;
+  readonly body: string;
+}
+
+async function fGet(server: FServer, path: string, authorization: string | null = "Bearer " + F_TOKEN): Promise<FResponse> {
+  const response = await fetch(server.url + path, authorization === null ? {} : { headers: { authorization } });
+  return { status: response.status, cacheControl: response.headers.get("cache-control"), body: await response.text() };
+}
+
+/** The event stream from its first row, read for a bounded window and then closed. */
+async function fStream(server: FServer): Promise<string> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+  }, 1_500);
+  let text = "";
+  try {
+    const response = await fetch(server.url + "/api/v1/events/stream", { headers: { "last-event-id": "0" }, signal: controller.signal });
+    const reader = response.body?.getReader();
+    if (reader === undefined) return text;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += Buffer.from(value).toString("utf8");
+    }
+  } catch {
+    // The window closed the connection; what arrived is what is swept.
+  } finally {
+    clearTimeout(timer);
+  }
+  return text;
+}
+
+/**
+ * The raw bytes of every SQLite file beside the ledger — the ledger, its WAL and
+ * shared memory, and the coordination stores — as text.
+ *
+ * Raw pages rather than rows: SQLite stores text uncompressed, so a sentinel in any
+ * row, live or freed, overflow page included, is in these bytes. Stricter than a
+ * row dump, and it needs no database driver this project may not import.
+ */
+function fLedgerText(ledgerPath: string): string {
+  const directory = resolve(ledgerPath, "..");
+  const files = readdirSync(directory).filter((name) => /\.sqlite(?:-wal|-shm|-journal)?$/.test(name));
+  expect(files).toContain("control-plane.sqlite");
+  return files.map((name) => readFileSync(join(directory, name)).toString("latin1")).join("\n");
+}
+
+function fPaths(taskId: string, effectId: string): { readonly effects: string; readonly result: string } {
+  return {
+    effects: "/api/v1/tasks/" + taskId + "/effects",
+    result: "/api/v1/tasks/" + taskId + "/effects/" + effectId + "/result",
+  };
+}
+
+/** The effect a door lists: exactly one, and its id comes from the door, never from the ledger. */
+function fOnlyEffect(document: unknown): Readonly<Record<string, unknown>> {
+  const effects = (document as { readonly effects: readonly Record<string, unknown>[] }).effects;
+  expect(effects).toHaveLength(1);
+  const [effect] = effects;
+  if (effect === undefined) throw new Error("no effect listed");
+  return effect;
+}
+
+/**
+ * The absence sweep (tests §8.1): the sentinel is in none of the public sinks.
+ * `cliStderr` is every stderr the CLI wrote in this run.
+ */
+async function fSweep(server: FServer, input: { readonly sentinel: string; readonly taskId: string; readonly ledgerPath: string; readonly cliStderr: readonly string[] }): Promise<void> {
+  const publicBodies = [
+    await fStream(server),
+    (await fGet(server, "/api/v1/events?limit=1000", null)).body,
+    (await fGet(server, "/api/v1/tasks/" + input.taskId, null)).body,
+    (await fGet(server, "/api/v1/overview", null)).body,
+    (await fGet(server, "/api/v1/tasks/" + input.taskId + "/effects", null)).body,
+  ];
+  const where: string[] = [];
+  publicBodies.forEach((body, index) => {
+    if (body.includes(input.sentinel)) where.push("public body " + String(index));
+  });
+  if (server.output().includes(input.sentinel)) where.push("the server's own output");
+  input.cliStderr.forEach((stderr, index) => {
+    if (stderr.includes(input.sentinel)) where.push("CLI stderr " + String(index));
+  });
+  if (fLedgerText(input.ledgerPath).includes(input.sentinel)) where.push("a ledger row");
+  expect(where).toEqual([]);
+  // The stream sweep read something: a window that saw nothing would prove nothing.
+  expect(publicBodies[0]?.length ?? 0).toBeGreaterThan(0);
+}
+
+describe("P-15/F: a result is read back by reference, through both new doors, behind authorization (ADR 0107)", () => {
+  beforeAll(() => {
+    // The two packages the drill spawns, built as an operator's checkout would be.
+    const packageManager = process.env["npm_execpath"];
+    for (const name of ["@acp/cli", "@acp/gateway"]) {
+      const built =
+        packageManager === undefined
+          ? spawnSync("pnpm", ["--filter", name, "build"], { cwd: D4_REPO_ROOT, encoding: "utf8" })
+          : spawnSync(process.execPath, [packageManager, "--filter", name, "build"], { cwd: D4_REPO_ROOT, encoding: "utf8" });
+      if (built.status !== 0) throw new Error("could not build " + name + ": " + (built.stderr || built.stdout));
+    }
+  }, 600_000);
+
+  it("PC-F1 (D-F-1): CLI intake, an answer past the block list, read back through both doors, by reference and by block", async () => {
+    const sentinel = "PFONE" + randomUUID().replace(/-/g, "");
+    const instruction = "Echo this instruction back, word for word: " + sentinel;
+    const answer = fPadded(instruction);
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true, instruction });
+    const child = await fChild("PADDED");
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG, 4 * 1024 * 1024)])).resolves.toBe(0);
+    expect(readFileSync(child.spawnLog, "utf8")).toBe("spawned\n");
+    const server = await fServer(databasePath, { bearer: true });
+    const cliStderr: string[] = [];
+    const cli = (args: readonly string[]): D4Invocation => {
+      const ran = acp([...args, "--database", databasePath, "--format", "json"]);
+      cliStderr.push(ran.stderr);
+      return ran;
+    };
+
+    // (1) The effect id comes from a door: the CLI's effects verb.
+    const listed = cli(["effects", taskId]);
+    expect({ status: listed.status, stderr: listed.stderr }).toEqual({ status: 0, stderr: "" });
+    const effect = fOnlyEffect(JSON.parse(listed.stdout));
+    expect(effect).toMatchObject({ outcomeStatus: "SUCCEEDED", hasResult: true });
+    const effectId = String(effect["effectId"]);
+    const paths = fPaths(taskId, effectId);
+
+    // (2) The CLI's result verb: one document block, by reference, whose bytes are the answer's.
+    const byCli = cli(["result", "--task", taskId, "--effect", effectId]);
+    expect({ status: byCli.status, stderr: byCli.stderr }).toEqual({ status: 0, stderr: "" });
+    const document = JSON.parse(byCli.stdout) as Record<string, unknown>;
+    expect(document).toMatchObject({ state: "RESULT", outcomeStatus: "SUCCEEDED", cohort: "CURRENT", blockContent: null });
+    const blocks = ((document["result"] as Record<string, unknown>)["document"] as Record<string, unknown>)["blocks"] as Record<string, unknown>[];
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      kind: "document",
+      text: null,
+      mediaType: "text/markdown; charset=utf-8",
+      byteLength: Buffer.byteLength(answer, "utf8"),
+      contentSha256: createHash("sha256").update(answer, "utf8").digest("hex"),
+    });
+    expect(blocks[0]?.["artifactRefId"]).toEqual(expect.any(String));
+
+    // (3) The HTTP door, behind the bearer: the same document, never cached.
+    const byHttp = await fGet(server, paths.result);
+    expect([byHttp.status, byHttp.cacheControl]).toEqual([200, "no-store"]);
+    expect(JSON.parse(byHttp.body)).toEqual(document);
+
+    // (4) Without the bearer, and with a wrong one: 401 alike, and no result.
+    for (const authorization of [null, "Bearer " + "w".repeat(40)]) {
+      const refused = await fGet(server, paths.result, authorization);
+      expect([refused.status, refused.cacheControl]).toEqual([401, "no-store"]);
+      expect(JSON.parse(refused.body)).not.toHaveProperty("result");
+      expect(refused.body).not.toContain(sentinel);
+    }
+
+    // (7) The block, by its own reference, through both doors: the answer, verified.
+    const blockHttp = await fGet(server, paths.result + "?block=0");
+    expect([blockHttp.status, blockHttp.cacheControl]).toEqual([200, "no-store"]);
+    const blockCli = cli(["result", "--task", taskId, "--effect", effectId, "--block", "0"]);
+    expect({ status: blockCli.status, stderr: blockCli.stderr }).toEqual({ status: 0, stderr: "" });
+    expect(JSON.parse(blockCli.stdout)).toEqual(JSON.parse(blockHttp.body));
+    const blockContent = (JSON.parse(blockHttp.body) as Record<string, unknown>)["blockContent"] as Record<string, unknown>;
+    expect(blockContent["text"]).toBe(answer);
+    expect(blockContent).toMatchObject({
+      index: 0,
+      artifactReferenceId: blocks[0]?.["artifactRefId"],
+      contentSha256: createHash("sha256").update(String(blockContent["text"]), "utf8").digest("hex"),
+      byteLength: Buffer.byteLength(String(blockContent["text"]), "utf8"),
+    });
+
+    // (6) The positive control: the sentinel is where the authorization says it may be.
+    expect(blockHttp.body).toContain(sentinel);
+    expect(blockCli.stdout).toContain(sentinel);
+
+    // (5) And nowhere else.
+    await fSweep(server, { sentinel, taskId, ledgerPath: databasePath, cliStderr });
+
+    // N-F-D8: a server started with no bearer shuts the private read, whatever is presented.
+    const shut = await fServer(databasePath, { bearer: false });
+    const unconfigured = await fGet(shut, paths.result);
+    expect([unconfigured.status, unconfigured.cacheControl]).toEqual([403, "no-store"]);
+    expect(JSON.parse(unconfigured.body)).toMatchObject({ error: { code: "PRIVATE_READ_UNCONFIGURED" } });
+
+    // N-F-D8: another task's effect answers exactly as an absent effect does, both doors.
+    const otherTask = randomUUID();
+    const crossed = await fGet(server, fPaths(otherTask, effectId).result);
+    const absent = await fGet(server, fPaths(otherTask, "f".repeat(64)).result);
+    expect([crossed.status, absent.status]).toEqual([404, 404]);
+    expect(crossed.body).toBe(absent.body);
+    expect(cli(["result", "--task", otherTask, "--effect", effectId]).status).toBe(4);
+    for (const method of ["POST", "PUT", "DELETE"]) {
+      const response = await fetch(server.url + paths.result, { method, headers: { authorization: "Bearer " + F_TOKEN } });
+      expect(response.status).toBe(405);
+    }
+
+    // N-F-D9: a byte of the RESPONSE flipped under the plane: the integrity refusal,
+    // its closed word, and no byte of the answer through either door.
+    const digest = String(blocks[0]?.["contentSha256"]);
+    const object = join(resolve(databasePath, ".."), "private-artifacts", digest.slice(0, 2), digest);
+    const bytes = readFileSync(object);
+    bytes[0] = (bytes[0] ?? 0) ^ 0x01;
+    writeFileSync(object, bytes);
+    const tampered = await fGet(server, paths.result + "?block=0");
+    expect(tampered.status).toBe(500);
+    expect(JSON.parse(tampered.body)).toMatchObject({ error: { code: "LEDGER_INTEGRITY", detail: "CONTENT_DOES_NOT_VERIFY" } });
+    expect(tampered.body).not.toContain(sentinel);
+    const tamperedCli = cli(["result", "--task", taskId, "--effect", effectId, "--block", "0"]);
+    expect([tamperedCli.status, tamperedCli.stdout]).toEqual([6, ""]);
+    expect(tamperedCli.stderr).not.toContain(sentinel);
+  }, 300_000);
+
+  it("PC-F2 (D-F-2): HTTP intake, a short answer inline, read back through both doors; a block read is refused", async () => {
+    const sentinel = "PFTWO" + randomUUID().replace(/-/g, "");
+    const instruction = "Echo this instruction back, word for word: " + sentinel;
+    const { databasePath, taskId, intakeRequest } = d4ThroughTheDoors({ priced: true, instruction, intakeBy: "CALLER" });
+    const server = await fServer(databasePath, { bearer: true });
+    const intake = await fetch(server.url + "/api/v1/tasks", {
+      method: "POST",
+      headers: { authorization: "Bearer " + F_TOKEN, "content-type": "application/json" },
+      body: JSON.stringify(intakeRequest),
+    });
+    expect(intake.status).toBe(200);
+    const child = await fChild("ECHO");
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG)])).resolves.toBe(0);
+    const cliStderr: string[] = [];
+
+    // Discovery by the HTTP door this time: a plain read, no bearer.
+    const listed = await fGet(server, fPaths(taskId, "x").effects, null);
+    expect(listed.status).toBe(200);
+    const effect = fOnlyEffect(JSON.parse(listed.body));
+    expect(effect).toMatchObject({ outcomeStatus: "SUCCEEDED", hasResult: true });
+    const effectId = String(effect["effectId"]);
+    const paths = fPaths(taskId, effectId);
+
+    const byHttp = await fGet(server, paths.result);
+    expect([byHttp.status, byHttp.cacheControl]).toEqual([200, "no-store"]);
+    const document = JSON.parse(byHttp.body) as Record<string, unknown>;
+    expect(document).toMatchObject({ state: "RESULT", outcomeStatus: "SUCCEEDED", cohort: "CURRENT", blockContent: null });
+    const blocks = ((document["result"] as Record<string, unknown>)["document"] as Record<string, unknown>)["blocks"] as Record<string, unknown>[];
+    expect(blocks.map((block) => block["text"]).join("")).toBe(instruction);
+    const byCli = acp(["result", "--task", taskId, "--effect", effectId, "--database", databasePath, "--format", "json"]);
+    cliStderr.push(byCli.stderr);
+    expect({ status: byCli.status, stderr: byCli.stderr }).toEqual({ status: 0, stderr: "" });
+    expect(JSON.parse(byCli.stdout)).toEqual(document);
+
+    // The positive control: inline, in both authorized reads.
+    expect(byHttp.body).toContain(sentinel);
+    expect(byCli.stdout).toContain(sentinel);
+
+    // A text block names no reference: the block read is refused by name, both doors.
+    const block = await fGet(server, paths.result + "?block=0");
+    expect(block.status).toBe(400);
+    expect(JSON.parse(block.body)).toMatchObject({ error: { code: "BAD_REQUEST", detail: "block" } });
+    const blockCli = acp(["result", "--task", taskId, "--effect", effectId, "--block", "0", "--database", databasePath, "--format", "json"]);
+    cliStderr.push(blockCli.stderr);
+    expect([blockCli.status, blockCli.stdout]).toEqual([2, ""]);
+
+    await fSweep(server, { sentinel, taskId, ledgerPath: databasePath, cliStderr });
+  }, 300_000);
+
+  it("D-F-3: the captured authentication failure has no result, and both doors say so", async () => {
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true });
+    const child = await fChild("AUTH_FAILURE");
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG)])).rejects.toMatchObject({
+      name: "OperationFailedError",
+    });
+    await fExpectBothDoors(databasePath, taskId, {
+      listed: { outcomeStatus: "FAILED", hasResult: false },
+      document: { state: "NO_RESULT_RECORDED", outcomeStatus: "FAILED", cohort: "CURRENT", result: null },
+    });
+  }, 300_000);
+
+  it("D-F-6: is_error with exit 0 is a FAILED result with its document, through both doors", async () => {
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true });
+    const child = await fChild("ERROR_EXIT_0");
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG)])).rejects.toMatchObject({
+      name: "OperationFailedError",
+    });
+    const document = await fExpectBothDoors(databasePath, taskId, {
+      listed: { outcomeStatus: "FAILED", hasResult: true },
+      document: { state: "RESULT", outcomeStatus: "FAILED", cohort: "CURRENT" },
+    });
+    const blocks = ((document["result"] as Record<string, unknown>)["document"] as Record<string, unknown>)["blocks"] as Record<string, unknown>[];
+    expect(blocks.map((block) => block["text"])).toEqual(["boom"]);
+  }, 300_000);
+
+  it("D-F-7: a child killed mid-stream is FAILED — the output it had given is its FAILED document; never SUCCEEDED, never NO_OUTCOME", async () => {
+    // What D3's decider does, measured here rather than assumed: a session that ends
+    // with no terminal is FAILED, and the output the collector held is assembled like
+    // any FAILED operation's (P-07 Q-D9) -- a FAILED result with its document.
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true });
+    const child = await fChild("KILLED");
+    // Named, as D-F-3 and D-F-6 name theirs (Fable C4): the decider rules a signal
+    // FAILED, so the walk throws the operation's failure after recording it.
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG)])).rejects.toMatchObject({
+      name: "OperationFailedError",
+    });
+    const document = await fExpectBothDoors(databasePath, taskId, {
+      listed: { outcomeStatus: "FAILED", hasResult: true },
+      document: { state: "RESULT", outcomeStatus: "FAILED", cohort: "CURRENT" },
+    });
+    const blocks = ((document["result"] as Record<string, unknown>)["document"] as Record<string, unknown>)["blocks"] as Record<string, unknown>[];
+    expect(blocks.map((block) => block["text"])).toEqual(["half an answer"]);
+  }, 300_000);
+});
+
+/** Read one task's only effect through both doors, and hold the two documents equal. */
+async function fExpectBothDoors(
+  databasePath: string,
+  taskId: string,
+  expected: { readonly listed: Record<string, unknown>; readonly document: Record<string, unknown> },
+): Promise<Record<string, unknown>> {
+  const server = await fServer(databasePath, { bearer: true });
+  const listedCli = acp(["effects", taskId, "--database", databasePath, "--format", "json"]);
+  expect({ status: listedCli.status, stderr: listedCli.stderr }).toEqual({ status: 0, stderr: "" });
+  const listedHttp = await fGet(server, fPaths(taskId, "x").effects, null);
+  expect(JSON.parse(listedHttp.body)).toEqual(JSON.parse(listedCli.stdout));
+  const effect = fOnlyEffect(JSON.parse(listedCli.stdout));
+  expect(effect).toMatchObject(expected.listed);
+  const effectId = String(effect["effectId"]);
+  const byHttp = await fGet(server, fPaths(taskId, effectId).result);
+  expect([byHttp.status, byHttp.cacheControl]).toEqual([200, "no-store"]);
+  const byCli = acp(["result", "--task", taskId, "--effect", effectId, "--database", databasePath, "--format", "json"]);
+  expect({ status: byCli.status, stderr: byCli.stderr }).toEqual({ status: 0, stderr: "" });
+  const document = JSON.parse(byHttp.body) as Record<string, unknown>;
+  expect(JSON.parse(byCli.stdout)).toEqual(document);
+  expect(document).toMatchObject(expected.document);
+  expect(document["state"]).not.toBe("NO_OUTCOME");
+  return document;
+}

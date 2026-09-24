@@ -45,6 +45,7 @@ export {
   TOKENS_USED_MAX,
   USAGE_REPORT_KINDS,
   USAGE_SOURCE_CLASSES,
+  EFFECT_OUTCOME_STATUSES,
   PRODUCT_PATH_MARKERS,
   CHECKPOINT_MAX_BYTES,
   EVENT_PAYLOAD_MAX_BYTES,
@@ -166,6 +167,7 @@ export type {
 } from "./schemas/index.js";
 export type { ResultStatus, ResultRefusal, ResultContract } from "./schemas/index.js";
 export type { UsageReportKind, UsageSourceClass } from "./schemas/index.js";
+export type { EffectOutcomeStatus } from "./schemas/index.js";
 export type { GuardViolation } from "./schemas/index.js";
 export type {
   ExecutionOutputSink,

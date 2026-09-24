@@ -29,7 +29,18 @@ not owned by the running user, or one whose mode is not exactly `0600`. The
 The server was started without `--write-bearer`. That is fail-closed by design:
 an unconfigured door is shut, not open. Configure a token file and restart —
 the token is loaded once at registration, so rotating it is a restart, not a
-re-read.
+re-read. The same missing token makes the one private read, the result route,
+answer its twin, `403 PRIVATE_READ_UNCONFIGURED` (next entry).
+
+## A result read answers 403 PRIVATE_READ_UNCONFIGURED
+
+The server was started without `--write-bearer`, and the result route
+(`GET /api/v1/tasks/:taskId/effects/:effectId/result`) is the one read this plane
+guards, because it answers model output. The same token file that authorizes writes
+authorizes it (ADR 0107). Configure it and restart; a missing or wrong bearer on a
+configured server answers **401 `AUTH_REQUIRED`**, as a write does. On the CLI,
+`acp result` needs no token: its authorization is your access to the ledger and the
+private plane beside it.
 
 ## Every write answers 401 AUTH_REQUIRED
 

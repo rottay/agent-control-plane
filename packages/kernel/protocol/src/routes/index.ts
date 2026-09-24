@@ -1,6 +1,8 @@
 import { WorkerIdentityString } from "@acp/contracts";
 import { z } from "zod";
 
+import { EffectIdParam } from "../schemas/index.js";
+
 /**
  * The read-only observation route table.
  *
@@ -74,6 +76,14 @@ export const API_ROUTES = Object.freeze({
   // Registered through the same guarded registrar as the other three, so the
   // bearer is inherited structurally rather than remembered.
   taskLifecycle: "/api/v1/tasks/:taskId/lifecycle",
+  // P-15/F: how a caller learns a task's effect ids. A plain read like every
+  // other GET here: ids, coordinates and outcome words, never a digest, a
+  // reference or a byte of a result.
+  taskEffects: "/api/v1/tasks/:taskId/effects",
+  // P-15/F: one effect's result, read back by reference. A GET, and the one read
+  // of this plane that is NOT free: it answers model output, so it is named in
+  // `API_PRIVATE_READ_ROUTES` below and registered behind the bearer.
+  taskEffectResult: "/api/v1/tasks/:taskId/effects/:effectId/result",
 } as const);
 
 export type ApiRouteName = keyof typeof API_ROUTES;
@@ -147,6 +157,26 @@ export const API_WRITE_ROUTES = Object.freeze([
 ] as const);
 export type ApiWriteRouteName = (typeof API_WRITE_ROUTES)[number];
 
+/**
+ * The private read routes, frozen — a third closed table (P-15 escalón F, ADR 0107).
+ *
+ * Observation is free on this plane, and every GET above stays so. A route that
+ * answers **model output** is the exception tests §8.1 admits only as a read
+ * "explícitamente autorizada", audited before it exists (decision 149): it is a
+ * GET, `API_ALLOWED_METHODS` does not change, and it is named here so the
+ * exception is a visible table rather than a guard remembered in one handler. The
+ * gateway registers every member through its bearer-guarded read registrar and
+ * nothing else. The initiative's objective, an internal plan document on an
+ * unguarded GET since decision 76, is not model output and is not in this table.
+ */
+export const API_PRIVATE_READ_ROUTES = Object.freeze(["taskEffectResult"] as const);
+export type ApiPrivateReadRouteName = (typeof API_PRIVATE_READ_ROUTES)[number];
+
+/** Is this route a private read, answered only behind the bearer? Data, so the server asserts rather than recalls. */
+export function isPrivateReadRoute(route: ApiRouteName): boolean {
+  return (API_PRIVATE_READ_ROUTES as readonly string[]).includes(route);
+}
+
 /** The methods a write route answers: its read, plus the one write. */
 export const API_WRITE_METHODS = Object.freeze(["GET", "POST"] as const);
 export type ApiWriteMethod = (typeof API_WRITE_METHODS)[number];
@@ -157,6 +187,7 @@ export function isWriteRoute(route: ApiRouteName): boolean {
 }
 
 const TaskIdParam = z.uuid();
+
 const InitiativeIdParam = z.uuid();
 
 /**
@@ -253,4 +284,19 @@ export function toolCallsPath(taskId: string): string {
  */
 export function lifecyclePath(taskId: string): string {
   return taskPath(taskId) + "/lifecycle";
+}
+
+/** Build the effects path for a single task (P-15/F), through `taskPath`'s one validator. */
+export function taskEffectsPath(taskId: string): string {
+  return taskPath(taskId) + "/effects";
+}
+
+/**
+ * Build the result path for one effect of one task (P-15/F).
+ *
+ * Both components are validated before either is encoded: the task id by
+ * `taskPath`'s rule, the effect id by the ledger's own shape.
+ */
+export function taskEffectResultPath(taskId: string, effectId: string): string {
+  return taskEffectsPath(taskId) + "/" + encodeURIComponent(EffectIdParam.parse(effectId)) + "/result";
 }

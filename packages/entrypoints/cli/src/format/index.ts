@@ -23,6 +23,7 @@ import type {
   LedgerStatusResponse,
   OverviewResponse,
   TaskDetailResponse,
+  TaskEffectsResponse,
   TaskPageResponse,
   TimelineItem,
   WorkerDetailResponse,
@@ -259,6 +260,29 @@ export function renderTaskDetail(response: TaskDetailResponse): string {
     " shown)\n" +
     renderTimeline(task.recentEvents);
   return withNewline(head + "\n\n" + timeline);
+}
+
+/**
+ * A task's effects (P-15/F). Ids and outcome words only: whether a result exists
+ * is a yes or a no, and reading it is `acp result`, never this table.
+ */
+export function renderTaskEffects(response: TaskEffectsResponse): string {
+  const body = table(
+    ["EFFECT", "REVISION", "ATTEMPT", "ORDINAL", "KIND", "INTENDED", "OUTCOME", "RECORDED", "RESULT"],
+    response.effects.map((effect) => [
+      effect.effectId,
+      count(effect.revisionNumber),
+      count(effect.attemptNumber),
+      count(effect.operationOrdinal),
+      effect.effectKind,
+      effect.intendedAt,
+      nullable(effect.outcomeStatus),
+      nullable(effect.outcomeRecordedAt),
+      effect.hasResult ? "yes" : "no",
+    ]),
+  );
+  const note = response.truncated ? "\n\nfirst " + count(response.effects.length) + " shown; the task has more" : "";
+  return withNewline(keyValues([["task", response.taskId]]) + "\n\n" + body + note);
 }
 
 export function renderWorkerPage(response: WorkerPageResponse): string {

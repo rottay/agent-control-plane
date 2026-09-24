@@ -20,6 +20,7 @@ import { ArtifactRegistryEvent, CONTRACT_VERSION, REFERENCE_SCOPE_KINDS } from "
 
 import type {
   ArtifactBlobLeaseGrant,
+  ArtifactBlobLeaseStore,
   ArtifactBlobLeaseOutcome,
   ArtifactBlobLeaseQuiescence,
   ArtifactBlobLeaseRefusal,
@@ -58,6 +59,7 @@ import type {
   IntendedEvent,
   OpenArtifactPlaneOptions,
   Placement,
+  ReferenceReadOutcome,
   Work,
 } from "./types/index.js";
 
@@ -78,6 +80,8 @@ export type {
   ArtifactPlaneOutcome,
   ArtifactReadOutcome,
   ArtifactPlaneTestFaults,
+  ReferenceReadOutcome,
+  ReferenceReadRefusal,
   OpenArtifactPlaneOptions,
   ArtifactPlane,
 } from "./types/index.js";
@@ -1048,4 +1052,68 @@ export function openArtifactPlane(options: OpenArtifactPlaneOptions): ArtifactPl
   };
 
   return { publish, read, reconcile };
+}
+
+// ---------------------------------------------------------------------------
+// Reading by reference, with no holding (P-15 escalón F, ADR 0107)
+// ---------------------------------------------------------------------------
+
+/**
+ * The two words a reader by reference adds to the plane's own: the private root
+ * is not there to read from, or something other than a directory stands there.
+ * They are the reader's, not the plane's -- `openArtifactPlane` would create an
+ * absent root, and a read must never create what it reads from -- so they stay
+ * out of {@link ARTIFACT_PLANE_REFUSALS}, whose sixteen words do not move.
+ */
+export const REFERENCE_READ_ROOT_REFUSALS = ["ROOT_ABSENT", "ROOT_NOT_A_DIRECTORY"] as const;
+
+function refuseReaderHolding(): never {
+  throw new LedgerQueryError("a reader takes no holding: reading a reference asks the blob lease store nothing");
+}
+
+/**
+ * The lease store a reader hands the plane: it refuses everything.
+ *
+ * `read` goes by reference and scope and never asks the lease store, and opening
+ * the real one on a read would create and migrate a coordination file on a GET.
+ * One declaration for every ledger-side reader (P-15/F): the objective reader's
+ * private copy moved here.
+ */
+const READER_LEASE_STORE: ArtifactBlobLeaseStore = Object.freeze({
+  incarnation: refuseReaderHolding,
+  read: refuseReaderHolding,
+  readToken: refuseReaderHolding,
+  acquire: refuseReaderHolding,
+  release: refuseReaderHolding,
+  revoke: refuseReaderHolding,
+  takeOver: refuseReaderHolding,
+  listOverdue: refuseReaderHolding,
+  close: (): void => undefined,
+});
+
+/**
+ * Read the bytes a reference authorizes one scope to read, holding nothing.
+ *
+ * The one ledger-side reader (P-15 escalón F, ADR 0107). It checks that the
+ * private root stands -- present, not a symbolic link, a directory -- **before**
+ * it opens the plane, because the plane creates an absent root and a read must
+ * create nothing; then it asks the plane, with a lease store that refuses every
+ * holding, and returns the plane's own answer unchanged. A refusal is a value:
+ * the caller decides what a refusal means to it (the objective reader calls
+ * every one an integrity failure; the result reader maps each to its word).
+ *
+ * Opens the plane over the handle it is given, read-only or not.
+ */
+export function readByReference(ledger: OpenArtifactPlaneOptions["ledger"], request: ArtifactReadRequest): ReferenceReadOutcome {
+  const root = artifactPlaneRootFor(ledger.path);
+  let standing;
+  try {
+    standing = lstatSync(root);
+  } catch {
+    return { verb: "REFUSE", refusal: "ROOT_ABSENT" };
+  }
+  if (standing.isSymbolicLink() || !standing.isDirectory()) {
+    return { verb: "REFUSE", refusal: "ROOT_NOT_A_DIRECTORY" };
+  }
+  return openArtifactPlane({ ledger, leaseStore: READER_LEASE_STORE, ledgerPath: ledger.path }).read(request);
 }

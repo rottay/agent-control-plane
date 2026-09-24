@@ -33,11 +33,16 @@ import {
   hasObservationPrivacyViolation,
   TaskLifecycleExecuteResponse,
   lifecyclePath,
+  TaskEffectResultResponse,
+  TaskEffectsResponse,
+  MAX_TASK_EFFECTS,
+  taskEffectResultPath,
+  taskEffectsPath,
 } from "@acp/protocol";
 import type { ApiRouteName } from "@acp/protocol";
 import { openToolClaimStore, openLedger, toolClaimStorePath } from "@acp/ledger";
 import { TOOL_ARGUMENTS_BYTES_MAX } from "@acp/tools";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildEventPage,
@@ -49,6 +54,8 @@ import {
   buildWorkerDetail,
   buildWorkerPage,
   buildToolCallPage,
+  buildEffectResult,
+  buildTaskEffects,
   cliRowModel,
   databaseIdentity,
 } from "@acp/cli/observation-rows";
@@ -74,8 +81,18 @@ import {
   scenarioLedgerPath,
   toolCallTransitionId,
 } from "@acp/runtime";
+import * as runtimeModule from "@acp/runtime";
+import type { EffectResultReading } from "@acp/runtime";
+
+// P-15/F: the result reader, wrapped so the two doors can be asked the same answer
+// in each of its states; every other call reaches the real one.
+vi.mock("@acp/runtime", async (importOriginal) => {
+  const original = await importOriginal<typeof runtimeModule>();
+  return { ...original, readEffectResult: vi.fn(original.readEffectResult) };
+});
 
 import { buildServer } from "../../src/build-server/index.js";
+import { taskEffects } from "../../src/effect-result/index.js";
 import { startServer } from "../../src/start/index.js";
 
 /**
@@ -1880,5 +1897,138 @@ describe("the two lifecycle doors are equivalent on the write (V2 L3)", () => {
 
     expect(second).toEqual(first);
     expect(lifecycleRowCount(seed.databasePath)).toBe(before);
+  });
+});
+
+describe("the effect reads agree across the two doors (P-15/F, ADR 0107)", () => {
+  const EFFECT = "c".repeat(64);
+  const AT = "2026-09-23T12:00:00.000Z";
+  const TOKEN = "p15f-parity-" + "q".repeat(30);
+  const DOCUMENT = {
+    resultContractVersion: 1 as const,
+    effectId: EFFECT,
+    status: "FAILED" as const,
+    blocks: [
+      {
+        kind: "text" as const,
+        blockId: "output-001",
+        mediaType: "text/plain; charset=utf-8",
+        byteLength: 4,
+        contentSha256: "a".repeat(64),
+        artifactRefId: null,
+        text: "boom",
+        toolCallId: null,
+        effectId: null,
+      },
+    ],
+    usageReference: EFFECT,
+  };
+  const readings: readonly EffectResultReading[] = [
+    { kind: "NO_OUTCOME" },
+    { kind: "OUTCOME_UNKNOWN", outcomeRecordedAt: AT },
+    { kind: "CANCELLED", outcomeRecordedAt: AT },
+    { kind: "NO_RESULT_RECORDED", status: "SUCCEEDED", outcomeRecordedAt: AT, cohort: "PRE_RESULT" },
+    { kind: "NO_RESULT_RECORDED", status: "FAILED", outcomeRecordedAt: AT, cohort: "CURRENT" },
+    {
+      kind: "RESULT",
+      status: "FAILED",
+      outcomeRecordedAt: AT,
+      resultSha256: "b".repeat(64),
+      artifactReferenceId: "ref-result",
+      document: DOCUMENT,
+      block: null,
+    },
+  ];
+
+  it("lists one task's effects identically through the route and the CLI builder", async () => {
+    const { path, taskA } = seed();
+    const http = await serverBody(path, taskEffectsPath(taskA), TaskEffectsResponse);
+    const ledger = openLedger(path, { readOnly: true });
+    try {
+      expect(buildTaskEffects(ledger, taskA)).toEqual(http);
+      expect(cliRowModel("taskEffects", buildTaskEffects(ledger, taskA))).toEqual(cliRowModel("taskEffects", http));
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it("v3 (V7): a task with 1001 effects is answered, not a 500 -- the first 1000 and truncated, alike at both doors", () => {
+    const { path, taskA } = seed();
+    const real = openLedger(path, { readOnly: true });
+    try {
+      // 1001 effect rows, each a valid read-model row; the ledger's own paging is
+      // proven against real rows in the ledger suite, and here the doors' use of it.
+      const rows = Array.from({ length: MAX_TASK_EFFECTS + 1 }, (_, index) => ({
+        effectId: index.toString(16).padStart(64, "0"),
+        taskId: taskA,
+        revisionNumber: 1,
+        attemptNumber: 1,
+        routeSegmentId: "seg-1",
+        operationOrdinal: index,
+        effectKind: "model_execution",
+        semanticScopeKey: "run",
+        localOperationKey: "step-" + String(index),
+        logicalOperationSha256: "d".repeat(64),
+        requestContractVersion: "1",
+        requestSha256: "e".repeat(64),
+        idempotencyKey: "key-" + String(index),
+        intendedAt: "2026-09-23T12:00:00.000Z",
+        outcomeStatus: null,
+        outcomeRecordedAt: null,
+        outcomeContractVersion: null,
+        resultArtifactReferenceId: null,
+        resultSha256: null,
+        sequence: index + 1,
+      }));
+      const asked: number[] = [];
+      const ledger = new Proxy(real, {
+        get(target, key) {
+          if (key === "listTaskEffects") {
+            return (_taskId: string, options: { readonly limit: number }) => {
+              asked.push(options.limit);
+              return { effects: rows.slice(0, options.limit), truncated: rows.length > options.limit };
+            };
+          }
+          const value: unknown = Reflect.get(target, key, target);
+          return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+        },
+      });
+      const http = taskEffects(ledger, taskA);
+      const cli = buildTaskEffects(ledger, taskA);
+      expect(asked).toEqual([MAX_TASK_EFFECTS, MAX_TASK_EFFECTS]);
+      expect(http?.effects).toHaveLength(MAX_TASK_EFFECTS);
+      expect(http?.truncated).toBe(true);
+      expect(cli).toEqual(http);
+    } finally {
+      real.close();
+    }
+  });
+
+  it("answers the same document in each of the six 200 states, through the bearer and through the CLI", async () => {
+    const { path, taskA } = seed();
+    const bearerPath = join(temporaryDirectory(), "bearer.token");
+    writeFileSync(bearerPath, TOKEN + "\n", "utf8");
+    chmodSync(bearerPath, 0o600);
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerPath });
+    const ledger = openLedger(path, { readOnly: true });
+    try {
+      for (const reading of readings) {
+        vi.mocked(runtimeModule.readEffectResult).mockImplementationOnce(() => reading);
+        const response = await app.inject({
+          method: "GET",
+          url: taskEffectResultPath(taskA, EFFECT),
+          headers: { authorization: "Bearer " + TOKEN },
+        });
+        expect(response.statusCode).toBe(200);
+        const http = TaskEffectResultResponse.parse(response.json());
+        vi.mocked(runtimeModule.readEffectResult).mockImplementationOnce(() => reading);
+        const cli = buildEffectResult(ledger, taskA, EFFECT, null);
+        expect(cli).toEqual({ kind: "DOCUMENT", response: http });
+        expect(cliRowModel("taskEffectResult", http)).toEqual(uiRowModel("taskEffectResult", http));
+      }
+    } finally {
+      ledger.close();
+      await app.close();
+    }
   });
 });

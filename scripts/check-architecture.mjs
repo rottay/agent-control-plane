@@ -11525,6 +11525,103 @@ const P15I_WRITE_SET = [
   "docs/audit/implementation/packets/index.md",
 ];
 
+/**
+ * P-15 escalón F -- a result is read by reference behind authorization (ADR 0107;
+ * decisions 150-154).
+ *
+ * The runtime's one result reader, `readEffectResult`, over the ledger's one reader
+ * by reference, `readByReference` (the objective reader moved onto it), and a
+ * ledger read of a task's effects; two routes -- `taskEffects`, a plain read, and
+ * `taskEffectResult`, the plane's one private read, answered only behind the bearer
+ * through `registerPrivateGet` and named in the new closed `API_PRIVATE_READ_ROUTES`
+ * table -- and their two verbs, `acp effects` and `acp result`; one error word,
+ * `PRIVATE_READ_UNCONFIGURED`; and the door-to-result drills that enter by the real
+ * doors and read back through both new ones. L-P15F-1 and L-P15F-2 keep the path.
+ *
+ * **Pins that move.** `API_CONTRACT_VERSION` 0.18.0 -> **0.19.0**; `API_ERROR_CODES`
+ * 15 -> **16**; `API_ROUTES` 20 -> **22**; `SURFACE_MAP` 30 -> **32**;
+ * `RUNTIME_PUBLIC_EXPORTS` 296 -> **299**; `PATH_SCOPED_LAWS` 154 -> **156**.
+ * `CONTRACT_VERSION`, `MIGRATIONS` and `PROVIDERS_PUBLIC_EXPORTS` (93) do not move: a
+ * read adds no recorded shape. `CONTRACTS_SCHEMA_EXPORTS` moves only for the
+ * vocabulary's declaration, 169 -> 171 (v2, below).
+ *
+ * **v2 (the DT's ruling on the outcome vocabulary).** `EFFECT_OUTCOME_STATUSES` and its
+ * type move from the ledger to a new contracts module, `effect-outcome`, on P-15/D2's
+ * mould: the ledger re-exports both under the same names, its CHECK text is byte-
+ * unchanged and a ledger test holds it equal to the set, and the protocol imports the
+ * set rather than pinning a mirror. `CONTRACTS_SCHEMA_EXPORTS` 169 -> **171**;
+ * `CONTRACT_VERSION` does not move, because a declaration moved and no recorded shape
+ * did. No new law: D2's guard trio -- the export pin, the value-list test and the CHECK
+ * equality test -- is the guard, as it was for the usage vocabularies.
+ *
+ * **Fifty-one paths; five are new.** v3 adds five more, none new: the gateway's bearer
+ * comment and build-server (framework errors carry `no-store`), the operations runbook
+ * and troubleshooting pages, and the runtime README -- fifty-six; the DT's addendum adds
+ * SECURITY.md -- fifty-seven.
+ */
+const P15F_WRITE_SET = [
+  "packages/domains/runtime/src/operation-result/index.ts",
+  "packages/domains/runtime/src/operation-result/types/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/test/operation-result/index.test.ts",
+  "packages/persistence/ledger/src/artifact-plane/index.ts",
+  "packages/persistence/ledger/src/artifact-plane/types/index.ts",
+  "packages/persistence/ledger/src/initiative-registration/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/src/surface-map/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/test/routes/index.test.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/surface-map/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/kernel/protocol/README.md",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/effect-result/index.ts",
+  "packages/entrypoints/gateway/src/errors/index.ts",
+  "packages/entrypoints/gateway/test/effect-result/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/gateway/README.md",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/src/observation/index.ts",
+  "packages/entrypoints/cli/src/format/index.ts",
+  "packages/entrypoints/cli/test/observation/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/cli/README.md",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "docs/api-reference.md",
+  "docs/audit/implementation/packets/index.md",
+  "docs/audit/requirements/index.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0107-a-result-is-read-by-reference-behind-authorization.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  // v2: the effect outcome vocabulary's move to contracts (the DT's widening, 44 -> 51).
+  "packages/kernel/contracts/src/schemas/effect-outcome/index.ts",
+  "packages/kernel/contracts/src/schemas/effect-outcome/types/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/persistence/ledger/src/types/index.ts",
+  // v3: the stale texts F made false (verifier V6) and the framework errors' no-store (V3).
+  "packages/entrypoints/gateway/src/bearer/index.ts",
+  "packages/entrypoints/gateway/src/build-server/index.ts",
+  "docs/operations/runbook.md",
+  "docs/operations/troubleshooting.md",
+  "packages/domains/runtime/README.md",
+  // v3 addendum (the DT, V6): SECURITY.md describes the private read.
+  "SECURITY.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11765,6 +11862,7 @@ const WRITE_SET = [
   ...P15D3_WRITE_SET,
   ...P15D4_WRITE_SET,
   ...P15I_WRITE_SET,
+  ...P15F_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13228,6 +13326,17 @@ const PATH_SCOPED_LAWS = [
   {
     law: "one canonical-instant predicate in src",
     scope: "packages/*/*/src/**",
+  },
+  // P-15 escalón F. Two new path-shaped surfaces, so two new rows: the register and
+  // the `requireScope` call sites both move 154 -> 156 for L-P15F-1 and L-P15F-2.
+  // L-P07A-1 is amended in its own row and adds none.
+  {
+    law: "a result's bytes leave the plane only through readEffectResult, to two doors",
+    scope: "packages/*/*/src/**",
+  },
+  {
+    law: "every private read route is registered behind the bearer",
+    scope: "packages/kernel/protocol/src/routes/index.ts, packages/entrypoints/gateway/src/routes/index.ts",
   },
   {
     law: "the production walk records the result through the execution chain",
@@ -20677,6 +20786,11 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "DispatchRefusedError",
   "OperationFailedError",
   "payloadCoordinate",
+  // P-15 escalón F (ADR 0107, decision 152): the one result reader the two
+  // private-read doors call, with its request and its closed answer. 296 -> 299.
+  "readEffectResult",
+  "EffectResultReading",
+  "EffectResultRequest",
 ];
 
 /**
@@ -21182,6 +21296,11 @@ if (accountsIndex === null) {
   "parseWorkerIdentity",
   "serializedByteLength",
   "utf8ByteLength",
+  // P-15 escalón F (ADR 0107, decision 151): the effect outcome vocabulary, moved down
+  // from the ledger on D2's mould -- the ledger re-exports it and the protocol's result
+  // read imports it -- and the union its leaf derives. 169 -> 171.
+  "EFFECT_OUTCOME_STATUSES",
+  "EffectOutcomeStatus",
 ];
 
   const schemasBarrel = readIfPresent("packages/kernel/contracts/src/schemas/index.ts");
@@ -28454,6 +28573,21 @@ const RESULT_CONTRACT_SITES = [
   "packages/domains/runtime/src/operation-result/index.ts",
   "packages/domains/runtime/src/operation-result/types/index.ts",
 ];
+// AMENDED by P-15 escalón F (ADR 0107, decision 151), in this row: the result read
+// carries the document on the wire, and the wire's authority for its shape is the
+// contract itself (Fable C-F1: protocol may import `@acp/contracts`, and a mirror
+// would be the second authority P-07's DT refused). So `protocol/src/schemas` is
+// admitted ONE NAME wide -- `ResultContractSchema`, from the contracts barrel --
+// by a map of its own beside the statuses' readers: it fails on the name's
+// absence (a stale admission) and on any other result word or a path import. The
+// gateway and the CLI name no contract word: they serialize what the runtime
+// reader returns. Same row, same `requireScope`: `PATH_SCOPED_LAWS` does not move.
+// Stated limit of this admission, as of the whole row (P-15/F v3, verifier B13): a
+// namespace import read by a computed key (`import * as C …; C["RESULT_" + …]`)
+// names no result word in text and is not seen.
+const RESULT_SCHEMA_READERS = {
+  "packages/kernel/protocol/src/schemas/index.ts": "ResultContractSchema",
+};
 const RESULT_STATUS_READERS = {
   "packages/persistence/ledger/src/projection/index.ts": null,
   "packages/kernel/contracts/src/schemas/execution-boundary/index.ts":
@@ -28481,12 +28615,34 @@ const RESULT_STATUS_READERS = {
       );
     }
   }
+  for (const [reader, admittedName] of Object.entries(RESULT_SCHEMA_READERS)) {
+    const code = stripComments(readIfPresent(reader) ?? "");
+    if (!new RegExp("\\b" + admittedName + "\\b").test(code)) {
+      fail(reader + " no longer names " + admittedName + "; its admission to L-P07A-1 is stale");
+    }
+    if (!/from "@acp\/contracts"/.test(code)) {
+      fail(reader + " no longer imports from the contracts barrel, the one form its admission allows");
+    }
+    const rest = code.split(admittedName).join("");
+    if (
+      /["'](?:[^"'\n]*\/)?result\/index\.js["']/.test(rest) ||
+      /\b(?:ResultContract|RESULT_CONTRACT_VERSION|RESULT_STATUSES|RESULT_REFUSALS)\b/.test(rest)
+    ) {
+      fail(
+        reader +
+          " is admitted to the result contract for " +
+          admittedName +
+          " alone, and names more of it; the wire carries the document by the contract's own schema and nothing else",
+      );
+    }
+  }
   if (tracked.status === 0) {
     const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
     for (const relativePath of present) {
       if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
       if (!/\.tsx?$/.test(relativePath)) continue;
       if (RESULT_CONTRACT_SITES.includes(relativePath)) continue;
+      if (Object.hasOwn(RESULT_SCHEMA_READERS, relativePath)) continue;
       if (CONTENT_CONTRACT_BARRELS.includes(relativePath)) continue;
       const content = readIfPresent(relativePath);
       if (content === null) continue;
@@ -28514,7 +28670,9 @@ const RESULT_STATUS_READERS = {
     "no production source outside the result concept, its one assembler and the contracts barrels names the" +
       " result contract, and " +
       Object.keys(RESULT_STATUS_READERS).join(" and ") +
-      " are admitted for RESULT_STATUSES alone",
+      " are admitted for RESULT_STATUSES alone, and " +
+      Object.keys(RESULT_SCHEMA_READERS).join(" and ") +
+      " for ResultContractSchema alone",
   );
 }
 
@@ -29355,6 +29513,315 @@ const CANONICAL_INSTANT_HOME = "packages/kernel/contracts/src/schemas/primitives
   }
   requireScope("one canonical-instant predicate in src", instantScanned);
   notes.push("the canonical instant has one predicate, in " + CANONICAL_INSTANT_HOME + ", over " + String(instantScanned) + " other sources");
+}
+
+// L-P15F-1 -- a result's bytes leave the plane only through readEffectResult, and
+// only to the two private-read doors (P-15 escalón F, ADR 0107; decision 153).
+//
+// Tests §8.1 admits model output on a public response only as a read "explícitamente
+// autorizada", frozen before the fixtures (decision 149): the HTTP result route's
+// 200 body behind the bearer and the CLI `result` verb's stdout behind filesystem
+// access. This law keeps the path to those two narrow, over every tracked
+// `packages/*/*/src/` `.ts` and `.tsx` file, comments stripped:
+//
+// - (i) the result's reference is named -- `resultArtifactReferenceId` -- only by
+//   the eight files that record, publish or read it: the ledger's row, projection
+//   and its types, and types; the runtime's events and execution chain; and the
+//   result concept with its type leaf. No entrypoint names it: a door derives
+//   `hasResult` from the pair's presence;
+// - (ii) `readByReference(` is called only by the objective reader and the result
+//   reader -- the ledger's one reader by reference and its two callers;
+// - (iii) `readEffectResult(` is called only inside two function bodies, once each:
+//   `effectResult` in the gateway's effect-result module and `buildEffectResult` in
+//   the CLI's observation module (function-level since v4, verifier v3 §2: a second
+//   exported function in the door module, `rawResult`, behind an unguarded GET
+//   passed a per-file rule); a call elsewhere in those files, a second call in the
+//   body, or none at all fails;
+// - (iv) inside those two callers' result functions (`effectResult`,
+//   `buildEffectResult`) no logger, console, telemetry, stream publication,
+//   standard stream or event append is named, on L-P06C-1's recording-name mould;
+// - (v) the doors' own wrappers are held to one registration each (v3, verifier V1:
+//   B07 had a new unguarded GET call `effectResult` and serve the result with no
+//   bearer): `effectResult(` exactly once in gateway `src`, inside the
+//   `registerPrivateGet(app, API_ROUTES.taskEffectResult, …)` call; and
+//   `buildEffectResult(` exactly once in cli `src`, inside `runResult`, which the
+//   handler table binds to `result`.
+//
+// Stated limit: a text-level matcher, so a call through an alias, a bracket access
+// or a re-export under another name is not seen, and what `stripComments` hides it
+// does not read (ADR 0106 §Three). Clause (iv) reads names inside two function
+// bodies, so it does not see a logger reached through a file-level helper the
+// function calls (verifier B11), nor a file write (`writeFileSync`,
+// `appendFileSync`, `createWriteStream`) or a network send (`fetch`) there (Fable
+// C3): those are sinks §8.1 counts that its name list does not. The daemon's own reader of instruction blocks
+// (`composition` `instructionFor`) calls the plane directly for an INSTRUCTION, not
+// a result, and is outside this law; its private lease-store copy is inherited
+// debt with an owner row (ADR 0107).
+const RESULT_REFERENCE_NAMERS = [
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/projection/types/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/domains/runtime/src/core/events/index.ts",
+  "packages/domains/runtime/src/execution-chain/index.ts",
+  "packages/domains/runtime/src/operation-result/index.ts",
+  "packages/domains/runtime/src/operation-result/types/index.ts",
+];
+const REFERENCE_READ_HOME = "packages/persistence/ledger/src/artifact-plane/index.ts";
+const REFERENCE_READ_CALLERS = [
+  "packages/persistence/ledger/src/initiative-registration/index.ts",
+  "packages/domains/runtime/src/operation-result/index.ts",
+];
+const EFFECT_RESULT_HOME = "packages/domains/runtime/src/operation-result/index.ts";
+const EFFECT_RESULT_CALLERS = {
+  "packages/entrypoints/gateway/src/effect-result/index.ts": "export function effectResult(",
+  "packages/entrypoints/cli/src/observation/index.ts": "export function buildEffectResult(",
+};
+const RESULT_READ_RECORDING_NAMES =
+  /\b(?:logger|console|telemetry|setAttribute|appendEvent|buildEvent|stderr|stdout)\b|\bpublish\s*\(/;
+{
+  let resultReadScanned = 0;
+  const referenceCallers = new Set();
+  const resultCallers = new Set();
+  const resultCallSites = [];
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      resultReadScanned += 1;
+      const code = stripComments(content);
+      if (/\bresultArtifactReferenceId\b/.test(code) && !RESULT_REFERENCE_NAMERS.includes(relativePath)) {
+        fail(
+          relativePath +
+            " names a result's reference; only the ledger that records it and the runtime that publishes and" +
+            " reads it may, and a door serves what readEffectResult returned instead",
+        );
+      }
+      const referenceCalls = code.split("function readByReference(").join("").match(/\breadByReference\s*\(/g);
+      if (referenceCalls !== null && relativePath !== REFERENCE_READ_HOME) {
+        referenceCallers.add(relativePath);
+        if (!REFERENCE_READ_CALLERS.includes(relativePath)) {
+          fail(
+            relativePath +
+              " reads the private plane by reference; the objective reader and the result reader are its two callers",
+          );
+        }
+      }
+      const resultCode = code.split("function readEffectResult(").join("");
+      const resultCalls = resultCode.match(/\breadEffectResult\s*\(/g);
+      if (resultCalls !== null && relativePath !== EFFECT_RESULT_HOME) {
+        resultCallers.add(relativePath);
+        for (const match of resultCode.matchAll(/\breadEffectResult\s*\(/g)) {
+          resultCallSites.push({ relativePath, index: match.index ?? 0, code: resultCode });
+        }
+        if (!Object.hasOwn(EFFECT_RESULT_CALLERS, relativePath)) {
+          fail(
+            relativePath +
+              " calls readEffectResult; only the two private-read doors may -- the gateway's bearer-guarded" +
+              " route and the CLI's result verb (tests §8.1, decision 149)",
+          );
+        }
+      }
+    }
+  }
+  for (const caller of REFERENCE_READ_CALLERS) {
+    if (!referenceCallers.has(caller)) {
+      fail(caller + " no longer reads through readByReference; L-P15F-1 (ii) names a caller that is gone");
+    }
+  }
+  for (const [caller, declaration] of Object.entries(EFFECT_RESULT_CALLERS)) {
+    if (!resultCallers.has(caller)) {
+      fail(caller + " no longer calls readEffectResult; L-P15F-1 (iii) names a door that is gone");
+    }
+    // (iii) is function-level since P-15/F v4 (verifier v3 §2): a second exported
+    // function in the same door module -- `rawResult(...) { return readEffectResult(...) }`
+    // -- behind an unguarded GET served model output while a per-file rule stayed
+    // green. So the one call must sit inside the door's own function body, once.
+    const sites = resultCallSites.filter((site) => site.relativePath === caller);
+    if (sites.length > 0) {
+      const code = sites[0].code;
+      const doorBody = functionBody(code, declaration);
+      const at = doorBody === null ? -1 : code.indexOf(doorBody);
+      const inside = sites.filter((site) => doorBody !== null && site.index > at && site.index < at + doorBody.length);
+      if (inside.length !== sites.length) {
+        fail(caller + " calls readEffectResult( outside " + declaration.trim() + "; the door's own function is its one caller");
+      }
+      if (inside.length !== 1) {
+        fail(
+          caller +
+            " calls readEffectResult( " +
+            String(inside.length) +
+            " times inside " +
+            declaration.trim() +
+            "; exactly one call is lawful",
+        );
+      }
+    }
+    const body = functionBody(stripComments(readIfPresent(caller) ?? ""), declaration);
+    if (body === null) {
+      fail(caller + " no longer declares " + declaration.trim() + "; L-P15F-1 (iv) has no function to read");
+    } else if (RESULT_READ_RECORDING_NAMES.test(body)) {
+      fail(
+        caller +
+          ": " +
+          declaration.trim() +
+          " names a logger, a console, telemetry, a stream publication, a standard stream or an event append;" +
+          " a result's text leaves it only inside the document it returns",
+      );
+    }
+  }
+  if (!/\bresultArtifactReferenceId\b/.test(stripComments(readIfPresent(EFFECT_RESULT_HOME) ?? ""))) {
+    fail(EFFECT_RESULT_HOME + " no longer names resultArtifactReferenceId; L-P15F-1 (i) would match nothing");
+  }
+  // (v) The doors' own wrappers are held to their one registration each (P-15/F v3,
+  // verifier V1, B07). Without this, a new unguarded GET calling the gateway's
+  // exported `effectResult` served model output with no bearer and no `no-store`
+  // while every clause above stayed green. So in gateway `src`, `effectResult(` is
+  // called exactly once, inside the `registerPrivateGet(app,
+  // API_ROUTES.taskEffectResult, …)` registration; in cli `src`,
+  // `buildEffectResult(` exactly once, inside `runResult`, which the handler table
+  // binds to `result`. Zero sites is a stale law, not a pass.
+  const wrapperSites = (prefix, callee) => {
+    const sites = [];
+    if (tracked.status !== 0) return sites;
+    const callPattern = new RegExp("\\b" + callee + "\\s*\\(", "g");
+    for (const relativePath of tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
+      if (!relativePath.startsWith(prefix) || !/\.tsx?$/.test(relativePath)) continue;
+      const code = stripComments(readIfPresent(relativePath) ?? "").split("function " + callee + "(").join("");
+      for (const match of code.matchAll(callPattern)) sites.push({ relativePath, index: match.index ?? 0, code });
+    }
+    return sites;
+  };
+  /** The span of the balanced call that opens at `open` (an index of its `(`), strings skipped. */
+  const callSpan = (code, open) => {
+    let depth = 0;
+    let quote = null;
+    for (let cursor = open; cursor < code.length; cursor += 1) {
+      const character = code[cursor];
+      if (quote !== null) {
+        if (character === "\\") cursor += 1;
+        else if (character === quote) quote = null;
+        continue;
+      }
+      if (character === '"' || character === "'" || character === "`") quote = character;
+      else if (character === "(") depth += 1;
+      else if (character === ")") {
+        depth -= 1;
+        if (depth === 0) return [open, cursor];
+      }
+    }
+    return [open, code.length];
+  };
+  const gatewayWrapper = wrapperSites("packages/entrypoints/gateway/src/", "effectResult");
+  if (gatewayWrapper.length !== 1) {
+    fail(
+      "the gateway calls effectResult( at " +
+        String(gatewayWrapper.length) +
+        " sites; exactly one is lawful, inside the registerPrivateGet registration of taskEffectResult",
+    );
+  } else {
+    const [site] = gatewayWrapper;
+    const registration = /registerPrivateGet\(\s*app,\s*API_ROUTES\.taskEffectResult\b/.exec(site.code);
+    const inside =
+      site.relativePath === "packages/entrypoints/gateway/src/routes/index.ts" &&
+      registration !== null &&
+      (() => {
+        const [from, to] = callSpan(site.code, registration.index + "registerPrivateGet".length);
+        return site.index > from && site.index < to;
+      })();
+    if (!inside) {
+      fail(site.relativePath + " calls effectResult( outside the registerPrivateGet registration of taskEffectResult");
+    }
+  }
+  const cliWrapper = wrapperSites("packages/entrypoints/cli/src/", "buildEffectResult");
+  if (cliWrapper.length !== 1) {
+    fail(
+      "the CLI calls buildEffectResult( at " +
+        String(cliWrapper.length) +
+        " sites; exactly one is lawful, inside runResult, the result verb's handler",
+    );
+  } else {
+    const [site] = cliWrapper;
+    const body = functionBody(site.code, "function runResult(");
+    const bodyAt = body === null ? -1 : site.code.indexOf(body);
+    const inside =
+      site.relativePath === "packages/entrypoints/cli/src/cli/index.ts" &&
+      body !== null &&
+      site.index > bodyAt &&
+      site.index < bodyAt + body.length &&
+      /\bresult: runResult\b/.test(site.code);
+    if (!inside) {
+      fail(site.relativePath + " calls buildEffectResult( outside runResult, the handler the result verb dispatches to");
+    }
+  }
+  requireScope("a result's bytes leave the plane only through readEffectResult, to two doors", resultReadScanned);
+  notes.push(
+    "a result's bytes leave the plane only through readEffectResult, called by " +
+      Object.keys(EFFECT_RESULT_CALLERS).join(" and ") +
+      ", over " +
+      String(resultReadScanned) +
+      " sources",
+  );
+}
+
+// L-P15F-2 -- every private read route is registered behind the bearer (P-15
+// escalón F, ADR 0107; decision 153).
+//
+// The twin of the write door's structural guard: every name in the protocol's
+// closed `API_PRIVATE_READ_ROUTES` table is registered through the gateway's
+// `registerPrivateGet` and through nothing else, and `registerPrivateGet` registers
+// nothing outside the table. So a private route is guarded by where it is written,
+// and a route leaves the table only by an edit this law sees. The registrar itself
+// must still refuse an unconfigured server and check the bearer before its handler.
+// Stated limit (v3, verifier B09): the order is read from the first textual
+// `return handler(` in the registrar, so a conditional earlier call assigned to a
+// variable before the bearer check (`const early = handler(…); return early;`) is
+// not seen.
+const PRIVATE_READ_TABLE_SITE = "packages/kernel/protocol/src/routes/index.ts";
+const PRIVATE_READ_REGISTRAR_SITE = "packages/entrypoints/gateway/src/routes/index.ts";
+{
+  const table = stripComments(readIfPresent(PRIVATE_READ_TABLE_SITE) ?? "");
+  const routes = stripComments(readIfPresent(PRIVATE_READ_REGISTRAR_SITE) ?? "");
+  const tableMatch = /export const API_PRIVATE_READ_ROUTES = Object\.freeze\(\[([^\]]*)\]/.exec(table);
+  const members = tableMatch === null ? [] : [...(tableMatch[1] ?? "").matchAll(/"([A-Za-z]+)"/g)].map((match) => match[1]);
+  if (tableMatch === null) {
+    fail(PRIVATE_READ_TABLE_SITE + " no longer declares API_PRIVATE_READ_ROUTES as a frozen array; L-P15F-2 has no table");
+  }
+  for (const name of members) {
+    const guardedSite = new RegExp("registerPrivateGet\\(\\s*app,\\s*API_ROUTES\\." + name + "\\b");
+    if (!guardedSite.test(routes)) {
+      fail(PRIVATE_READ_REGISTRAR_SITE + " does not register the private read " + name + " through registerPrivateGet");
+    }
+    const openSite = new RegExp("register(?:Get|GetAndPost|Stream)\\(\\s*app,\\s*API_ROUTES\\." + name + "\\b");
+    if (openSite.test(routes)) {
+      fail(PRIVATE_READ_REGISTRAR_SITE + " registers the private read " + name + " through an unguarded registrar");
+    }
+  }
+  const registered = [...routes.matchAll(/registerPrivateGet\(\s*app,\s*API_ROUTES\.([A-Za-z]+)/g)].map((match) => match[1]);
+  for (const name of registered) {
+    if (!members.includes(name)) {
+      fail(PRIVATE_READ_REGISTRAR_SITE + " registers " + name + " behind the bearer without naming it in API_PRIVATE_READ_ROUTES");
+    }
+  }
+  const registrar = functionBody(routes, "function registerPrivateGet(");
+  if (registrar === null) {
+    fail(PRIVATE_READ_REGISTRAR_SITE + " no longer declares registerPrivateGet; the private reads have no guard");
+  } else {
+    const unconfigured = registrar.indexOf('"PRIVATE_READ_UNCONFIGURED"');
+    const accepts = registrar.indexOf("bearer.guard.accepts(");
+    const handled = registrar.indexOf("return handler(");
+    if (unconfigured === -1 || accepts === -1 || handled === -1 || !(unconfigured < accepts && accepts < handled)) {
+      fail(
+        PRIVATE_READ_REGISTRAR_SITE +
+          ": registerPrivateGet must refuse an unconfigured server, then check the bearer, and only then run its handler",
+      );
+    }
+  }
+  requireScope("every private read route is registered behind the bearer", members.length);
+  notes.push("every private read route (" + members.join(", ") + ") is registered behind the bearer through registerPrivateGet");
 }
 
 // L-P32A-2 -- the settlement fold reads no clock, no environment and no

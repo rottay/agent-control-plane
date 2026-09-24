@@ -1,14 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { LedgerEventRecord } from "@acp/ledger";
-import { openLedger } from "@acp/ledger";
-import { LEDGER_CONTRACT_VERSION } from "@acp/protocol";
+import { artifactPlaneRootFor, openLedger } from "@acp/ledger";
+import { API_CONTRACT_VERSION, ApiError, LEDGER_CONTRACT_VERSION, TaskEffectsResponse } from "@acp/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { toTimelineItem } from "../../src/observation/index.js";
+import { EXIT_NOT_FOUND, EXIT_OK, EXIT_USAGE, run } from "../../src/cli/index.js";
+import type { CliIo } from "../../src/cli/index.js";
+import { buildTaskEffects, toTimelineItem } from "../../src/observation/index.js";
 
 /**
  * The CLI door's own fixture for the payload-key projection (P-12, structure
@@ -119,5 +121,107 @@ describe("the CLI's timeline item projects payload keys", () => {
       "k50", "k51", "k52", "k53", "k54", "k55", "k56", "k57", "k58", "k59",
       "k60", "k61", "k62", "k63",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15/F: the two effect verbs (ADR 0107)
+// ---------------------------------------------------------------------------
+
+interface Invocation {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+async function invoke(argv: readonly string[]): Promise<Invocation> {
+  let stdout = "";
+  let stderr = "";
+  const io: CliIo = {
+    stdout: (chunk) => {
+      stdout += chunk;
+    },
+    stderr: (chunk) => {
+      stderr += chunk;
+    },
+    now: () => AT,
+  };
+  const exitCode = await run(argv, io);
+  return { exitCode, stdout, stderr };
+}
+
+/** A ledger holding one discovered task and no effects, closed. */
+function seededTask(): { readonly path: string; readonly taskId: string } {
+  const path = temporaryDatabase();
+  const ledger = openLedger(path);
+  const event = makeEvent({});
+  ledger.append(event);
+  ledger.close();
+  return { path, taskId: event["taskId"] as string };
+}
+
+const EFFECT = "a".repeat(64);
+
+describe("P-15/F: acp effects lists a task's effects, query-only", () => {
+  it("prints the document the builder answers, and a stated absence in human form", async () => {
+    const { path, taskId } = seededTask();
+    const listed = await invoke(["effects", taskId, "--database", path, "--format", "json"]);
+    expect(listed.exitCode).toBe(EXIT_OK);
+    expect(listed.stderr).toBe("");
+    const ledger = openLedger(path, { readOnly: true });
+    try {
+      expect(TaskEffectsResponse.parse(JSON.parse(listed.stdout))).toEqual(buildTaskEffects(ledger, taskId));
+    } finally {
+      ledger.close();
+    }
+    expect(JSON.parse(listed.stdout)).toMatchObject({ apiContractVersion: API_CONTRACT_VERSION, taskId, effects: [], truncated: false });
+    const human = await invoke(["effects", taskId, "--database", path]);
+    expect(human.exitCode).toBe(EXIT_OK);
+    expect(human.stdout).toContain("(none)");
+  });
+
+  it("answers NOT_FOUND for an unknown task and a usage error for a task id that is not a uuid", async () => {
+    const { path } = seededTask();
+    const unknown = await invoke(["effects", randomUUID(), "--database", path, "--format", "json"]);
+    expect(unknown.exitCode).toBe(EXIT_NOT_FOUND);
+    expect(unknown.stdout).toBe("");
+    const bad = await invoke(["effects", "not-a-uuid", "--database", path, "--format", "json"]);
+    expect(bad.exitCode).toBe(EXIT_USAGE);
+  });
+});
+
+describe("P-15/F N-F-23: acp result reads query-only and refuses by name", () => {
+  it("opens the ledger read-only: the file does not change and no private root is created", async () => {
+    const { path, taskId } = seededTask();
+    const before = { bytes: readFileSync(path), mtimeMs: statSync(path).mtimeMs };
+    const answered = await invoke(["result", "--task", taskId, "--effect", EFFECT, "--database", path, "--format", "json"]);
+    expect(answered.exitCode).toBe(EXIT_NOT_FOUND);
+    expect(answered.stdout).toBe("");
+    expect(ApiError.parse(JSON.parse(answered.stderr)).error.code).toBe("NOT_FOUND");
+    expect(readFileSync(path).equals(before.bytes)).toBe(true);
+    expect(statSync(path).mtimeMs).toBe(before.mtimeMs);
+    expect(existsSync(artifactPlaneRootFor(path))).toBe(false);
+  });
+
+  it("refuses a missing id, an id that is not the ledger's shape, a bad block and a positional, with nothing on stdout", async () => {
+    const { path, taskId } = seededTask();
+    const cases: { readonly argv: readonly string[]; readonly detail: string | null }[] = [
+      { argv: ["result", "--task", taskId], detail: "acp result" },
+      { argv: ["result", "--effect", EFFECT], detail: "acp result" },
+      { argv: ["result", "--task", taskId, "--effect", "A".repeat(64)], detail: "effect" },
+      { argv: ["result", "--task", taskId, "--effect", "a".repeat(201)], detail: "effect" },
+      { argv: ["result", "--task", "not-a-uuid", "--effect", EFFECT], detail: null },
+      { argv: ["result", "--task", taskId, "--effect", EFFECT, "--block", "x"], detail: null },
+      { argv: ["result", "extra", "--task", taskId, "--effect", EFFECT], detail: null },
+    ];
+    for (const { argv, detail } of cases) {
+      const answered = await invoke([...argv, "--database", path, "--format", "json"]);
+      expect({ argv, exitCode: answered.exitCode }).toEqual({ argv, exitCode: EXIT_USAGE });
+      expect(answered.stdout).toBe("");
+      const envelope = ApiError.parse(JSON.parse(answered.stderr));
+      expect(envelope.error.code).toBe("BAD_REQUEST");
+      if (detail !== null) expect(envelope.error.detail).toBe(detail);
+      expect(answered.stderr).not.toContain("A".repeat(64));
+    }
   });
 });

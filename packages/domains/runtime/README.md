@@ -328,6 +328,14 @@ P-07 escalón D (ADR 0100) gives an effect its answer, in three pieces.
 - **`buildResponseOccurrenceEvent`** records the answer's digest and length, which
   are the published `RESPONSE`'s own, against the prompt it answers. It builds its
   record as one literal of the ledger's five keys.
+- **`readEffectResult`** (P-15/F, ADR 0107; on the barrel) reads an effect's result
+  back by reference, for the two private-read doors only: the gateway's
+  bearer-guarded route and the CLI's `result` verb. It returns a closed answer --
+  `NOT_FOUND`, `NO_OUTCOME`, `OUTCOME_UNKNOWN`, `CANCELLED`, `NO_RESULT_RECORDED` with
+  its cohort, `RESULT` with the parsed document and, when asked, one block read by its
+  own reference, or `RESULT_UNREADABLE` with a closed word -- and serves `RESPONSE`
+  bytes and nothing else (`CLASS_REFUSED`). It reads through the ledger's
+  `readByReference` and appends, writes and logs nothing.
 
 Since P-15 escalón D3 the recorder is wired, through the execution chain below,
 and the task's terminal state is coupled to the effect's outcome there.

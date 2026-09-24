@@ -80,6 +80,7 @@ import {
   utf8ByteLength,
   USAGE_REPORT_KINDS,
   USAGE_SOURCE_CLASSES,
+  EFFECT_OUTCOME_STATUSES,
   PRODUCT_PATH_MARKERS,
   CanonicalInstant,
   Timestamp,
@@ -2119,6 +2120,12 @@ describe("ExecutionEvent", () => {
   it("P-15/D2: the usage vocabularies are the ones the ledger's CHECKs hold, in precedence order", () => {
     expect([...USAGE_SOURCE_CLASSES]).toEqual(["PROVIDER_AUTHORITATIVE", "WRAPPER_MEASURED", "ESTIMATE"]);
     expect([...USAGE_REPORT_KINDS]).toEqual(["DELTA", "CUMULATIVE", "CORRECTION"]);
+  });
+
+  it("P-15/F: the effect outcome vocabulary is the four words the ledger's CHECKs hold, in their order", () => {
+    // Moved down from the ledger on D2's mould (decision 151); the ledger re-exports it
+    // and its suite holds the two CHECK texts equal to this set.
+    expect([...EFFECT_OUTCOME_STATUSES]).toEqual(["SUCCEEDED", "FAILED", "CANCELLED", "OUTCOME_UNKNOWN"]);
   });
 
   it("P-15/D3: the product-path markers are the providers' five, frozen, as data only", () => {

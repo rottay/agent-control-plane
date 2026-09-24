@@ -32,9 +32,11 @@ import {
   API_CONTRACT_VERSION,
   EventsQuery,
   LEDGER_CONTRACT_VERSION,
+  TaskEffectResultQuery,
   TasksQuery,
   WorkersQuery,
   accountActionsPath,
+  taskEffectResultPath,
   taskPath,
   workerPath,
 } from "@acp/protocol";
@@ -74,6 +76,7 @@ import {
   renderOverview,
   renderStatus,
   renderTaskDetail,
+  renderTaskEffects,
   renderTaskPage,
   renderWorkerDetail,
   renderWorkerPage,
@@ -91,7 +94,9 @@ import {
   buildIntegrity,
   buildOverview,
   buildStatus,
+  buildEffectResult,
   buildTaskDetail,
+  buildTaskEffects,
   buildToolCallPage,
   buildTaskPage,
   buildUnavailableOverview,
@@ -177,6 +182,8 @@ const OPTIONS = {
   role: { type: "string" },
   provider: { type: "string" },
   task: { type: "string" },
+  effect: { type: "string" },
+  block: { type: "string" },
   type: { type: "string" },
   "emitted-by": { type: "string" },
   "to-state": { type: "string" },
@@ -325,6 +332,24 @@ const COMMANDS: readonly CommandSpec[] = [
     positional: null,
     options: [],
     summary: "verify the hash chain, the schema and the projections",
+  },
+  // P-15/F. A task's effects, the CLI's side of `taskEffects`: ids, coordinates
+  // and outcome words, never a reference, a digest or a byte of a result.
+  {
+    name: "effects",
+    positional: "<task-id>",
+    options: [],
+    summary: "list one task's effects and whether each recorded a result",
+  },
+  // P-15/F. One effect's result, read back by reference: the CLI's private read,
+  // authorized by the operator's own access to the ledger and the private plane.
+  // It prints the document the bearer-guarded route answers, JSON regardless of
+  // --format, and opens the ledger query-only like every read verb.
+  {
+    name: "result",
+    positional: null,
+    options: ["task", "effect", "block"],
+    summary: "print one effect's result document, or one block of it, read by reference",
   },
   // V2-B7S. The one verb that plans rather than observes, and the only one
   // that needs no ledger: it reads a daemon config document, re-elects its
@@ -572,7 +597,8 @@ function failure(
  * with no author, and a `2` tells an operator's script the arguments were
  * wrong. Written as a table the compiler settles it: a sixteenth member is a
  * type error here, at the same stage that already checks the gateway's
- * `STATUS_BY_CODE`, and the fence checks that these two name the same fifteen.
+ * `STATUS_BY_CODE`, and the fence checks that these two name the same codes --
+ * sixteen since P-15/F added `PRIVATE_READ_UNCONFIGURED`, which proved it.
  *
  * Every number below is the number this package answered before it became a
  * table. Re-assigning any of them — the 503 family earning `EXIT_UNAVAILABLE`,
@@ -603,6 +629,9 @@ const EXIT_BY_CODE: Record<ApiErrorCode, number> = {
   // is the successor question ADR 0053 records rather than answers.
   AUTH_REQUIRED: EXIT_USAGE,
   WRITE_BEARER_UNCONFIGURED: EXIT_USAGE,
+  // P-15/F: the private read's twin of the line above, and the API's state for
+  // the same reason -- the CLI's authorization is filesystem access, not a bearer.
+  PRIVATE_READ_UNCONFIGURED: EXIT_USAGE,
   TOOL_SERVERS_UNCONFIGURED: EXIT_USAGE,
   // A gateway's connection ceiling. A CLI invocation is one process holding no
   // long-lived connection, so it cannot be the ninth caller.
@@ -1097,6 +1126,73 @@ function runIntegrity(context: CommandContext): CommandResult {
   };
 }
 
+function runEffects(context: CommandContext): CommandResult {
+  const taskId = requirePositional(context, "<task-id>");
+  try {
+    taskPath(taskId);
+  } catch (error: unknown) {
+    throw usageFailure("the task id is not a uuid", issuePaths(error));
+  }
+  const response = buildTaskEffects(context.ledger, taskId);
+  if (response === null) {
+    throw failure(EXIT_NOT_FOUND, "NOT_FOUND", "no task with that id is recorded", null);
+  }
+  return ok(response, renderTaskEffects(response));
+}
+
+/**
+ * One effect's result (P-15 escalón F, ADR 0107).
+ *
+ * The ids are validated by the protocol's own path builder, so the CLI and the
+ * route agree on what an effect id is; `--block` by the route's own query
+ * schema. A refusal is an envelope on stderr and a number, never a partial
+ * document: `NOT_FOUND` for an absent effect or another task's, the integrity
+ * exit with the closed word as its only detail when the plane cannot give the
+ * bytes back, and a usage error naming `block` for a block that is not read by
+ * reference. The document is JSON whatever `--format` says, as the tool call's is.
+ */
+function runResult(context: CommandContext): CommandResult {
+  if (context.positionals.length > 1) {
+    throw usageFailure("result takes no positional argument", null);
+  }
+  const taskId = stringOption(context.values, "task");
+  const effectId = stringOption(context.values, "effect");
+  if (taskId === undefined || effectId === undefined) {
+    throw usageFailure("--task and --effect are required", "acp result");
+  }
+  try {
+    taskPath(taskId);
+  } catch (error: unknown) {
+    throw usageFailure("the task id is not a uuid", issuePaths(error));
+  }
+  try {
+    taskEffectResultPath(taskId, effectId);
+  } catch {
+    throw usageFailure("the effect id is not an effect id: 64 lowercase hex", "effect");
+  }
+  const query = parseQuery(TaskEffectResultQuery, { block: stringOption(context.values, "block") });
+  const answer = buildEffectResult(context.ledger, taskId, effectId, query.block ?? null);
+  switch (answer.kind) {
+    case "NOT_FOUND":
+      throw failure(EXIT_NOT_FOUND, "NOT_FOUND", "no effect with that id is recorded for that task", null);
+    case "BLOCK_REFUSED":
+      throw usageFailure("block names no block of this result that is read by reference", "block");
+    case "UNREADABLE":
+      throw failure(
+        EXIT_INTEGRITY,
+        "LEDGER_INTEGRITY",
+        "the ledger names a result the private plane cannot give back",
+        answer.refusal,
+      );
+    case "DOCUMENT":
+      return ok(answer.response, renderJson(answer.response));
+    default: {
+      const unreachable: never = answer;
+      return unreachable;
+    }
+  }
+}
+
 function requirePositional(context: CommandContext, label: string): string {
   const value = context.positionals[1];
   if (value === undefined || value === "") {
@@ -1118,6 +1214,8 @@ const HANDLERS: Readonly<Record<string, (context: CommandContext) => CommandResu
   status: runStatus,
   integrity: runIntegrity,
   "tool-calls": runToolCalls,
+  effects: runEffects,
+  result: runResult,
 };
 
 // ---------------------------------------------------------------------------

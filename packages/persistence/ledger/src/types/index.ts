@@ -10,6 +10,7 @@ import type {
   RetentionClass,
   ControlPlaneEvent,
   ControlPlaneEventType,
+  EffectOutcomeStatus,
   InitiativeEvent,
   InitiativeEventType,
   InitiativeStatus,
@@ -444,19 +445,15 @@ export type ModelResolutionStatus = (typeof MODEL_RESOLUTION_STATUSES)[number];
 /**
  * How a logical effect turned out — execution §6's `effect_outcome_status`.
  *
- * The same four `task_attempt_read_model.outcome` admits, and the fourth is the
- * one that carries the packet's whole point. `OUTCOME_UNKNOWN` is **not** a
- * failure: it is a recorded uncertain exposure, it does not license a blind
- * retry, and it is never the default of creation — an intention never
- * dispatched carries `null`, which is absence of data (execution §6 `:252`).
+ * Declared once, in `@acp/contracts`' `effect-outcome` module since P-15/F (ADR 0107,
+ * decision 151), and re-exported here under the same names so every importer of
+ * this leaf and of the ledger barrel reads it unchanged — P-15/D2's mould. The same
+ * four `task_attempt_read_model.outcome` and `effect_read_model.outcome_status`
+ * admit; the SQL CHECK text of both is the cohort's pinned text, unchanged, and a
+ * ledger test holds it equal to the set. `OUTCOME_UNKNOWN` is **not** a failure.
  */
-export const EFFECT_OUTCOME_STATUSES = [
-  "SUCCEEDED",
-  "FAILED",
-  "CANCELLED",
-  "OUTCOME_UNKNOWN",
-] as const;
-export type EffectOutcomeStatus = (typeof EFFECT_OUTCOME_STATUSES)[number];
+export { EFFECT_OUTCOME_STATUSES } from "@acp/contracts";
+export type { EffectOutcomeStatus } from "@acp/contracts";
 
 /**
  * The five states of one delivery — execution §7 `:347`, and there are five.
@@ -629,6 +626,15 @@ export interface EffectReadModel {
   readonly resultArtifactReferenceId: string | null;
   readonly resultSha256: string | null;
   readonly sequence: number;
+}
+
+/**
+ * One page of a task's effects (P-15/F v3, ADR 0107): at most the limit asked for,
+ * in intention order, and whether the task has more than that.
+ */
+export interface TaskEffectPage {
+  readonly effects: readonly EffectReadModel[];
+  readonly truncated: boolean;
 }
 
 /**

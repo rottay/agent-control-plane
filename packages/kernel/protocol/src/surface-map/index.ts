@@ -105,6 +105,8 @@ export const SURFACE_MAP: readonly SurfaceEntry[] = Object.freeze([
   entry("attach", "taskLifecycle", "POST", "DOCUMENT"),
   entry("initiative", "initiatives", "POST", "DOCUMENT"),
   entry("intake", "tasks", "POST", "DOCUMENT"),
+  entry("effects", "taskEffects", "GET", "PROJECTION"),
+  entry("result", "taskEffectResult", "GET", "DOCUMENT"),
   entry("submission", null, null, "CLI_ONLY",
     "a planning verb: it re-elects a config's route and prints the document; it opens " +
       "the ledger query-only and appends nothing, and the plane exposes no route that plans"),

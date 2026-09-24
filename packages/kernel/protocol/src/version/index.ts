@@ -198,8 +198,27 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * though this packet adds a migration: migration 19 creates a derived table,
  * which is ledger schema and not the shape of a recorded event. ADR 0087 carries
  * the reasoning.
+ *
+ * `0.18.0` → `0.19.0` at P-15/F: two routes and one error word. `taskEffects`
+ * lists a task's effects — ids, coordinates, outcome words and whether a result
+ * exists, never a reference, a digest or a byte of one — and `taskEffectResult`
+ * reads one effect's result back by reference, the first GET of this plane that
+ * is not free: it answers model output, so it is named in the new closed table
+ * `API_PRIVATE_READ_ROUTES` and answered only behind the bearer. Four schemas
+ * arrive with them (`TaskEffectsResponse`, `TaskEffectResultQuery`,
+ * `TaskEffectResultResponse`, and `EFFECT_RESULT_STATES`), and
+ * `PRIVATE_READ_UNCONFIGURED` joins the error vocabulary, fifteen words to
+ * sixteen, for a server started without a bearer.
+ *
+ * Minor for the reason `0.13.0` gave first: the route surface moves.
+ * `API_ALLOWED_METHODS` stays `["GET"]` and `API_WRITE_ROUTES` stays at six —
+ * both routes are reads. No existing DTO changes shape: a task's detail does not
+ * grow an effects list, which is a sibling route of its own so the console's
+ * reading of `TaskDetail` stays untouched. `CONTRACT_VERSION` and
+ * `LEDGER_CONTRACT_VERSION` do not move: a read adds no recorded shape. ADR 0107
+ * carries the reasoning.
  */
-export const API_CONTRACT_VERSION = "0.18.0" as const;
+export const API_CONTRACT_VERSION = "0.19.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

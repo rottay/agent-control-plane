@@ -60,6 +60,9 @@ const STATUS_BY_CODE: Record<ApiErrorCode, number> = {
   // 403, not 401: no credential would work, because this process holds none.
   // A 401 invites a retry with better headers; there is no better header.
   WRITE_BEARER_UNCONFIGURED: 403,
+  // 403, the read-side twin of the line above (P-15/F): no bearer was
+  // configured, so no private read can be authorized and no header would help.
+  PRIVATE_READ_UNCONFIGURED: 403,
   // 503, beside LEDGER_UNAVAILABLE and deliberately not 400 or 429 (V2-B3a).
   // The ninth caller sent nothing wrong: this process is at its stream
   // connection ceiling, which is a fact about this process's current capacity

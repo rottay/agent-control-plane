@@ -38,6 +38,8 @@ import {
   StreamFrame,
   ToolCallPageResponse,
   TaskLifecycleResponse,
+  TaskEffectResultResponse,
+  TaskEffectsResponse,
 } from "../../src/schemas/index.js";
 
 describe("the contract covers every frozen route", () => {
@@ -146,7 +148,11 @@ describe("the binding table matches the schemas it claims to bind", () => {
     // across the doors is proved by the equivalence suite instead, which is a
     // different claim and is kept apart on purpose.
     taskLifecycle: TaskLifecycleResponse,
-  };
+      // P-15/F. The effects list is a projection like any page; the result is a
+    // document read by reference, bound whole and compared across the two doors.
+    taskEffects: TaskEffectsResponse,
+    taskEffectResult: TaskEffectResultResponse,
+};
 
   it("binds the roadmap route's read, and deliberately not its write (P8-8D-pre)", () => {
     // Parity is an equality over what the three clients *render*. The write

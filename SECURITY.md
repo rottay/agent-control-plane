@@ -46,8 +46,8 @@ The port is not part of the boundary: a caller may choose another.
 
 ## The write door, and why it is armed differently
 
-Reads are free. Writes are not, because a write reachable by anything that can
-reach the port is a different risk from a read.
+Reads are free, but one (below). Writes are not, because a write reachable by
+anything that can reach the port is a different risk from a read.
 
 The guard is armed inside the **write registrar**, not sprinkled over handlers.
 That is structural rather than remembered: a future write route registered
@@ -73,6 +73,32 @@ Three properties, each mechanical:
 > Anchor: `packages/entrypoints/gateway/src/bearer/index.ts` — `timingSafeEqual`
 > Anchor: `packages/entrypoints/gateway/src/bearer/index.ts` — `Fail-closed`
 > Anchor: `packages/kernel/protocol/src/routes/index.ts` — `export const API_WRITE_ROUTES`
+
+**One read is guarded too (P-15/F, ADR 0107).** Observation stays free, with one
+exception: `taskEffectResult` (`GET /api/v1/tasks/:taskId/effects/:effectId/result`)
+answers **model output**, which tests §8.1 admits on a public response only as an
+explicitly authorized read (decision 149). It is named in a third frozen table,
+`API_PRIVATE_READ_ROUTES`, and registered through the read-side twin of the write
+registrar, `registerPrivateGet`, so it is guarded by where it is registered:
+
+- **Fail-closed.** A server started without a token answers
+  `403 PRIVATE_READ_UNCONFIGURED`; a missing or wrong bearer answers
+  `401 AUTH_REQUIRED`, one answer for both. The bearer is checked before any
+  parameter is read.
+- **One credential.** The same token file authorizes writes and this read until
+  P-36's read policy; there is no least privilege between the two uses yet.
+- **Never cached.** Every answer on the path, a `200` or an error — the framework's
+  own refusals included — carries `Cache-Control: no-store`, and error bodies are
+  closed words, never a byte or a path.
+- **`RESPONSE` only.** The read serves model output and nothing else: a reference
+  of another class is refused `CLASS_REFUSED`, so the task's own envelope is never
+  handed out through it.
+
+On the CLI, `acp result` is the same read; its authorization is the operator's own
+access to the ledger and the private plane beside it (root `0700`, objects `0600`).
+
+> Anchor: `packages/entrypoints/gateway/src/routes/index.ts` — `function registerPrivateGet(`
+> Anchor: `packages/kernel/protocol/src/routes/index.ts` — `export const API_PRIVATE_READ_ROUTES`
 
 ## No secret enters this repository
 

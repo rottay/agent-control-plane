@@ -81,6 +81,11 @@ import {
   ToolCallExecuteRequest,
   ToolCallExecuteResponse,
   ToolCallRow,
+  EFFECT_RESULT_STATES,
+  MAX_TASK_EFFECTS,
+  TaskEffectResultQuery,
+  TaskEffectResultResponse,
+  TaskEffectsResponse,
 } from "../../src/index.js";
 
 /**
@@ -2297,10 +2302,10 @@ describe("the initiative registration's wire contract (P-14/B)", () => {
 
   it("N-P14B-14: moves the API version and the write table, and adds no error code", () => {
     // `0.16.0` when it landed; P-14/C's sixth write door moved it again.
-    expect(API_CONTRACT_VERSION).toBe("0.18.0");
+    expect(API_CONTRACT_VERSION).toBe("0.19.0");
     expect(isWriteRoute("initiatives")).toBe(true);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
-    expect(API_ERROR_CODES).toHaveLength(15);
+    expect(API_ERROR_CODES).toHaveLength(16);
   });
 });
 
@@ -2454,11 +2459,11 @@ describe("the task intake's wire contract (P-14/C)", () => {
   });
 
   it("N-P14C-23: moves the API version and the write table, and adds no method and no error code", () => {
-    expect(API_CONTRACT_VERSION).toBe("0.18.0");
+    expect(API_CONTRACT_VERSION).toBe("0.19.0");
     expect(isWriteRoute("tasks")).toBe(true);
     expect(API_WRITE_ROUTES).toHaveLength(6);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
-    expect(API_ERROR_CODES).toHaveLength(15);
+    expect(API_ERROR_CODES).toHaveLength(16);
     // Derived from `CONTRACT_VERSION`, which P-15 escalón C moved to 2.9.0 (ADR 0103).
     expect(LEDGER_CONTRACT_VERSION).toBe("2.9.0");
   });
@@ -2587,7 +2592,7 @@ describe("the registry publication's request (P-15/R, ADR 0104)", () => {
       RegistryPublicationResponse.safeParse({ ...response, document: { ...response.document, documentKind: "CAPABILITY_POLICY" } }).success,
     ).toBe(false);
     // No route parses it: the API contract version and the write table do not move.
-    expect(API_CONTRACT_VERSION).toBe("0.18.0");
+    expect(API_CONTRACT_VERSION).toBe("0.19.0");
     expect(API_WRITE_ROUTES).toHaveLength(6);
   });
 });
@@ -3079,7 +3084,7 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.18.0");
+    expect(API_CONTRACT_VERSION).toBe("0.19.0");
   });
 
   it("names the thirteenth error code, and the version the surface now stands at", () => {
@@ -3088,7 +3093,7 @@ describe("the tool call's wire contract", () => {
     // version docblock states, and the one `WRITE_REFUSED`, `STREAM_CAPACITY`
     // and `TOOL_SERVERS_UNCONFIGURED` each set. Hence a minor, not a patch.
     expect(API_ERROR_CODES).toContain("CLAIM_HELD");
-    expect(API_ERROR_CODES).toHaveLength(15);
+    expect(API_ERROR_CODES).toHaveLength(16);
     // The literal is the version the surface stands at TODAY, not the one this
     // code arrived with, and the two titles were corrected at V2-B3c to stop
     // saying otherwise. `CLAIM_HELD` landed at `0.11.0`; the constant has since
@@ -3096,7 +3101,7 @@ describe("the tool call's wire contract", () => {
     // that did not move with it is exactly the point — the version tracks the
     // whole surface, not one list. The number stays a literal so it is asserted
     // rather than echoed.
-    expect(API_CONTRACT_VERSION).toBe("0.18.0");
+    expect(API_CONTRACT_VERSION).toBe("0.19.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
@@ -3108,8 +3113,8 @@ describe("the tool call's wire contract", () => {
     // silently answers the wrong status for one of them.
     expect(API_ERROR_CODES).toContain("CAPABILITY_UNSUPPORTED");
     expect(API_ERROR_CODES).toContain("SCENARIO_UNCONFIGURED");
-    expect(API_ERROR_CODES).toHaveLength(15);
-    expect(API_CONTRACT_VERSION).toBe("0.18.0");
+    expect(API_ERROR_CODES).toHaveLength(16);
+    expect(API_CONTRACT_VERSION).toBe("0.19.0");
 
     // The distinction is the reason both exist. `SCENARIO_UNCONFIGURED` is an
     // operator problem a restart fixes, on the shape
@@ -3224,5 +3229,176 @@ describe("P-15/I: the registry instant reads contracts' canonical instant, verdi
       const admitted = result.success || !result.error.issues.some((issue) => issue.path[0] === "observedAt");
       expect(admitted, String(entry.vector)).toBe(entry.timestamp);
     }
+  });
+});
+
+describe("P-15/F: the effect reads on the wire (ADR 0107)", () => {
+  const TASK = "3f2a9c1e-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
+  const EFFECT = "a".repeat(64);
+  const AT = "2026-09-23T12:00:00.000Z";
+  // Digests stated, not computed: this suite imports only its measured set, and
+  // `node:crypto` is not in it. sha256("ok") and sha256("the answer").
+  const DIGESTS: Readonly<Record<string, string>> = {
+    ok: "2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df",
+    "the answer": "a7c9985d46ca5719357525cc365641e45d6882fb66949d4c08989883f8148c8b",
+  };
+  const sha = (text: string): string => DIGESTS[text] ?? "";
+  const document = (status: "SUCCEEDED" | "FAILED", effectId = EFFECT): Record<string, unknown> => ({
+    resultContractVersion: 1,
+    effectId,
+    status,
+    blocks: [
+      {
+        kind: "text",
+        blockId: "output-001",
+        mediaType: "text/plain; charset=utf-8",
+        byteLength: 2,
+        contentSha256: sha("ok"),
+        artifactRefId: null,
+        text: "ok",
+        toolCallId: null,
+        effectId: null,
+      },
+    ],
+    usageReference: effectId,
+  });
+  const base = {
+    apiContractVersion: API_CONTRACT_VERSION,
+    ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+    taskId: TASK,
+    effectId: EFFECT,
+  };
+  const result = {
+    ...base,
+    state: "RESULT",
+    outcomeStatus: "SUCCEEDED",
+    outcomeRecordedAt: AT,
+    cohort: "CURRENT",
+    result: { resultSha256: "b".repeat(64), artifactReferenceId: "ref-result", document: document("SUCCEEDED") },
+    blockContent: null,
+  };
+  const empty = (state: string, outcomeStatus: string | null, cohort: string | null): Record<string, unknown> => ({
+    ...base,
+    state,
+    outcomeStatus,
+    outcomeRecordedAt: outcomeStatus === null ? null : AT,
+    cohort,
+    result: null,
+    blockContent: null,
+  });
+
+  it("admits every state of the NULL table, with every key present", () => {
+    expect([...EFFECT_RESULT_STATES]).toEqual(["RESULT", "NO_RESULT_RECORDED", "NO_OUTCOME", "OUTCOME_UNKNOWN", "CANCELLED"]);
+    expect(TaskEffectResultResponse.safeParse(result).success).toBe(true);
+    expect(TaskEffectResultResponse.safeParse(empty("NO_RESULT_RECORDED", "FAILED", "CURRENT")).success).toBe(true);
+    expect(TaskEffectResultResponse.safeParse(empty("NO_RESULT_RECORDED", "SUCCEEDED", "PRE_RESULT")).success).toBe(true);
+    expect(TaskEffectResultResponse.safeParse(empty("NO_OUTCOME", null, null)).success).toBe(true);
+    expect(TaskEffectResultResponse.safeParse(empty("OUTCOME_UNKNOWN", "OUTCOME_UNKNOWN", null)).success).toBe(true);
+    expect(TaskEffectResultResponse.safeParse(empty("CANCELLED", "CANCELLED", null)).success).toBe(true);
+    // Absent is not null: every key is required (ADR 0093's present-as-null rule).
+    for (const key of Object.keys(result)) {
+      const rest = Object.fromEntries(Object.entries(result).filter(([name]) => name !== key));
+      expect(TaskEffectResultResponse.safeParse(rest).success).toBe(false);
+    }
+  });
+
+  it("N-F-2: state is never absent, never null, and never RESULT without its result", () => {
+    expect(TaskEffectResultResponse.safeParse({ ...result, state: null }).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse({ ...result, result: null }).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse({ ...empty("NO_OUTCOME", null, null), state: "RESULT" }).success).toBe(false);
+  });
+
+  it("N-F-3: the outcome is null only with no outcome; an unresolved one is its own word, never null or FAILED", () => {
+    expect(TaskEffectResultResponse.safeParse(empty("NO_OUTCOME", "FAILED", null)).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse(empty("OUTCOME_UNKNOWN", null, null)).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse(empty("OUTCOME_UNKNOWN", "FAILED", null)).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse(empty("CANCELLED", "OUTCOME_UNKNOWN", null)).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse({ ...empty("OUTCOME_UNKNOWN", "OUTCOME_UNKNOWN", null), outcomeRecordedAt: null }).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse({ ...result, outcomeStatus: "CANCELLED" }).success).toBe(false);
+  });
+
+  it("N-F-4: a cohort only where a result was or could have been; a RESULT is CURRENT, never PRE_RESULT", () => {
+    expect(TaskEffectResultResponse.safeParse({ ...result, cohort: "PRE_RESULT" }).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse({ ...result, cohort: null }).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse(empty("NO_RESULT_RECORDED", "FAILED", null)).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse(empty("NO_OUTCOME", null, "CURRENT")).success).toBe(false);
+  });
+
+  it("N-F-5, N-F-6: result is null iff the state is not RESULT, and its digest is 64 lowercase hex", () => {
+    expect(TaskEffectResultResponse.safeParse({ ...empty("NO_RESULT_RECORDED", "FAILED", "CURRENT"), result: result.result }).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse({ ...result, result: { ...result.result, resultSha256: "B".repeat(64) } }).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse({ ...result, result: { ...result.result, resultSha256: "b".repeat(63) } }).success).toBe(false);
+  });
+
+  it("N-F-7: the document is the result contract itself — nine keys a block, another effect or another status refused", () => {
+    const blockless = { ...document("SUCCEEDED") };
+    const [first] = blockless["blocks"] as Record<string, unknown>[];
+    const eightKeys: Record<string, unknown> = { ...first };
+    delete eightKeys["toolCallId"];
+    expect(TaskEffectResultResponse.safeParse({ ...result, result: { ...result.result, document: { ...blockless, blocks: [eightKeys] } } }).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse({ ...result, result: { ...result.result, document: document("SUCCEEDED", "c".repeat(64)) } }).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse({ ...result, result: { ...result.result, document: document("FAILED") } }).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse({ ...result, result: { ...result.result, document: { ...document("SUCCEEDED"), vendor: 1 } } }).success).toBe(false);
+  });
+
+  it("a block's content only under a RESULT, and only at its declared length", () => {
+    const text = "the answer";
+    const blockContent = {
+      index: 0,
+      artifactReferenceId: "ref-overflow",
+      contentSha256: sha(text),
+      byteLength: Buffer.byteLength(text, "utf8"),
+      mediaType: "text/markdown; charset=utf-8",
+      text,
+    };
+    expect(TaskEffectResultResponse.safeParse({ ...result, blockContent }).success).toBe(true);
+    expect(TaskEffectResultResponse.safeParse({ ...empty("NO_OUTCOME", null, null), blockContent }).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse({ ...result, blockContent: { ...blockContent, byteLength: 3 } }).success).toBe(false);
+    expect(TaskEffectResultResponse.safeParse({ ...result, blockContent: { ...blockContent, index: 100 } }).success).toBe(false);
+  });
+
+  it("the effects list: ids and outcome words, never a digest or a reference, and a result only under a resolved outcome", () => {
+    const effect = {
+      effectId: EFFECT,
+      revisionNumber: 1,
+      attemptNumber: 1,
+      operationOrdinal: 0,
+      effectKind: "model_execution",
+      intendedAt: AT,
+      outcomeStatus: "SUCCEEDED",
+      outcomeRecordedAt: AT,
+      hasResult: true,
+    };
+    const listed = { ...base, effects: [effect], truncated: false };
+    delete (listed as Record<string, unknown>)["effectId"];
+    expect(TaskEffectsResponse.safeParse(listed).success).toBe(true);
+    // v3 (V7): `truncated` is required, and true only with exactly the ceiling.
+    expect(TaskEffectsResponse.safeParse({ ...listed, truncated: undefined }).success).toBe(false);
+    expect(TaskEffectsResponse.safeParse({ ...listed, truncated: true }).success).toBe(false);
+    const full = Array.from({ length: MAX_TASK_EFFECTS }, () => effect);
+    expect(TaskEffectsResponse.safeParse({ ...listed, effects: full, truncated: true }).success).toBe(true);
+    expect(TaskEffectsResponse.safeParse({ ...listed, effects: [...full, effect], truncated: true }).success).toBe(false);
+    expect(TaskEffectsResponse.safeParse({ ...listed, effects: [{ ...effect, resultSha256: "b".repeat(64) }] }).success).toBe(false);
+    expect(TaskEffectsResponse.safeParse({ ...listed, effects: [{ ...effect, resultArtifactReferenceId: "ref" }] }).success).toBe(false);
+    expect(TaskEffectsResponse.safeParse({ ...listed, effects: [{ ...effect, outcomeStatus: "CANCELLED" }] }).success).toBe(false);
+    expect(TaskEffectsResponse.safeParse({ ...listed, effects: [{ ...effect, outcomeStatus: null }] }).success).toBe(false);
+    expect(TaskEffectsResponse.safeParse({ ...listed, effects: [{ ...effect, effectId: "a".repeat(63) }] }).success).toBe(false);
+    expect(MAX_TASK_EFFECTS).toBe(1_000);
+  });
+
+  it("the result query admits one decimal block index and nothing else", () => {
+    expect(TaskEffectResultQuery.safeParse({}).success).toBe(true);
+    expect(TaskEffectResultQuery.parse({ block: "0" })).toEqual({ block: 0 });
+    expect(TaskEffectResultQuery.parse({ block: "99" })).toEqual({ block: 99 });
+    for (const bad of ["100", "-1", "x", "1.5", " 1", ""]) {
+      expect(TaskEffectResultQuery.safeParse({ block: bad }).success).toBe(false);
+    }
+    expect(TaskEffectResultQuery.safeParse({ other: "1" }).success).toBe(false);
+  });
+
+  it("names the private read's unconfigured server apart from the write door's", () => {
+    expect(API_ERROR_CODES).toContain("PRIVATE_READ_UNCONFIGURED");
+    expect(API_ERROR_CODES).toContain("WRITE_BEARER_UNCONFIGURED");
+    expect(API_CONTRACT_VERSION).toBe("0.19.0");
   });
 });

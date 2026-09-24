@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   CONTENT_ARTIFACT_MAX_BYTES,
@@ -10,8 +12,13 @@ import {
 import type { ExecutionEvent, ResolvedRoute, TaskState } from "@acp/contracts";
 import * as ledgerModule from "@acp/ledger";
 import {
+  ARTIFACT_PLANE_REFUSALS,
+  LedgerIntegrityError,
   LedgerValidationError,
+  PRE_RESULT_REFERENCE_CONTRACT_VERSIONS,
+  REFERENCE_READ_ROOT_REFUSALS,
   artifactBlobLeaseStorePath,
+  artifactPlaneRootFor,
   canonicalJsonStringify,
   effectIdV1,
   effectIdempotencyKeyV1,
@@ -22,7 +29,7 @@ import {
   requestSha256,
   sha256Hex,
 } from "@acp/ledger";
-import type { ArtifactPlane, ArtifactPlaneTestFaults, Ledger } from "@acp/ledger";
+import type { ArtifactPlane, ArtifactPlaneTestFaults, EffectReadModel, Ledger, ReferenceReadOutcome } from "@acp/ledger";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ATTEMPT_OPENING_STEP, buildPromptOccurrenceEvent, buildResponseOccurrenceEvent } from "../../src/core/events/index.js";
@@ -43,10 +50,13 @@ import {
   decideOperationOutcome,
   operationFactsOf,
   publishResult,
+  readEffectResult,
   resultIdempotencyKeys,
 } from "../../src/operation-result/index.js";
 import type {
   ArtifactIdentities,
+  EffectResultReading,
+  EffectResultUnreadable,
   OperationFacts,
   PublishedResult,
   ResultAssembly,
@@ -58,7 +68,14 @@ import type {
 // wrapper.
 vi.mock("@acp/ledger", async (importOriginal) => {
   const original = await importOriginal<typeof ledgerModule>();
-  return { ...original, effectOutcomeArrival: vi.fn(original.effectOutcomeArrival) };
+  return {
+    ...original,
+    effectOutcomeArrival: vi.fn(original.effectOutcomeArrival),
+    // P-15/F: the reader by reference, wrapped for the refusals no real plane can be
+    // made to give on demand (N-F-17, N-F-18 and the invalid-document rows); every
+    // other test runs the real function through it.
+    readByReference: vi.fn(original.readByReference),
+  };
 });
 
 /**
@@ -100,6 +117,8 @@ afterEach(() => {
   }
   for (const id of scenarios.splice(0)) removeScenarioRoot(id);
   vi.mocked(ledgerModule.effectOutcomeArrival).mockClear();
+  vi.mocked(ledgerModule.readByReference).mockReset();
+  vi.mocked(ledgerModule.readByReference).mockImplementation(realReadByReference);
 });
 
 // ---------------------------------------------------------------------------
@@ -864,5 +883,396 @@ describe("the whole chain through the door: prompt, published result, outcome, r
     // The control: the same record with every field well-formed is admitted.
     w.ledger.append(buildResponseOccurrenceEvent({ invocation: w.invocation, state, emittedBy: EMITTED_BY, causedBy: null, occurrence: { ...base, redactionVerdict: "CLEAN" } }));
     expect(w.ledger.getResponseOccurrenceForPrompt("po-1")?.occurrenceId).toBe("ro-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reading a result back (P-15 escalón F, ADR 0107)
+// ---------------------------------------------------------------------------
+
+const realReadByReference: typeof ledgerModule.readByReference = (
+  await vi.importActual<typeof ledgerModule>("@acp/ledger")
+).readByReference;
+
+/** A published result with its outcome appended through the ledger's own door. */
+function settled(name: string, output: string, overrides: Partial<ResultSample> = {}): { readonly w: World; readonly published: PublishedResult } {
+  const w = world(name);
+  const published = publish(w, assembleResult(w.effectId, sample(output, overrides)));
+  w.ledger.append(outcomeEvent(w, "settle-1", published));
+  return { w, published };
+}
+
+/** The ledger, with one row answered differently; every other call reaches the real one. */
+function withRow(ledger: Ledger, row: EffectReadModel | null): Ledger {
+  return new Proxy(ledger, {
+    get(target, key) {
+      if (key === "getEffect") return () => row;
+      const value: unknown = Reflect.get(target, key, target);
+      return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+    },
+  });
+}
+
+function objectPath(w: World, digest: string): string {
+  return join(artifactPlaneRootFor(w.ledgerPath), digest.slice(0, 2), digest);
+}
+
+function unreadableWord(reading: EffectResultReading): string {
+  if (reading.kind !== "RESULT_UNREADABLE") throw new Error("expected RESULT_UNREADABLE, got " + reading.kind);
+  return reading.refusal;
+}
+
+const NINE_KEYS = ["artifactRefId", "blockId", "byteLength", "contentSha256", "effectId", "kind", "mediaType", "text", "toolCallId"];
+const PADDED_ANSWER = "The answer, padded plainly. ".repeat(14_300);
+
+describe("P-15/F: one effect's result is read back by reference, in the reader's order", () => {
+  it("P-F-1: a published SUCCEEDED result is read back whole, with its digest, blocks in order and nine keys each", () => {
+    const { w, published } = settled("p15f-read", "ok");
+    const reading = readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: null });
+    if (reading.kind !== "RESULT") throw new Error("expected RESULT, got " + reading.kind);
+    expect(reading.status).toBe("SUCCEEDED");
+    expect(reading.outcomeRecordedAt).toBe(V2_AT);
+    expect(reading.resultSha256).toBe(published.resultSha256);
+    expect(reading.artifactReferenceId).toBe(published.resultArtifactReferenceId);
+    expect(reading.block).toBeNull();
+    const plane = w.plane.read({ artifactReferenceId: published.resultArtifactReferenceId ?? "", scopeKind: "TASK", scopeId: w.taskId });
+    if (plane.verb !== "READ") throw new Error("expected the bytes");
+    expect(reading.document).toEqual(ResultContractSchema.parse(JSON.parse(plane.content.toString("utf8"))));
+    expect(reading.document.blocks.map((block) => block.text)).toEqual(["ok"]);
+    for (const block of reading.document.blocks) expect(Object.keys(block).sort()).toEqual(NINE_KEYS);
+  });
+
+  it("P-F-2: FAILED with a document is a FAILED RESULT; FAILED with none is NO_RESULT_RECORDED of the current cohort", () => {
+    const withDocument = settled("p15f-failed-doc", "boom", { facts: facts({ operation: "FAILED" }) });
+    const read = readEffectResult(withDocument.w.ledger, { taskId: withDocument.w.taskId, effectId: withDocument.w.effectId, block: null });
+    expect(read).toMatchObject({ kind: "RESULT", status: "FAILED" });
+
+    const without = settled("p15f-failed-none", "");
+    expect(without.published.resultArtifactReferenceId).toBeNull();
+    expect(readEffectResult(without.w.ledger, { taskId: without.w.taskId, effectId: without.w.effectId, block: null })).toEqual({
+      kind: "NO_RESULT_RECORDED",
+      status: "FAILED",
+      outcomeRecordedAt: V2_AT,
+      cohort: "CURRENT",
+    });
+  });
+
+  it("N-F-10: an effect with no outcome is NO_OUTCOME, never FAILED and never empty", () => {
+    const w = world("p15f-no-outcome");
+    expect(readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: null })).toEqual({ kind: "NO_OUTCOME" });
+  });
+
+  it("N-F-11: another task's effect is NOT_FOUND, exactly like an effect that does not exist", () => {
+    const { w } = settled("p15f-other-task", "ok");
+    const other = deterministicUuid("operation-result/another-task");
+    expect(readEffectResult(w.ledger, { taskId: other, effectId: w.effectId, block: null })).toEqual({ kind: "NOT_FOUND" });
+    expect(readEffectResult(w.ledger, { taskId: w.taskId, effectId: "f".repeat(64), block: null })).toEqual({ kind: "NOT_FOUND" });
+  });
+
+  it("N-F-9: OUTCOME_UNKNOWN and CANCELLED are their own words, with no result", () => {
+    const w = world("p15f-unresolved");
+    const row = w.ledger.getEffect(w.effectId);
+    if (row === null) throw new Error("expected the effect");
+    for (const status of ["OUTCOME_UNKNOWN", "CANCELLED"] as const) {
+      const planted = withRow(w.ledger, { ...row, outcomeStatus: status, outcomeRecordedAt: V2_AT, outcomeContractVersion: CONTRACT_VERSION });
+      expect(readEffectResult(planted, { taskId: w.taskId, effectId: w.effectId, block: null })).toEqual({ kind: status, outcomeRecordedAt: V2_AT });
+    }
+  });
+
+  it("N-F-8: a pre-cohort outcome with no pair is NO_RESULT_RECORDED / PRE_RESULT, SUCCEEDED included, never a RESULT", () => {
+    const w = world("p15f-pre-cohort");
+    const row = w.ledger.getEffect(w.effectId);
+    if (row === null) throw new Error("expected the effect");
+    for (const version of PRE_RESULT_REFERENCE_CONTRACT_VERSIONS) {
+      for (const status of ["SUCCEEDED", "FAILED"] as const) {
+        const planted = withRow(w.ledger, { ...row, outcomeStatus: status, outcomeRecordedAt: V2_AT, outcomeContractVersion: version });
+        expect(readEffectResult(planted, { taskId: w.taskId, effectId: w.effectId, block: null })).toEqual({
+          kind: "NO_RESULT_RECORDED",
+          status,
+          outcomeRecordedAt: V2_AT,
+          cohort: "PRE_RESULT",
+        });
+      }
+    }
+  });
+
+  it("C-F5: the rows the ledger's triggers forbid are the ledger disagreeing with itself, never a cohort", () => {
+    const { w, published } = settled("p15f-integrity", "ok");
+    const row = w.ledger.getEffect(w.effectId);
+    if (row === null) throw new Error("expected the effect");
+    const read = (planted: EffectReadModel): EffectResultReading =>
+      readEffectResult(withRow(w.ledger, planted), { taskId: w.taskId, effectId: w.effectId, block: null });
+    expect(published.status).toBe("SUCCEEDED");
+    // An outcome without its contract version, or without its instant.
+    expect(() => read({ ...row, outcomeContractVersion: null })).toThrow(LedgerIntegrityError);
+    expect(() => read({ ...row, outcomeRecordedAt: null })).toThrow(LedgerIntegrityError);
+    // Half a pair, either half.
+    expect(() => read({ ...row, resultSha256: null })).toThrow(LedgerIntegrityError);
+    expect(() => read({ ...row, resultArtifactReferenceId: null })).toThrow(LedgerIntegrityError);
+    // A current-cohort SUCCEEDED without a result.
+    expect(() => read({ ...row, resultArtifactReferenceId: null, resultSha256: null })).toThrow(LedgerIntegrityError);
+  });
+
+  it("N-F-12: a result whose object is gone is RESULT_UNREADABLE / CONTENT_ABSENT, with nothing partial", () => {
+    const { w, published } = settled("p15f-absent", "ok");
+    rmSync(objectPath(w, published.resultSha256 ?? ""));
+    expect(readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: null })).toEqual({
+      kind: "RESULT_UNREADABLE",
+      refusal: "CONTENT_ABSENT",
+    });
+  });
+
+  it("N-F-13: a result whose bytes were changed is CONTENT_DOES_NOT_VERIFY", () => {
+    const { w, published } = settled("p15f-tampered", "ok");
+    const path = objectPath(w, published.resultSha256 ?? "");
+    const bytes = readFileSync(path);
+    bytes[0] = (bytes[0] ?? 0) ^ 0x01;
+    writeFileSync(path, bytes);
+    expect(unreadableWord(readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: null }))).toBe("CONTENT_DOES_NOT_VERIFY");
+  });
+
+  it("N-F-14: a symbolic link where the object should stand is SYMLINK_REFUSED", () => {
+    const { w, published } = settled("p15f-symlink", "ok");
+    const path = objectPath(w, published.resultSha256 ?? "");
+    const copy = path + ".elsewhere";
+    writeFileSync(copy, readFileSync(path));
+    rmSync(path);
+    symlinkSync(copy, path);
+    expect(unreadableWord(readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: null }))).toBe("SYMLINK_REFUSED");
+  });
+
+  it("N-F-15 (a): a row that names reference A with B's digest is DIGEST_MISMATCH", () => {
+    // (b) is the ledger's: its door admits a pair only with the reference's own digest,
+    // which the P-07 escalón B suite pins, so no door path makes a real row disagree.
+    const { w } = settled("p15f-digest", "ok");
+    const row = w.ledger.getEffect(w.effectId);
+    if (row === null) throw new Error("expected the effect");
+    const planted = withRow(w.ledger, { ...row, resultSha256: "b".repeat(64) });
+    expect(unreadableWord(readEffectResult(planted, { taskId: w.taskId, effectId: w.effectId, block: null }))).toBe("DIGEST_MISMATCH");
+  });
+
+  it("N-F-16: a document of another effect, or of another status than the row's, is DOCUMENT_DISAGREES; the door admitted both", () => {
+    const otherEffect = world("p15f-disagree-effect");
+    const foreign = publish(otherEffect, assembleResult("f".repeat(64), sample("ok")));
+    expect(otherEffect.ledger.append(outcomeEvent(otherEffect, "settle-1", foreign)).inserted).toBe(true);
+    expect(unreadableWord(readEffectResult(otherEffect.ledger, { taskId: otherEffect.taskId, effectId: otherEffect.effectId, block: null }))).toBe(
+      "DOCUMENT_DISAGREES",
+    );
+
+    const otherStatus = world("p15f-disagree-status");
+    const succeeded = publish(otherStatus, assembleResult(otherStatus.effectId, sample("ok")));
+    expect(otherStatus.ledger.append(outcomeEvent(otherStatus, "settle-1", { ...succeeded, status: "FAILED" })).inserted).toBe(true);
+    expect(unreadableWord(readEffectResult(otherStatus.ledger, { taskId: otherStatus.taskId, effectId: otherStatus.effectId, block: null }))).toBe(
+      "DOCUMENT_DISAGREES",
+    );
+  });
+
+  it("P0-4: bytes that are not UTF-8, not JSON, or not a result document v1 are DOCUMENT_INVALID, usageReference included", () => {
+    const { w, published } = settled("p15f-invalid", "ok");
+    const reference = w.ledger.getArtifactReference(published.resultArtifactReferenceId ?? "");
+    if (reference === null) throw new Error("expected the reference");
+    const answer = (content: Buffer): ReferenceReadOutcome => ({ verb: "READ", content, reference });
+    const valid = ResultContractSchema.parse(JSON.parse(readFileSync(objectPath(w, published.resultSha256 ?? "")).toString("utf8")));
+    const cases = [
+      Buffer.from([0xff, 0xfe, 0xfd]),
+      Buffer.from("not json", "utf8"),
+      Buffer.from(JSON.stringify({ ...valid, usageReference: "f".repeat(64) }), "utf8"),
+      Buffer.from(JSON.stringify({ ...valid, resultContractVersion: 2 }), "utf8"),
+      Buffer.from(JSON.stringify({ ...valid, vendor: "x" }), "utf8"),
+    ];
+    for (const content of cases) {
+      vi.mocked(ledgerModule.readByReference).mockImplementationOnce(() => answer(content));
+      expect(unreadableWord(readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: null }))).toBe("DOCUMENT_INVALID");
+    }
+  });
+
+  it("N-F-17 (a) and N-F-18: every plane word and both root words pass through as RESULT_UNREADABLE, unchanged", () => {
+    const { w } = settled("p15f-words", "ok");
+    const words = [...ARTIFACT_PLANE_REFUSALS, ...REFERENCE_READ_ROOT_REFUSALS];
+    expect(words).toHaveLength(18);
+    for (const word of words) {
+      vi.mocked(ledgerModule.readByReference).mockImplementationOnce(() => ({ verb: "REFUSE", refusal: word }));
+      expect(readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: null })).toEqual({ kind: "RESULT_UNREADABLE", refusal: word });
+    }
+    // The vocabulary is total at compile time: a twenty-fourth word fails to type-check here.
+    const all: Record<EffectResultUnreadable, true> = {
+      LEASE_HELD: true,
+      LEASE_SUPERSEDED: true,
+      QUIESCENCE_UNPROVEN: true,
+      QUIESCENCE_OF_ANOTHER_PROCESS: true,
+      HELD_FOR_RECLAIM: true,
+      PUBLICATION_IN_FLIGHT: true,
+      PUBLICATION_ALREADY_ABANDONED: true,
+      CONTENT_ABSENT: true,
+      CONTENT_DOES_NOT_VERIFY: true,
+      SYMLINK_REFUSED: true,
+      NO_INTENDED_REFERENCE: true,
+      REFERENCE_REFUSED_BY_DOOR: true,
+      REFERENCE_NOT_READABLE: true,
+      CONTENT_DELETED: true,
+      BLOB_NOT_PUBLISHED: true,
+      ENCRYPTED_AT_REST_NOT_DELIVERED: true,
+      ROOT_ABSENT: true,
+      ROOT_NOT_A_DIRECTORY: true,
+      BLOCK_DISAGREES: true,
+      CLASS_REFUSED: true,
+      DIGEST_MISMATCH: true,
+      DOCUMENT_DISAGREES: true,
+      DOCUMENT_INVALID: true,
+    };
+    expect(Object.keys(all)).toHaveLength(23);
+  });
+
+  it("?block: an overflowed answer's document block is read by its own reference and verified", () => {
+    expect(PADDED_ANSWER.length).toBeGreaterThan(CONTENT_INLINE_TEXT_MAX_CHARS * RESULT_BLOCK_LIST_MAX);
+    const { w } = settled("p15f-block", PADDED_ANSWER);
+    const whole = readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: null });
+    if (whole.kind !== "RESULT") throw new Error("expected RESULT");
+    expect(whole.document.blocks).toHaveLength(1);
+    const declared = whole.document.blocks[0];
+    expect(declared).toMatchObject({ kind: "document", text: null });
+    const reading = readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: 0 });
+    if (reading.kind !== "RESULT" || reading.block === null) throw new Error("expected a block");
+    expect(reading.block.text).toBe(PADDED_ANSWER);
+    expect(reading.block).toMatchObject({
+      index: 0,
+      artifactReferenceId: declared?.artifactRefId,
+      contentSha256: declared?.contentSha256,
+      byteLength: declared?.byteLength,
+      mediaType: "text/markdown; charset=utf-8",
+    });
+    expect(createHash("sha256").update(reading.block.text, "utf8").digest("hex")).toBe(reading.block.contentSha256);
+  });
+
+  it("?block: a text block, an index past the list or a state other than RESULT is BLOCK_REFUSED", () => {
+    const { w } = settled("p15f-block-refused", "ok");
+    expect(readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: 0 })).toEqual({ kind: "BLOCK_REFUSED" });
+    expect(readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: 7 })).toEqual({ kind: "BLOCK_REFUSED" });
+    const open = world("p15f-block-no-outcome");
+    expect(readEffectResult(open.ledger, { taskId: open.taskId, effectId: open.effectId, block: 0 })).toEqual({ kind: "BLOCK_REFUSED" });
+    const none = settled("p15f-block-no-result", "");
+    expect(readEffectResult(none.w.ledger, { taskId: none.w.taskId, effectId: none.w.effectId, block: 0 })).toEqual({ kind: "BLOCK_REFUSED" });
+  });
+
+  it("?block: a block whose reference is not the one its document declares is BLOCK_DISAGREES", () => {
+    const { w } = settled("p15f-block-disagree", PADDED_ANSWER);
+    let calls = 0;
+    vi.mocked(ledgerModule.readByReference).mockImplementation((ledger, request) => {
+      calls += 1;
+      const outcome = realReadByReference(ledger, request);
+      if (calls === 2 && outcome.verb === "READ") {
+        return { ...outcome, reference: { ...outcome.reference, contentSha256: "a".repeat(64) } };
+      }
+      return outcome;
+    });
+    expect(unreadableWord(readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: 0 }))).toBe("BLOCK_DISAGREES");
+  });
+
+  it("reads through the ledger's reader by reference under the task's own scope, and appends nothing", () => {
+    const { w } = settled("p15f-scope", "ok");
+    const before = JSON.stringify(w.ledger.listEvents({ limit: 1000 }));
+    vi.mocked(ledgerModule.readByReference).mockClear();
+    readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: null });
+    expect(vi.mocked(ledgerModule.readByReference).mock.calls.map(([, request]) => request.scopeKind + ":" + String(request.scopeId))).toEqual([
+      "TASK:" + w.taskId,
+    ]);
+    expect(JSON.stringify(w.ledger.listEvents({ limit: 1000 }))).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15/F v3 (Fable C1): the authorized read serves RESPONSE and nothing else
+// ---------------------------------------------------------------------------
+
+/** Publish raw bytes under the task's own scope, as `class`, through the world's plane. */
+function publishAs(w: World, artifactClass: "RESPONSE" | "TASK_ENVELOPE", role: string, bytes: Buffer): { readonly reference: string; readonly sha256: string } {
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const ids = identities(role);
+  const outcome = w.plane.publish({
+    content: bytes,
+    declaredContentSha256: sha256,
+    mediaType: artifactClass === "RESPONSE" ? "application/json; charset=utf-8" : "application/json",
+    encryptionStatus: "PLAINTEXT",
+    encryptionProfile: "local-plaintext-v1",
+    commandId: ids.commandId,
+    artifactPinId: ids.artifactPinId,
+    reference: {
+      artifactReferenceId: ids.artifactReferenceId,
+      artifactClass,
+      classification: "INTERNAL",
+      scopeKind: "TASK",
+      scopeId: w.taskId,
+      producerIdentity: EMITTED_BY,
+      accessPolicyId: "SCOPE_EQUALITY_V1",
+      retentionClass: "PERMANENT",
+      expiresAt: null,
+    },
+    recordedBy: EMITTED_BY,
+    intention: { eventId: ids.intentionEventId, idempotencyKey: "intended/" + role, occurredAt: V2_AT, recordedAt: V2_AT },
+    terminal: { eventId: ids.terminalEventId, idempotencyKey: "succeeded/" + role, occurredAt: V2_AT, recordedAt: V2_AT },
+    holding: { holder: EMITTED_BY, holderPid: process.pid, acquiredAt: V2_AT, expiresAt: "2026-09-23T12:05:00.000Z" },
+  });
+  if (outcome.verb !== "PUBLISHED") throw new Error("the fixture publication answered " + outcome.verb);
+  return { reference: outcome.reference.artifactReferenceId, sha256 };
+}
+
+describe("P-15/F v3: a reference of another class is refused, in the block and in the document", () => {
+  it("N-F-24: a RESPONSE whose document block names the task's envelope is admitted by the door and refused by the block read", () => {
+    const w = world("p15f-class-block");
+    // The prompt, published as the task's envelope under the task's own scope, with real bytes.
+    const envelopeBytes = Buffer.from(JSON.stringify({ instruction: "the prompt this read must never serve" }), "utf8");
+    const envelope = publishAs(w, "TASK_ENVELOPE", "envelope-probe", envelopeBytes);
+    // A valid result document whose one block names that envelope, with its own digest and length.
+    const document = {
+      resultContractVersion: 1,
+      effectId: w.effectId,
+      status: "SUCCEEDED",
+      blocks: [
+        {
+          kind: "document",
+          blockId: "output-001",
+          mediaType: "text/markdown; charset=utf-8",
+          byteLength: envelopeBytes.byteLength,
+          contentSha256: envelope.sha256,
+          artifactRefId: envelope.reference,
+          text: null,
+          toolCallId: null,
+          effectId: null,
+        },
+      ],
+      usageReference: w.effectId,
+    };
+    expect(ResultContractSchema.safeParse(document).success).toBe(true);
+    const response = publishAs(w, "RESPONSE", "response-probe", Buffer.from(canonicalJsonStringify(document), "utf8"));
+    // The door checks the pair's class, scope and digest -- never the document's content.
+    expect(
+      w.ledger.append(
+        outcomeEvent(w, "settle-1", { status: "SUCCEEDED", resultArtifactReferenceId: response.reference, resultSha256: response.sha256 }),
+      ).inserted,
+    ).toBe(true);
+
+    // Positive control: the document itself reads, so the plant is a valid result.
+    const whole = readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: null });
+    expect(whole).toMatchObject({ kind: "RESULT", status: "SUCCEEDED" });
+    // The block read refuses by class, and carries no byte of the envelope.
+    const block = readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: 0 });
+    expect(block).toEqual({ kind: "RESULT_UNREADABLE", refusal: "CLASS_REFUSED" });
+    expect(JSON.stringify(block)).not.toContain("the prompt this read must never serve");
+  });
+
+  it("N-F-24b: a top-level reference of another class is refused before its digest or its bytes (the door's rule, held again here)", () => {
+    const { w, published } = settled("p15f-class-document", "ok");
+    const reference = w.ledger.getArtifactReference(published.resultArtifactReferenceId ?? "");
+    if (reference === null) throw new Error("expected the reference");
+    vi.mocked(ledgerModule.readByReference).mockImplementationOnce(() => ({
+      verb: "READ",
+      content: Buffer.from("not a result", "utf8"),
+      reference: { ...reference, artifactClass: "TASK_ENVELOPE" },
+    }));
+    expect(readEffectResult(w.ledger, { taskId: w.taskId, effectId: w.effectId, block: null })).toEqual({
+      kind: "RESULT_UNREADABLE",
+      refusal: "CLASS_REFUSED",
+    });
+    // No door path plants this: the ledger refuses a pair of another class at append.
   });
 });

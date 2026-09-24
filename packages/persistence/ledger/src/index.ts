@@ -253,8 +253,10 @@ export type {
 export {
   ARTIFACT_PLANE_CONTENT_MAX_BYTES,
   ARTIFACT_PLANE_REFUSALS,
+  REFERENCE_READ_ROOT_REFUSALS,
   artifactPlaneRootFor,
   openArtifactPlane,
+  readByReference,
 } from "./artifact-plane/index.js";
 
 export type {
@@ -270,6 +272,8 @@ export type {
   ArtifactReconciliationRequest,
   ArtifactReferenceIntent,
   OpenArtifactPlaneOptions,
+  ReferenceReadOutcome,
+  ReferenceReadRefusal,
 } from "./artifact-plane/index.js";
 
 export type {
@@ -428,6 +432,7 @@ export type {
   EffectLookupQuery,
   EffectOutcomeStatus,
   EffectReadModel,
+  TaskEffectPage,
   EventPage,
   EventQuery,
   ExecutionEffectKind,
@@ -586,6 +591,14 @@ export { taskIntakePayloadOf } from "./projection/index.js";
  * text, rather than restating the check.
  */
 export { isInstant } from "./projection/index.js";
+
+/**
+ * The six contract versions whose outcomes carry no result (P-07 escalón B, ADR
+ * 0098). Exported for the runtime's result reader (P-15/F, ADR 0107), which tells a
+ * pre-cohort `SUCCEEDED` without a result from a current one that must have one,
+ * rather than restating the list.
+ */
+export { PRE_RESULT_REFERENCE_CONTRACT_VERSIONS } from "./projection/index.js";
 
 /**
  * P-06/CORR: the prompt occurrence record's closed key set (ADR 0096).

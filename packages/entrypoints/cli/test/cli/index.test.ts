@@ -377,7 +377,7 @@ describe("usage", () => {
       // Asserted as a literal on purpose: the CLI's job here is to
       // report the number a reader can pin against, and comparing it to the
       // constant it prints would assert only that the CLI can echo itself.
-      apiContractVersion: "0.18.0",
+      apiContractVersion: "0.19.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });
@@ -3039,7 +3039,7 @@ describe("F4d: --emit-authorization prints the whole document, or refuses", () =
 // ---------------------------------------------------------------------------
 
 /**
- * The exit code each of the fifteen `API_ERROR_CODES` earns.
+ * The exit code each of the `API_ERROR_CODES` earns.
  *
  * Written out here as the numbers HEAD answered before the decider became a
  * table, so this file is the evidence that the totality packet changed no
@@ -3048,6 +3048,11 @@ describe("F4d: --emit-authorization prints the whole document, or refuses", () =
  * the decider's table -- nothing exports that -- it is an independent
  * statement of the contract, compared below against what the door actually
  * returns.
+ *
+ * P-15/F added a sixteenth, `PRIVATE_READ_UNCONFIGURED`. It had no number
+ * before, so it takes the one its write-side twin answers, `EXIT_USAGE`: no CLI
+ * door raises either, because the CLI's authorization is filesystem access and
+ * not a bearer.
  */
 const EXIT_CODE_BY_API_ERROR_CODE: Record<ApiErrorCode, number> = {
   // The six the switch named explicitly.
@@ -3069,6 +3074,8 @@ const EXIT_CODE_BY_API_ERROR_CODE: Record<ApiErrorCode, number> = {
   LEDGER_INTEGRITY: EXIT_USAGE,
   CAPABILITY_UNSUPPORTED: EXIT_USAGE,
   SCENARIO_UNCONFIGURED: EXIT_USAGE,
+  // P-15/F: the sixteenth, answered as its write twin is.
+  PRIVATE_READ_UNCONFIGURED: EXIT_USAGE,
 };
 
 /**
@@ -3198,7 +3205,7 @@ describe("old-V2 R1b: the decider answers the closed vocabulary by name", () => 
   }
 
   it("refuses a code outside the vocabulary instead of calling it a usage error", async () => {
-    // `SIXTEENTH` is not in `API_ERROR_CODES`, and it stands for the code this
+    // `UNLISTED_CODE` is not in `API_ERROR_CODES`, and it stands for the code this
     // repository has not written yet: a door that starts raising one, or a
     // driver that deserializes one off a wire. The decider used to answer it
     // with `EXIT_USAGE` through a `default:` arm -- a `2` telling a script to
@@ -3206,7 +3213,7 @@ describe("old-V2 R1b: the decider answers the closed vocabulary by name", () => 
     // number that is right for a code this package has never heard of, so the
     // only honest answer is to refuse to produce one.
     const staged = stageAttempt("cli-r1b-off-vocabulary");
-    const settled = await invokeCancel(staged, refusingWith("SIXTEENTH" as ApiErrorCode)).then(
+    const settled = await invokeCancel(staged, refusingWith("UNLISTED_CODE" as ApiErrorCode)).then(
       (invocation) => ({ kind: "answered" as const, exitCode: invocation.exitCode }),
       (error: unknown) => ({
         kind: "refused" as const,
@@ -3216,10 +3223,10 @@ describe("old-V2 R1b: the decider answers the closed vocabulary by name", () => 
     expect(settled).toEqual({ kind: "refused", name: "UnnamedRefusal" });
   });
 
-  it("answers each of the fifteen codes with the number it answered before", async () => {
+  it("answers each of the sixteen codes with the number it answered before, and the sixteenth as its write twin", async () => {
     // Every member of the closed vocabulary, driven through the real door and
     // the real decider rather than read out of a table. A packet that quietly
-    // re-assigned one of the fifteen fails here, which is what makes the
+    // re-assigned one of them fails here, which is what makes the
     // totality claim a non-behavioural one.
     const answered: Record<string, number> = {};
     for (const code of API_ERROR_CODES) {

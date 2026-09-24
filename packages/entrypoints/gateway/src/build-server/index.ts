@@ -128,6 +128,12 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
   //   one `ApiError` envelope rather than Fastify's own default shape — which
   //   a strict reader cannot tell apart from a genuine contract mismatch.
   //
+  // Both set `Cache-Control: no-store` on what they send (P-15/F v3): the private
+  // read's error bodies are public words, and tests §8.1's inventory (decision
+  // 149) says they are never cached -- a framework refusal on that path, such as
+  // `FST_ERR_BAD_URL` or `FST_ERR_MAX_PARAM_LENGTH`, never reaches the route's own
+  // registrar, so the header is set here, for every framework-generated answer.
+  //
   // A handler wrapped by `guarded()` (routes/index.ts) never lets an exception
   // reach either path: it classifies everything itself and sends the
   // envelope directly. What reaches these two handlers is always Fastify's
@@ -143,6 +149,7 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
     // which weighs the content itself.
     bodyLimit: ROADMAP_CONTENT_MAX_BYTES + ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES,
     frameworkErrors: (error, _request, reply) => {
+      reply.header("cache-control", "no-store");
       const classified = classifyFastifyError(error);
       sendApiError(reply, classified.code, classified.message, classified.detail);
     },
@@ -182,6 +189,7 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
 
   app.setErrorHandler((error, _request, reply) => {
     if (reply.sent) return;
+    reply.header("cache-control", "no-store");
     const classified = classifyFastifyError(error);
     sendApiError(reply, classified.code, classified.message, classified.detail);
   });

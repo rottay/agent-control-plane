@@ -10,7 +10,7 @@ table that this document omits fails. It also asserts that every response and
 query schema named below is exported by `@acp/protocol`.
 
 The parity suite is the behavioral authority **where it reaches**, and it does
-not reach every route. Eleven of the twenty-six arms below are compared in full
+not reach every route. Thirteen of the twenty-eight arms below are compared in full
 against an independently built CLI-side producer, including ordering,
 pagination, cursors and redaction; `eventStream` GET is compared in part, on one
 frame's item; `health` has no ledger content and so has no CLI build to compare
@@ -31,7 +31,9 @@ arm is not by itself a claim that a behavioral comparison exists for it.
   describe, and should fail rather than guess.
 - **Methods.** `API_ALLOWED_METHODS` is `["GET"]` and describes the read plane.
   The routes that also accept a write are named in a separate frozen table,
-  `API_WRITE_ROUTES`, and are marked `GET, POST` below.
+  `API_WRITE_ROUTES`, and are marked `GET, POST` below. The one read that is not
+  free is named in a third, `API_PRIVATE_READ_ROUTES`, and is marked
+  `GET (bearer)` below.
 - **Parameters** are validated before they are encoded. A traversal segment, a
   query string or a raw path produces a thrown validation error rather than a
   request to somewhere else.
@@ -66,6 +68,8 @@ arm is not by itself a claim that a behavioral comparison exists for it.
 | `eventStream` | GET | `/api/v1/events/stream` | — | `StreamQuery` | `StreamFrame` (Server-Sent Events) | — |
 | `taskToolCalls` | GET, POST | `/api/v1/tasks/:taskId/tool-calls` | `taskId` (uuid) | `ToolCallsQuery` | `ToolCallPageResponse` / `ToolCallExecuteResponse` | `tool-calls`:GET, `tool-call`:POST |
 | `taskLifecycle` | GET, POST | `/api/v1/tasks/:taskId/lifecycle` | `taskId` (uuid) | none | `TaskLifecycleResponse` / `TaskLifecycleExecuteResponse` | `cancel`:POST, `attach`:POST |
+| `taskEffects` | GET | `/api/v1/tasks/:taskId/effects` | `taskId` (uuid) | none | `TaskEffectsResponse` | `effects`:GET |
+| `taskEffectResult` | GET (bearer) | `/api/v1/tasks/:taskId/effects/:effectId/result` | `taskId` (uuid), `effectId` (64 lowercase hex) | `TaskEffectResultQuery` | `TaskEffectResultResponse` | `result`:GET |
 
 Two commands have no row above, because they have no route. `submission`
 re-elects a daemon config's route and prints the document; `switch-decision`
@@ -138,6 +142,49 @@ imposed.** A caller that attaches to a long run holds the HTTP connection open
 for the length of that run. This is the honest consequence of the verb rather
 than an oversight: rejoining an invocation means waiting for it. A caller that
 cannot hold a connection should poll the `GET` instead.
+
+## The private read
+
+`taskEffectResult` answers **model output**: one effect's result document, read
+back by reference from the private artifact plane (P-15/F, ADR 0107). Tests §8.1
+admits that on a public response only as an explicitly authorized read, audited
+before it existed (decision 149), so it is the one GET of this plane that is not
+free:
+
+- **Registered behind the bearer**, through the gateway's `registerPrivateGet`,
+  and named in `API_PRIVATE_READ_ROUTES`. The bearer is checked before any
+  parameter is read. No bearer or a wrong one is `401` `AUTH_REQUIRED`; a server
+  started without a token is `403` `PRIVATE_READ_UNCONFIGURED`. One credential
+  authorizes writes and this read alike until P-36's read policy.
+- **`Cache-Control: no-store`** on every answer on the path, a `200` or an error,
+  including the framework's own refusals before the route runs (a malformed escape,
+  an over-long parameter) and the not-found answer.
+- **Never in the stream, the event log or a log line.** The body is built and
+  returned; nothing else sees it.
+- **Error bodies stay public**: closed words, never a byte or a path.
+
+The answer's `state` is one of `RESULT`, `NO_RESULT_RECORDED`, `NO_OUTCOME`,
+`OUTCOME_UNKNOWN`, `CANCELLED`. Every key is present in every state, `null` where
+the state has nothing to say; `result` is present exactly under `RESULT`, and an
+unresolved outcome is its own word, never a failure. A result the ledger names
+but the plane cannot give back is **not** a `200` beside partial data: it is `500`
+`LEDGER_INTEGRITY` with the refusal's closed word as the only `detail`. Another
+task's effect is `404` exactly like an absent one.
+
+`?block=<n>` reads one block of the document whose bytes live by reference — an
+answer long enough to overflow the block list is one `document` block naming a
+markdown artifact — and adds `blockContent`, verified against the digest and the
+length the document declares. A block that names no reference, or a state other
+than `RESULT`, is `400` naming `block`. The read serves `RESPONSE` bytes and nothing
+else: a document or a block whose reference is of another class is `500`
+`LEDGER_INTEGRITY` with detail `CLASS_REFUSED`.
+
+`taskEffects` is how a caller learns an effect id: a plain, unguarded read of ids,
+coordinates, outcome words and whether a result exists — never its reference, its
+digest or a byte of it. It carries at most `MAX_TASK_EFFECTS` (1000), in intention
+order, and `truncated: true` when the task has more. The CLI answers both: `acp effects <task-id>` and
+`acp result --task <id> --effect <id> [--block <n>]`, whose authorization is the
+operator's own access to the ledger and the plane (root `0700`, objects `0600`).
 
 ## The one stream
 
@@ -322,6 +369,10 @@ the wrong thing with at least one of them.
 | `CONTRACT_VERSION_MISMATCH` | the request names a contract this build does not speak | upgrade one side; do not retry |
 | `WRITE_REFUSED` | the write lost to a concurrent one | worth retrying against a fresh head |
 | `CLAIM_HELD` | another operating-system process holds this durable tool coordinate | **read** the recorded call; do not retry |
+
+`403` is answered by two codes, one per door: `WRITE_BEARER_UNCONFIGURED` on a
+write and `PRIVATE_READ_UNCONFIGURED` on the private read. Both mean this server
+holds no bearer token, so no header a caller sends can help.
 
 ### `501` and `503`, and why a capability gap is neither an outage nor a defect
 

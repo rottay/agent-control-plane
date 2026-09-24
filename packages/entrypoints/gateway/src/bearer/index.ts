@@ -3,15 +3,18 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
 /**
- * The write door's bearer token (P8-8G).
+ * The plane's bearer token (P8-8G; read side since P-15/F).
  *
- * **Reads are never guarded, and that is a design statement rather than an
+ * **Reads are free but one, and that is a design statement rather than an
  * omission.** This plane's whole point is that observation is free: a local
  * operator, the CLI and the browser all read without ceremony, and adding a
  * credential to that would buy nothing — the data is already on the operator's
  * own machine behind loopback. What changed in P8-8D is that the plane grew a
  * door that *writes*, and a write reachable by anything that can reach the
- * port is a different risk from a read.
+ * port is a different risk from a read. What changed in P-15/F is one read that
+ * answers **model output**: `taskEffectResult`, named in `API_PRIVATE_READ_ROUTES`
+ * and registered through `registerPrivateGet`, which checks this same token
+ * (decision 150: one credential for writes and that read until P-36).
  *
  * So the guard is armed inside the **write registrar**, not sprinkled over
  * handlers. Structural rather than remembered: a future write route registered
