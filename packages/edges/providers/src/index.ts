@@ -149,6 +149,14 @@ export type {
 } from "./local/index.js";
 export { LOCAL_TRANSPORT_KIND, admitLocalRoute, localExecutionEvents } from "./local/index.js";
 
+// P-15 escalón E (ADR 0108): the two real clients behind the owned interfaces, and
+// their usage sources. Each is one of the two files in this package that may call
+// `fetch`; each takes its credential as a closure the composition builds from the
+// runtime resolver, called only inside its fetch site. Their option types stay
+// behind the boundary: a caller passes an object literal.
+export { ANTHROPIC_MESSAGES_USAGE_SOURCE, createAnthropicMessagesClient } from "./api-key/http/index.js";
+export { LOCAL_CHAT_USAGE_SOURCE, createLocalChatClient } from "./local/http/index.js";
+
 // P4B: the Claude headless descriptor. Kimi and Codex arrive in P4C and P4D.
 // Every Claude capability leaves P4 `UNKNOWN`: the adapter is complete, the
 // warranty about the provider's protocol is what no authorized evidence could

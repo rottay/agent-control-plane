@@ -11622,6 +11622,80 @@ const P15F_WRITE_SET = [
   "SECURITY.md",
 ];
 
+/**
+ * P-15 escalón E: the real API and local clients, and the one credential resolver
+ * that serves them (ADR 0108; owner authorization C4 and decision E-ND-1, the
+ * DT's rulings E-ND-2..12, Fable C-E1..C-E11; decisions 155-159).
+ *
+ * The providers package gains its two HTTP leaves -- the Anthropic Messages client
+ * and the OpenAI-compatible local client -- the only two files in it that call
+ * `fetch`, over one shared SSE byte reader and failure classifier; five closed
+ * adapter codes; and the legs' string check on a delta before the sink. The
+ * runtime gains `CredentialResolverPort` and its one implementation,
+ * `resolveCredential`, which reads one entry of the owner's credentials file --
+ * the sibling `credentials.local.json` derived beside the accounts file, never
+ * configured -- through the owner-file ladder `@acp/accounts` now exports once as
+ * `admitOwnerFile`. The daemon admits a LOCAL_OR_SELF_HOSTED entry, gives the API
+ * entry its `models` and `maxTokens`, takes `execution.accountsFile` exactly when a
+ * credential is needed, and composes the clients in one place. L-P15E-1, L-P15E-2
+ * and L-P15E-3 keep it so; the drills enter by the real doors, the API leg over a
+ * fetch substitute and the local leg over a real loopback socket served by the one
+ * admitted `.mjs` fixture.
+ *
+ * **Pins that move.** `ADAPTER_ERROR_CODES` 14 -> **19**; `PROVIDERS_PUBLIC_EXPORTS`
+ * 93 -> **97**; `RUNTIME_PUBLIC_EXPORTS` 299 -> **303**; `ACCOUNTS_PUBLIC_EXPORTS`
+ * 97 -> **98**; `PATH_SCOPED_LAWS` 156 -> **159**. `CONTRACT_VERSION`,
+ * `MIGRATIONS`, `API_CONTRACT_VERSION`, `CONTRACTS_SCHEMA_EXPORTS`,
+ * `API_CLIENT_SHAPE` and `LOCAL_CLIENT_SHAPE` do not move.
+ *
+ * **Forty-three paths; fifteen are new.**
+ */
+const P15E_WRITE_SET = [
+  "packages/edges/providers/src/api-key/http/index.ts",
+  "packages/edges/providers/src/api-key/http/types/index.ts",
+  "packages/edges/providers/src/local/http/index.ts",
+  "packages/edges/providers/src/local/http/types/index.ts",
+  "packages/edges/providers/src/sse/index.ts",
+  "packages/edges/providers/src/sse/types/index.ts",
+  "packages/edges/providers/src/api-key/index.ts",
+  "packages/edges/providers/src/local/index.ts",
+  "packages/edges/providers/src/errors/index.ts",
+  "packages/edges/providers/src/index.ts",
+  "packages/edges/providers/README.md",
+  "packages/edges/providers/test/api-key/http/index.test.ts",
+  "packages/edges/providers/test/local/http/index.test.ts",
+  "packages/edges/providers/test/sse/index.test.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/edges/providers/test/testing/index.ts",
+  "packages/edges/providers/test/contract/index.test.ts",
+  "packages/domains/runtime/src/contracts/index.ts",
+  "packages/domains/runtime/src/credentials/index.ts",
+  "packages/domains/runtime/src/credentials/types/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/test/credentials/index.test.ts",
+  "packages/domains/runtime/README.md",
+  "packages/domains/accounts/src/registry/index.ts",
+  "packages/domains/accounts/src/index.ts",
+  "packages/domains/accounts/test/registry/index.test.ts",
+  "packages/domains/accounts/README.md",
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/entrypoints/daemon/src/daemon-child/types/index.ts",
+  "packages/entrypoints/daemon/src/composition/ports/index.ts",
+  "packages/entrypoints/daemon/src/composition/index.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/test/composition/ports/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/testing/loopback-sse-server/index.mjs",
+  "packages/entrypoints/daemon/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0108-a-client-reaches-its-model-with-a-credential-it-never-holds-outside-the-boundary.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "docs/architecture/0107-a-result-is-read-by-reference-behind-authorization.md",
+  "SECURITY.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11863,6 +11937,7 @@ const WRITE_SET = [
   ...P15D4_WRITE_SET,
   ...P15I_WRITE_SET,
   ...P15F_WRITE_SET,
+  ...P15E_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13341,6 +13416,22 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the production walk records the result through the execution chain",
     scope: "packages/entrypoints/daemon/src/composition/walk/index.ts, packages/domains/runtime/src/execution-chain/index.ts",
+  },
+  // P-15 escalón E. Three new path-shaped surfaces, so three new rows: the register
+  // and the `requireScope` call sites both move 156 -> 159 for L-P15E-1, L-P15E-2 and
+  // L-P15E-3. The providers network row and the topology law are amended in their
+  // own rows and add none.
+  {
+    law: "the Messages leaf's one fetch site is bounded and keeps its credential",
+    scope: "packages/edges/providers/src/api-key/http/index.ts",
+  },
+  {
+    law: "the local leaf's one fetch site is bounded and keeps its credential",
+    scope: "packages/edges/providers/src/local/http/index.ts",
+  },
+  {
+    law: "a credential lives in the resolver and the composition, and reaches only the two factories",
+    scope: "packages/*/*/src/**",
   },
 ];
 
@@ -19767,6 +19858,21 @@ const TOPOLOGY_TEST_DOMAIN = new Set([
   "index.ts",
   "index.tsx",
 ]);
+/**
+ * The one test fixture admitted with a basename the test tree otherwise refuses
+ * (P-15 escalón E, ADR 0108; E-ND-12).
+ *
+ * The local drill's loopback server is a separate process spawned by path, and it
+ * is an `.mjs` so Node runs it with no build and no flag. It is exactly this path:
+ * the basename rule is skipped for it alone and every segment rule still applies. It
+ * must exist and be tracked (a stale admission fails), and its shape is held: it
+ * names `node:http` in a plain import, imports nothing from `@acp/`, and listens on
+ * the literal `"127.0.0.1"`. It is not a test-only domain: the mirror law reads
+ * `.ts` and `.tsx` only, so it never sees this file.
+ */
+const TOPOLOGY_ADMITTED_FIXTURES = new Map([
+  ["packages/entrypoints/daemon/test/testing/loopback-sse-server/index.mjs", new Set(["index.mjs"])],
+]);
 /** Lowercase kebab-case: no uppercase, no underscore, no leading or double dash. */
 const TOPOLOGY_SEGMENT = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 /** What may never appear under `src/`, whatever else is true of it. */
@@ -19871,10 +19977,68 @@ if (tracked.status === 0) {
           relativePath,
           relativePath.slice(testRoot.length).split("/"),
           TOPOLOGY_TEST_ROOT,
-          TOPOLOGY_TEST_DOMAIN,
+          TOPOLOGY_ADMITTED_FIXTURES.get(relativePath) ?? TOPOLOGY_TEST_DOMAIN,
           testRoot,
         );
       }
+    }
+  }
+
+  // P-15 escalón E: the admitted fixture is live, tracked and of its declared shape.
+  for (const fixture of TOPOLOGY_ADMITTED_FIXTURES.keys()) {
+    const source = readIfPresent(fixture);
+    if (source === null || !present.includes(fixture)) {
+      fail("TOPOLOGY_ADMITTED_FIXTURES admits " + fixture + ", which is not a tracked file; a stale admission is a hole, not a record");
+      continue;
+    }
+    const code = stripComments(source);
+    const specifiers = importSpecifiers(code);
+    if (!specifiers.includes("node:http")) {
+      fail(fixture + " no longer imports node:http; the admission is for the loopback server and nothing else");
+    }
+    if (specifiers.some((name) => name.startsWith("@acp/"))) {
+      fail(fixture + " imports an @acp/ package; the admitted fixture is a standalone server, never a door into the plane");
+    }
+    if (!/\.listen\([^)]*"127\.0\.0\.1"/.test(code)) {
+      fail(fixture + " does not listen on the literal \"127.0.0.1\"; the one admitted socket is loopback only");
+    }
+    // v2 (verifier E12/E13): exactly one server and one listen, a closed import list,
+    // and no other network at all -- no `fetch`, no second server, no host but loopback.
+    const FIXTURE_IMPORTS = new Set(["node:buffer", "node:fs", "node:http", "node:process", "node:timers"]);
+    for (const name of specifiers) {
+      if (!FIXTURE_IMPORTS.has(name)) fail(fixture + " imports " + name + "; the admitted fixture's imports are " + [...FIXTURE_IMPORTS].join(", "));
+    }
+    const bare = p15eStringsBlanked(code);
+    if ([...bare.matchAll(/\bcreateServer\s*\(/g)].length !== 1 || [...bare.matchAll(/\.listen\s*\(/g)].length !== 1) {
+      fail(fixture + " creates or listens more than once; the admission is for one loopback server");
+    }
+    // Declared here, not shared: this law runs before the providers section declares
+    // its own list, and a module constant read here would be in its dead zone. The
+    // same names: the global object, dynamic evaluation (a `.constructor` included),
+    // and the network globals that are not `fetch` (v3).
+    const fixtureReach = [
+      /\bfetch\b/,
+      /\bimport\s*\(/,
+      /\bglobalThis\b/,
+      /\bglobal\b/,
+      /\bself\b/,
+      /\bReflect\b/,
+      /\beval\s*\(/,
+      /\bFunction\b/,
+      /\.\s*constructor\b/,
+      /\bWebSocket\b/,
+      /\bEventSource\b/,
+      /\.\s*(?:dlopen|_linkedBinding)\b/,
+      /\.\s*binding\s*\(/,
+      /(?<![.\w$])process\b(?!\s*\.\s*(?:argv|stdout|stderr|exit|on)\b)/,
+    ];
+    const bareBody = bare.replace(/^\s*import\b[^;]*;/gm, "");
+    if (
+      fixtureReach.some((reach) => reach.test(bareBody)) ||
+      /\[\s*(["'`])(?:constructor|fetch|WebSocket|EventSource|binding|dlopen|_linkedBinding|globalThis)\1\s*\]/.test(code) ||
+      /"0\.0\.0\.0"|"::"|"localhost"/.test(code)
+    ) {
+      fail(fixture + " reaches the network other than its one loopback listener");
     }
   }
 
@@ -20791,6 +20955,12 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "readEffectResult",
   "EffectResultReading",
   "EffectResultRequest",
+  // P-15 escalón E (ADR 0108, decision 155): the credential resolver's port, its one
+  // implementation, its closed refusal words and its answer. 299 -> 303.
+  "CredentialResolverPort",
+  "resolveCredential",
+  "CREDENTIAL_REFUSALS",
+  "CredentialResolution",
 ];
 
 /**
@@ -20861,6 +21031,9 @@ const ACCOUNTS_PUBLIC_EXPORTS = [
   "ACCOUNTS_FILE_MAX_BYTES",
   "buildRegistry",
   "loadAccountsFile",
+  // P-15 escalón E (ADR 0108): the owner-file ladder, exported once for both owner
+  // files. 97 -> 98.
+  "admitOwnerFile",
   // P5B
   "QuotaEstimate",
   "QuotaEstimateInput",
@@ -21612,6 +21785,64 @@ const PROVIDERS_ALLOWED_BUILTINS = new Set([
   "node:string_decoder",
 ]);
 const PROVIDERS_TEST_ONLY_IMPORTS = new Set(["vitest", "node:crypto", "node:os", "node:url"]);
+/**
+ * The network amendment of "adapters reach no network" (P-15 escalón E, ADR 0108;
+ * C5 of the P-15 adjudication).
+ *
+ * The builtin ban below still holds for every file, and it is not the whole law:
+ * `fetch` is a global, so a ban on `node:http` alone would leave the network one
+ * identifier away. Exactly these two HTTP leaves may call `fetch`, each at one site
+ * bounded by its own law (L-P15E-1, L-P15E-2); the shared SSE reader both use names
+ * neither `fetch` nor a network builtin. Every other providers source reaches no
+ * network, as before.
+ */
+/**
+ * Code with its single- and double-quoted strings emptied, so a word inside a
+ * string (a tool named "fetch") is not a reference (P-15/E v2). Template literals
+ * are kept whole: an interpolation is code, and a word in a template's text fails
+ * closed rather than hiding a call.
+ */
+function p15eStringsBlanked(code) {
+  return code.replace(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g, '""');
+}
+
+/**
+ * The global object's names, and the dynamic-evaluation forms that reach it without
+ * naming it (P-15/E v2, verifier V1). A providers source that names any of them can
+ * reach `fetch` by member access or by alias (`const g = globalThis; g.fetch(…)`),
+ * which a call-shaped matcher does not see; so none may, anywhere in providers `src`,
+ * the two leaves included — they need none.
+ */
+const PROVIDERS_GLOBAL_REACH = [
+  /\bglobalThis\b/,
+  /\bglobal\b/,
+  /\bself\b/,
+  /\bwindow\b/,
+  /\bReflect\b/,
+  /\beval\s*\(/,
+  /\bFunction\b/,
+  /\bimport\s*\(/,
+  // v3 (verifier v2): dynamic evaluation through any function's `.constructor`, and
+  // the network globals that are not `fetch` -- Node's `WebSocket` and `EventSource`,
+  // and the native-binding doors on `process`.
+  /\.\s*constructor\b/,
+  /\bWebSocket\b/,
+  /\bEventSource\b/,
+  // The native-binding doors, as members of anything (a cast hides the receiver),
+  // and `process` itself named only for the two members this package reads.
+  /\.\s*(?:dlopen|_linkedBinding)\b/,
+  /\.\s*binding\s*\(/,
+  // (a `process:` declaration or key names a field, not the global)
+  /(?<![.\w$])process\b(?!\s*(?:\??\.\s*(?:env|getuid)\b|:))/,
+];
+
+/** The same names reached by a bracket string, which `p15eStringsBlanked` would hide. */
+const PROVIDERS_GLOBAL_REACH_BRACKETED =
+  /\[\s*(["'`])(?:constructor|fetch|WebSocket|EventSource|binding|dlopen|_linkedBinding|globalThis)\1\s*\]/;
+const PROVIDERS_FETCH_SITES = [
+  "packages/edges/providers/src/api-key/http/index.ts",
+  "packages/edges/providers/src/local/http/index.ts",
+];
 const PROVIDERS_FORBIDDEN_BUILTINS = [
   "node:net",
   "node:http",
@@ -21734,6 +21965,12 @@ const PROVIDERS_PUBLIC_EXPORTS = [
   "LOCAL_TRANSPORT_KIND",
   "admitLocalRoute",
   "localExecutionEvents",
+  // P-15 escalón E (ADR 0108): the two real clients and their usage sources. The
+  // factories' option types stay behind the boundary. 93 -> 97.
+  "ANTHROPIC_MESSAGES_USAGE_SOURCE",
+  "createAnthropicMessagesClient",
+  "LOCAL_CHAT_USAGE_SOURCE",
+  "createLocalChatClient",
   // P4B
   "CLAUDE_STREAM_PROTOCOL",
   "claudeAdapter",
@@ -21818,6 +22055,26 @@ if (tracked.status === 0) {
     }
 
     if (isTest) continue;
+
+    // The network amendment (P-15/E; v2, verifier V1): `fetch` is a global, so the
+    // builtin ban does not reach it. In providers `src`, no file names the global
+    // object or a dynamic evaluation (so no alias or member access can reach it), and
+    // no file but the two HTTP leaves names `fetch` at all, as a call, a member or a
+    // value. A test's fetch substitute installs a stand-in and reaches nothing.
+    if (relativePath.includes("/src/")) {
+      const bare = p15eStringsBlanked(code);
+      for (const reach of PROVIDERS_GLOBAL_REACH) {
+        if (reach.test(bare)) {
+          fail(relativePath + " names " + String(reach) + "; providers src reaches no global object and evaluates nothing dynamically (ADR 0108)");
+        }
+      }
+      if (PROVIDERS_GLOBAL_REACH_BRACKETED.test(code)) {
+        fail(relativePath + " reads a global, a constructor or a network name by bracket string; providers src reaches none (ADR 0108)");
+      }
+      if (/\bfetch\b/.test(bare) && !PROVIDERS_FETCH_SITES.includes(relativePath)) {
+        fail(relativePath + " names fetch; only " + PROVIDERS_FETCH_SITES.join(" and ") + " may call it (ADR 0108)");
+      }
+    }
 
     // Exactly one spawner, and exactly one caller of it.
     if (importSpecifiers(code).includes("node:child_process") && relativePath !== PROVIDERS_SPAWN_SITE) {
@@ -29557,6 +29814,12 @@ const CANONICAL_INSTANT_HOME = "packages/kernel/contracts/src/schemas/primitives
 // (`composition` `instructionFor`) calls the plane directly for an INSTRUCTION, not
 // a result, and is outside this law; its private lease-store copy is inherited
 // debt with an owner row (ADR 0107).
+//
+// Errata (P-15/E, 2026-09-23): Stated limit (Fable, F post-audit R4): clauses (iii)
+// and (v) count call sites. A closure that captures the one lawful
+// `readEffectResult(` / `effectResult(` call inside the door's own body and escapes
+// it by assignment to module-level state is one site inside the body and is not
+// seen — the alias family's sibling, deliberate rather than accidental.
 const RESULT_REFERENCE_NAMERS = [
   "packages/persistence/ledger/src/ledger/index.ts",
   "packages/persistence/ledger/src/projection/index.ts",
@@ -29857,6 +30120,264 @@ const PRIVATE_READ_REGISTRAR_SITE = "packages/entrypoints/gateway/src/routes/ind
     settlementSource === null ? 0 : 1,
   );
   notes.push("the settlement fold reads no clock, environment or randomness and hashes through the one canonicalizer");
+}
+
+// L-P15E-1 and L-P15E-2 -- each HTTP leaf's one fetch site is bounded and keeps its
+// credential (P-15 escalón E, ADR 0108; decision 158; Fable C-E2, C-E7.4, C-E9.1).
+//
+// On L-B4B-15's mould, per leaf, over its comment-stripped source:
+//
+// - exactly one call-time `fetch(` (or `globalThis.fetch(`), and `fetch` is never
+//   captured: no `= fetch`, no `: fetch`, no `fetch` passed as a value — the global
+//   is read at the call, so a substitute installed after load is the one called;
+// - `redirect: "manual"` and `AbortSignal.timeout(`; no `dispatcher`, `process.env`,
+//   `credentials:` or `cookie`;
+// - the headers: every literal key is one of the leaf's allowed names, and the one
+//   computed key is the leaf's `CREDENTIAL_HEADER`, declared as the literal the
+//   leaf sends (C-E2);
+// - the credential closure is invoked (`credential()`) only inside the function that
+//   holds the fetch site;
+// - that function's `catch` names no `.message`, `.cause`, `String(`, `inspect(`,
+//   `JSON.stringify(` or template interpolation (C-E7.4): the caught value becomes
+//   a closed word through the shared classifier and nothing else;
+// - URLs: the Messages leaf carries exactly one URL literal, `https://`; the local
+//   leaf carries none, since its base is the binding's.
+//
+// Stated limit: a text-level matcher. A header key built from a variable other than
+// `CREDENTIAL_HEADER`, a closure invoked through an alias (`const c = credential;
+// c()`), or a catch body that hands the caught value to a helper is not seen; the
+// leaves' unit tests assert the request a substitute receives and the renderings of
+// every error, which is where those would show.
+const P15E_LEAVES = [
+  {
+    site: "packages/edges/providers/src/api-key/http/index.ts",
+    law: "the Messages leaf's one fetch site is bounded and keeps its credential",
+    header: "x-api-key",
+    literalHeaders: ["anthropic-version", "content-type"],
+    urls: ["https://api.anthropic.com/v1/messages"],
+    fetchFunction: "sendMessages",
+  },
+  {
+    site: "packages/edges/providers/src/local/http/index.ts",
+    law: "the local leaf's one fetch site is bounded and keeps its credential",
+    header: "authorization",
+    literalHeaders: ["content-type"],
+    urls: [],
+    fetchFunction: "sendCompletions",
+  },
+];
+
+/** The body of the top-level function `name` in `code`, braces balanced, or null. */
+function p15eFunctionBody(code, name) {
+  const start = code.search(new RegExp("\\n(?:export\\s+)?(?:async\\s+)?function\\*?\\s+" + name + "\\s*\\("));
+  if (start === -1) return null;
+  const open = code.indexOf("{", code.indexOf(")", start));
+  // Skip a return-type annotation's braces: the body opens after the signature's `)`.
+  let brace = open;
+  const signatureEnd = code.indexOf(") {", start);
+  const typedEnd = code.indexOf("> {", start);
+  const candidates = [signatureEnd, typedEnd].filter((index) => index !== -1);
+  if (candidates.length > 0) brace = Math.min(...candidates) + 2;
+  let depth = 0;
+  for (let index = brace; index < code.length; index += 1) {
+    if (code[index] === "{") depth += 1;
+    else if (code[index] === "}") {
+      depth -= 1;
+      if (depth === 0) return code.slice(brace, index + 1);
+    }
+  }
+  return null;
+}
+
+const p15eLeafScanned = new Map();
+for (const leaf of P15E_LEAVES) {
+  let scanned = 0;
+  const source = readIfPresent(leaf.site);
+  if (source === null) {
+    fail(leaf.site + " is missing; the network amendment would license a file that does not exist");
+  } else {
+    scanned += 1;
+    const code = stripComments(source);
+    // v2 (verifier V1): every mention of `fetch` counts, a member (`.fetch`) or a value
+    // (`= fetch`) included, and exactly one is allowed: the bare call-time call. With
+    // the global object unnameable in providers src, no alias can reach it either.
+    const bare = p15eStringsBlanked(code);
+    const mentions = [...bare.matchAll(/\bfetch\b/g)].length;
+    const calls = [...bare.matchAll(/(^|[^A-Za-z0-9_$.\s])\s*fetch\s*\(|(^|[^A-Za-z0-9_$.])fetch\s*\(/g)].length;
+    if (mentions !== 1 || calls !== 1) {
+      fail(leaf.site + " names fetch " + String(mentions) + " time(s), " + String(calls) + " as a bare call; the leaf has exactly one call-time fetch site");
+    }
+    if (/\.\s*fetch\b|\bfetch\b(?!\s*\()/.test(bare)) {
+      fail(leaf.site + " names fetch as a member or a value; the global is read at the call, never captured (C-E9.1)");
+    }
+    for (const required of ['redirect: "manual"', "AbortSignal.timeout("]) {
+      if (!code.includes(required)) fail(leaf.site + " no longer names " + required + "; the request is bounded or it is not sent");
+    }
+    for (const forbidden of ["dispatcher", "process.env", "credentials:", "cookie", "Cookie"]) {
+      if (code.includes(forbidden)) fail(leaf.site + " names " + forbidden + "; the leaf installs no dispatcher and carries nothing ambient");
+    }
+
+    const declared = code.match(/const CREDENTIAL_HEADER = "([^"]+)";/);
+    if (declared === null || declared[1] !== leaf.header) {
+      fail(leaf.site + ' no longer declares CREDENTIAL_HEADER = "' + leaf.header + '"; the credential\'s header is the leaf constant (C-E2)');
+    }
+    const body = p15eFunctionBody(code, leaf.fetchFunction);
+    if (body === null) {
+      fail(leaf.site + " no longer declares " + leaf.fetchFunction + "; L-P15E has no fetch-site function to read");
+    } else {
+      if (!/(^|[^A-Za-z0-9_$.])fetch\s*\(/.test(body)) {
+        fail(leaf.fetchFunction + " in " + leaf.site + " no longer holds the fetch site");
+      }
+      const headersAt = body.indexOf("headers:");
+      const bodyAt = body.indexOf("body:", headersAt);
+      const headers = headersAt === -1 || bodyAt === -1 ? "" : body.slice(headersAt, bodyAt);
+      const region = headers.slice("headers:".length);
+      const literalKeys = [
+        ...[...region.matchAll(/(["'`])([^"'`\n]*)\1\s*:/g)].map((match) => match[2]),
+        // An unquoted key is a key too: `authorization: …` is not a literal the allowed set names.
+        ...[...region.matchAll(/(^|[{,\s])([A-Za-z_$][\w$]*)\s*:(?!:)/g)].map((match) => match[2]),
+      ];
+      const computedKeys = [...headers.matchAll(/\[([A-Za-z_$][\w$]*)\]\s*:/g)].map((match) => match[1]);
+      for (const key of literalKeys) {
+        if (!leaf.literalHeaders.includes(key)) {
+          fail(leaf.site + " sends the header " + key + ", outside its allowed [" + leaf.literalHeaders.join(", ") + "] (C-E2)");
+        }
+      }
+      if (computedKeys.some((key) => key !== "CREDENTIAL_HEADER") || !computedKeys.includes("CREDENTIAL_HEADER")) {
+        fail(leaf.site + " builds a header key from something other than CREDENTIAL_HEADER, or sends no credential header (C-E2)");
+      }
+      const invocations = [...code.matchAll(/\bcredential\s*\(\s*\)/g)].length;
+      const inside = [...body.matchAll(/\bcredential\s*\(\s*\)/g)].length;
+      if (invocations === 0 || invocations !== inside) {
+        fail(leaf.site + " invokes the credential closure outside " + leaf.fetchFunction + ", or not at all; it is called only at the fetch site");
+      }
+      const catchAt = body.search(/\bcatch\s*\(/);
+      const catchBody = catchAt === -1 ? null : body.slice(body.indexOf("{", catchAt));
+      if (catchBody === null) {
+        fail(leaf.fetchFunction + " in " + leaf.site + " no longer catches at the fetch site; a rejection would travel unclassified");
+      } else {
+        const block = catchBody.slice(0, catchBody.indexOf("}") + 1);
+        for (const forbidden of [".message", ".cause", "String(", "inspect(", "JSON.stringify(", "${"]) {
+          if (block.includes(forbidden)) {
+            fail(leaf.site + " names " + forbidden + " in the fetch site's catch; the caught value becomes a closed word and nothing else (C-E7.4)");
+          }
+        }
+        if (!block.includes("classifyTransportFailure(")) {
+          fail(leaf.site + " no longer classifies the fetch site's failure through classifyTransportFailure");
+        }
+        // v2 (verifier E04): the only throw is the classified AdapterError; the caught
+        // value is never rethrown raw.
+        if (/\bthrow\s+(?!new\s+AdapterError\s*\()/.test(block)) {
+          fail(leaf.site + " rethrows something other than a classified AdapterError from the fetch site's catch (C-E7.4)");
+        }
+      }
+    }
+
+    const urls = [...code.matchAll(/"(https?:\/\/[^"]*)"/g)].map((match) => match[1]);
+    if (JSON.stringify(urls) !== JSON.stringify(leaf.urls)) {
+      fail(leaf.site + " carries the URL literals [" + urls.join(", ") + "], and its law admits exactly [" + leaf.urls.join(", ") + "]");
+    }
+    for (const url of leaf.urls) {
+      if (!url.startsWith("https://")) fail(leaf.site + " names a URL that is not https://; the one remote endpoint is TLS");
+    }
+  }
+  p15eLeafScanned.set(leaf.site, scanned);
+}
+{
+  // One call site per law, so the register counts both (L3).
+  requireScope(P15E_LEAVES[0].law, p15eLeafScanned.get(P15E_LEAVES[0].site) ?? 0);
+  requireScope(P15E_LEAVES[1].law, p15eLeafScanned.get(P15E_LEAVES[1].site) ?? 0);
+}
+{
+  // The shared reader and classifier: no network, and no read of a message or cause.
+  const sse = readIfPresent("packages/edges/providers/src/sse/index.ts");
+  if (sse === null) {
+    fail("packages/edges/providers/src/sse/index.ts is missing; both leaves read their streams through it");
+  } else {
+    const code = stripComments(sse);
+    if (/(^|[^A-Za-z0-9_$.])fetch\s*\(/.test(code) || importSpecifiers(code).some((name) => name.startsWith("node:"))) {
+      fail("packages/edges/providers/src/sse/index.ts calls fetch or imports a builtin; the reader is bytes in, events out");
+    }
+    for (const forbidden of [".message", ".cause", "String(error", "inspect("]) {
+      if (code.includes(forbidden)) fail("packages/edges/providers/src/sse/index.ts names " + forbidden + "; the classifier reads a name and nothing else (C-E7)");
+    }
+  }
+  notes.push("each HTTP leaf has one bounded call-time fetch site whose credential stays in it, over a reader that reads no message");
+}
+
+// L-P15E-3 -- a credential lives in two named places (P-15 escalón E, ADR 0108;
+// decision 158; owner authorization C4, PRECISION).
+//
+// The secret exists as a string in memory to authenticate; this law keeps where. Over
+// every tracked `packages/*/*/src/` `.ts` and `.tsx` file, comments stripped:
+//
+// - the credentials file is named, and its `credentials` section read, only by the
+//   resolver (`runtime/src/credentials/index.ts`);
+// - `resolveCredential(` is called only in the daemon's composition ports, the one
+//   receiver of the closure;
+// - the two factories are called only there, besides their own definitions;
+// - the resolver names no logger, console, telemetry, event builder or append.
+//
+// Stated limit: a text-level matcher, so the resolver reached through an alias, or a
+// closure handed on through a second variable inside the ports file, is not seen;
+// the composition's own test serializes every composed record for the canary
+// (sink 8b), which is where that would show.
+{
+  const RESOLVER_SITE = "packages/domains/runtime/src/credentials/index.ts";
+  const RECEIVER_SITE = "packages/entrypoints/daemon/src/composition/ports/index.ts";
+  const FACTORY_HOMES = new Set([
+    "packages/edges/providers/src/api-key/http/index.ts",
+    "packages/edges/providers/src/local/http/index.ts",
+  ]);
+  let scanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const sources = new Set(present);
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const source = readIfPresent(relativePath);
+      if (source === null) continue;
+      scanned += 1;
+      const code = stripComments(source);
+      // v2 (verifier E09): the name in pieces too: a quoted literal that starts with
+      // `/credentials` or `credentials.`, or names `credentials.local`. A bare
+      // "credentials" is a key name the contracts' own guard denies, not the file.
+      // Import specifiers are module paths and are set aside.
+      const literals = [...code.replace(/^\s*(?:import|export)\b[^;]*?\bfrom\s*["'][^"'\n]*["'];|^\s*import\s*["'][^"'\n]*["'];/gm, "").matchAll(/(["'`])([^"'`\n]*)\1/g)].map((match) => match[2]);
+      const namesTheFile = literals.some(
+        (literal) => /^\/credentials|^credentials\./.test(literal) || literal.includes("credentials.local"),
+      );
+      if (relativePath !== RESOLVER_SITE && (namesTheFile || /\[\s*["'`]credentials["'`]\s*\]/.test(code))) {
+        fail(relativePath + " names the credentials file or reads its section; only " + RESOLVER_SITE + " may (L-P15E-3)");
+      }
+      if (relativePath !== RECEIVER_SITE && /(^|[^A-Za-z0-9_$.])resolveCredential\s*\(/.test(code) && relativePath !== RESOLVER_SITE) {
+        fail(relativePath + " calls resolveCredential; only " + RECEIVER_SITE + " receives a credential closure (L-P15E-3)");
+      }
+      if (
+        relativePath !== RECEIVER_SITE &&
+        !FACTORY_HOMES.has(relativePath) &&
+        /(^|[^A-Za-z0-9_$.])(createAnthropicMessagesClient|createLocalChatClient)\s*\(/.test(code)
+      ) {
+        fail(relativePath + " builds an HTTP client; only " + RECEIVER_SITE + " hands a credential closure to a factory (L-P15E-3)");
+      }
+    }
+    const resolver = readIfPresent(RESOLVER_SITE);
+    if (resolver === null) {
+      fail(RESOLVER_SITE + " is missing; L-P15E-3 has no resolver to hold");
+    } else {
+      const code = stripComments(resolver);
+      for (const forbidden of ["console.", "logger", "telemetry", "buildEvent(", "appendEvent(", ".log(", "process.env", "writeFileSync(", "appendFileSync("]) {
+        if (code.includes(forbidden)) fail(RESOLVER_SITE + " names " + forbidden + "; the resolver reads and answers, and records nothing (L-P15E-3)");
+      }
+    }
+    const receiver = readIfPresent(RECEIVER_SITE);
+    if (receiver === null || !/(^|[^A-Za-z0-9_$.])resolveCredential\s*\(/.test(stripComments(receiver))) {
+      fail(RECEIVER_SITE + " no longer calls resolveCredential; L-P15E-3 names a receiver that is gone");
+    }
+  }
+  requireScope("a credential lives in the resolver and the composition, and reaches only the two factories", scanned);
+  notes.push("a credential closure is received in one composition file and reaches only the two HTTP factories");
 }
 
 // --- 22. the live docs gate (P8-T G10) --------------------------------------

@@ -154,6 +154,7 @@ export type {
   EventCoordinate,
   InvocationRevision,
   OperationCoordinate,
+  CredentialResolverPort,
   OrchestrationDriver,
   PostconditionProbe,
   PostconditionVerdict,
@@ -552,3 +553,9 @@ export type { ExecutionChainInput } from "./execution-chain/index.js";
 // the CLI's `result` verb -- and its request and answer.
 export { readEffectResult } from "./operation-result/index.js";
 export type { EffectResultReading, EffectResultRequest } from "./operation-result/index.js";
+// P-15 escalón E (ADR 0108; owner authorization C4, decision E-ND-1): the one
+// credential resolver, which the daemon calls at composition and whose admitted
+// closure it hands to one HTTP client factory, its closed refusal words, and its
+// answer. The port's shape is exported above with the other contracts.
+export { CREDENTIAL_REFUSALS, resolveCredential } from "./credentials/index.js";
+export type { CredentialResolution } from "./credentials/index.js";

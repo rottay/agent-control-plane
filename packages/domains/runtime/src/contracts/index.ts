@@ -9,6 +9,8 @@ import type {
   TaskState,
 } from "@acp/contracts";
 
+import type { CredentialRequest, CredentialResolution } from "../credentials/types/index.js";
+
 /**
  * Package-internal contracts for the durability plane.
  *
@@ -213,6 +215,18 @@ export type PostconditionProbe = (
 // ---------------------------------------------------------------------------
 // Driver
 // ---------------------------------------------------------------------------
+
+/**
+ * The credential resolver port (P-15 escalón E, ADR 0108; C-E1).
+ *
+ * The one seam between an account's opaque `credentialRef` and the HTTP client that
+ * authenticates with it. Beside the driver port because it is, like it, a shape the
+ * composition wires and the domain never calls: the daemon calls it once per
+ * account at composition and hands the admitted closure to one client factory,
+ * and nothing else holds it. `resolveCredential` is its one implementation; P-19
+ * adds the others (keychain, rotation) behind the same shape.
+ */
+export type CredentialResolverPort = (request: CredentialRequest) => CredentialResolution;
 
 /**
  * What both drivers must satisfy.

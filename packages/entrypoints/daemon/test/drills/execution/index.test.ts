@@ -15,6 +15,7 @@ import {
   ResultContractSchema,
   TERMINAL_STATES,
   buildIdempotencyKey,
+  findCredentialViolations,
 } from "@acp/contracts";
 import type {
   Checkpoint,
@@ -4559,6 +4560,10 @@ function r6ApiExecution(workdir: string): DaemonExecutionConfig {
         transportKind: "API_KEY",
         workdir,
         limits: { timeoutMs: 10_000, outputBudgetBytes: 64 * 1024, interruptGraceMs: 120, termGraceMs: 120 },
+        // P-15/E: required of an API entry; the injected factory below serves
+        // it, and no accounts file is named, so no credential is resolved.
+        models: [r6ApiRoute().model],
+        maxTokens: 256,
       },
     ],
   };
@@ -5699,8 +5704,11 @@ function d4ThroughTheDoors(options: {
   readonly priced: boolean;
   readonly instruction?: string;
   readonly intakeBy?: "CLI" | "CALLER";
+  /** P-15/E: the transport the model admits, the catalog prices and the intake asks for; CLI by default. */
+  readonly transport?: ResolvedRoute["transportKind"];
 }): { readonly databasePath: string; readonly taskId: string; readonly intakeRequest: Record<string, unknown> } {
   const instruction = options.instruction ?? D4_INSTRUCTION;
+  const transport = options.transport ?? "CLI_SUBSCRIPTION";
   const directory = d4Directory();
   const databasePath = join(directory, "control-plane.sqlite");
   // The one act no door performs: an empty ledger file (ND-D4-6).
@@ -5729,7 +5737,7 @@ function d4ThroughTheDoors(options: {
       policyVersion: "2026.09.0",
       deprecatedAt: null,
       eligibleRoles: ["implementer"],
-      transports: ["CLI_SUBSCRIPTION"],
+      transports: [transport],
     }),
   );
   registry(
@@ -5750,7 +5758,7 @@ function d4ThroughTheDoors(options: {
           {
             provider: "claude",
             modelVersionId: D4_MODEL,
-            transportKind: "CLI_SUBSCRIPTION",
+            transportKind: transport,
             tokenClass: "output",
             currency: "USD",
             effectiveFrom: D4_RULES_FROM,
@@ -5791,7 +5799,7 @@ function d4ThroughTheDoors(options: {
     stepId: null,
     role: "implementer",
     slot: 0,
-    transportKind: "CLI_SUBSCRIPTION",
+    transportKind: transport,
     recordedBy: D4_OPERATOR,
   };
   if (options.intakeBy === "CALLER") return { databasePath, taskId, intakeRequest };
@@ -6289,8 +6297,13 @@ const fServers: FServer[] = [];
  * (the daemon's import law), so a port is drawn from a high range and a server
  * that could not bind it — it exits — is retried on another.
  */
-async function fServer(ledgerPath: string, options: { readonly bearer: boolean }): Promise<FServer> {
+async function fServer(
+  ledgerPath: string,
+  options: { readonly bearer: boolean; readonly accountsFile?: string },
+): Promise<FServer> {
   const args = [F_GATEWAY_ENTRY, "--ledger", ledgerPath];
+  // P-15/E: the owner's accounts file, so the accounts read is one of the swept sinks.
+  if (options.accountsFile !== undefined) args.push("--accounts-file", options.accountsFile);
   if (options.bearer) {
     const token = join(d4Directory(), "bearer.token");
     writeFileSync(token, F_TOKEN + "\n", { encoding: "utf8", mode: 0o600 });
@@ -6678,3 +6691,586 @@ async function fExpectBothDoors(
   expect(document["state"]).not.toBe("NO_OUTCOME");
   return document;
 }
+
+// ---------------------------------------------------------------------------
+// P-15 escalón E (ADR 0108): the real clients, through the real doors
+//
+// D-F-4 enters by POST /tasks and runs the recorded daemon over the API_KEY leg,
+// whose one fetch site calls a substitute installed on `globalThis` for the run
+// alone: SOCKET_EXERCISED: NONE, stated, and the substitute refuses any other URL.
+// D-F-5 enters by `acp intake` and runs the LOCAL leg over a real loopback socket:
+// the tracked child server, spawned by path. Every credential is a canary this
+// file writes into a disposable owner directory; no real one is read or reachable.
+// ---------------------------------------------------------------------------
+
+const E_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
+const E_LOOPBACK_FIXTURE = join(D4_REPO_ROOT, "packages", "entrypoints", "daemon", "test", "testing", "loopback-sse-server", "index.mjs");
+const E_DAEMON_ROOT = join(D4_REPO_ROOT, ".acp-local", "daemon");
+const E_LIMITS = { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 };
+
+/** A synthetic credential: concatenated, in the resolver's grammar, and tripping the detector. */
+function eCanary(tag: string): string {
+  return "sk-" + "ant-" + "api03-" + "C".repeat(40) + tag;
+}
+
+/**
+ * The owner's two files, in a directory of their own: an accounts file naming the
+ * drill account with `file://e-main`, and its sibling carrying `entries`, or none.
+ */
+function eOwnerFiles(entries: Readonly<Record<string, string>> | null): string {
+  const directory = d4Directory();
+  const accountsFile = d4Write(directory, "accounts.local.json", {
+    contractVersion: CONTRACT_VERSION,
+    accounts: [
+      {
+        contractVersion: CONTRACT_VERSION,
+        accountId: D4_ACCOUNT,
+        provider: "claude",
+        alias: "e-drill",
+        authMode: "LOCAL_CREDENTIAL_FALLBACK",
+        authProfileRef: "profile://acp-drill-e",
+        credentialRef: "file://e-main",
+        plan: null,
+        enabledModels: ["claude-opus-5"],
+        knownLimits: {},
+        resetSchedule: { kind: "UNKNOWN", nextResetAt: null, timezone: "UTC", confidence: "LOW" },
+        quotaEstimate: { remainingRatio: null, estimatedTokensRemaining: null, estimatedAt: D4_RULES_FROM, confidence: "LOW" },
+        lastHealthProbe: null,
+        lastClassifiedError: null,
+        status: "AVAILABLE",
+        isolatedConfigRoot: directory,
+        contextSwitchCost: { estimatedTokens: 0, estimatedSeconds: 0 },
+      },
+    ],
+  });
+  if (entries !== null) d4Write(directory, "credentials.local.json", { contractVersion: CONTRACT_VERSION, credentials: entries });
+  return accountsFile;
+}
+
+/** The recorded form's config for the API_KEY or LOCAL leg, on `d4ConfigFile`'s mould. */
+function eConfigFile(
+  databasePath: string,
+  taskId: string,
+  binding:
+    | { readonly transportKind: "API_KEY"; readonly accountsFile: string }
+    | { readonly transportKind: "LOCAL_OR_SELF_HOSTED"; readonly baseUrl: string; readonly auth: "NONE" | "CREDENTIAL"; readonly accountsFile?: string },
+): string {
+  const entry =
+    binding.transportKind === "API_KEY"
+      ? { models: ["claude-opus-5"], maxTokens: 256 }
+      : { provider: "claude", baseUrl: binding.baseUrl, models: ["claude-opus-5"], auth: binding.auth };
+  return d4Write(d4Directory(), "daemon.json", {
+    mode: "SQLITE_SUPERVISOR",
+    databasePath,
+    taskId,
+    emittedBy: D4_OPERATOR,
+    holdOpen: false,
+    checkPorts: false,
+    execution: {
+      route: {
+        provider: "claude",
+        model: "claude-opus-5",
+        accountId: D4_ACCOUNT,
+        transportKind: binding.transportKind,
+        capabilityPolicyVersion: "2026-09-03.1",
+        resolvedAt: D4_RULES_FROM,
+      },
+      bindings: [
+        { accountId: D4_ACCOUNT, transportKind: binding.transportKind, workdir: d4Worktree(), limits: E_LIMITS, ...entry },
+      ],
+      ...(binding.accountsFile === undefined ? {} : { accountsFile: binding.accountsFile }),
+      catalogDocumentId: D4_CATALOG,
+    },
+  });
+}
+
+/** A synthetic Messages event stream echoing `content`, ending `end_turn`. */
+function eMessagesStream(content: string): string {
+  const event = (name: string, data: unknown): string => "event: " + name + "\ndata: " + JSON.stringify(data) + "\n\n";
+  const half = Math.floor(content.length / 2);
+  return [
+    event("message_start", {
+      type: "message_start",
+      message: { id: "msg_e_drill01", type: "message", role: "assistant", model: "claude-opus-5-20260601", usage: { input_tokens: 5, cache_creation_input_tokens: 11, cache_read_input_tokens: 13, output_tokens: 1 } },
+    }),
+    event("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
+    event("ping", { type: "ping" }),
+    event("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: content.slice(0, half) } }),
+    event("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: content.slice(half) } }),
+    event("content_block_stop", { type: "content_block_stop", index: 0 }),
+    event("message_delta", { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 7 } }),
+    event("message_stop", { type: "message_stop" }),
+  ].join("");
+}
+
+/** The UTF-8 bytes of `text`, cut into reads at a few places, one inside an event. */
+function eReads(text: string): ReadableStream<Uint8Array> {
+  const bytes = new TextEncoder().encode(text);
+  const cuts = [7, Math.floor(bytes.length / 3), Math.floor(bytes.length / 2) + 1, bytes.length - 5];
+  const parts: Uint8Array[] = [];
+  let at = 0;
+  for (const cut of cuts) {
+    parts.push(bytes.slice(at, cut));
+    at = cut;
+  }
+  parts.push(bytes.slice(at));
+  let index = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const part = parts[index];
+      index += 1;
+      if (part === undefined) controller.close();
+      else controller.enqueue(part);
+    },
+  });
+}
+
+interface ESubstitute {
+  readonly calls: { readonly url: string; readonly init: RequestInit }[];
+  readonly strays: string[];
+  late: number;
+}
+
+/**
+ * Run the packaged entry with the fetch substitute installed for exactly the run
+ * (C-E9.4): installed immediately before, restored in `finally`, then armed so a
+ * later call is counted rather than answered. Any URL but the Messages endpoint is a
+ * stray, refused and recorded (stop condition 2). The daemon's own writes to stdout
+ * and stderr are captured for the sweep (sink 6).
+ */
+async function eRunWithSubstitute(
+  config: string,
+  answer: (call: { readonly url: string; readonly init: RequestInit }) => Response,
+): Promise<{ readonly substitute: ESubstitute; readonly io: string; readonly outcome: { readonly code: number | null; readonly error: unknown } }> {
+  const substitute: ESubstitute = { calls: [], strays: [], late: 0 };
+  let restored = false;
+  const stand = (input: unknown, init?: RequestInit): Promise<Response> => {
+    const url = String(input);
+    if (restored) {
+      substitute.late += 1;
+      return Promise.reject(new Error("the fetch substitute was called after it was restored"));
+    }
+    if (url !== E_MESSAGES_URL) {
+      substitute.strays.push(url);
+      return Promise.reject(new Error("a request left for a URL the drill did not admit"));
+    }
+    const call = { url, init: init ?? {} };
+    substitute.calls.push(call);
+    try {
+      return Promise.resolve(answer(call));
+    } catch (error: unknown) {
+      return Promise.reject(error instanceof Error ? error : new Error("the substitute failed"));
+    }
+  };
+  const io: string[] = [];
+  const realFetch = globalThis.fetch;
+  const realOut = process.stdout.write.bind(process.stdout);
+  const realErr = process.stderr.write.bind(process.stderr);
+  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+    io.push(String(chunk));
+    return (realOut as (...args: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
+    io.push(String(chunk));
+    return (realErr as (...args: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof process.stderr.write;
+  globalThis.fetch = stand as typeof fetch;
+  let code: number | null = null;
+  let error: unknown = null;
+  try {
+    code = await runPackagedEntry([config]);
+  } catch (thrown: unknown) {
+    error = thrown;
+  } finally {
+    globalThis.fetch = realFetch;
+    restored = true;
+    process.stdout.write = realOut;
+    process.stderr.write = realErr;
+  }
+  // The post-restore guard: the real fetch is back, and the substitute answers nothing more.
+  expect(globalThis.fetch).toBe(realFetch);
+  await expect(stand(E_MESSAGES_URL)).rejects.toThrow("after it was restored");
+  substitute.late -= 1;
+  return { substitute, io: io.join(""), outcome: { code, error } };
+}
+
+/** Capture the daemon's stdout and stderr around a run with no substitute (the LOCAL leg). */
+async function eRunCaptured(config: string): Promise<{ readonly io: string; readonly outcome: { readonly code: number | null; readonly error: unknown } }> {
+  const io: string[] = [];
+  const realOut = process.stdout.write.bind(process.stdout);
+  const realErr = process.stderr.write.bind(process.stderr);
+  process.stdout.write = ((chunk: unknown, ...rest: unknown[]) => {
+    io.push(String(chunk));
+    return (realOut as (...args: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
+    io.push(String(chunk));
+    return (realErr as (...args: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof process.stderr.write;
+  let code: number | null = null;
+  let error: unknown = null;
+  try {
+    code = await runPackagedEntry([config]);
+  } catch (thrown: unknown) {
+    error = thrown;
+  } finally {
+    process.stdout.write = realOut;
+    process.stderr.write = realErr;
+  }
+  return { io: io.join(""), outcome: { code, error } };
+}
+
+interface ELoopback {
+  readonly baseUrl: string;
+  readonly headerLog: string;
+  readonly stop: () => Promise<void>;
+}
+
+const eLoopbacks: ELoopback[] = [];
+
+afterEach(async () => {
+  for (const loopback of eLoopbacks.splice(0)) await loopback.stop();
+});
+
+/** The tracked loopback server, spawned by path, on a drawn high port with retry. */
+async function eLoopback(): Promise<ELoopback> {
+  // Its own directory: the header log holds the credential by design, so it lives
+  // outside every root the sweep reads, and the drill asserts that below.
+  const headerLog = join(d4Directory(), "headers.log");
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const port = 20_000 + Math.floor(Math.random() * 40_000);
+    const child = spawn(process.execPath, [E_LOOPBACK_FIXTURE, String(port), headerLog], { stdio: ["ignore", "pipe", "pipe"] });
+    const exited = new Promise<void>((done) => {
+      child.once("exit", () => {
+        done();
+      });
+    });
+    const up = await new Promise<boolean>((settle) => {
+      child.stdout.on("data", (chunk: Buffer) => {
+        if (chunk.toString("utf8").includes("listening")) settle(true);
+      });
+      child.once("exit", () => {
+        settle(false);
+      });
+    });
+    if (!up) {
+      await exited;
+      continue;
+    }
+    const loopback: ELoopback = {
+      baseUrl: "http://127.0.0.1:" + String(port) + "/v1",
+      headerLog,
+      stop: async () => {
+        if (child.exitCode === null) {
+          child.kill("SIGTERM");
+          await exited;
+        }
+      },
+    };
+    eLoopbacks.push(loopback);
+    return loopback;
+  }
+  throw new Error("the loopback server did not come up on any of five ports");
+}
+
+/** Every file under `directory`, as latin1 text, keyed by path. */
+function eTreeText(directory: string): readonly { readonly path: string; readonly text: string }[] {
+  if (!existsSync(directory)) return [];
+  const out: { path: string; text: string }[] = [];
+  for (const name of readdirSync(directory, { recursive: true, encoding: "utf8" })) {
+    const path = join(directory, name);
+    try {
+      out.push({ path, text: readFileSync(path).toString("latin1") });
+    } catch {
+      // A directory, or a file removed while walked: nothing to read.
+    }
+  }
+  return out;
+}
+
+/** Every text a thrown value renders to, through `cause` and `errors[]` (sink 7). */
+function eErrorText(value: unknown, seen = new Set<unknown>()): string {
+  if (value === null || typeof value !== "object") return String(value);
+  if (seen.has(value)) return "";
+  seen.add(value);
+  let own = "";
+  try {
+    own = (value as { toString(): string }).toString();
+  } catch {
+    // A value with no string form renders to nothing of its own.
+  }
+  const parts = [own, (JSON.stringify(value) as string | undefined) ?? ""];
+  for (const key of Object.getOwnPropertyNames(value)) {
+    parts.push(key, eErrorText((value as Record<string, unknown>)[key], seen));
+  }
+  return parts.join("\n");
+}
+
+/**
+ * The canary sweep (sinks 1–13 of the prestate's matrix, each named): the canary is
+ * in none of them, on this path. The ledger directory is walked whole — the ledger,
+ * its WAL and shared memory, the coordination stores, the evidence root and the
+ * private plane's objects (sinks 1–4) — and so is the daemon's root, its status
+ * document and log (sink 5).
+ */
+async function eCanarySweep(input: {
+  readonly canary: string;
+  readonly databasePath: string;
+  readonly server: FServer;
+  readonly taskId: string;
+  readonly io: string;
+  readonly error: unknown;
+  readonly cliOutput: readonly string[];
+  readonly readBodies: readonly string[];
+}): Promise<void> {
+  // The detector's positive control, before any absence is read (C-E8).
+  expect(findCredentialViolations({ value: input.canary }).length).toBeGreaterThan(0);
+  expect(findCredentialViolations({ value: "Bearer " + input.canary }).length).toBeGreaterThan(0);
+  const where: string[] = [];
+  const ledgerDirectory = resolve(input.databasePath, "..");
+  for (const file of eTreeText(ledgerDirectory)) if (file.text.includes(input.canary)) where.push("sinks 1-4: " + file.path);
+  for (const file of eTreeText(E_DAEMON_ROOT)) if (file.text.includes(input.canary)) where.push("sink 5: " + file.path);
+  if (input.io.includes(input.canary)) where.push("sink 6: the daemon's stdout or stderr");
+  if (eErrorText(input.error).includes(input.canary)) where.push("sink 7: the thrown error");
+  const bodies: readonly [string, string][] = [
+    ["sink 10: GET accounts", (await fGet(input.server, "/api/v1/accounts", null)).body],
+    ["sink 11: the event stream", await fStream(input.server)],
+    ["sink 11: GET events", (await fGet(input.server, "/api/v1/events?limit=1000", null)).body],
+    ["sink 11: GET task", (await fGet(input.server, "/api/v1/tasks/" + input.taskId, null)).body],
+    ["sink 11: GET overview", (await fGet(input.server, "/api/v1/overview", null)).body],
+    ["sink 11: GET effects", (await fGet(input.server, "/api/v1/tasks/" + input.taskId + "/effects", null)).body],
+    ["sink 12: health", (await fGet(input.server, "/api/v1/health", null)).body],
+    ...input.readBodies.map((body, index): [string, string] => ["sink 11: result read " + String(index), body]),
+    ...input.cliOutput.map((text, index): [string, string] => ["sink 11: CLI output " + String(index), text]),
+    ["sink 13: acp-server output", input.server.output()],
+  ];
+  for (const [name, body] of bodies) if (body.includes(input.canary)) where.push(name);
+  expect(where).toEqual([]);
+}
+
+/** Read the one effect through both doors, returning the bodies read. */
+async function eReadBack(
+  server: FServer,
+  databasePath: string,
+  taskId: string,
+): Promise<{ readonly document: Record<string, unknown>; readonly bodies: readonly string[]; readonly cliOutput: readonly string[] }> {
+  const listed = acp(["effects", taskId, "--database", databasePath, "--format", "json"]);
+  expect({ status: listed.status, stderr: listed.stderr }).toEqual({ status: 0, stderr: "" });
+  const effectId = String(fOnlyEffect(JSON.parse(listed.stdout))["effectId"]);
+  const byHttp = await fGet(server, fPaths(taskId, effectId).result);
+  expect([byHttp.status, byHttp.cacheControl]).toEqual([200, "no-store"]);
+  const byCli = acp(["result", "--task", taskId, "--effect", effectId, "--database", databasePath, "--format", "json"]);
+  expect({ status: byCli.status, stderr: byCli.stderr }).toEqual({ status: 0, stderr: "" });
+  const document = JSON.parse(byHttp.body) as Record<string, unknown>;
+  expect(JSON.parse(byCli.stdout)).toEqual(document);
+  return { document, bodies: [byHttp.body], cliOutput: [listed.stdout, listed.stderr, byCli.stdout, byCli.stderr] };
+}
+
+function eBlocksText(document: Record<string, unknown>): string {
+  const blocks = ((document["result"] as Record<string, unknown>)["document"] as Record<string, unknown>)["blocks"] as Record<string, unknown>[];
+  return blocks.map((block) => String(block["text"])).join("");
+}
+
+function eTypes(databasePath: string, taskId: string): readonly D4Event[] {
+  const ledger = openLedger(databasePath);
+  try {
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    return d4Events(ledger, taskId);
+  } finally {
+    ledger.close();
+  }
+}
+
+describe("P-15/E: the real clients, from the doors to the result, with a credential they never let out (ADR 0108)", () => {
+  beforeAll(() => {
+    const packageManager = process.env["npm_execpath"];
+    for (const name of ["@acp/cli", "@acp/gateway"]) {
+      const built =
+        packageManager === undefined
+          ? spawnSync("pnpm", ["--filter", name, "build"], { cwd: D4_REPO_ROOT, encoding: "utf8" })
+          : spawnSync(process.execPath, [packageManager, "--filter", name, "build"], { cwd: D4_REPO_ROOT, encoding: "utf8" });
+      if (built.status !== 0) throw new Error("could not build " + name + ": " + (built.stderr || built.stdout));
+    }
+  }, 600_000);
+
+  it("D-F-4 (API_KEY): POST /tasks, the Messages leaf over the substitute, read back through both doors; the canary nowhere", async () => {
+    const canary = eCanary("DF4" + randomUUID().replace(/-/g, "").slice(0, 12));
+    const sentinel = "PESFOUR" + randomUUID().replace(/-/g, "");
+    const instruction = "Echo this instruction back, word for word: " + sentinel;
+    const { databasePath, taskId, intakeRequest } = d4ThroughTheDoors({ priced: true, instruction, intakeBy: "CALLER", transport: "API_KEY" });
+    const accountsFile = eOwnerFiles({ "e-main": canary });
+    const server = await fServer(databasePath, { bearer: true, accountsFile });
+    const intake = await fetch(server.url + "/api/v1/tasks", {
+      method: "POST",
+      headers: { authorization: "Bearer " + F_TOKEN, "content-type": "application/json" },
+      body: JSON.stringify(intakeRequest),
+    });
+    expect(intake.status).toBe(200);
+
+    const run = await eRunWithSubstitute(eConfigFile(databasePath, taskId, { transportKind: "API_KEY", accountsFile }), (call) => {
+      const body = JSON.parse(call.init.body as string) as { messages: { content: string }[] };
+      return new Response(eReads(eMessagesStream(body.messages[0]?.content ?? "")), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    expect(run.outcome).toEqual({ code: 0, error: null });
+
+    // The transport's positive control (C-E9.3): one call, the exact request, the canary once.
+    expect(run.substitute.strays).toEqual([]);
+    expect(run.substitute.late).toBe(0);
+    expect(run.substitute.calls).toHaveLength(1);
+    const [call] = run.substitute.calls;
+    if (call === undefined) throw new Error("no call");
+    expect([call.init.method, call.init.redirect, call.init.signal instanceof AbortSignal]).toEqual(["POST", "manual", true]);
+    const headers = new Headers(call.init.headers);
+    expect([...headers.keys()].sort()).toEqual(["anthropic-version", "content-type", "x-api-key"]);
+    expect(headers.get("x-api-key")).toBe(canary);
+    expect(JSON.parse(call.init.body as string)).toEqual({
+      model: "claude-opus-5",
+      max_tokens: 256,
+      stream: true,
+      messages: [{ role: "user", content: instruction }],
+    });
+
+    // The ledger: one CUMULATIVE final observation, a SUCCEEDED settlement, integrity ok.
+    const events = eTypes(databasePath, taskId);
+    const types = events.map((event) => event.type);
+    expect(types.filter((type) => type === "USAGE_OBSERVATION_RECORDED")).toHaveLength(1);
+    expect(events.find((event) => event.type === "USAGE_OBSERVATION_RECORDED")?.payload["usageObservation"]).toMatchObject({
+      reportKind: "CUMULATIVE",
+      isFinal: 1,
+      inputTokens: 5,
+      outputTokens: 7,
+      cacheWriteTokens: 11,
+      cacheReadTokens: 13,
+      totalTokens: 36,
+    });
+    expect(types).toContain("CHECKPOINT_WRITTEN");
+
+    // Read back through both doors: RESULT/SUCCEEDED, the sentinel where it may be.
+    const read = await eReadBack(server, databasePath, taskId);
+    expect(read.document).toMatchObject({ state: "RESULT", outcomeStatus: "SUCCEEDED", cohort: "CURRENT" });
+    expect(eBlocksText(read.document)).toBe(instruction);
+    expect(read.bodies.join("")).toContain(sentinel);
+
+    await eCanarySweep({ canary, databasePath, server, taskId, io: run.io, error: run.outcome.error, cliOutput: read.cliOutput, readBodies: read.bodies });
+    await fSweep(server, { sentinel, taskId, ledgerPath: databasePath, cliStderr: read.cliOutput.filter((_, index) => index % 2 === 1) });
+  }, 300_000);
+
+  for (const auth of ["CREDENTIAL", "NONE"] as const) {
+    it("D-F-5 (LOCAL, auth " + auth + "): acp intake, the local leaf over a real loopback socket, read back through both doors", async () => {
+      const canary = eCanary("DF5" + auth.slice(0, 1) + randomUUID().replace(/-/g, "").slice(0, 12));
+      const sentinel = "PESFIVE" + randomUUID().replace(/-/g, "");
+      const instruction = "Echo this instruction back, word for word: " + sentinel;
+      const { databasePath, taskId } = d4ThroughTheDoors({ priced: true, instruction, transport: "LOCAL_OR_SELF_HOSTED" });
+      const loopback = await eLoopback();
+      // The header log holds the credential by design: it is outside every swept root.
+      for (const root of [resolve(databasePath, ".."), E_DAEMON_ROOT]) expect(loopback.headerLog.startsWith(root + "/")).toBe(false);
+      const accountsFile = auth === "CREDENTIAL" ? eOwnerFiles({ "e-main": canary }) : undefined;
+      const run = await eRunCaptured(
+        eConfigFile(databasePath, taskId, {
+          transportKind: "LOCAL_OR_SELF_HOSTED",
+          baseUrl: loopback.baseUrl,
+          auth,
+          ...(accountsFile === undefined ? {} : { accountsFile }),
+        }),
+      );
+      expect(run.outcome).toEqual({ code: 0, error: null });
+
+      // The transport's positive control: the socket saw exactly one request, and the
+      // bearer header exactly when the auth is CREDENTIAL.
+      const log = readFileSync(loopback.headerLog, "utf8");
+      expect(log.split("POST /v1/chat/completions")).toHaveLength(2);
+      if (auth === "CREDENTIAL") {
+        expect(log.split("authorization: Bearer " + canary + "\n")).toHaveLength(2);
+      } else {
+        expect(log).not.toContain("authorization:");
+      }
+
+      // No usage frame: no observation, never a report of zeros.
+      const events = eTypes(databasePath, taskId);
+      const observations = events.filter((event) => event.type === "USAGE_OBSERVATION_RECORDED");
+      for (const observation of observations) {
+        const usage = observation.payload["usageObservation"] as Record<string, unknown>;
+        for (const key of ["inputTokens", "outputTokens", "cacheWriteTokens", "cacheReadTokens"]) expect(usage[key]).not.toBe(0);
+      }
+
+      const server = await fServer(databasePath, { bearer: true, ...(accountsFile === undefined ? {} : { accountsFile }) });
+      const read = await eReadBack(server, databasePath, taskId);
+      expect(read.document).toMatchObject({ state: "RESULT", outcomeStatus: "SUCCEEDED", cohort: "CURRENT" });
+      expect(eBlocksText(read.document)).toBe(instruction);
+      expect(read.bodies.join("")).toContain(sentinel);
+
+      await eCanarySweep({ canary, databasePath, server, taskId, io: run.io, error: run.outcome.error, cliOutput: read.cliOutput, readBodies: read.bodies });
+      await fSweep(server, { sentinel, taskId, ledgerPath: databasePath, cliStderr: read.cliOutput.filter((_, index) => index % 2 === 1) });
+    }, 300_000);
+  }
+
+  it("refuses the start when the sibling has no entry: CREDENTIAL_ENTRY_ABSENT, no request, no run", async () => {
+    const canary = eCanary("ABSENT" + randomUUID().replace(/-/g, "").slice(0, 12));
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true, transport: "API_KEY" });
+    const accountsFile = eOwnerFiles({ "other-entry": canary });
+    const run = await eRunWithSubstitute(eConfigFile(databasePath, taskId, { transportKind: "API_KEY", accountsFile }), () => {
+      throw new Error("no request may be made");
+    });
+    expect(run.outcome.code).toBeNull();
+    expect(eErrorText(run.outcome.error)).toContain("CREDENTIAL_ENTRY_ABSENT");
+    expect(run.substitute.calls).toHaveLength(0);
+    expect(run.substitute.strays).toEqual([]);
+    const types = eTypes(databasePath, taskId).map((event) => event.type);
+    for (const absent of ["LEASE_ACQUIRED", "EFFECT_INTENDED", "DISPATCH_INTENDED"]) expect(types, absent).not.toContain(absent);
+    const server = await fServer(databasePath, { bearer: true, accountsFile });
+    await eCanarySweep({ canary, databasePath, server, taskId, io: run.io, error: run.outcome.error, cliOutput: [], readBodies: [] });
+  }, 300_000);
+
+  it("carries a 401 as the account's AUTH_REQUIRED pressure and a FAILED outcome, and a 429 as a failed execution with no retry", async () => {
+    for (const status of [401, 429] as const) {
+      const canary = eCanary("S" + String(status) + randomUUID().replace(/-/g, "").slice(0, 12));
+      const { databasePath, taskId } = d4ThroughTheDoors({ priced: true, transport: "API_KEY" });
+      const accountsFile = eOwnerFiles({ "e-main": canary });
+      const run = await eRunWithSubstitute(
+        eConfigFile(databasePath, taskId, { transportKind: "API_KEY", accountsFile }),
+        () => new Response(JSON.stringify({ error: { type: "authentication_error", message: canary } }), { status }),
+      );
+      expect(run.outcome.code).toBeNull();
+      expect(run.substitute.calls).toHaveLength(1);
+      const events = eTypes(databasePath, taskId);
+      if (status === 401) {
+        // The authRequired chunk is the pressure the plane records, on the account.
+        expect(events.find((event) => event.type === "AUTH_REQUIRED_RAISED")?.payload).toMatchObject({
+          accountId: D4_ACCOUNT,
+          pressure: "AUTH_REQUIRED",
+        });
+      } else {
+        // The leg's closed word is the port's error event detail; the effect settles on
+        // the event's refusal, and the word itself is proved at the port (providers,
+        // "the real HTTP clients through the port"), since no door reads a trail's detail.
+        expect(events.some((event) => event.type === "AUTH_REQUIRED_RAISED")).toBe(false);
+        expect(run.outcome.error).toMatchObject({ name: "ExecutionEffectError", refusal: "TRANSPORT_UNAVAILABLE", at: "events.error" });
+      }
+      expect(events.find((event) => event.type === "TASK_FAILED")?.payload).toMatchObject({ reason: "EXECUTION_FAILED" });
+      const server = await fServer(databasePath, { bearer: true, accountsFile });
+      const listed = acp(["effects", taskId, "--database", databasePath, "--format", "json"]);
+      expect(fOnlyEffect(JSON.parse(listed.stdout))).toMatchObject({ outcomeStatus: "FAILED" });
+      await eCanarySweep({ canary, databasePath, server, taskId, io: run.io, error: run.outcome.error, cliOutput: [listed.stdout, listed.stderr], readBodies: [] });
+    }
+  }, 600_000);
+
+  it("settles a transport failure carrying the canary as a failed execution, and the canary reaches no sink (N-E-21)", async () => {
+    const canary = eCanary("UNREACH" + randomUUID().replace(/-/g, "").slice(0, 12));
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true, transport: "API_KEY" });
+    const accountsFile = eOwnerFiles({ "e-main": canary });
+    const run = await eRunWithSubstitute(eConfigFile(databasePath, taskId, { transportKind: "API_KEY", accountsFile }), () => {
+      throw new TypeError("fetch failed: " + canary, { cause: { code: "ECONNRESET", detail: canary } });
+    });
+    expect(run.outcome.code).toBeNull();
+    expect(run.substitute.calls).toHaveLength(1);
+    // The closed word is the port's error detail (proved at the port); here the effect
+    // settles on the event's refusal, and nothing of the thrown value travels.
+    expect(run.outcome.error).toMatchObject({ name: "ExecutionEffectError", refusal: "TRANSPORT_UNAVAILABLE", at: "events.error" });
+    expect(eTypes(databasePath, taskId).find((event) => event.type === "TASK_FAILED")?.payload).toMatchObject({ reason: "EXECUTION_FAILED" });
+    const server = await fServer(databasePath, { bearer: true, accountsFile });
+    await eCanarySweep({ canary, databasePath, server, taskId, io: run.io, error: run.outcome.error, cliOutput: [], readBodies: [] });
+  }, 300_000);
+});

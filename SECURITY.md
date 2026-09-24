@@ -144,6 +144,42 @@ that fails the check is refused rather than read.
 Contracts carry opaque locators — `keychain://`, `profile://`, `file://` —
 never material.
 
+## A credential stays inside its boundary (P-15/E, ADR 0108)
+
+The API and local clients authenticate, so a credential exists as a string in
+memory while they do. The claim is where, not whether: it lives in the resolver's
+closure and in the one fetch site of the one HTTP client it is handed to, and it
+never reaches the domain, an event, the ledger, the private plane, an error, a log
+line or a response.
+
+- **One file, derived.** The owner's credentials live in `credentials.local.json`
+  beside the owner account file, a path derived from that file's and never
+  configured. It climbs the same ladder — canonical (no symlink), owned by this
+  user, exactly `0600`, size-bounded — and is a strict, versioned document. The
+  resolver reads one entry by an account's `file://<name>` reference, and only for an
+  account that declares the stored-credential mode (`LOCAL_CREDENTIAL_FALLBACK`); it
+  reads no environment variable and writes nothing. `keychain://` is unsupported
+  until P-19, and `profile://` is not a secret.
+- **Refused before any header exists.** A value is admitted only as visible ASCII,
+  1 to 4096 characters, no whitespace: a header API refuses a line feed or a NUL by
+  quoting the value in its error, and silently trims spaces.
+- **Failures are closed words.** A failed request is classified by its error's name
+  alone; its message and cause are never read, and a response that is not a `2xx`
+  event stream is never read either.
+- **Two places, by law.** Only the resolver names the credentials file, only the
+  daemon's composition receives its closure, and only the two client factories are
+  handed it. In the providers package no file names the global object, and only the
+  two HTTP clients name `fetch`. The drills sweep a synthetic canary through every sink on success and
+  on every refusal, after proving the detector sees it.
+
+No test reads a real credential or calls a commercial API: every credential in the
+suites is a canary written into a disposable directory.
+
+> Anchor: `packages/domains/runtime/src/credentials/index.ts` — `const CREDENTIALS_FILE_NAME = "credentials.local.json";`
+> Anchor: `packages/domains/runtime/src/credentials/index.ts` — `const CREDENTIAL_VALUE = /^[\x21-\x7E]{1,4096}$/;`
+> Anchor: `packages/edges/providers/src/sse/index.ts` — `export function classifyTransportFailure(error: unknown): AdapterErrorCode {`
+> Anchor: `scripts/check-architecture.mjs` — `a credential lives in the resolver and the composition, and reaches only the two factories`
+
 ## Redaction is absence, not masking
 
 No response carries an absolute path: the ledger's location crosses as a digest

@@ -32,6 +32,7 @@ export type { AccountsFile, AccountsRegistry, LoadOutcome } from "./registry/ind
 export {
   ACCOUNTS_FILE_KEYS,
   ACCOUNTS_FILE_MAX_BYTES,
+  admitOwnerFile,
   buildRegistry,
   loadAccountsFile,
 } from "./registry/index.js";

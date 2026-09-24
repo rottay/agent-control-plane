@@ -32,7 +32,14 @@ export type AdapterErrorCode =
   | "MALFORMED_EVENT"
   // our own state
   | "ILLEGAL_TRANSITION"
-  | "CAPABILITY_UNPROVEN";
+  | "CAPABILITY_UNPROVEN"
+  // an HTTP transport's own failures (P-15 escalón E, ADR 0108): each a closed word
+  // for one class of failure, so a vendor's text or Node's never becomes a detail
+  | "PROVIDER_HTTP_ERROR"
+  | "PROVIDER_RATE_LIMITED"
+  | "PROVIDER_UNREACHABLE"
+  | "REDIRECT_REFUSED"
+  | "REQUEST_TIMEOUT";
 
 /** Every code, for the closed-set assertions the fence and tests make. */
 export const ADAPTER_ERROR_CODES: readonly AdapterErrorCode[] = Object.freeze([
@@ -47,7 +54,12 @@ export const ADAPTER_ERROR_CODES: readonly AdapterErrorCode[] = Object.freeze([
   "MALFORMED_EVENT",
   "OUTPUT_BUDGET_EXCEEDED",
   "PROTOCOL_UNSUPPORTED",
+  "PROVIDER_HTTP_ERROR",
+  "PROVIDER_RATE_LIMITED",
+  "PROVIDER_UNREACHABLE",
   "READ_ONLY_VIOLATION",
+  "REDIRECT_REFUSED",
+  "REQUEST_TIMEOUT",
   "SPAWN_FAILED",
   "UNKNOWN_EVENT",
 ]);

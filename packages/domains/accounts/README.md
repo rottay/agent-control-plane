@@ -68,6 +68,12 @@ The size bound is applied twice — against the `stat`, and against the bytes
 actually read. A file can grow between the two, and a bound that only ever
 consulted metadata would be a bound on what the filesystem claimed.
 
+The ladder up to the JSON rung is exported once as `admitOwnerFile` (P-15/E, ADR
+0108), and `loadAccountsFile` is built from it: the runtime's credential resolver
+climbs the same ladder for the owner's `credentials.local.json`, so both owner files
+answer to one set of rungs rather than to two copies of it. `admitOwnerFile` returns
+the parsed document unvalidated; what the document must be is its caller's.
+
 ## The envelope, and unknown keys
 
 An accounts file carries exactly two keys:

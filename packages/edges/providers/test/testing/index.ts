@@ -307,3 +307,186 @@ export function fakeLocalClient(script: FakeLocalScript, secret = "unused"): Loc
     },
   };
 }
+
+/**
+ * A synthetic credential for the leak drills (P-15/E, ADR 0108).
+ *
+ * Built by concatenation so no credential-shaped literal sits in the source, and
+ * inside the resolver's value grammar (visible ASCII, 0x21-0x7E). It is shaped so the
+ * contracts' detector trips on it: every absence read against it is preceded by that
+ * positive control.
+ */
+export function syntheticCanary(tag: string): string {
+  return "sk-" + "ant-" + "api03-" + "C".repeat(40) + tag;
+}
+
+/** One call the fetch substitute received, as the leaf made it. */
+export interface FetchCall {
+  readonly url: string;
+  readonly init: RequestInit;
+}
+
+/**
+ * A stand-in for the global `fetch`, with the five honesty conditions of C-E9.
+ *
+ * It answers from a script with a real `Response` over bytes, records every call it
+ * receives, and is installed on `globalThis` only by {@link FetchSubstitute.install},
+ * whose returned restore puts the real `fetch` back and arms a guard: a call after the
+ * restore is counted in `callsAfterRestore` and rejected, so a leaf that captured the
+ * substitute cannot pass silently.
+ */
+export interface FetchSubstitute {
+  readonly calls: readonly FetchCall[];
+  readonly callsAfterRestore: () => number;
+  readonly install: () => () => void;
+}
+
+export function fetchSubstitute(answer: (call: FetchCall) => Response | Promise<Response>): FetchSubstitute {
+  const calls: FetchCall[] = [];
+  let restored = false;
+  let late = 0;
+  const substitute = async (input: unknown, init?: RequestInit): Promise<Response> => {
+    if (restored) {
+      late += 1;
+      throw new Error("the fetch substitute was called after it was restored");
+    }
+    const call = Object.freeze({ url: String(input), init: init ?? {} });
+    calls.push(call);
+    return answer(call);
+  };
+  return {
+    calls,
+    callsAfterRestore: () => late,
+    install: () => {
+      const real = globalThis.fetch;
+      globalThis.fetch = substitute as typeof fetch;
+      return () => {
+        globalThis.fetch = real;
+        restored = true;
+      };
+    },
+  };
+}
+
+/** UTF-8 bytes of `text`, cut at the given byte offsets (C-E9.2). */
+export function splitBytes(text: string, cuts: readonly number[]): readonly Uint8Array[] {
+  const bytes = new TextEncoder().encode(text);
+  const parts: Uint8Array[] = [];
+  let at = 0;
+  for (const cut of [...cuts].sort((a, b) => a - b)) {
+    if (cut <= at || cut >= bytes.length) continue;
+    parts.push(bytes.slice(at, cut));
+    at = cut;
+  }
+  parts.push(bytes.slice(at));
+  return parts;
+}
+
+/** A byte stream that yields each part as one read. */
+export function byteStream(parts: readonly Uint8Array[]): ReadableStream<Uint8Array> {
+  let index = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      const part = parts[index];
+      index += 1;
+      if (part === undefined) controller.close();
+      else controller.enqueue(part);
+    },
+  });
+}
+
+/** A real `Response` whose body is the given byte parts. */
+export function bytesResponse(
+  parts: readonly Uint8Array[],
+  init: { readonly status?: number; readonly contentType?: string } = {},
+): Response {
+  return new Response(byteStream(parts), {
+    status: init.status ?? 200,
+    headers: { "content-type": init.contentType ?? "text/event-stream" },
+  });
+}
+
+/** One SSE event's text: an optional `event:` line (before or after `data:`), then a blank line. */
+export function sseEvent(data: string, event?: string, eventAfterData = false, newline = "\n"): string {
+  const lines = event === undefined ? ["data: " + data] : eventAfterData ? ["data: " + data, "event: " + event] : ["event: " + event, "data: " + data];
+  return lines.join(newline) + newline + newline;
+}
+
+/** What a synthetic Messages stream says, each field overridable to drive a negative. */
+export interface SynMessagesOptions {
+  readonly model?: string;
+  readonly id?: string;
+  readonly text?: readonly string[];
+  readonly startUsage?: Readonly<Record<string, unknown>> | null;
+  readonly endUsage?: Readonly<Record<string, unknown>> | null;
+  readonly stopReason?: string | null;
+  readonly terminal?: boolean;
+  readonly newline?: string;
+}
+
+/** A synthetic Anthropic Messages SSE stream, as text. */
+export function synMessagesStream(options: SynMessagesOptions = {}): string {
+  const newline = options.newline ?? "\n";
+  const message: Record<string, unknown> = {
+    id: options.id ?? "msg_syn01",
+    type: "message",
+    role: "assistant",
+    model: options.model ?? "claude-syn-1",
+  };
+  if (options.startUsage !== null) {
+    message["usage"] = options.startUsage ?? { input_tokens: 11, cache_creation_input_tokens: 2, cache_read_input_tokens: 3, output_tokens: 1 };
+  }
+  const events = [
+    sseEvent(JSON.stringify({ type: "message_start", message }), "message_start", false, newline),
+    sseEvent(JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }), "content_block_start", true, newline),
+    sseEvent(JSON.stringify({ type: "ping" }), "ping", false, newline),
+    ...(options.text ?? ["Hel", "lo €"]).map((text) =>
+      sseEvent(JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text } }), "content_block_delta", false, newline),
+    ),
+    sseEvent(JSON.stringify({ type: "content_block_stop", index: 0 }), "content_block_stop", false, newline),
+  ];
+  const delta: Record<string, unknown> = { type: "message_delta", delta: { stop_reason: options.stopReason === undefined ? "end_turn" : options.stopReason } };
+  if (options.endUsage !== null) delta["usage"] = options.endUsage ?? { output_tokens: 7 };
+  events.push(sseEvent(JSON.stringify(delta), "message_delta", false, newline));
+  if (options.terminal !== false) events.push(sseEvent(JSON.stringify({ type: "message_stop" }), "message_stop", false, newline));
+  return events.join("");
+}
+
+/** What a synthetic chat/completions stream says, each field overridable to drive a negative. */
+export interface SynLocalOptions {
+  readonly model?: string;
+  readonly id?: string | null;
+  readonly text?: readonly string[];
+  readonly finishReason?: string | null;
+  readonly usage?: Readonly<Record<string, unknown>> | null;
+  readonly terminal?: boolean;
+  readonly newline?: string;
+}
+
+/** A synthetic OpenAI-compatible chat/completions SSE stream, as text. */
+export function synLocalStream(options: SynLocalOptions = {}): string {
+  const newline = options.newline ?? "\n";
+  const base = (): Record<string, unknown> => {
+    const frame: Record<string, unknown> = { object: "chat.completion.chunk", model: options.model ?? "local-syn-1" };
+    if (options.id !== null) frame["id"] = options.id ?? "chatcmpl-syn01";
+    return frame;
+  };
+  const events = (options.text ?? ["Hel", "lo €"]).map((content) =>
+    sseEvent(JSON.stringify({ ...base(), choices: [{ index: 0, delta: { content }, finish_reason: null }] }), undefined, false, newline),
+  );
+  events.push(
+    sseEvent(
+      JSON.stringify({ ...base(), choices: [{ index: 0, delta: {}, finish_reason: options.finishReason === undefined ? "stop" : options.finishReason }] }),
+      undefined,
+      false,
+      newline,
+    ),
+  );
+  if (options.usage !== null) {
+    events.push(
+      sseEvent(JSON.stringify({ ...base(), choices: [], usage: options.usage ?? { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 } }), undefined, false, newline),
+    );
+  }
+  if (options.terminal !== false) events.push(sseEvent("[DONE]", undefined, false, newline));
+  return events.join("");
+}

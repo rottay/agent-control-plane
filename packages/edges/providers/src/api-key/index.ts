@@ -215,6 +215,13 @@ export async function* apiExecutionEvents(
     // boundary's events carry no output bytes (P-07 escalón C, ADR 0099).
     // Without a sink the delta is dropped.
     if (chunk.kind === "text") {
+      // A delta is checked before it reaches the sink (P-15/E, the P-07/C note):
+      // the client is typed, but what it yields at run time is not, and a sink
+      // handed a non-string would carry it into the private output as if it were
+      // text. Refused by name, never coerced.
+      if (typeof (chunk as { readonly delta: unknown }).delta !== "string") {
+        throw new AdapterError("MALFORMED_EVENT", { provider: route.provider, taskId: request.taskId });
+      }
       sink?.(chunk.delta);
       continue;
     }

@@ -1572,6 +1572,28 @@ describe("F4d: the switch authorization is admitted at the same door as the rout
 // V2-BE/R6: the parser admits a second transport, and refuses its confusions
 // ---------------------------------------------------------------------------
 
+/** Owner directories the P-15/E config rows create, removed after each test. */
+const ownerDirs: string[] = [];
+afterEach(() => {
+  for (const dir of ownerDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+/**
+ * A disposable owner directory holding an `accounts.local.json` (P-15/E, C-E6).
+ *
+ * The door checks the path's name and that it is canonical and present; it never
+ * reads the file, so its content here is a placeholder, and no credentials file is
+ * written beside it.
+ */
+function ownerAccountsFile(): string {
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), "acp-p15e-owner-"));
+  ownerDirs.push(dir);
+  const path = join(dir, "accounts.local.json");
+  writeFileSync(path, "{}", "utf8");
+  chmodSync(path, 0o600);
+  return path;
+}
+
 describe("R6: an API_KEY binding is a shape of its own", () => {
   /** A config whose one binding is the API shape, with `patch` merged over it. */
   function apiConfig(patch: Record<string, unknown> = {}): Record<string, unknown> {
@@ -1599,9 +1621,13 @@ describe("R6: an API_KEY binding is a shape of its own", () => {
             transportKind: "API_KEY",
             workdir: home,
             limits: { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 },
+            // P-15/E: required of an API entry, never defaulted.
+            models: [(route as unknown as { model: string }).model],
+            maxTokens: 1024,
             ...patch,
           },
         ],
+        accountsFile: ownerAccountsFile(),
       },
     };
   }
@@ -1691,6 +1717,164 @@ describe("R6: an API_KEY binding is a shape of its own", () => {
     expect(() => parseDaemonChildConfig(apiConfig({ transportKind: "LOCAL" }))).toThrow(
       "execution.bindings[0].transportKind names no transport this daemon composes",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón E: the real clients' config (ADR 0108; E-ND-7, C-E6)
+// ---------------------------------------------------------------------------
+
+describe("P-15/E: the API and local entries name what their clients serve, and the accounts file only when needed", () => {
+  const limits = { timeoutMs: 20_000, outputBudgetBytes: 65_536, interruptGraceMs: 200, termGraceMs: 200 };
+
+  /** A config whose one binding has `transportKind` and `entry`, and whose execution carries `extra`. */
+  function configWith(transportKind: string, entry: Record<string, unknown>, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    const home = realpathSync(tmpdir());
+    const config = validConfig();
+    const execution = config["execution"] as Record<string, unknown>;
+    const route = { ...(execution["route"] as { accountId: string; model: string }), transportKind };
+    return {
+      ...config,
+      submissionDigest: canonicalSubmissionDigest({
+        taskId: config["taskId"] as string,
+        attempt: 1,
+        submittedAt: SUBMITTED_AT,
+        initiativeId: CONFIG_INITIATIVE_ID,
+        route: route as unknown as DaemonExecutionConfig["route"],
+      }),
+      execution: {
+        ...execution,
+        route,
+        bindings: [{ accountId: route.accountId, transportKind, workdir: home, limits, ...entry }],
+        ...extra,
+      },
+    };
+  }
+
+  function apiEntry(patch: Record<string, unknown> = {}): Record<string, unknown> {
+    return { models: ["opus"], maxTokens: 1024, ...patch };
+  }
+
+  function localEntry(patch: Record<string, unknown> = {}): Record<string, unknown> {
+    return { provider: "llama-cpp", baseUrl: "http://127.0.0.1:18080/v1", models: ["local-syn-1"], auth: "NONE", ...patch };
+  }
+
+  function without(entry: Record<string, unknown>, key: string): Record<string, unknown> {
+    return Object.fromEntries(Object.entries(entry).filter(([name]) => name !== key));
+  }
+
+  it("admits an API entry with its models, maxTokens and the accounts file", () => {
+    const accountsFile = ownerAccountsFile();
+    const parsed = parseDaemonChildConfig(configWith("API_KEY", apiEntry(), { accountsFile }));
+    expect(parsed.execution.accountsFile).toBe(accountsFile);
+    expect(parsed.execution.bindings[0]).toMatchObject({ transportKind: "API_KEY", models: ["opus"], maxTokens: 1024 });
+  });
+
+  it("refuses an API entry's models and maxTokens absent or malformed, naming the path (NULL per field)", () => {
+    const accountsFile = ownerAccountsFile();
+    const rows: readonly [Record<string, unknown>, string][] = [
+      [without(apiEntry(), "models"), "execution.bindings[0].models must be a non-empty array"],
+      [apiEntry({ models: [] }), "execution.bindings[0].models must be a non-empty array"],
+      [apiEntry({ models: null }), "execution.bindings[0].models must be a non-empty array"],
+      [apiEntry({ models: [""] }), "execution.bindings[0].models[0] must be a model word"],
+      [apiEntry({ models: [7] }), "execution.bindings[0].models[0] must be a model word"],
+      [without(apiEntry(), "maxTokens"), "execution.bindings[0].maxTokens must be a positive integer"],
+      [apiEntry({ maxTokens: 0 }), "execution.bindings[0].maxTokens must be a positive integer"],
+      [apiEntry({ maxTokens: 1.5 }), "execution.bindings[0].maxTokens must be a positive integer"],
+      [apiEntry({ maxTokens: null }), "execution.bindings[0].maxTokens must be a positive integer"],
+      [apiEntry({ baseUrl: "http://127.0.0.1:1/" }), "execution.bindings[0].baseUrl is not a field of an API_KEY binding"],
+      [apiEntry({ auth: "NONE" }), "execution.bindings[0].auth is not a field of an API_KEY binding"],
+    ];
+    for (const [entry, message] of rows) {
+      expect(() => parseDaemonChildConfig(configWith("API_KEY", entry, { accountsFile })), message).toThrow(message);
+    }
+  });
+
+  it("requires the accounts file for an API entry, and holds it to its name and canonical path (C-E6)", () => {
+    expect(() => parseDaemonChildConfig(configWith("API_KEY", apiEntry()))).toThrow(
+      "execution.accountsFile is required when an entry needs a credential",
+    );
+    const accountsFile = ownerAccountsFile();
+    const other = join(accountsFile, "..", "accounts.json");
+    writeFileSync(other, "{}", "utf8");
+    expect(() => parseDaemonChildConfig(configWith("API_KEY", apiEntry(), { accountsFile: other }))).toThrow(
+      "execution.accountsFile must name an accounts.local.json",
+    );
+    const linkDir = mkdtempSync(join(realpathSync(tmpdir()), "acp-p15e-owner-"));
+    ownerDirs.push(linkDir);
+    symlinkSync(accountsFile, join(linkDir, "accounts.local.json"));
+    expect(() => parseDaemonChildConfig(configWith("API_KEY", apiEntry(), { accountsFile: join(linkDir, "accounts.local.json") }))).toThrow(
+      "execution.accountsFile must be canonical",
+    );
+    for (const accountsFile of ["", "accounts.local.json", 7, null]) {
+      expect(() => parseDaemonChildConfig(configWith("API_KEY", apiEntry(), { accountsFile }))).toThrow("execution.accountsFile");
+    }
+  });
+
+  it("admits a local entry with auth NONE and no accounts file, and refuses the accounts file there", () => {
+    const parsed = parseDaemonChildConfig(configWith("LOCAL_OR_SELF_HOSTED", localEntry()));
+    expect(parsed.execution.bindings[0]).toMatchObject({
+      transportKind: "LOCAL_OR_SELF_HOSTED",
+      provider: "llama-cpp",
+      baseUrl: "http://127.0.0.1:18080/v1",
+      models: ["local-syn-1"],
+      auth: "NONE",
+    });
+    expect(parsed.execution.accountsFile).toBeUndefined();
+    expect(() => parseDaemonChildConfig(configWith("LOCAL_OR_SELF_HOSTED", localEntry(), { accountsFile: ownerAccountsFile() }))).toThrow(
+      "execution.accountsFile is not a field of a config whose entries need no credential",
+    );
+  });
+
+  it("requires the accounts file for a local entry whose auth is CREDENTIAL", () => {
+    expect(() => parseDaemonChildConfig(configWith("LOCAL_OR_SELF_HOSTED", localEntry({ auth: "CREDENTIAL" })))).toThrow(
+      "execution.accountsFile is required when an entry needs a credential",
+    );
+    const parsed = parseDaemonChildConfig(
+      configWith("LOCAL_OR_SELF_HOSTED", localEntry({ auth: "CREDENTIAL" }), { accountsFile: ownerAccountsFile() }),
+    );
+    expect(parsed.execution.bindings[0]).toMatchObject({ auth: "CREDENTIAL" });
+  });
+
+  it("refuses a local entry's fields absent, malformed or off loopback, naming the path (NULL per field)", () => {
+    const rows: readonly [Record<string, unknown>, string][] = [
+      [without(localEntry(), "baseUrl"), "execution.bindings[0].baseUrl must be an absolute URL"],
+      [localEntry({ baseUrl: "" }), "execution.bindings[0].baseUrl must be an absolute URL"],
+      [localEntry({ baseUrl: "127.0.0.1:8080" }), "execution.bindings[0].baseUrl"],
+      [localEntry({ baseUrl: "http://10.0.0.1:8080/v1" }), "execution.bindings[0].baseUrl must name a loopback address"],
+      [localEntry({ baseUrl: "http://localhost:8080/v1" }), "execution.bindings[0].baseUrl must name a loopback address"],
+      [localEntry({ baseUrl: "https://api.anthropic.com/v1" }), "execution.bindings[0].baseUrl must name a loopback address"],
+      [localEntry({ baseUrl: "ftp://127.0.0.1/" }), "execution.bindings[0].baseUrl must be http or https"],
+      [localEntry({ baseUrl: "http://user:pass@127.0.0.1/" }), "execution.bindings[0].baseUrl must carry no userinfo"],
+      [localEntry({ baseUrl: "http://127.0.0.1/?key=1" }), "execution.bindings[0].baseUrl must carry no userinfo"],
+      [without(localEntry(), "provider"), "execution.bindings[0].provider must be a provider word"],
+      [localEntry({ provider: "" }), "execution.bindings[0].provider must be a provider word"],
+      [without(localEntry(), "models"), "execution.bindings[0].models must be a non-empty array"],
+      [localEntry({ models: [] }), "execution.bindings[0].models must be a non-empty array"],
+      [without(localEntry(), "auth"), "execution.bindings[0].auth must be NONE or CREDENTIAL"],
+      [localEntry({ auth: "BEARER" }), "execution.bindings[0].auth must be NONE or CREDENTIAL"],
+      [localEntry({ binary: realpathSync(process.execPath) }), "execution.bindings[0].binary is not a field of a LOCAL_OR_SELF_HOSTED binding"],
+      [localEntry({ maxTokens: 10 }), "execution.bindings[0].maxTokens is not a field of a LOCAL_OR_SELF_HOSTED binding"],
+    ];
+    for (const [entry, message] of rows) {
+      expect(() => parseDaemonChildConfig(configWith("LOCAL_OR_SELF_HOSTED", entry)), message).toThrow(message);
+    }
+  });
+
+  it("refuses the HTTP fields on a CLI entry", () => {
+    const base = validConfig();
+    const execution = base["execution"] as Record<string, unknown>;
+    const entry = (execution["bindings"] as Record<string, unknown>[])[0];
+    for (const [key, value] of [
+      ["models", ["opus"]],
+      ["maxTokens", 1],
+      ["baseUrl", "http://127.0.0.1/"],
+      ["auth", "NONE"],
+    ] as const) {
+      expect(() =>
+        parseDaemonChildConfig({ ...base, execution: { ...execution, bindings: [{ ...entry, [key]: value }] } }),
+      ).toThrow("execution.bindings[0]." + key + " is not a field of a CLI_SUBSCRIPTION binding");
+    }
   });
 });
 

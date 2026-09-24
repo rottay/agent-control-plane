@@ -255,6 +255,8 @@ reached through a file-level helper the function calls (B11), nor a file write
 (`writeFileSync`, `appendFileSync`, `createWriteStream`) or a network send (`fetch`)
 there (Fable C3).
 
+**Errata (P-15/E, 2026-09-23):** Stated limit (Fable, F post-audit R4): clauses (iii) and (v) count call sites. A closure that captures the one lawful `readEffectResult(` / `effectResult(` call inside the door's own body and escapes it by assignment to module-level state is one site inside the body and is not seen — the alias family's sibling, deliberate rather than accidental.
+
 **L-P15F-2, "every private read route is registered behind the bearer".** Every name in
 `API_PRIVATE_READ_ROUTES` is registered through `registerPrivateGet` and through no
 unguarded registrar. `registerPrivateGet` registers nothing outside the table. The

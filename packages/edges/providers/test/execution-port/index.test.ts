@@ -29,7 +29,20 @@ import { KIMI_ACP_PROTOCOL, kimiAdapter } from "../../src/kimi/index.js";
 import type { LocalBinding, LocalChatChunk, LocalChatRequest } from "../../src/local/index.js";
 import type { AgentHarness } from "../../src/harness/index.js";
 import { createAgentHarness } from "../../src/harness/index.js";
-import { fakeAdapter, fakeApiClient, fakeLocalClient, scriptedAdapter } from "../testing/index.js";
+import { createAnthropicMessagesClient } from "../../src/api-key/http/index.js";
+import { createLocalChatClient } from "../../src/local/http/index.js";
+import {
+  bytesResponse,
+  fakeAdapter,
+  fakeApiClient,
+  fakeLocalClient,
+  fetchSubstitute,
+  scriptedAdapter,
+  splitBytes,
+  synLocalStream,
+  synMessagesStream,
+  syntheticCanary,
+} from "../testing/index.js";
 import { CAPTURED_AUTH_FAILURE, CAPTURED_SUCCESS } from "../testing/claude-capture/index.js";
 import type { FakeScript } from "../testing/index.js";
 
@@ -1731,6 +1744,148 @@ describe("P-15/D2: the port maps a usage report field for field, and refuses wha
     ] as const) {
       const mapped = toExecutionEvent(normalizedEvent("step.completed", "claude", TASK_ID, report({ [key]: value })), route());
       expect({ key, kind: mapped.kind }).toEqual({ key, kind: "UNEXPRESSIBLE" });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15 escalón E (ADR 0108): the real clients, through the port
+// ---------------------------------------------------------------------------
+
+describe("the real HTTP clients through the port (P-15/E)", () => {
+  const canary = syntheticCanary("PORT01");
+  const messagesRoute = (): ResolvedRoute =>
+    route({ provider: "claude", model: "claude-syn-1", accountId: API_ACCOUNT, transportKind: "API_KEY" });
+  const chatRoute = (): ResolvedRoute =>
+    route({ provider: LOCAL_PROVIDER, model: "local-syn-1", accountId: LOCAL_ACCOUNT, transportKind: "LOCAL_OR_SELF_HOSTED" });
+
+  function realPort(): ModelExecutionPort {
+    return portFor(
+      { "acct-primary": binding(claudeAdapter, CLAUDE_LINES) },
+      {
+        [API_ACCOUNT]: {
+          client: createAnthropicMessagesClient({ models: ["claude-syn-1"], credential: () => canary, maxTokens: 64, timeoutMs: 5_000 }),
+        },
+      },
+      {
+        [LOCAL_ACCOUNT]: {
+          client: createLocalChatClient({
+            baseUrl: "http://127.0.0.1:18081/v1",
+            provider: LOCAL_PROVIDER,
+            models: ["local-syn-1"],
+            credential: () => canary,
+            timeoutMs: 5_000,
+          }),
+        },
+      },
+    );
+  }
+
+  async function withSubstitute<T>(
+    answer: () => Response,
+    run: (substitute: ReturnType<typeof fetchSubstitute>) => Promise<T>,
+  ): Promise<T> {
+    const substitute = fetchSubstitute(answer);
+    const restore = substitute.install();
+    try {
+      return await run(substitute);
+    } finally {
+      restore();
+    }
+  }
+
+  it("runs each leaf to the port's terminal, text to the sink, the operation fact in its fixed place", async () => {
+    for (const [routeValue, text] of [
+      [messagesRoute(), synMessagesStream()],
+      [chatRoute(), synLocalStream()],
+    ] as const) {
+      const sunk: string[] = [];
+      const trail = await withSubstitute(
+        () => bytesResponse(splitBytes(text, [9, 101])),
+        () => drain(realPort(), routeValue, request(), (delta) => sunk.push(delta)),
+      );
+      expect(trail.map((event) => event.kind), routeValue.transportKind).toEqual(["started", "usage", "operationResult", "completed"]);
+      expect(trail.find((event) => event.kind === "operationResult")).toMatchObject({ status: "SUCCEEDED" });
+      expect(sunk.join("")).toBe("Hello \u20ac");
+      expect(JSON.stringify(trail)).not.toContain(canary);
+    }
+  });
+
+  it("refuses a non-string delta at the leg before the sink, for a hand-built client on each leg (N-E-18)", async () => {
+    const hostile = { kind: "text", delta: 7 } as unknown as ApiStreamChunk;
+    const sunk: unknown[] = [];
+    const apiTrail = await drain(
+      dualPort([{ kind: "started", resolvedModel: API_MODEL, protocolVersion: API_PROTOCOL }, hostile]),
+      apiRoute(),
+      request(),
+      (delta) => sunk.push(delta),
+    );
+    const localTrail = await drain(
+      localPort([{ kind: "started", resolvedModel: LOCAL_MODEL, protocolVersion: LOCAL_PROTOCOL }, hostile as LocalChatChunk]),
+      localRoute(),
+      request(),
+      (delta) => sunk.push(delta),
+    );
+    for (const trail of [apiTrail, localTrail]) {
+      expect(trail.at(-1)).toMatchObject({ kind: "error", detail: "MALFORMED_EVENT" });
+    }
+    expect(sunk).toEqual([]);
+  });
+
+  it("refuses an account whose credential the composition could not resolve, before any request (N-E-19)", async () => {
+    // A refused credential leaves no binding: the composition builds none. The port
+    // then has nothing to call and says so; the substitute sees no call.
+    await withSubstitute(
+      () => bytesResponse(splitBytes(synMessagesStream(), [])),
+      async (substitute) => {
+        const port = portFor({ "acct-primary": binding(claudeAdapter, CLAUDE_LINES) }, {});
+        expect(await port.start(messagesRoute(), request())).toEqual({
+          ok: false,
+          refusal: "TRANSPORT_UNAVAILABLE",
+          at: "route.accountId",
+        });
+        expect(substitute.calls).toHaveLength(0);
+      },
+    );
+  });
+
+  it("turns a hostile transport failure into the closed word, with nothing of it in the trail (N-E-21)", async () => {
+    for (const routeValue of [messagesRoute(), chatRoute()]) {
+      for (const thrown of [
+        new TypeError("fetch failed: " + canary),
+        new TypeError("fetch failed", { cause: { code: "ECONNRESET", detail: canary } }),
+        new AggregateError([new Error(canary)]),
+      ]) {
+        const trail = await withSubstitute(
+          () => {
+            throw thrown;
+          },
+          () => drain(realPort(), routeValue),
+        );
+        expect(trail.map((event) => event.kind)).toEqual(["error"]);
+        expect(trail[0]).toMatchObject({ kind: "error", detail: "PROVIDER_UNREACHABLE" });
+        expect(JSON.stringify(trail)).not.toContain(canary);
+      }
+    }
+  });
+
+  it("carries a 401 as authRequired from the status alone, and a 429 as its closed word", async () => {
+    for (const routeValue of [messagesRoute(), chatRoute()]) {
+      const denied = await withSubstitute(
+        () => new Response(JSON.stringify({ error: { type: "authentication_error", message: canary } }), { status: 401 }),
+        () => drain(realPort(), routeValue),
+      );
+      expect(denied.find((event) => event.kind === "authRequired")).toEqual({ kind: "authRequired", reason: "AUTHENTICATION_ERROR" });
+      expect(JSON.stringify(denied)).not.toContain(canary);
+      const limited = await withSubstitute(
+        () => new Response(null, { status: 429 }),
+        async (substitute) => {
+          const trail = await drain(realPort(), routeValue);
+          expect(substitute.calls).toHaveLength(1);
+          return trail;
+        },
+      );
+      expect(limited.at(-1)).toMatchObject({ kind: "error", detail: "PROVIDER_RATE_LIMITED" });
     }
   });
 });

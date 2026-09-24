@@ -135,17 +135,30 @@ wrote a binary for an API binding believed this transport spawns something, and
 a refusal is the correction. The discriminant is required on every entry, so
 neither a reader nor the compiler ever infers which shape it is holding.
 
-An `API_KEY` entry declares **neither provider nor models**. The injected client
-declares both, and the port refuses the route against them. A second spelling in
-this file could disagree with the thing that answers the call.
+An `API_KEY` entry declares no provider: the client declares it, and the port
+refuses the route against it. Since P-15 escalón E (ADR 0108) it declares the
+`models` its client serves and the `maxTokens` it may ask for, both required and
+never defaulted, and it is served by the Anthropic Messages client. A
+`LOCAL_OR_SELF_HOSTED` entry declares the provider word, a `baseUrl` on a loopback
+literal (`http://127.0.0.1:…` or `http://[::1]:…`, no userinfo, query or fragment),
+its `models`, and `auth`: `NONE`, or `CREDENTIAL` for a server that takes a bearer.
+Every field another transport carries is refused by name.
 
-**The API transport is closed unless you open it.** The daemon binds an account
-only where `DaemonOptions.apiClientFor` returns a client for it. There is no
-default: no factory, or a factory that declines the account, leaves it unbound,
-and an unbound account is refused at `route.accountId` — never served from a
-sibling's binding. The daemon holds no credential either; the factory returns a
-client that has already closed over its own, and nothing reaches the config,
-which is written to a file and handed to a child process.
+**A credential never enters the config.** `execution.accountsFile` names the owner's
+accounts file, exactly when an entry needs a credential — an API entry, or a local
+entry with `auth: "CREDENTIAL"` — and is refused otherwise. At composition the
+daemon asks the runtime's resolver for each such account's credential, read from the
+`credentials.local.json` beside that file, and hands the closure straight to one
+client factory (`transportClientsFor`, the one receiver, L-P15E-3). A refused
+credential stops the start before anything is appended, naming the account and the
+resolver's word — `CREDENTIAL_ENTRY_ABSENT at credentials.<name>` — and never a byte
+of the file. Nothing of the credential reaches the config, the bindings, the port,
+the ledger, the status document or the log.
+
+**No accounts file, no client.** A config built by hand without one leaves such an
+entry unbound, refused at `route.accountId` — never served from a sibling's binding.
+`DaemonOptions.apiClientFor` still exists for tests: a factory given there replaces
+the composed API clients whole, and no credential is resolved for them.
 
 Composing a transport is not probing one. The daemon performs no discovery, no
 health check and no capability claim at startup: capabilities stay UNKNOWN, and
@@ -196,6 +209,13 @@ external server killed by the exact pid the daemon published. A shutdown
 demonstrated by calling a function in-process proves nothing, because the file
 handles, the page cache and every object survive it, which is precisely what
 losing a process does not do.
+
+The P-15/E rows run the real HTTP clients from the doors to the result. The API leg
+calls a `fetch` substitute installed on `globalThis` for the packaged run alone —
+restored in `finally`, then armed to refuse a late call — and no socket; the local leg
+talks over a real loopback socket to `test/testing/loopback-sse-server/index.mjs`, a
+tracked fixture spawned by path, the one socket these drills open. Every credential is
+a synthetic canary written into a disposable directory and swept from every sink.
 
 ## The packaged entry
 

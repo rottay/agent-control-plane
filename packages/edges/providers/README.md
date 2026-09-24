@@ -124,6 +124,35 @@ to the trail, and an `operationResult` chunk is held and emitted in order before
 the terminal; they never report a process exit, because they own no process
 (ADR 0099).
 
+**The two real clients (P-15 escalón E, ADR 0108).** Each interface now has one
+implementation in this package, and they are the only two files here that call
+`fetch`:
+
+| Export | Transport | What it is |
+| --- | --- | --- |
+| `createAnthropicMessagesClient` | API_KEY | the Anthropic Messages client, provider `claude`, one `https://` endpoint |
+| `createLocalChatClient` | LOCAL_OR_SELF_HOSTED | an OpenAI-compatible chat/completions client over the binding's base URL |
+| `ANTHROPIC_MESSAGES_USAGE_SOURCE` | API_KEY | the Messages API's usage source, `PROVIDER_AUTHORITATIVE` |
+| `LOCAL_CHAT_USAGE_SOURCE` | LOCAL_OR_SELF_HOSTED | a local server's usage source, `PROVIDER_AUTHORITATIVE` |
+
+Each factory takes its credential as a closure the daemon's composition builds from
+the runtime's resolver (the local one takes `null` when its server needs none). The
+closure is called only at the client's one fetch site, into the one header the leaf
+names, and nothing on the client, its requests or its errors holds the value. Both
+send `redirect: "manual"` and their own timeout, and read the stream through one
+shared SSE reader (`src/sse/`) that decodes UTF-8 strictly across reads.
+
+A response is classified by its status and content type before a byte of its body is
+read: a redirect is `REDIRECT_REFUSED`, a 401 or 403 is an `authRequired` chunk, a 429
+or 529 is `PROVIDER_RATE_LIMITED`, any other failure status is `PROVIDER_HTTP_ERROR`,
+and a 2xx that is not an event stream is `PROTOCOL_UNSUPPORTED`. A failure `fetch`
+raises is `REQUEST_TIMEOUT` by its name, otherwise `PROVIDER_UNREACHABLE`; its message
+and cause are never read, because a header API quotes a value it refuses. The five
+words joined `ADAPTER_ERROR_CODES` for this (14 → 19). Provider text that becomes a
+chunk field — the model word, a message or completion id — is bounded first, and
+anything else is `MALFORMED_EVENT`. L-P15E-1 and L-P15E-2 hold each fetch site to
+this shape.
+
 ## One process boundary
 
 `src/process/spawn/index.ts` is the only file that imports `node:child_process`, and
@@ -251,6 +280,12 @@ report the member refuses.
 - **Codex and Kimi** report no usage until they execute. No capture shows whether
   their counts are deltas or running totals, or which id would name one, and a report
   built on that guess would be one invented.
+- **The Messages client** reports one CUMULATIVE final report at `message_delta`:
+  input and cache classes from `message_start`, output from `message_delta`, the id
+  the message's own, a missing class `null`. **The local client** reports the
+  server's one `usage` object, requested with `stream_options.include_usage`, with
+  both cache classes `null`. Neither reports anything when the stream carries no
+  usage.
 - **`CLAUDE_USAGE_SOURCE`** declares the Claude CLI's measurement stream once:
   `claude-cli`, `PROVIDER_AUTHORITATIVE`, and its normalization policy with the
   policy's digest. The digest is a pinned literal the suite recomputes, since this
@@ -259,7 +294,10 @@ report the member refuses.
 ## Testing
 
 Every negative is driven by `test/testing/index.ts`: a scripted child
-with no auth, no network, no account and no product path. It is deliberately
+with no auth, no network, no account and no product path. The two HTTP clients
+are driven by its `fetch` substitute, installed after the client module loads and
+answering real `Response`s over byte streams cut inside events and inside multibyte
+characters; every credential there is a synthetic canary built by concatenation. It is deliberately
 **not** part of the public surface — tests import it by relative path — because
 a fake on the public surface would eventually be mistaken for evidence.
 

@@ -19,6 +19,10 @@ import { installSignalHandlers } from "../signals/index.js";
 import { startDaemon, stopDaemon, terminateDaemon } from "../index.js";
 import { startRecordedDaemon } from "../composition/index.js";
 
+import type { DaemonLocalExecutionBinding } from "./types/index.js";
+
+export type { DaemonLocalExecutionBinding } from "./types/index.js";
+
 /**
  * The daemon, hosted in its own process so a drill can signal it for real.
  *
@@ -117,20 +121,23 @@ interface DaemonCliExecutionBinding extends DaemonExecutionBindingBase {
 }
 
 /**
- * A binding served by an injected streaming client.
+ * A binding served by the Anthropic Messages client (P-15/E) or an injected one.
  *
- * **It declares neither `provider` nor `models`, and that is D3 rather than an
- * omission.** The client is the sole declaration of both: it says which provider
- * it speaks and which models it will serve, and `admitApiRoute` refuses the
- * route against those. A second spelling in the config would be a fact that
- * could disagree with the thing that actually answers the call.
+ * **It declares no `provider`, and that is D3 rather than an omission.** The
+ * client declares it — the Messages client speaks `claude` by law (E-ND-7) — and
+ * `admitApiRoute` refuses the route against it. **It declares `models` and
+ * `maxTokens` since P-15/E**, because the composed client serves what the config
+ * names and nothing it discovered, and neither is ever defaulted.
  *
- * It carries no credential either. The client closes over its own key; the
- * config is written to a file and handed to a child process, so a credential
- * here would be a credential on disk.
+ * It carries no credential either. The resolver reads it at composition from the
+ * owner's credentials file, derived beside `execution.accountsFile`; the config is
+ * written to a file and handed to a child process, so a credential here would be a
+ * credential on disk.
  */
 interface DaemonApiExecutionBinding extends DaemonExecutionBindingBase {
   readonly transportKind: "API_KEY";
+  readonly models: readonly string[];
+  readonly maxTokens: number;
 }
 
 /**
@@ -146,7 +153,7 @@ interface DaemonApiExecutionBinding extends DaemonExecutionBindingBase {
  * name this package already published and the only one a consumer needs, so the
  * union widens without adding a public name.
  */
-export type DaemonExecutionBinding = DaemonCliExecutionBinding | DaemonApiExecutionBinding;
+export type DaemonExecutionBinding = DaemonCliExecutionBinding | DaemonApiExecutionBinding | DaemonLocalExecutionBinding;
 
 /**
  * The most accounts one daemon may be given bindings for (V2-B1f/F2).
@@ -181,6 +188,14 @@ export const MAX_EXECUTION_BINDINGS = 8;
 export interface DaemonExecutionConfig {
   readonly route: ResolvedRoute;
   readonly bindings: readonly DaemonExecutionBinding[];
+  /**
+   * The owner's accounts file, from whose path the credentials file is derived
+   * (P-15/E, ADR 0108; C-E6). Required exactly when an entry needs a credential —
+   * an `API_KEY` entry, or a local entry whose `auth` is `CREDENTIAL` — and refused
+   * otherwise, since no field is ignored. Absent on a hand-built config, it leaves
+   * such an entry unbound.
+   */
+  readonly accountsFile?: string | undefined;
   /**
    * A switch an elector already decided, admitted through this same door
    * (V2-B1f/F4d).
@@ -347,6 +362,43 @@ function admittedPath(candidate: unknown, at: string): string {
   return candidate;
 }
 
+/** A required, non-empty list of model words, never defaulted (E-ND-7). */
+function modelList(value: unknown, at: string): readonly string[] {
+  if (!Array.isArray(value) || value.length === 0) throw new ModeError(at + " must be a non-empty array of model words");
+  for (const [index, model] of (value as readonly unknown[]).entries()) {
+    if (typeof model !== "string" || model === "" || model.length > 120) {
+      throw new ModeError(at + "[" + String(index) + "] must be a model word of 1 to 120 characters");
+    }
+  }
+  return Object.freeze([...(value as readonly string[])]);
+}
+
+/** The loopback hosts a local binding may name: literal addresses, never a name to resolve. */
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "[::1]"]);
+
+/** A local server's base: `http(s)` on a loopback literal, no userinfo, query or fragment. */
+function loopbackBaseUrl(value: unknown, at: string): string {
+  if (typeof value !== "string" || value === "" || !URL.canParse(value)) {
+    throw new ModeError(at + " must be an absolute URL");
+  }
+  const url = new URL(value);
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new ModeError(at + " must be http or https");
+  if (!LOOPBACK_HOSTS.has(url.hostname)) throw new ModeError(at + " must name a loopback address (127.0.0.1 or [::1])");
+  if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
+    throw new ModeError(at + " must carry no userinfo, query or fragment");
+  }
+  return value;
+}
+
+/** The accounts file a credential is derived beside: admitted canonical, named `accounts.local.json` (C-E6). */
+function accountsFilePath(value: unknown): string {
+  const path = admittedPath(value, "execution.accountsFile");
+  if (!path.endsWith(sep + "accounts.local.json")) {
+    throw new ModeError("execution.accountsFile must name an accounts.local.json");
+  }
+  return path;
+}
+
 function positiveInteger(value: unknown, at: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
     throw new ModeError(at + " must be a positive integer");
@@ -432,7 +484,7 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
     if (typeof transportKind !== "string" || transportKind === "") {
       throw new ModeError(at + ".transportKind must be a non-empty string");
     }
-    if (transportKind !== "CLI_SUBSCRIPTION" && transportKind !== "API_KEY") {
+    if (transportKind !== "CLI_SUBSCRIPTION" && transportKind !== "API_KEY" && transportKind !== "LOCAL_OR_SELF_HOSTED") {
       throw new ModeError(at + ".transportKind names no transport this daemon composes");
     }
 
@@ -471,8 +523,55 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
       if (admission["provider"] !== undefined) {
         throw new ModeError(at + ".provider is not a field of an API_KEY binding");
       }
-      bindings.push({ accountId, transportKind, workdir, limits: admittedLimits });
+      for (const absent of ["baseUrl", "auth"] as const) {
+        if (admission[absent] !== undefined) {
+          throw new ModeError(at + "." + absent + " is not a field of an API_KEY binding");
+        }
+      }
+      bindings.push({
+        accountId,
+        transportKind,
+        workdir,
+        limits: admittedLimits,
+        models: modelList(admission["models"], at + ".models"),
+        maxTokens: positiveInteger(admission["maxTokens"], at + ".maxTokens"),
+      });
       continue;
+    }
+
+    if (transportKind === "LOCAL_OR_SELF_HOSTED") {
+      // P-15/E: an OpenAI-compatible server on this machine. Refused, not
+      // ignored, for every field another transport carries.
+      for (const absent of ["binary", "configRoot", "maxTokens"] as const) {
+        if (admission[absent] !== undefined) {
+          throw new ModeError(at + "." + absent + " is not a field of a LOCAL_OR_SELF_HOSTED binding");
+        }
+      }
+      const provider = admission["provider"];
+      if (typeof provider !== "string" || provider === "" || provider.length > 40) {
+        throw new ModeError(at + ".provider must be a provider word of 1 to 40 characters");
+      }
+      const auth = admission["auth"];
+      if (auth !== "NONE" && auth !== "CREDENTIAL") {
+        throw new ModeError(at + ".auth must be NONE or CREDENTIAL");
+      }
+      bindings.push({
+        accountId,
+        transportKind,
+        workdir,
+        limits: admittedLimits,
+        provider,
+        baseUrl: loopbackBaseUrl(admission["baseUrl"], at + ".baseUrl"),
+        models: modelList(admission["models"], at + ".models"),
+        auth,
+      });
+      continue;
+    }
+
+    for (const absent of ["models", "maxTokens", "baseUrl", "auth"] as const) {
+      if (admission[absent] !== undefined) {
+        throw new ModeError(at + "." + absent + " is not a field of a CLI_SUBSCRIPTION binding");
+      }
     }
 
     // **The provider is declared, never derived (V2-B1f/F2b).** The shape
@@ -561,6 +660,22 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
     }
   }
 
+  // **The accounts file, exactly when a credential is needed (P-15/E, C-E6).** An
+  // API entry, or a local entry whose auth is CREDENTIAL, needs the resolver, and
+  // the resolver needs this path; any other config carrying it is refused rather
+  // than ignored.
+  const needsCredential = bindings.some(
+    (entry) => entry.transportKind === "API_KEY" || (entry.transportKind === "LOCAL_OR_SELF_HOSTED" && entry.auth === "CREDENTIAL"),
+  );
+  const accountsRaw = value["accountsFile"];
+  if (needsCredential && accountsRaw === undefined) {
+    throw new ModeError("execution.accountsFile is required when an entry needs a credential");
+  }
+  if (!needsCredential && accountsRaw !== undefined) {
+    throw new ModeError("execution.accountsFile is not a field of a config whose entries need no credential");
+  }
+  const accountsFile = accountsRaw === undefined ? undefined : accountsFilePath(accountsRaw);
+
   // V2-B1f/F4d. The switch, admitted exactly as the route above was: by the
   // contract first, then by the agreements this config can check and the
   // contract cannot.
@@ -648,6 +763,7 @@ function parseExecutionSection(raw: unknown): DaemonExecutionConfig {
   return {
     route: route.data,
     bindings: Object.freeze(bindings),
+    ...(accountsFile === undefined ? {} : { accountsFile }),
     ...(switchAuthorization === undefined ? {} : { switchAuthorization }),
   };
 }

@@ -22,7 +22,15 @@ import type { Checkpoint, Lease, ModelExecutionPort, TaskEnvelope } from "@acp/c
 import { CONTRACT_VERSION } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
 import { createCheckpointStore } from "@acp/ledger";
-import type { AgentHarness, ApiKeyBinding, ApiStreamingClient, CliBinding, ProviderAdapter } from "@acp/providers";
+import type {
+  AgentHarness,
+  ApiKeyBinding,
+  ApiStreamingClient,
+  CliBinding,
+  LocalBinding,
+  LocalChatClient,
+  ProviderAdapter,
+} from "@acp/providers";
 import {
   AdapterError,
   admitBinary,
@@ -30,7 +38,9 @@ import {
   admitWorkdir,
   claudeAdapter,
   codexAdapter,
+  createAnthropicMessagesClient,
   createExecutionPort,
+  createLocalChatClient,
   kimiAdapter,
 } from "@acp/providers";
 import type {
@@ -50,6 +60,7 @@ import {
   deriveEventCoordinate,
   deterministicUuid,
   payloadCoordinate,
+  resolveCredential,
 } from "@acp/runtime";
 
 import type { DaemonExecutionBinding, DaemonExecutionConfig } from "../../daemon-child/index.js";
@@ -516,6 +527,83 @@ export function conformanceGateFor(input: {
   };
 }
 
+/** The HTTP clients a config's non-CLI entries are served by, by account. */
+export interface TransportClients {
+  readonly apiClientFor: (accountId: string) => ApiStreamingClient | undefined;
+  readonly localClientFor: (accountId: string) => LocalChatClient | undefined;
+}
+
+/**
+ * Compose the real HTTP clients a config names (P-15 escalón E, ADR 0108; L-P15E-3).
+ *
+ * **The one place a credential closure is received.** For an `API_KEY` entry, and a
+ * local entry whose `auth` is `CREDENTIAL`, the runtime's resolver reads the
+ * account's credential from the owner's credentials file — derived beside
+ * `execution.accountsFile`, never configured — once, here, at composition. The
+ * admitted closure is handed straight to one factory and kept nowhere else: not on
+ * the config, the bindings, the port, the ledger, the status document or a log
+ * line. A refusal stops the start before anything is appended, naming the account
+ * and the resolver's closed word and path — never a byte of either file.
+ *
+ * **No accounts file, no credential and no client.** A config the door admitted
+ * carries it whenever an entry needs it; a hand-built one without it leaves such an
+ * entry unbound, and the port refuses the account (R6's N1, unchanged). An injected
+ * `apiClientFor` replaces the composed API clients whole, without a resolver call.
+ */
+export function transportClientsFor(
+  execution: DaemonExecutionConfig,
+  injectedApiClientFor?: (accountId: string) => ApiStreamingClient | undefined,
+): TransportClients {
+  const api = new Map<string, ApiStreamingClient>();
+  const local = new Map<string, LocalChatClient>();
+  const credentialFor = (accountId: string): (() => string) | null => {
+    if (execution.accountsFile === undefined) return null;
+    const resolution = resolveCredential({ accountsFile: execution.accountsFile, accountId });
+    if (!resolution.ok) {
+      throw new StartupError(
+        "the credential for " + accountId + " was refused: " + resolution.refusal + " at " + resolution.at,
+      );
+    }
+    return resolution.credential;
+  };
+  for (const entry of execution.bindings) {
+    if (entry.transportKind === "API_KEY") {
+      if (injectedApiClientFor !== undefined) continue;
+      const credential = credentialFor(entry.accountId);
+      if (credential === null) continue;
+      api.set(
+        entry.accountId,
+        createAnthropicMessagesClient({
+          models: entry.models,
+          maxTokens: entry.maxTokens,
+          timeoutMs: entry.limits.timeoutMs,
+          credential,
+        }),
+      );
+    } else if (entry.transportKind === "LOCAL_OR_SELF_HOSTED") {
+      let credential: (() => string) | null = null;
+      if (entry.auth === "CREDENTIAL") {
+        credential = credentialFor(entry.accountId);
+        if (credential === null) continue;
+      }
+      local.set(
+        entry.accountId,
+        createLocalChatClient({
+          baseUrl: entry.baseUrl,
+          provider: entry.provider,
+          models: entry.models,
+          timeoutMs: entry.limits.timeoutMs,
+          credential,
+        }),
+      );
+    }
+  }
+  return Object.freeze({
+    apiClientFor: injectedApiClientFor ?? ((accountId: string): ApiStreamingClient | undefined => api.get(accountId)),
+    localClientFor: (accountId: string): LocalChatClient | undefined => local.get(accountId),
+  });
+}
+
 /**
  * Build the execution port over every account the config binds (V2-B1f/F2).
  *
@@ -548,6 +636,7 @@ export function executionPortFor(
   taskId: string,
   harness: AgentHarness,
   apiClientFor?: (accountId: string) => ApiStreamingClient | undefined,
+  localClientFor?: (accountId: string) => LocalChatClient | undefined,
 ): ModelExecutionPort {
   const { route } = execution;
   const bindings = new Map<string, CliBinding>();
@@ -575,6 +664,15 @@ export function executionPortFor(
     const client = apiClientFor?.(entry.accountId);
     if (client === undefined) continue;
     apiBindings.set(entry.accountId, { client });
+  }
+  // P-15/E: the local transport, on the API map's law -- always passed, and an
+  // account nobody composed a client for is unbound, refused at `route.accountId`.
+  const localBindings = new Map<string, LocalBinding>();
+  for (const entry of execution.bindings) {
+    if (entry.transportKind !== "LOCAL_OR_SELF_HOSTED") continue;
+    const client = localClientFor?.(entry.accountId);
+    if (client === undefined) continue;
+    localBindings.set(entry.accountId, { client });
   }
 
   if (route.transportKind === "CLI_SUBSCRIPTION") {
@@ -642,5 +740,5 @@ export function executionPortFor(
   // built its own would still hold the children correctly; what the daemon
   // would lose is the ability to reap them at its unwind, which is the whole
   // point of owning them.
-  return createExecutionPort({ bindings, apiBindings, harness });
+  return createExecutionPort({ bindings, apiBindings, localBindings, harness });
 }

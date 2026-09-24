@@ -137,14 +137,25 @@ describe("a capability is a claim, and a claim needs the right evidence", () => 
 });
 
 describe("the error surface is closed and says nothing it should not", () => {
-  it("declares exactly fourteen codes, sorted", () => {
+  it("declares exactly nineteen codes, sorted", () => {
     expect([...ADAPTER_ERROR_CODES]).toEqual([...ADAPTER_ERROR_CODES].sort());
     // Thirteen until V2-B1c, which added `CREDENTIAL_MATERIAL`: an instruction
     // carrying credential-shaped material is refused before the write, and no
     // existing member said that. The set grows visibly rather than by a word
     // being borrowed to mean two things.
-    expect(ADAPTER_ERROR_CODES).toHaveLength(14);
     expect(ADAPTER_ERROR_CODES).toContain("CREDENTIAL_MATERIAL");
+    // Fourteen until P-15/E (C-E7, ADR 0108), which added the five words a real
+    // HTTP leaf needs for what `fetch` and a status line can say.
+    expect(ADAPTER_ERROR_CODES).toHaveLength(19);
+    for (const code of [
+      "PROVIDER_HTTP_ERROR",
+      "PROVIDER_RATE_LIMITED",
+      "PROVIDER_UNREACHABLE",
+      "REDIRECT_REFUSED",
+      "REQUEST_TIMEOUT",
+    ] as const) {
+      expect(ADAPTER_ERROR_CODES).toContain(code);
+    }
   });
 
   it("carries the code, provider and task id, and nothing else", () => {

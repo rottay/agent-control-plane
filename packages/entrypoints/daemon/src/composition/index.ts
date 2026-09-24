@@ -52,7 +52,13 @@ import {
 import type { ArtifactBlobLeaseStore, ArtifactPlane } from "@acp/ledger";
 import { deriveInvocation } from "@acp/durability";
 import type { AgentHarness, ApiStreamingClient } from "@acp/providers";
-import { CLAUDE_USAGE_SOURCE, createAgentHarness, executionSessionId } from "@acp/providers";
+import {
+  ANTHROPIC_MESSAGES_USAGE_SOURCE,
+  CLAUDE_USAGE_SOURCE,
+  LOCAL_CHAT_USAGE_SOURCE,
+  createAgentHarness,
+  executionSessionId,
+} from "@acp/providers";
 import type { CheckpointPort, DurableInvocation, ScenarioRoot } from "@acp/runtime";
 import type { WalkOutcome } from "../scheduler/index.js";
 import {
@@ -85,7 +91,15 @@ import { acquireSingleton, recoverStaleLock } from "../singleton/index.js";
 import type { DaemonPhase, DaemonStatusDocument } from "../status/index.js";
 import { clearStatus, readStatusFrom, writeStatus } from "../status/index.js";
 
-import { bindingForRoute, checkpointsFor, cliBindingsOf, conformanceGateFor, executionPortFor } from "./ports/index.js";
+import {
+  bindingForRoute,
+  checkpointsFor,
+  cliBindingsOf,
+  conformanceGateFor,
+  executionPortFor,
+  transportClientsFor,
+} from "./ports/index.js";
+import type { TransportClients } from "./ports/index.js";
 import type {
   ComposedInstruction,
   ComposedSqliteWalkInput,
@@ -207,6 +221,11 @@ export interface DaemonOptions {
    * The daemon never sees a credential: the factory returns a client that has
    * already closed over its own, so nothing reaches the config, the bindings,
    * the ledger or the marker.
+   *
+   * **Since P-15/E it replaces, it does not open.** A config's API entries are
+   * served by the Messages client the composition builds from the resolver when
+   * the config names its accounts file; a factory given here replaces those
+   * clients whole and no credential is resolved for them.
    */
   readonly apiClientFor?: ((accountId: string) => ApiStreamingClient | undefined) | undefined;
   /** Absent: the inline form states its coordinates and runs on a scenario ledger. */
@@ -588,13 +607,25 @@ function admitEvidenceRoot(ledgerPath: string): ScenarioRoot {
 }
 
 /**
- * The usage source an adapter declared, by provider, or null (P-15 escalón D2/D3).
+ * The usage source the route's transport declared, or null (P-15 escalón D2/D3, E).
  *
- * Claude declares one; Codex and Kimi declare none until they execute (ND-D2-1 (b)),
- * so a recorded walk on them has no stream to declare and is refused at the start.
+ * By transport, then provider: the Claude CLI declares one and Codex and Kimi none
+ * until they execute (ND-D2-1 (b)); the API transport's Messages client speaks
+ * `claude` and declares its own (E-ND-7, E-ND-8); a local server's count is the
+ * local client's. A route with none has no stream to declare and is refused at the
+ * start of a recorded walk.
  */
-function usageSourceFor(provider: string): WalkChainFacts["usageSource"] | null {
-  return provider === "claude" ? CLAUDE_USAGE_SOURCE : null;
+function usageSourceFor(route: ResolvedRoute): WalkChainFacts["usageSource"] | null {
+  switch (route.transportKind) {
+    case "CLI_SUBSCRIPTION":
+      return route.provider === "claude" ? CLAUDE_USAGE_SOURCE : null;
+    case "API_KEY":
+      return route.provider === "claude" ? ANTHROPIC_MESSAGES_USAGE_SOURCE : null;
+    case "LOCAL_OR_SELF_HOSTED":
+      return LOCAL_CHAT_USAGE_SOURCE;
+    default:
+      return null;
+  }
 }
 
 /**
@@ -617,11 +648,13 @@ function recordedSubject(input: {
   readonly stack: UnwindStack;
   readonly clock: () => string;
 }): WalkSubject {
-  const usageSource = usageSourceFor(input.execution.route.provider);
+  const usageSource = usageSourceFor(input.execution.route);
   if (usageSource === null) {
     throw new StartupError(
       "the recorded form runs on a provider that declares its usage source, and " +
         input.execution.route.provider +
+        " over " +
+        input.execution.route.transportKind +
         " declares none yet",
     );
   }
@@ -820,6 +853,14 @@ async function startWalks(options: DaemonOptions | Parameters<typeof startRecord
         );
       }
     }
+
+    // P-15 escalón E (ADR 0108): the HTTP clients, composed once per execution
+    // and before anything is appended, so a refused credential stops the start
+    // with no RUN_STARTED and no request made. The resolver's closure goes into
+    // one client and nowhere else.
+    const clients: TransportClients = transportClientsFor(options.execution, options.apiClientFor);
+    const walkClients = new Map<string, TransportClients>();
+    for (const walk of scheduled ?? []) walkClients.set(walk.spec.taskId, transportClientsFor(walk.spec.execution));
 
     if (scheduled === null || scheduled.length === 1) {
       // S3. The inline form resolves its scenario root and opens the scenario's
@@ -1057,7 +1098,7 @@ async function startWalks(options: DaemonOptions | Parameters<typeof startRecord
       // second answer to "did the prestate move"; building a second port would
       // be a second admission of the same bindings. Both are the same values
       // the seam has always been given, named a few lines earlier.
-      const port = executionPortFor(options.execution, walked.taskId, harness, options.apiClientFor);
+      const port = executionPortFor(options.execution, walked.taskId, harness, clients.apiClientFor, clients.localClientFor);
       const gate = conformanceGateFor({
         ledger: openedLedger,
         invocation,
@@ -1370,7 +1411,14 @@ async function startWalks(options: DaemonOptions | Parameters<typeof startRecord
           // The same two hoists, per walk, and for the same reason: the
           // landing needs this walk's port and this walk's own gate before the
           // seam that would otherwise build them exists (V2-B1f/F5).
-          const walkPort = executionPortFor(walk.spec.execution, walk.spec.taskId, harness);
+          const composed = walkClients.get(walk.spec.taskId);
+          const walkPort = executionPortFor(
+            walk.spec.execution,
+            walk.spec.taskId,
+            harness,
+            composed?.apiClientFor,
+            composed?.localClientFor,
+          );
           const walkGate = conformanceGateFor({
             ledger: held.ledger,
             invocation: held.invocation,

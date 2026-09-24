@@ -294,19 +294,23 @@ export function buildRegistry(accounts: readonly AccountRecord[]): AccountsRegis
 }
 
 /**
- * Admit and load an owner file, or refuse it with a classified reason.
+ * Admit an owner file and parse it, or refuse it with a classified reason.
  *
  * The admission ladder, in this order and with a distinct refusal at every
  * rung: supplied → absolute → canonical → regular file → owned by this uid →
- * mode exactly `0600` → within the size bound → parseable JSON → a valid
- * accounts file.
+ * mode exactly `0600` → within the size bound → parseable JSON. What the JSON
+ * must then be is the caller's: {@link loadAccountsFile} validates an accounts
+ * file, and the runtime's credential resolver its sibling (P-15/E, ADR 0108), so
+ * both owner files climb one ladder rather than two copies of it.
  *
- * The parameter is typed `unknown` on purpose. "The loader has no default path"
- * is only true if calling it with nothing is a *refusal at runtime* rather than
- * a type error a caller can cast away, so the no-argument call is a tested
- * behaviour rather than a compiler opinion.
+ * The parsed document is returned unvalidated and is never echoed by this
+ * function: every refusal carries a rung word and the root path, never a byte of
+ * the file. The parameter is typed `unknown` for the reason given on
+ * `loadAccountsFile`.
  */
-export function loadAccountsFile(path?: unknown): LoadOutcome {
+export function admitOwnerFile(
+  path?: unknown,
+): { readonly ok: true; readonly document: unknown } | AccountsRefused {
   if (typeof path !== "string" || path === "") {
     return refuse("PATH_NOT_SUPPLIED", ROOT_PATH);
   }
@@ -365,6 +369,21 @@ export function loadAccountsFile(path?: unknown): LoadOutcome {
     // The parser's own message quotes the input. It does not travel.
     return refuse("OWNER_FILE_NOT_JSON", ROOT_PATH);
   }
+  return { ok: true, document: parsed };
+}
 
-  return validateAccountsFile(parsed);
+/**
+ * Admit and load an accounts file, or refuse it with a classified reason.
+ *
+ * The owner-file ladder ({@link admitOwnerFile}), then a valid accounts file.
+ *
+ * The parameter is typed `unknown` on purpose. "The loader has no default path"
+ * is only true if calling it with nothing is a *refusal at runtime* rather than
+ * a type error a caller can cast away, so the no-argument call is a tested
+ * behaviour rather than a compiler opinion.
+ */
+export function loadAccountsFile(path?: unknown): LoadOutcome {
+  const admitted = admitOwnerFile(path);
+  if (!admitted.ok) return admitted;
+  return validateAccountsFile(admitted.document);
 }

@@ -336,6 +336,17 @@ P-07 escalón D (ADR 0100) gives an effect its answer, in three pieces.
   own reference, or `RESULT_UNREADABLE` with a closed word -- and serves `RESPONSE`
   bytes and nothing else (`CLASS_REFUSED`). It reads through the ledger's
   `readByReference` and appends, writes and logs nothing.
+- **`resolveCredential`** (P-15/E, ADR 0108; on the barrel, with its port
+  `CredentialResolverPort`, its answer `CredentialResolution` and its closed words
+  `CREDENTIAL_REFUSALS`) resolves one account's `file://<name>` reference to a
+  closure over the credential, for the one HTTP client the daemon's composition hands
+  it to. It reads the accounts file through `loadAccountsFile`, then the one entry in
+  the owner's `credentials.local.json` — the sibling derived beside that file, never
+  configured — through the owner-file ladder `admitOwnerFile`, a strict
+  `{contractVersion, credentials}` document, an own-property lookup and a visible-ASCII
+  value grammar. `keychain://` is unsupported until P-19 and `profile://` is not a
+  secret. It reads no environment variable, writes nothing, and a refusal carries a
+  closed word and a path that names a file or an entry, never a byte of either.
 
 Since P-15 escalón D3 the recorder is wired, through the execution chain below,
 and the task's terminal state is coupled to the effect's outcome there.

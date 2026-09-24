@@ -22,6 +22,7 @@ import type { AccountsRefused } from "../../src/errors/index.js";
 import {
   ACCOUNTS_FILE_KEYS,
   ACCOUNTS_FILE_MAX_BYTES,
+  admitOwnerFile,
   buildRegistry,
   loadAccountsFile,
 } from "../../src/registry/index.js";
@@ -265,6 +266,50 @@ describe("the path itself must be admitted first", () => {
     const padding = "x".repeat(ACCOUNTS_FILE_MAX_BYTES);
     const path = writeFixture(JSON.stringify({ contractVersion: CONTRACT_VERSION, accounts: [], padding }));
     expect(refusal(loadAccountsFile(path)).reason).toBe("OWNER_FILE_TOO_LARGE");
+  });
+});
+
+describe("one ladder for every owner file (P-15/E, ADR 0108)", () => {
+  it("refuses at the same rung, with the same word and path, through both entries", () => {
+    const real = writeFixture(file([account()]));
+    const link = join(fixtureDir(), "link.json");
+    symlinkSync(real, link);
+    const cases: readonly unknown[] = [
+      undefined,
+      "",
+      "relative.json",
+      join(fixtureDir(), "absent.json"),
+      link,
+      fixtureDir(),
+      writeFixture(file([account()]), "owner-fixture.json", 0o644),
+      writeFixture(file([account()]), "owner-fixture.json", 0o400),
+      writeFixture(JSON.stringify({ padding: "x".repeat(ACCOUNTS_FILE_MAX_BYTES) })),
+      writeFixture("{ not json " + SECRET_VALUE),
+    ];
+    for (const path of cases) {
+      const admitted = admitOwnerFile(path);
+      const loaded = loadAccountsFile(path);
+      expect(admitted.ok, String(path)).toBe(false);
+      expect(admitted).toEqual(loaded);
+      expect(JSON.stringify(admitted)).not.toContain(SECRET_VALUE);
+    }
+  });
+
+  it("admits any JSON document past the ladder and leaves its validation to the caller", () => {
+    const document = { contractVersion: CONTRACT_VERSION, credentials: { name: "value" } };
+    const path = writeFixture(JSON.stringify(document));
+    expect(admitOwnerFile(path)).toEqual({ ok: true, document });
+    // The same file is not an accounts file, and the loader says so after the ladder.
+    expect(refusal(loadAccountsFile(path)).reason).toBe("OWNER_FILE_UNEXPECTED_KEY");
+  });
+
+  it("loads exactly what the ladder admitted when the document is an accounts file", () => {
+    const path = writeFixture(file([account()]));
+    const admitted = admitOwnerFile(path);
+    expect(admitted.ok).toBe(true);
+    const loaded = loadAccountsFile(path);
+    if (!loaded.ok) throw new Error("expected a registry");
+    expect(loaded.registry.accountIds).toEqual(["acct-primary"]);
   });
 });
 
