@@ -17,6 +17,13 @@ import type { RoadmapVersionReadModel } from "../types/index.js";
  * apart the moment they are maintained separately, and no other package may
  * re-derive this fold.
  *
+ * **Two callers, one function** (P-26/A, ADR 0110). The initiative append door
+ * calls this inside the append's own `BEGIN IMMEDIATE`, over the fold that
+ * transaction keeps level with the stream, and refuses what it refuses; that call
+ * is the law. The gateway's call before it is the fast path, over a fold that may
+ * be stale by the time it appends. Both fold through `listRoadmapVersions`' order,
+ * so neither folds the history a second way.
+ *
  * What the contract already proved is not re-proved here. `RoadmapVersion`
  * enforces what one value can say about itself — the bootstrap biconditionals
  * and kind/restore coherence — so a candidate that reaches the laws below is
@@ -38,6 +45,7 @@ export const ROADMAP_VERSION_REFUSALS = [
   "REQUEST_INVALID",
   "RESTORES_UNKNOWN_VERSION",
   "ROLLBACK_DIGEST_MISMATCH",
+  "VERSION_ID_REUSED",
   "VERSION_NOT_MONOTONIC",
 ] as const;
 
@@ -129,6 +137,16 @@ export function decideRoadmapVersion(request: RoadmapVersionRequest): RoadmapVer
     if (candidate.expectedHeadDigest !== head.contentDigest) {
       return refuse("HEAD_MISMATCH", "candidate.expectedHeadDigest");
     }
+  }
+
+  // A version's identity names one version for ever. After the three claims
+  // about the head, so a replayed version under a fresh key is refused as the
+  // non-successor it is; this catches the one that is a successor in every other
+  // respect and borrows an identity the fold already holds. The fold here is one
+  // initiative's: an identity held by another initiative is the projection's to
+  // refuse, under this same word, in the same transaction.
+  if (request.knownVersions.some((known) => known.roadmapVersionId === candidate.roadmapVersionId)) {
+    return refuse("VERSION_ID_REUSED", "candidate.roadmapVersionId");
   }
 
   if (candidate.kind === "ROLLBACK") {

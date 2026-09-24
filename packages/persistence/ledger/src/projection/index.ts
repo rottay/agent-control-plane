@@ -25,6 +25,7 @@ import { canonicalJsonStringify, sha256Hex } from "../canonical-json/index.js";
 import {
   LedgerArtifactEncryptionConflictError,
   LedgerIdempotencyConflictError,
+  LedgerRoadmapVersionRefusedError,
   LedgerValidationError,
   type LedgerValidationIssue,
 } from "../errors/index.js";
@@ -5048,18 +5049,23 @@ export function nextInitiativeProjection(
 }
 
 /**
- * The roadmap version a `ROADMAP_VERSION_RECORDED` event records, if its
- * payload carries one.
+ * The roadmap version a `ROADMAP_VERSION_RECORDED` event records.
  *
  * The version travels in the event's payload as a `RoadmapVersion` value, and
  * it is parsed here through the contract rather than trusted: the payload is a
  * bounded record of unknowns, so the only way to know it is a version is to
- * ask the schema. A payload that does not parse, or that names a different
- * initiative than the event it rides on, projects **no row** — the event still
- * stands in the stream and still moves the initiative projection, because an
- * append-only log does not get to disown an event it accepted. Live projection
- * and replay share this one function, so both agree about which events produce
- * a row.
+ * ask the schema. Live projection and replay share this one function, so both
+ * agree about which events produce a row.
+ *
+ * A payload that does not parse, or that names a different initiative than the
+ * event it rides on, is **refused by name** with the door's own error. This
+ * function used to project no row for such an event and let it stand, because an
+ * append-only log does not get to disown an event it accepted. That reason has a
+ * successor rather than an exception (P-26/A, ADR 0110): the door now refuses
+ * such an event before accepting it, so the fold meets one only in a history no
+ * producer at this build could write; there, refusing by name is the honest
+ * answer, and skipping it silently is not. A ledger whose stream already holds
+ * one no longer rebuilds, and that is the owner's decision to take (ND-5).
  */
 export function nextRoadmapVersionProjection(
   event: InitiativeEvent,
@@ -5068,8 +5074,16 @@ export function nextRoadmapVersionProjection(
   if (event.type !== "ROADMAP_VERSION_RECORDED") return null;
 
   const parsed = RoadmapVersion.safeParse(event.payload);
-  if (!parsed.success) return null;
-  if (parsed.data.initiativeId !== event.initiativeId) return null;
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new LedgerRoadmapVersionRefusedError(
+      "REQUEST_INVALID",
+      "candidate." + (issue?.path ?? []).map(String).join("."),
+    );
+  }
+  if (parsed.data.initiativeId !== event.initiativeId) {
+    throw new LedgerRoadmapVersionRefusedError("REQUEST_INVALID", "candidate.initiativeId");
+  }
 
   return {
     roadmapVersionId: parsed.data.roadmapVersionId,
@@ -5083,6 +5097,41 @@ export function nextRoadmapVersionProjection(
     recordedAt: parsed.data.recordedAt,
     sequence,
   };
+}
+
+/**
+ * What a fold already holds, asked by both of a version's keys.
+ *
+ * The live step answers from the read model, inside the append's transaction;
+ * the rebuild answers from its in-memory snapshot. One question, two holders.
+ */
+export interface FoldedRoadmapVersions {
+  readonly hasVersionId: (roadmapVersionId: string) => boolean;
+  readonly hasVersionNumber: (initiativeId: string, version: number) => boolean;
+}
+
+/**
+ * Refuse a version the fold already holds under either key (P-26/A, ADR 0110).
+ *
+ * A recorded version is immutable: nothing may write a second row under its
+ * identity, and no initiative may hold two versions with one number. The check
+ * lives here, shared by the live step and the rebuild, because the rebuild's
+ * snapshot is keyed by identity and would otherwise overwrite a second claim in
+ * memory before any SQL could see it. It throws the door's error and word, so a
+ * history holding either duplicate refuses by name, before migration 24's unique
+ * index or the primary key could refuse it anonymously; those two are the second
+ * line, not the first.
+ */
+export function assertRoadmapVersionUnfolded(
+  version: RoadmapVersionReadModel,
+  folded: FoldedRoadmapVersions,
+): void {
+  if (folded.hasVersionId(version.roadmapVersionId)) {
+    throw new LedgerRoadmapVersionRefusedError("VERSION_ID_REUSED", "candidate.roadmapVersionId");
+  }
+  if (folded.hasVersionNumber(version.initiativeId, version.version)) {
+    throw new LedgerRoadmapVersionRefusedError("VERSION_NOT_MONOTONIC", "candidate.version");
+  }
 }
 
 /**
@@ -5122,7 +5171,17 @@ export function applyInitiativeEventToSnapshot(
   );
 
   const version = nextRoadmapVersionProjection(event, sequence);
-  if (version !== null) snapshot.roadmapVersions.set(version.roadmapVersionId, version);
+  if (version !== null) {
+    const versions = snapshot.roadmapVersions;
+    assertRoadmapVersionUnfolded(version, {
+      hasVersionId: (roadmapVersionId) => versions.has(roadmapVersionId),
+      hasVersionNumber: (initiativeId, number) =>
+        [...versions.values()].some(
+          (known) => known.initiativeId === initiativeId && known.version === number,
+        ),
+    });
+    versions.set(version.roadmapVersionId, version);
+  }
 
   const assignment = nextRoutingAssignmentFromInitiative(event, sequence);
   if (assignment !== null) applyRoutingAssignment(snapshot, assignment);

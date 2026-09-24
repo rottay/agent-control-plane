@@ -16,6 +16,8 @@ import {
 // (V2-B1f/F3): one home, and this suite reads the checkpoint side of the same
 // rule in P9 below.
 import {
+  LedgerIdempotencyConflictError,
+  LedgerRoadmapVersionRefusedError,
   ROADMAP_VERSION_REFUSALS,
   artifactRootFor,
   hasArtifact,
@@ -23,6 +25,7 @@ import {
   publishArtifact,
   readArtifact,
 } from "@acp/ledger";
+import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { buildServer } from "../../src/build-server/index.js";
@@ -39,7 +42,7 @@ import * as writeSeam from "../../src/roadmap-write/index.js";
  * checked against a stub.
  *
  * The refusal cases are one per name, and the vocabulary itself is asserted
- * exact against the landed module — a suite that covered five of six refusals
+ * exact against the landed module — a suite that covered six of seven refusals
  * while claiming the vocabulary would be the overclaim shape this repository
  * keeps finding.
  */
@@ -297,11 +300,13 @@ describe("door two: the decision's refusals are 409, by name", () => {
   it("covers the landed vocabulary exactly, with nothing invented", () => {
     // The seam adds exactly two names of its own — one for the store's
     // refusals, one for a lost race (P8-8G R1) — and re-exports the
-    // decision's six unchanged.
+    // decision's seven unchanged. The seventh, VERSION_ID_REUSED (P-26/A), is
+    // unreachable from this route, which mints a fresh identity per request.
     expect([...ROADMAP_WRITE_REFUSALS]).toEqual(
       [...ROADMAP_VERSION_REFUSALS, "CONTENT_REJECTED", "WRITE_CONFLICT"].sort(),
     );
-    expect(ROADMAP_VERSION_REFUSALS.length).toBe(6);
+    expect(ROADMAP_VERSION_REFUSALS.length).toBe(7);
+    expect([...ROADMAP_VERSION_REFUSALS]).toContain("VERSION_ID_REUSED");
     // Both seam names are the seam's, not the decision's: the decision knows
     // nothing about a store or about concurrency.
     expect([...ROADMAP_VERSION_REFUSALS]).not.toContain("WRITE_CONFLICT");
@@ -531,6 +536,252 @@ describe("R1: the race loser hears the truth, and only the race loser", () => {
       }),
     ).toThrow();
     reader.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-26/A: the door decides, and the route hears it (ADR 0110)
+// ---------------------------------------------------------------------------
+
+/** Every recorded initiative event's payload, in stream order. */
+function recordedPayloads(path: string, initiativeId: string): readonly Record<string, unknown>[] {
+  const reader = openLedger(path, { readOnly: true });
+  try {
+    return reader
+      .listInitiativeEvents({ initiativeId })
+      .events.filter((record) => record.event.type === "ROADMAP_VERSION_RECORDED")
+      .map((record) => record.event.payload);
+  } finally {
+    reader.close();
+  }
+}
+
+/** A raw roadmap event, as another producer would append it: no route, no seam. */
+function rawRoadmapEvent(initiativeId: string, transitionId: string, payload: Record<string, unknown>): Record<string, unknown> {
+  return {
+    contractVersion: LEDGER_CONTRACT_VERSION,
+    eventId: randomUUID(),
+    initiativeId,
+    transitionId,
+    idempotencyKey: initiativeId + "/1/" + transitionId,
+    type: "ROADMAP_VERSION_RECORDED",
+    fromStatus: "ACTIVE",
+    toStatus: "ACTIVE",
+    emittedBy: COORDINATOR,
+    occurredAt: AT,
+    recordedAt: AT,
+    payload,
+  };
+}
+
+/** What the door throws, as the error it is. */
+function doorError(path: string, event: Record<string, unknown>): unknown {
+  const writable = openLedger(path);
+  try {
+    writable.appendInitiativeEvent(event);
+    return undefined;
+  } catch (error: unknown) {
+    return error;
+  } finally {
+    writable.close();
+  }
+}
+
+/** Two versions recorded through the route. */
+async function twoVersions(): Promise<{
+  readonly path: string;
+  readonly initiativeId: string;
+  readonly first: RoadmapVersionWriteResponse;
+  readonly second: RoadmapVersionWriteResponse;
+}> {
+  const { path, initiativeId } = seed();
+  const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+  const firstResponse = await app.inject({ method: "POST", url: roadmapUrl(initiativeId), payload: body(), headers: AUTH });
+  expect(firstResponse.statusCode).toBe(200);
+  const first = RoadmapVersionWriteResponse.parse(firstResponse.json());
+  const secondResponse = await app.inject({
+    method: "POST",
+    url: roadmapUrl(initiativeId),
+    payload: body({ content: "# Roadmap\n\nThe second.\n", expectedHeadDigest: first.version.contentDigest }),
+    headers: AUTH,
+  });
+  expect(secondResponse.statusCode).toBe(200);
+  const second = RoadmapVersionWriteResponse.parse(secondResponse.json());
+  await app.close();
+  return { path, initiativeId, first, second };
+}
+
+describe("P-26/A: the roadmap-version law runs inside the append, and the route hears the door", () => {
+  it("G1: v1 then v2 through the route, and the door ran the decision: v2 again under a new key is refused", async () => {
+    const { path, initiativeId, first, second } = await twoVersions();
+    const payloads = recordedPayloads(path, initiativeId);
+    expect(payloads.map((payload) => payload["version"])).toEqual([1, 2]);
+    expect(payloads[1]?.["parentVersionId"]).toBe(first.version.roadmapVersionId);
+
+    // Spy-free: no seam runs here, only the ledger's own door. If the door did
+    // not decide, this event would be appended as a second version 2.
+    const error = doorError(path, rawRoadmapEvent(initiativeId, "roadmap.v2.again", { ...payloads[1] }));
+    expect(error).toBeInstanceOf(LedgerRoadmapVersionRefusedError);
+    const refused = error as LedgerRoadmapVersionRefusedError;
+    expect({ code: refused.code, reason: refused.reason, at: refused.at }).toEqual({
+      code: "LEDGER_ROADMAP_VERSION_REFUSED",
+      reason: "VERSION_NOT_MONOTONIC",
+      at: "candidate.version",
+    });
+    expect(recordedPayloads(path, initiativeId).map((payload) => payload["roadmapVersionId"])).toEqual([
+      first.version.roadmapVersionId,
+      second.version.roadmapVersionId,
+    ]);
+  });
+
+  it("G1b: the same raw append under the route's own key with other content is a key conflict, before any decision", async () => {
+    const { path, initiativeId } = await twoVersions();
+    const payloads = recordedPayloads(path, initiativeId);
+    // The route's key for version 2, with content the decision would also refuse.
+    // The order is the claim: the key conflict fires first, and the decision's
+    // word never appears.
+    const error = doorError(path, rawRoadmapEvent(initiativeId, "roadmap.v2", { ...payloads[1], contentDigest: "f".repeat(64) }));
+    expect(error).toBeInstanceOf(LedgerIdempotencyConflictError);
+    expect((error as LedgerIdempotencyConflictError).code).toBe("LEDGER_IDEMPOTENCY_CONFLICT");
+    expect(error).not.toBeInstanceOf(LedgerRoadmapVersionRefusedError);
+    for (const word of ROADMAP_VERSION_REFUSALS) expect(String(error)).not.toContain(word);
+  });
+
+  it("G2: a ROLLBACK to v1 is recorded, and the door's rollback-digest law agrees with the route's", async () => {
+    const { path, initiativeId, first, second } = await twoVersions();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+
+    // The route refuses a rollback carrying the wrong bytes ...
+    const wrong = await app.inject({
+      method: "POST",
+      url: roadmapUrl(initiativeId),
+      payload: body({
+        content: "# Roadmap\n\nThe second.\n",
+        expectedHeadDigest: second.version.contentDigest,
+        kind: "ROLLBACK",
+        restoresVersionId: first.version.roadmapVersionId,
+      }),
+      headers: AUTH,
+    });
+    expect(wrong.statusCode).toBe(409);
+    expect(ApiError.parse(wrong.json()).error.message).toContain("ROLLBACK_DIGEST_MISMATCH");
+
+    // ... and so does the door, for the same claim offered past the route.
+    const doorWrong = doorError(
+      path,
+      rawRoadmapEvent(initiativeId, "roadmap.v3.raw", {
+        ...recordedPayloads(path, initiativeId)[1],
+        roadmapVersionId: randomUUID(),
+        version: 3,
+        parentVersionId: second.version.roadmapVersionId,
+        expectedHeadDigest: second.version.contentDigest,
+        kind: "ROLLBACK",
+        restoresVersionId: first.version.roadmapVersionId,
+      }),
+    );
+    expect(doorWrong).toBeInstanceOf(LedgerRoadmapVersionRefusedError);
+    expect((doorWrong as LedgerRoadmapVersionRefusedError).reason).toBe("ROLLBACK_DIGEST_MISMATCH");
+
+    // The lawful rollback is recorded through the route, and the door let it by.
+    const rolled = await app.inject({
+      method: "POST",
+      url: roadmapUrl(initiativeId),
+      payload: body({
+        expectedHeadDigest: second.version.contentDigest,
+        kind: "ROLLBACK",
+        restoresVersionId: first.version.roadmapVersionId,
+      }),
+      headers: AUTH,
+    });
+    await app.close();
+    expect(rolled.statusCode).toBe(200);
+    const parsed = RoadmapVersionWriteResponse.parse(rolled.json());
+    expect([parsed.version.version, parsed.version.kind, parsed.version.contentDigest]).toEqual([
+      3,
+      "ROLLBACK",
+      first.version.contentDigest,
+    ]);
+    expect(recordedPayloads(path, initiativeId).map((payload) => payload["version"])).toEqual([1, 2, 3]);
+  });
+
+  it("G3 (C1): a stale fold reaches the door, which refuses it, and the seam answers WRITE_CONFLICT, never a throw", async () => {
+    // Version 1 through the route.
+    const staged = seed();
+    const app = buildServer({ ledgerPath: staged.path, writeBearerPath: bearerFile() });
+    const v1 = RoadmapVersionWriteResponse.parse(
+      (await app.inject({ method: "POST", url: roadmapUrl(staged.initiativeId), payload: body(), headers: AUTH })).json(),
+    );
+    await app.close();
+
+    // The gateway's reader snapshot, taken before the other producer writes.
+    const reader = openLedger(staged.path, { readOnly: true });
+    const stale = reader.listRoadmapVersions(staged.initiativeId);
+    expect(stale.map((version) => version.version)).toEqual([1]);
+
+    // Another producer records version 2 under a key the route never builds.
+    const other = openLedger(staged.path);
+    other.appendInitiativeEvent(
+      rawRoadmapEvent(staged.initiativeId, "roadmap.other.v2", {
+        contractVersion: LEDGER_CONTRACT_VERSION,
+        roadmapVersionId: randomUUID(),
+        initiativeId: staged.initiativeId,
+        version: 2,
+        contentDigest: "e".repeat(64),
+        parentVersionId: v1.version.roadmapVersionId,
+        expectedHeadDigest: v1.version.contentDigest,
+        kind: "EDIT",
+        restoresVersionId: null,
+        recordedBy: COORDINATOR,
+        recordedAt: AT,
+      }),
+    );
+    other.close();
+
+    // The seam's fold is the snapshot: it grants its own "version 2", under the
+    // route's own key roadmap.v2, which nobody holds — so no key conflict, and
+    // the candidate reaches the door's decision over the fold that moved.
+    const staleReader: Ledger = new Proxy(reader, {
+      get(target, property) {
+        if (property === "listRoadmapVersions") return () => stale;
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const outcome = recordRoadmapVersion({
+      ledger: staleReader,
+      initiativeId: staged.initiativeId,
+      request: {
+        content: "# the loser's second version\n",
+        expectedHeadDigest: v1.version.contentDigest,
+        kind: "EDIT",
+        restoresVersionId: null,
+        recordedBy: COORDINATOR,
+      },
+      recordedAt: AT,
+      roadmapVersionId: randomUUID(),
+      eventId: randomUUID(),
+    });
+    reader.close();
+
+    expect(outcome).toEqual({ ok: false, reason: "WRITE_CONFLICT", at: "roadmapVersion" });
+    // The door refused it by name: the stream holds the other producer's v2 and
+    // nothing of the loser's.
+    const versions = recordedPayloads(staged.path, staged.initiativeId);
+    expect(versions.map((payload) => payload["version"])).toEqual([1, 2]);
+    expect(versions[1]?.["contentDigest"]).toBe("e".repeat(64));
+
+    // And the route renders that seam word as it renders every refusal: 409,
+    // WRITE_REFUSED, the word in the message. A retry re-folds and is told the truth.
+    const retryApp = buildServer({ ledgerPath: staged.path, writeBearerPath: bearerFile() });
+    const retry = await retryApp.inject({
+      method: "POST",
+      url: roadmapUrl(staged.initiativeId),
+      payload: body({ content: "# the loser's second version\n", expectedHeadDigest: v1.version.contentDigest }),
+      headers: AUTH,
+    });
+    await retryApp.close();
+    expect(retry.statusCode).toBe(409);
+    expect(ApiError.parse(retry.json()).error.message).toContain("HEAD_MISMATCH");
   });
 });
 

@@ -37,14 +37,17 @@ import {
   LedgerOpenError,
   LedgerQueryError,
   LedgerReadOnlyError,
+  LedgerRoadmapVersionRefusedError,
   LedgerSequenceError,
   LedgerValidationError,
   type LedgerValidationIssue,
 } from "../errors/index.js";
+import { decideRoadmapVersion } from "../roadmap-version/index.js";
 import {
   ACCOUNT_INTEGRITY_MIGRATION,
   DISPATCH_CATALOG_PIN_MIGRATION,
   EFFECT_RESULT_REFERENCE_MIGRATION,
+  ROADMAP_VERSION_UNIQUENESS_MIGRATION,
   MODEL_VERSION_PROJECTION,
   PRICE_INTERVAL_PROJECTION,
   INITIATIVE_REGISTRATION_MIGRATION,
@@ -150,6 +153,7 @@ import {
   taskRevisionKey,
   nextInitiativeProjection,
   nextRoadmapVersionProjection,
+  assertRoadmapVersionUnfolded,
   nextRoutingAssignmentProjection,
   nextTaskProjection,
   nextWorkerProjection,
@@ -2207,6 +2211,91 @@ function assertNoDuplicateAccountVersions(db: Database.Database): void {
 }
 
 /**
+ * Refuse migration 24 over a stream that already holds a duplicate roadmap
+ * version (P-26/A, ADR 0110).
+ *
+ * `assertNoDuplicateAccountVersions`' shape, with one difference that matters:
+ * it counts the **stream**, not the read model. The read model's former
+ * upsert-by-identity has already collapsed two events claiming one identity
+ * into one row, so only `initiative_events` still shows both families: two
+ * events claiming one `(initiativeId, version)`, and two claiming one
+ * `roadmapVersionId`. Each is named, up to twenty, as UUIDs and integers and
+ * never as content; nothing is deduplicated, renumbered or deleted. A refusal
+ * here rolls back every pending migration, so the ledger stays at 23 and does
+ * not open under this build; what to do with it is the owner's decision
+ * (ND-4): an exception entry, or a quarantined ledger.
+ */
+function assertNoDuplicateRoadmapVersions(db: Database.Database): void {
+  const pairs = db
+    .prepare(
+      "SELECT json_extract(event_json, '$.payload.initiativeId') AS initiative_id, " +
+        "json_extract(event_json, '$.payload.version') AS version, COUNT(*) AS n " +
+        "FROM initiative_events WHERE type = 'ROADMAP_VERSION_RECORDED' " +
+        "GROUP BY initiative_id, version HAVING n > 1 ORDER BY initiative_id ASC, version ASC",
+    )
+    .all() as { readonly initiative_id: unknown; readonly version: unknown; readonly n: number }[];
+  const identities = db
+    .prepare(
+      "SELECT json_extract(event_json, '$.payload.roadmapVersionId') AS roadmap_version_id, " +
+        "COUNT(*) AS n FROM initiative_events WHERE type = 'ROADMAP_VERSION_RECORDED' " +
+        "GROUP BY roadmap_version_id HAVING n > 1 ORDER BY roadmap_version_id ASC",
+    )
+    .all() as { readonly roadmap_version_id: unknown; readonly n: number }[];
+
+  if (pairs.length === 0 && identities.length === 0) return;
+
+  const problems: string[] = [];
+  if (pairs.length > 0) {
+    const named = pairs
+      .slice(0, 20)
+      .map(
+        (row) =>
+          safeUuid(row.initiative_id) +
+          " version " +
+          safeVersionNumber(row.version) +
+          " appears " +
+          String(row.n) +
+          " times",
+      );
+    if (pairs.length > 20) named.push("and " + String(pairs.length - 20) + " further pair(s)");
+    problems.push(
+      "initiative_events holds " +
+        String(pairs.length) +
+        " duplicate roadmap (initiativeId, version) pair(s), which this migration will not " +
+        "deduplicate: " +
+        named.join("; "),
+    );
+  }
+  if (identities.length > 0) {
+    const named = identities
+      .slice(0, 20)
+      .map((row) => safeUuid(row.roadmap_version_id) + " appears " + String(row.n) + " times");
+    if (identities.length > 20) {
+      named.push("and " + String(identities.length - 20) + " further identity(ies)");
+    }
+    problems.push(
+      "initiative_events holds " +
+        String(identities.length) +
+        " duplicate roadmapVersionId(s), which this migration will not deduplicate: " +
+        named.join("; "),
+    );
+  }
+  throw new LedgerMigrationError(problems);
+}
+
+/** A UUID read back out of a stored body, printed only if it is one. */
+function safeUuid(value: unknown): string {
+  return typeof value === "string" && /^[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$/.test(value)
+    ? value
+    : "<unprintable id>";
+}
+
+/** A version number read back out of a stored body, printed only if it is one. */
+function safeVersionNumber(value: unknown): string {
+  return typeof value === "number" && Number.isSafeInteger(value) ? String(value) : "<unprintable version>";
+}
+
+/**
  * Build the account sidecar over every historical row, once (P-08/A2).
  *
  * Runs inside the migration's own transaction, after the sidecar's DDL and
@@ -3056,6 +3145,14 @@ export class Ledger {
               // collision is a UNIQUE failure naming one row and no coordinate.
               if (migration.version === TASK_REVISION_MIGRATION) {
                 assertNoV2KeyCollisions(db);
+              }
+              // Migration 24's preflight, on migration 10's terms (P-26/A): the
+              // stream must hold no duplicate roadmap version before the unique
+              // index exists, because after that a duplicate is an anonymous
+              // constraint failure, and a refusal here rolls back every pending
+              // migration with it.
+              if (migration.version === ROADMAP_VERSION_UNIQUENESS_MIGRATION) {
+                assertNoDuplicateRoadmapVersions(db);
               }
             },
             afterSql: (migration) => {
@@ -6739,6 +6836,18 @@ export class Ledger {
       );
     }
 
+    // The roadmap-version law, inside this transaction (P-26/A, ADR 0110). After
+    // the replay, identity and contiguity checks and before causation, head and
+    // INSERT: an exact replay has already returned above and is never re-judged,
+    // and a reused key with other content has already been refused as the
+    // conflict it is. What reaches here is a new event, and its version is judged
+    // by the one decision over the fold this transaction keeps level with the
+    // stream, read here, under `BEGIN IMMEDIATE`, so no append can move it
+    // between the read and the INSERT.
+    if (event.type === "ROADMAP_VERSION_RECORDED") {
+      this.#assertRoadmapVersionGranted(event);
+    }
+
     this.#assertCausationResolves(causation);
 
     const head = this.#readInitiativeHead();
@@ -6812,6 +6921,31 @@ export class Ledger {
     };
   }
 
+  /**
+   * Run the roadmap-version decision at the door, or throw its refusal by name.
+   *
+   * The fold is `listRoadmapVersions`' — version order, last is the head — which
+   * is the gateway's fold too, so there is one way of folding the history and the
+   * door does not invent a second. A payload that names another initiative than
+   * the event it rides on is refused here even on a first version, where the
+   * decision has no head to compare it against.
+   */
+  #assertRoadmapVersionGranted(event: InitiativeEvent): void {
+    // Only a string that names another initiative is refused here; a missing or
+    // mistyped one is the decision's to name, by its own parse path.
+    const payload = event.payload as { readonly initiativeId?: unknown };
+    if (typeof payload.initiativeId === "string" && payload.initiativeId !== event.initiativeId) {
+      throw new LedgerRoadmapVersionRefusedError("REQUEST_INVALID", "candidate.initiativeId");
+    }
+    const knownVersions = this.listRoadmapVersions(event.initiativeId);
+    const decision = decideRoadmapVersion({
+      candidate: event.payload,
+      head: knownVersions.at(-1) ?? null,
+      knownVersions,
+    });
+    if (!decision.ok) throw new LedgerRoadmapVersionRefusedError(decision.reason, decision.at);
+  }
+
   /** Incremental projection of the initiative stream. Same rules as replay. */
   #projectInitiativeEvent(event: InitiativeEvent, sequence: number): void {
     const current = this.#stmt(
@@ -6827,7 +6961,21 @@ export class Ledger {
     );
 
     const version = nextRoadmapVersionProjection(event, sequence);
-    if (version !== null) this.#upsertRoadmapVersion(version);
+    if (version !== null) {
+      // The rebuild's check, asked of the read model: the same function, so the
+      // live step and the rebuild refuse the same duplicates with the same word.
+      assertRoadmapVersionUnfolded(version, {
+        hasVersionId: (roadmapVersionId) =>
+          this.#stmt("SELECT 1 FROM roadmap_version_read_model WHERE roadmap_version_id = ?").get(
+            roadmapVersionId,
+          ) !== undefined,
+        hasVersionNumber: (initiativeId, number) =>
+          this.#stmt(
+            "SELECT 1 FROM roadmap_version_read_model WHERE initiative_id = ? AND version = ?",
+          ).get(initiativeId, number) !== undefined,
+      });
+      this.#insertRoadmapVersion(version);
+    }
   }
 
   #upsertInitiative(initiative: InitiativeReadModel): void {
@@ -6863,19 +7011,19 @@ export class Ledger {
     );
   }
 
-  #upsertRoadmapVersion(version: RoadmapVersionReadModel): void {
+  /**
+   * Write one recorded version. Insert-only (P-26/A, ADR 0110): a version is
+   * immutable, so there is no conflict clause that could overwrite one. The
+   * fold's named refusal is the first line; the primary key and migration 24's
+   * unique index are the second, and reaching either means a writer bypassed
+   * the fold.
+   */
+  #insertRoadmapVersion(version: RoadmapVersionReadModel): void {
     this.#stmt(
       "INSERT INTO roadmap_version_read_model (" +
         "roadmap_version_id, initiative_id, version, content_digest, parent_version_id, " +
         "kind, restores_version_id, recorded_by, recorded_at, sequence" +
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
-        "ON CONFLICT (roadmap_version_id) DO UPDATE SET " +
-        "initiative_id = excluded.initiative_id, version = excluded.version, " +
-        "content_digest = excluded.content_digest, " +
-        "parent_version_id = excluded.parent_version_id, kind = excluded.kind, " +
-        "restores_version_id = excluded.restores_version_id, " +
-        "recorded_by = excluded.recorded_by, recorded_at = excluded.recorded_at, " +
-        "sequence = excluded.sequence",
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       version.roadmapVersionId,
       version.initiativeId,
@@ -8876,7 +9024,7 @@ export class Ledger {
         this.#upsertInitiative(initiative);
       }
       for (const version of initiativeSnapshot.roadmapVersions.values()) {
-        this.#upsertRoadmapVersion(version);
+        this.#insertRoadmapVersion(version);
       }
 
       // One table, two partitions, written from the two snapshots that folded
@@ -9063,10 +9211,29 @@ export class Ledger {
     problems.push(...replay.problems);
 
     const initiativeSnapshot = createInitiativeProjectionSnapshot();
+    // The fold refuses a roadmap version by name (P-26/A); a check reports that
+    // refusal as a problem at its sequence rather than dying on it, so a ledger
+    // holding one is described, not unreadable. The rebuild lets it throw.
+    const roadmapRefusals: IntegrityProblem[] = [];
     const initiativeReplay = this.#replayInitiative((event, row) => {
-      applyInitiativeEventToSnapshot(initiativeSnapshot, event, row.sequence);
+      try {
+        applyInitiativeEventToSnapshot(initiativeSnapshot, event, row.sequence);
+      } catch (error: unknown) {
+        if (!(error instanceof LedgerRoadmapVersionRefusedError)) throw error;
+        roadmapRefusals.push({
+          kind: "PROJECTION",
+          detail:
+            "initiative sequence " +
+            String(row.sequence) +
+            " records a roadmap version the fold refuses: " +
+            error.reason +
+            " at " +
+            error.at,
+          sequence: row.sequence,
+        });
+      }
     });
-    problems.push(...initiativeReplay.problems);
+    problems.push(...initiativeReplay.problems, ...roadmapRefusals);
 
     const registrySnapshot = createRegistryProjectionSnapshot();
     const artifactSnapshot = createArtifactProjectionSnapshot();

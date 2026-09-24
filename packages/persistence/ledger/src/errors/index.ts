@@ -1,3 +1,5 @@
+import type { RoadmapVersionRefusal } from "../roadmap-version/index.js";
+
 /**
  * Typed ledger errors.
  *
@@ -24,7 +26,8 @@ export type LedgerErrorCode =
   | "LEDGER_SEQUENCE"
   | "LEDGER_INTEGRITY"
   | "LEDGER_QUERY"
-  | "LEDGER_ARTIFACT_ENCRYPTION_CONFLICT";
+  | "LEDGER_ARTIFACT_ENCRYPTION_CONFLICT"
+  | "LEDGER_ROADMAP_VERSION_REFUSED";
 
 /** Base class for everything this package throws deliberately. */
 export class LedgerError extends Error {
@@ -279,6 +282,31 @@ export class LedgerArtifactEncryptionConflictError extends LedgerError {
     this.contentSha256 = contentSha256;
     this.blobGeneration = blobGeneration;
     this.fields = fields;
+  }
+}
+
+/**
+ * The initiative door refused a roadmap version (P-26/A, ADR 0110).
+ *
+ * The door runs `decideRoadmapVersion` inside the append's own transaction, over
+ * the fold that transaction keeps level with the stream, and throws this when the
+ * decision refuses; the projection throws it too, for a version the fold has
+ * already seen under either key. It carries the decision's word and the field that
+ * failed, never the roadmap: the same rule every class here keeps.
+ */
+export class LedgerRoadmapVersionRefusedError extends LedgerError {
+  readonly reason: RoadmapVersionRefusal;
+  /** The field that failed. Never roadmap content. */
+  readonly at: string;
+
+  constructor(reason: RoadmapVersionRefusal, at: string) {
+    super(
+      "LEDGER_ROADMAP_VERSION_REFUSED",
+      "the roadmap version was refused: " + reason + " at " + at,
+    );
+    this.name = "LedgerRoadmapVersionRefusedError";
+    this.reason = reason;
+    this.at = at;
   }
 }
 

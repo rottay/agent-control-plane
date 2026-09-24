@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
 import {
+  CONTRACT_VERSION,
   ARTIFACT_CLASSES,
   ARTIFACT_CLASSIFICATIONS,
   ARTIFACT_EVENT_KINDS,
@@ -58,6 +60,7 @@ import {
   PRICE_INTERVAL_PROJECTION,
   EFFECT_RESULT_REFERENCE_MIGRATION,
   DISPATCH_CATALOG_PIN_MIGRATION,
+  ROADMAP_VERSION_UNIQUENESS_MIGRATION,
   TASK_STREAM,
   checkMigrationConformance,
 } from "../../src/migrations/index.js";
@@ -66,6 +69,8 @@ import {
   PRE_ENVELOPE_REFERENCE_CONTRACT_VERSIONS,
   PRE_RESULT_REFERENCE_CONTRACT_VERSIONS,
 } from "../../src/projection/index.js";
+import { GENESIS_SHA256, canonicalJsonStringify, chainDigest } from "../../src/canonical-json/index.js";
+import { LedgerMigrationError } from "../../src/errors/index.js";
 import { openLedger } from "../../src/ledger/index.js";
 import { DOCUMENT_KINDS } from "../../src/types/index.js";
 import type { AppliedMigration } from "../../src/types/index.js";
@@ -206,7 +211,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -232,6 +237,7 @@ describe("migration 7 appends the watermark table without touching the applied s
       "price_interval_catalog",
       "effect_result_reference",
       "dispatch_catalog_pin",
+      "roadmap_version_uniqueness",
     ]);
   });
 
@@ -559,7 +565,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
     ]);
   });
 
@@ -1542,7 +1548,7 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
     // Sixteen when this migration landed; the seventeenth is P-14 A's, the
     // eighteenth P-14 B's, the nineteenth P-14 C's, the twentieth P-32/captura B's
     // the twenty-first P-33/catálogo A's and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(23);
+    expect(MIGRATIONS).toHaveLength(24);
     expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION]?.name).toBe("model_version_registry");
   });
 
@@ -1640,7 +1646,7 @@ describe("migration 17 folds the model version registry from the registry stream
     // Seventeen when this migration landed; the eighteenth is P-14 B's, the
     // nineteenth P-14 C's, the twentieth P-32/captura B's and the twenty-first
     // P-33/catálogo A's, and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(23);
+    expect(MIGRATIONS).toHaveLength(24);
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION]?.name).toBe("initiative_registration_detail");
   });
 
@@ -1765,7 +1771,7 @@ describe("migration 18 adds the initiative projection's three columns and nothin
     // Eighteen when this migration landed; the nineteenth is P-14 C's, the
     // twentieth P-32/captura B's, the twenty-first P-33/catálogo A's and the
     // twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(23);
+    expect(MIGRATIONS).toHaveLength(24);
     expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION]?.name).toBe("task_submission");
   });
 
@@ -1815,7 +1821,7 @@ describe("migration 19 gives a task's client key its one home", () => {
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION - 1]?.name).toBe("task_submission");
     // Nineteen when this migration landed; the twentieth is P-32/captura B's and
     // the twenty-first P-33/catálogo A's, and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(23);
+    expect(MIGRATIONS).toHaveLength(24);
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION]?.name).toBe("usage_capture");
   });
 
@@ -1892,7 +1898,7 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
     expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION - 1]?.name).toBe("usage_capture");
     // Twenty when this migration landed; the twenty-first is P-33/catálogo A's
     // and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(23);
+    expect(MIGRATIONS).toHaveLength(24);
     expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION]?.name).toBe("price_interval_catalog");
   });
 
@@ -2056,7 +2062,7 @@ describe("migration 21 gives a price catalog version its one table", () => {
     expect(PRICE_INTERVAL_CATALOG_MIGRATION).toBe(21);
     expect(MIGRATIONS[PRICE_INTERVAL_CATALOG_MIGRATION - 1]?.name).toBe("price_interval_catalog");
     // Twenty-one when this migration landed; the twenty-second is P-07 B's.
-    expect(MIGRATIONS).toHaveLength(23);
+    expect(MIGRATIONS).toHaveLength(24);
   });
 
   it("H-1: creates economy's table under economy's name, STRICT, and nothing else is created, altered or dropped", () => {
@@ -2162,7 +2168,7 @@ describe("migration 22 names an effect's result by reference, with its outcome, 
     expect(TWENTY_SECOND?.name).toBe("effect_result_reference");
     expect(EFFECT_RESULT_REFERENCE_MIGRATION).toBe(22);
     expect(MIGRATIONS[EFFECT_RESULT_REFERENCE_MIGRATION - 1]?.name).toBe("effect_result_reference");
-    expect(MIGRATIONS).toHaveLength(23);
+    expect(MIGRATIONS).toHaveLength(24);
   });
 
   it("adds three columns in place and two triggers, and creates, drops, updates and seeds nothing else", () => {
@@ -2239,12 +2245,12 @@ describe("migration 23 pins a delivery's price catalog version, by cohort", () =
     .filter((line) => !line.trimStart().startsWith("--"))
     .join("\n");
 
-  it("sits at the tail of a set whose order is fixed", () => {
+  it("sits at the position a set whose order is fixed gave it", () => {
     expect(TWENTY_THIRD?.version).toBe(23);
     expect(TWENTY_THIRD?.name).toBe("dispatch_catalog_pin");
     expect(DISPATCH_CATALOG_PIN_MIGRATION).toBe(23);
     expect(MIGRATIONS[DISPATCH_CATALOG_PIN_MIGRATION - 1]?.name).toBe("dispatch_catalog_pin");
-    expect(MIGRATIONS).toHaveLength(23);
+    expect(MIGRATIONS).toHaveLength(24);
   });
 
   it("adds three columns in place and two triggers, and creates, drops, updates and seeds nothing else", () => {
@@ -2414,5 +2420,268 @@ describe("migration 23 pins a delivery's price catalog version, by cohort", () =
     expect(got.message).toContain("dispatch_contract_version is required on every delivery");
     expect(got.message).not.toContain("are required on a delivery of every later contract version");
     raw.close();
+  });
+});
+
+/**
+ * Migration 24, one roadmap version per number (P-26/A, ADR 0110).
+ *
+ * The text, then the preflight as a positive-control instrument: both duplicate
+ * families are planted in the stream of a scratch file and both must be named,
+ * the failure must leave the ledger at 23 and unopenable under this build, and a
+ * clean ledger must upgrade with its rows unchanged. `test/ledger` asserts what the
+ * door and the fold do before this index is ever reached.
+ */
+describe("migration 24 makes a roadmap version's number unique per initiative", () => {
+  const TWENTY_FOURTH = MIGRATIONS[23];
+  const INDEX = "ux_roadmap_version_read_model__initiative_id__version";
+  const COORDINATOR = "kimi/k3/coordinator/01";
+  const AT = "2026-09-24T12:00:00.000Z";
+
+  const statements = (TWENTY_FOURTH?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+
+  it("sits at the tail of a set whose order is fixed", () => {
+    expect(TWENTY_FOURTH?.version).toBe(24);
+    expect(TWENTY_FOURTH?.name).toBe("roadmap_version_uniqueness");
+    expect(ROADMAP_VERSION_UNIQUENESS_MIGRATION).toBe(24);
+    expect(MIGRATIONS[ROADMAP_VERSION_UNIQUENESS_MIGRATION - 1]?.name).toBe("roadmap_version_uniqueness");
+    expect(MIGRATIONS).toHaveLength(24);
+  });
+
+  it("creates one unique index and nothing else, and the inventory names it", () => {
+    expect([...statements.matchAll(/CREATE UNIQUE INDEX (\w+)\s+ON (\w+) \(([^)]*)\)/g)].map((match) => [match[1], match[2], match[3]])).toEqual([
+      [INDEX, "roadmap_version_read_model", "initiative_id, version"],
+    ]);
+    expect(statements).not.toMatch(/CREATE TABLE|CREATE TRIGGER|ALTER TABLE|DROP |^\s*UPDATE |INSERT INTO|ON CONFLICT|IF NOT EXISTS/m);
+    expect(TWENTY_FOURTH?.sql ?? "").not.toContain("projection_watermark");
+    expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({ type: "index", name: INDEX });
+    // Migration 4's plain index stays: this one is beside it, not instead of it.
+    expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({ type: "index", name: "roadmap_version_read_model_by_initiative" });
+  });
+
+  function scratch(): string {
+    const directory = mkdtempSync(join(realpathSync(tmpdir()), "acp-p26-migration-"));
+    return join(directory, "ledger.sqlite");
+  }
+
+  function initiativeEvent(initiativeId: string, transitionId: string, type: string, payload: Record<string, unknown>): Record<string, unknown> {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: randomUUID(),
+      initiativeId,
+      transitionId,
+      idempotencyKey: initiativeId + "/1/" + transitionId,
+      type,
+      fromStatus: type === "INITIATIVE_REGISTERED" ? null : "ACTIVE",
+      toStatus: "ACTIVE",
+      emittedBy: COORDINATOR,
+      occurredAt: AT,
+      recordedAt: AT,
+      payload,
+    };
+  }
+
+  function versionValue(initiativeId: string, version: number, id: string, parent: { readonly id: string; readonly digest: string } | null): Record<string, unknown> {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      roadmapVersionId: id,
+      initiativeId,
+      version,
+      contentDigest: String(version).repeat(64),
+      parentVersionId: parent === null ? null : parent.id,
+      expectedHeadDigest: parent === null ? null : parent.digest,
+      kind: "EDIT",
+      restoresVersionId: null,
+      recordedBy: COORDINATOR,
+      recordedAt: AT,
+    };
+  }
+
+  /** A ledger holding one initiative with versions 1..count, through the door. */
+  function withVersions(path: string, count: number): { readonly initiativeId: string; readonly ids: readonly string[] } {
+    const ledger = openLedger(path);
+    const initiativeId = randomUUID();
+    ledger.appendInitiativeEvent(initiativeEvent(initiativeId, "initiative.registered", "INITIATIVE_REGISTERED", {}));
+    const ids: string[] = [];
+    for (let version = 1; version <= count; version += 1) {
+      const id = randomUUID();
+      const previous = ids.at(-1);
+      const parent = previous === undefined ? null : { id: previous, digest: String(version - 1).repeat(64) };
+      ledger.appendInitiativeEvent(
+        initiativeEvent(initiativeId, "roadmap.v" + String(version), "ROADMAP_VERSION_RECORDED", versionValue(initiativeId, version, id, parent)),
+      );
+      ids.push(id);
+    }
+    ledger.close();
+    return { initiativeId, ids };
+  }
+
+  /** Migration 24 undone on a raw handle: the ledger is back at 23. */
+  function rewindTo23(raw: Database.Database): void {
+    raw.exec("DROP INDEX " + INDEX + ";");
+    raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(ROADMAP_VERSION_UNIQUENESS_MIGRATION);
+  }
+
+  /** Plant one initiative event past the door, chain and head recomputed. */
+  function plant(raw: Database.Database, event: Record<string, unknown>): void {
+    const last = raw
+      .prepare("SELECT sequence, event_sha256 FROM initiative_events ORDER BY sequence DESC LIMIT 1")
+      .get() as { readonly sequence: number; readonly event_sha256: string } | undefined;
+    const sequence = (last?.sequence ?? 0) + 1;
+    const previous = last?.event_sha256 ?? GENESIS_SHA256;
+    const canonical = canonicalJsonStringify(event);
+    const digest = chainDigest(previous, canonical);
+    raw
+      .prepare(
+        "INSERT INTO initiative_events (sequence, event_id, idempotency_key, initiative_id, transition_id, " +
+          "type, from_status, to_status, emitted_by, occurred_at, recorded_at, causation_stream, " +
+          "causation_sequence, causation_sha256, contract_version, event_json, previous_sha256, event_sha256) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)",
+      )
+      .run(
+        sequence,
+        event["eventId"],
+        event["idempotencyKey"],
+        event["initiativeId"],
+        event["transitionId"],
+        event["type"],
+        event["fromStatus"],
+        event["toStatus"],
+        event["emittedBy"],
+        event["occurredAt"],
+        event["recordedAt"],
+        event["contractVersion"],
+        canonical,
+        previous,
+        digest,
+      );
+    const meta = raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = ?");
+    meta.run(String(sequence), "initiative_head_sequence");
+    meta.run(digest, "initiative_head_event_sha256");
+    meta.run(String(sequence), "initiative_event_count");
+  }
+
+  function state(path: string): { readonly applied: number; readonly index: number } {
+    const raw = new Database(path, { readonly: true });
+    try {
+      const applied = (raw.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v;
+      const index = raw.prepare("SELECT name FROM sqlite_schema WHERE type = 'index' AND name = ?").all(INDEX).length;
+      return { applied, index };
+    } finally {
+      raw.close();
+    }
+  }
+
+  function openFailure(path: string): LedgerMigrationError {
+    try {
+      openLedger(path).close();
+    } catch (error: unknown) {
+      if (error instanceof LedgerMigrationError) return error;
+      throw error;
+    }
+    throw new Error("expected the open to refuse the migration");
+  }
+
+  it("is present on a fresh ledger", () => {
+    const path = scratch();
+    openLedger(path).close();
+    expect(state(path)).toEqual({ applied: 24, index: 1 });
+  });
+
+  it("upgrades a ledger at 23 holding versions 1..3, and every row is unchanged", () => {
+    const path = scratch();
+    const { initiativeId } = withVersions(path, 3);
+    const before = openLedger(path, { readOnly: true });
+    const rows = before.listRoadmapVersions(initiativeId);
+    before.close();
+    const raw = new Database(path);
+    rewindTo23(raw);
+    raw.close();
+    expect(state(path)).toEqual({ applied: 23, index: 0 });
+
+    const migrated = openLedger(path);
+    expect(migrated.listRoadmapVersions(initiativeId)).toEqual(rows);
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+    migrated.close();
+    expect(rows.map((row) => row.version)).toEqual([1, 2, 3]);
+    expect(state(path)).toEqual({ applied: 24, index: 1 });
+  });
+
+  it("refuses a stream holding two events with one (initiativeId, version), names the pair, and applies nothing", () => {
+    const path = scratch();
+    const { initiativeId } = withVersions(path, 2);
+    const raw = new Database(path);
+    rewindTo23(raw);
+    // A second version 2, under another key and another identity: the family the
+    // read model would still show as two rows.
+    plant(raw, initiativeEvent(initiativeId, "roadmap.v2b", "ROADMAP_VERSION_RECORDED", versionValue(initiativeId, 2, randomUUID(), null)));
+    raw.close();
+
+    const error = openFailure(path);
+    expect(error.problems).toHaveLength(1);
+    expect(error.problems[0]).toContain("1 duplicate roadmap (initiativeId, version) pair(s)");
+    expect(error.problems[0]).toContain(initiativeId + " version 2 appears 2 times");
+    expect(state(path)).toEqual({ applied: 23, index: 0 });
+    // Not a first-open accident: it refuses on every open under this build.
+    expect(openFailure(path).problems).toEqual(error.problems);
+  });
+
+  it("refuses a stream holding two events with one roadmapVersionId, names it, and applies nothing", () => {
+    const path = scratch();
+    const { initiativeId, ids } = withVersions(path, 2);
+    const raw = new Database(path);
+    rewindTo23(raw);
+    // Version 3 claiming version 1's identity: the family the read model's old
+    // upsert collapsed into one row, visible only in the stream.
+    const reused = ids[0] ?? "";
+    plant(
+      raw,
+      initiativeEvent(initiativeId, "roadmap.v3", "ROADMAP_VERSION_RECORDED", versionValue(initiativeId, 3, reused, { id: ids[1] ?? "", digest: "2".repeat(64) })),
+    );
+    raw.close();
+
+    const error = openFailure(path);
+    expect(error.problems).toHaveLength(1);
+    expect(error.problems[0]).toContain("1 duplicate roadmapVersionId(s)");
+    expect(error.problems[0]).toContain(reused + " appears 2 times");
+    expect(state(path)).toEqual({ applied: 23, index: 0 });
+  });
+
+  it("names both families at once, and never the content", () => {
+    const path = scratch();
+    const { initiativeId, ids } = withVersions(path, 1);
+    const raw = new Database(path);
+    rewindTo23(raw);
+    plant(raw, initiativeEvent(initiativeId, "roadmap.v1b", "ROADMAP_VERSION_RECORDED", { ...versionValue(initiativeId, 1, ids[0] ?? "", null), contentDigest: "9".repeat(64) }));
+    raw.close();
+
+    const error = openFailure(path);
+    expect(error.problems).toHaveLength(2);
+    expect(error.message).not.toContain("9".repeat(64));
+    expect(state(path)).toEqual({ applied: 23, index: 0 });
+  });
+
+  it("has teeth: after a clean migration, a raw duplicate number aborts on the index, the one route to that anonymous error", () => {
+    const path = scratch();
+    const { initiativeId } = withVersions(path, 1);
+    const raw = new Database(path);
+    let message = "";
+    try {
+      raw
+        .prepare(
+          "INSERT INTO roadmap_version_read_model (roadmap_version_id, initiative_id, version, content_digest, " +
+            "parent_version_id, kind, restores_version_id, recorded_by, recorded_at, sequence) " +
+            "VALUES (?, ?, 1, ?, NULL, 'EDIT', NULL, ?, ?, 99)",
+        )
+        .run(randomUUID(), initiativeId, "e".repeat(64), COORDINATOR, AT);
+    } catch (error: unknown) {
+      message = String(error);
+    } finally {
+      raw.close();
+    }
+    expect(message).toContain("UNIQUE constraint failed: roadmap_version_read_model.initiative_id, roadmap_version_read_model.version");
   });
 });

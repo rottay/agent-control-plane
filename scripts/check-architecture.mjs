@@ -11744,6 +11744,53 @@ const P15E_WRITE_SET = [
   "SECURITY.md",
 ];
 
+/**
+ * P-26, cut A: the roadmap-version law runs inside the append (ADR 0110; decisions
+ * 165-170; Fable pre-audit C1-C7, adopted; requirement A2).
+ *
+ * The initiative door calls `decideRoadmapVersion` under its own `BEGIN IMMEDIATE`
+ * and refuses by name with `LedgerRoadmapVersionRefusedError`; the gateway seam
+ * answers that refusal as `WRITE_CONFLICT`; the fold refuses a second claim on either
+ * of a version's keys, and a malformed payload, by name, shared by the live step and
+ * the rebuild, and the read model's write is a plain `INSERT`; the decision gains
+ * `VERSION_ID_REUSED`; migration 24 adds the unique index behind a preflight over the
+ * stream. L-P26A-1 keeps the door's call and the insert-only write.
+ *
+ * **Pins that move.** `MIGRATIONS` 23 -> **24**; the ledger barrel +1 (the error
+ * class, held by the README's error table in both directions); `ROADMAP_VERSION_REFUSALS`
+ * 6 -> **7**; `PATH_SCOPED_LAWS` 161 -> **162**. `CONTRACT_VERSION`,
+ * `INITIATIVE_EVENT_TYPES`, `API_CONTRACT_VERSION`, `CONTRACTS_SCHEMA_EXPORTS`,
+ * `RUNTIME_PUBLIC_EXPORTS` and `tr_` do not move. The refusal type is declared in
+ * `roadmap-version`, so `ledger/src/types` is not in the set.
+ *
+ * **Twenty paths; one is new.** Eighteen from the map, and the two integrity rewinds
+ * the DT admitted.
+ */
+const P26A_WRITE_SET = [
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/roadmap-version/index.ts",
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/errors/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/roadmap-version/index.test.ts",
+  "packages/entrypoints/gateway/src/roadmap-write/index.ts",
+  "packages/entrypoints/gateway/test/roadmap-write/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0110-the-roadmap-version-law-runs-inside-the-append.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  // The DT's widening (18 -> 20): the two integrity rewinds that re-apply every
+  // migration after 10, the known per-migration restamp class (ADR 0110).
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -11987,6 +12034,7 @@ const WRITE_SET = [
   ...P15F_WRITE_SET,
   ...P15E_WRITE_SET,
   ...P24A_WRITE_SET,
+  ...P26A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13493,6 +13541,12 @@ const PATH_SCOPED_LAWS = [
   {
     law: "a pinned schema is compared in one place, by value",
     scope: "packages/edges/tools/src/**",
+  },
+  // P-26, cut A. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 161 -> 162 for L-P26A-1.
+  {
+    law: "the roadmap-version law runs inside the append, and a version is written insert-only",
+    scope: "packages/persistence/ledger/src/ledger/index.ts",
   },
 ];
 
@@ -25817,6 +25871,69 @@ if (tracked.status === 0) {
   }
   requireScope("a pinned schema is compared in one place, by value", scanned);
   notes.push("a pinned schema is compared in one place, by value, and the port compares through it");
+}
+
+// L-P26A-1 -- the roadmap-version law runs inside the append, and a version is
+// written insert-only (P-26/A, ADR 0110; decision 170).
+//
+// Over `packages/persistence/ledger/src/ledger/index.ts`, comments stripped: the file
+// imports `decideRoadmapVersion` from `../roadmap-version/index.js`; the initiative
+// door `#appendInitiativeInTransaction` calls `#assertRoadmapVersionGranted(event)`
+// after its contiguity guard and before its `INSERT INTO initiative_events`; that
+// method's body calls `decideRoadmapVersion({`; and every statement that writes
+// `roadmap_version_read_model` (an `INSERT INTO` or `UPDATE` naming it, up to its
+// `.run(`) carries no `ON CONFLICT`, with at least one insert present. It checks the
+// sites, not the decision's behaviour: the door drills carry that.
+//
+// Stated limit: a text-level matcher. A decision reached through an alias of the
+// import, a second door method that appends a roadmap event without the call, a
+// write assembled from a table name held in a variable, or a conflict clause joined
+// in from another string is not seen; the ledger suite's insert-only row and the
+// raw-insert teeth of migration 24 are the behaviour. Only `INSERT INTO` and `UPDATE`
+// are matched: an `INSERT OR REPLACE`, `REPLACE INTO` or `INSERT OR IGNORE` on
+// `roadmap_version_read_model` is not (verifier note 1); the fold's pre-insert
+// `assertRoadmapVersionUnfolded` still guards the second claim any of them would hide.
+{
+  const DOOR_SITE = "packages/persistence/ledger/src/ledger/index.ts";
+  let scanned = 0;
+  const body = (code, head) => {
+    const start = code.indexOf(head);
+    const end = start === -1 ? -1 : code.indexOf("\n  }\n", start);
+    return start === -1 || end === -1 ? "" : code.slice(start, end);
+  };
+  const source = readIfPresent(DOOR_SITE);
+  if (source !== null) {
+    scanned += 1;
+    const code = stripComments(source);
+    if (!/import \{ decideRoadmapVersion \} from "\.\.\/roadmap-version\/index\.js";/.test(code)) {
+      fail(DOOR_SITE + " no longer imports decideRoadmapVersion from roadmap-version; the door decides with the one function (L-P26A-1)");
+    }
+    const door = body(code, "  #appendInitiativeInTransaction(");
+    const call = door.indexOf("this.#assertRoadmapVersionGranted(event)");
+    const guard = door.indexOf("LedgerLifecycleConflictError");
+    const insert = door.indexOf("INSERT INTO initiative_events");
+    if (call === -1) {
+      fail(DOOR_SITE + " #appendInitiativeInTransaction no longer calls #assertRoadmapVersionGranted; the roadmap law runs inside the append (L-P26A-1)");
+    } else if (guard === -1 || insert === -1 || !(guard < call && call < insert)) {
+      fail(DOOR_SITE + " decides a roadmap version outside its place: after the contiguity guard, before the INSERT (L-P26A-1)");
+    }
+    if (!/\bdecideRoadmapVersion\(\{/.test(body(code, "  #assertRoadmapVersionGranted("))) {
+      fail(DOOR_SITE + " #assertRoadmapVersionGranted no longer calls decideRoadmapVersion (L-P26A-1)");
+    }
+    let inserts = 0;
+    for (const match of code.matchAll(/(INSERT INTO|UPDATE) roadmap_version_read_model\b/g)) {
+      const from = match.index ?? 0;
+      const to = code.indexOf(".run(", from);
+      const statement = code.slice(from, to === -1 ? code.length : to);
+      if (match[1] === "INSERT INTO") inserts += 1;
+      if (/ON CONFLICT/.test(statement)) {
+        fail(DOOR_SITE + " writes roadmap_version_read_model with ON CONFLICT; a recorded version is insert-only (L-P26A-1)");
+      }
+    }
+    if (inserts === 0) fail(DOOR_SITE + " no longer inserts into roadmap_version_read_model where the law can see it (L-P26A-1)");
+  }
+  requireScope("the roadmap-version law runs inside the append, and a version is written insert-only", scanned);
+  notes.push("the roadmap-version law runs inside the append, and a version is written insert-only");
 }
 
 // --- 21c. V2-B5/R11: the telemetry export edge ------------------------------

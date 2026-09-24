@@ -37,6 +37,7 @@ export {
   LedgerIntegrityError,
   LedgerQueryError,
   LedgerArtifactEncryptionConflictError,
+  LedgerRoadmapVersionRefusedError,
 } from "./errors/index.js";
 
 // P8-8D-pre: the content-addressed artifact store. The Checkpoint law's twin —

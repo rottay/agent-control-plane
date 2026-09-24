@@ -3010,6 +3010,30 @@ BEGIN
 END;
 `,
   },
+  {
+    version: 24,
+    name: "roadmap_version_uniqueness",
+    sql: `
+-- An initiative holds one roadmap version per number, as a constraint and not a
+-- convention (P-26/A, ADR 0110; requirement A2; planning §2).
+--
+-- **Additive.** One unique index beside migration 4's plain one, which stays: no
+-- table is rebuilt, no column moves, no watermark is touched and no trigger is
+-- added. The identity is already the primary key.
+--
+-- **The first line is not this index.** The door refuses a non-successor inside
+-- the append's own transaction, and the fold refuses a second claim on either key
+-- by name; this index is the second line, and the only way to reach its anonymous
+-- failure is a raw write that bypassed both.
+--
+-- **The preflight runs before this text**, in the same transaction, over the
+-- stream rather than this table: two events claiming one number, or one identity,
+-- are named and refused, every pending migration rolls back, and nothing is
+-- deduplicated here.
+CREATE UNIQUE INDEX ux_roadmap_version_read_model__initiative_id__version
+  ON roadmap_version_read_model (initiative_id, version);
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -3356,6 +3380,16 @@ export const EFFECT_RESULT_REFERENCE_MIGRATION = 22;
 export const DISPATCH_CATALOG_PIN_MIGRATION = 23;
 
 /**
+ * The migration that makes a roadmap version's number unique per initiative
+ * (P-26/A, ADR 0110).
+ *
+ * Named for `ACCOUNT_INTEGRITY_MIGRATION`'s reason: the ledger hangs a preflight
+ * off this exact version, and a bare `24` there would be a number nobody could
+ * search for.
+ */
+export const ROADMAP_VERSION_UNIQUENESS_MIGRATION = 24;
+
+/**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
  * Named rather than written as a literal at the two sites that need it, because
@@ -3685,6 +3719,10 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   // admits a delivery of 2.9.0 with no pin, or a pin on one of the cohort before.
   { type: "trigger", name: "tr_dispatch_attempt_read_model__validate_pin_on_insert" },
   { type: "trigger", name: "tr_dispatch_attempt_read_model__validate_pin_on_update" },
+  // P-26/A. One index and nothing else. Inventoried for the reason every unique
+  // index here is: dropping it leaves `schema_migrations` intact while the read
+  // model quietly admits two versions with one number.
+  { type: "index", name: "ux_roadmap_version_read_model__initiative_id__version" },
 ];
 
 export interface MigrationConformance {

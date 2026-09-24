@@ -1,6 +1,12 @@
 import { LEDGER_CONTRACT_VERSION } from "@acp/protocol";
 import type { RoadmapVersionWriteRequest } from "@acp/protocol";
-import { LedgerError, artifactRootFor, openLedger, publishArtifact } from "@acp/ledger";
+import {
+  LedgerError,
+  LedgerRoadmapVersionRefusedError,
+  artifactRootFor,
+  openLedger,
+  publishArtifact,
+} from "@acp/ledger";
 import type { Ledger, RoadmapVersionReadModel } from "@acp/ledger";
 import { ROADMAP_VERSION_REFUSALS, decideRoadmapVersion } from "@acp/ledger";
 import type { RoadmapVersionRefusal } from "@acp/ledger";
@@ -11,9 +17,11 @@ import type { RoadmapVersionRefusal } from "@acp/ledger";
  * This module gathers what the decision needs, hands it over, and appends
  * exactly what a grant produced. It **decides nothing**: every law about when a
  * version may be recorded already lives in `decideRoadmapVersion`, which owns
- * the six-name refusal vocabulary and reasons over a folded head it is handed
+ * the seven-name refusal vocabulary and reasons over a folded head it is handed
  * rather than a ledger it reads. Re-checking any of that here would be a second
- * opinion about the same question, and two opinions drift.
+ * opinion about the same question, and two opinions drift. This module's call is
+ * the fast path; the law is the ledger door's call of the same function, inside
+ * the append (P-26/A, ADR 0110).
  *
  * **The write capability is scoped to this module, and is short-lived.** The
  * server's long-lived handle is opened `{ readOnly: true }` at exactly one call
@@ -198,6 +206,19 @@ export function recordRoadmapVersion(input: RoadmapWriteInput): RoadmapWriteOutc
       // Narrow by name: anything else is re-thrown untouched and still
       // classifies as `INTERNAL`.
       if (error instanceof LedgerError && RACE_LOST_CODES.includes(error.code)) {
+        return Object.freeze({
+          ok: false as const,
+          reason: "WRITE_CONFLICT" as const,
+          at: "roadmapVersion",
+        });
+      }
+      // The door refused a version this seam's decision granted (P-26/A). The
+      // two ran the same function over the same fold, so by construction the
+      // fold moved between this seam's read and its append — another producer
+      // got there first under another key. That is a lost race, answered like
+      // the two above; the door's word stays inside the plane, and no new word
+      // reaches a caller.
+      if (error instanceof LedgerRoadmapVersionRefusedError) {
         return Object.freeze({
           ok: false as const,
           reason: "WRITE_CONFLICT" as const,

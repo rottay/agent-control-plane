@@ -91,8 +91,42 @@ describe("the refusal vocabulary", () => {
       "REQUEST_INVALID",
       "RESTORES_UNKNOWN_VERSION",
       "ROLLBACK_DIGEST_MISMATCH",
+      "VERSION_ID_REUSED",
       "VERSION_NOT_MONOTONIC",
     ]);
+  });
+});
+
+describe("a version's identity names one version for ever (P-26/A)", () => {
+  it("VERSION_ID_REUSED: a lawful successor borrowing an identity the fold holds", () => {
+    const outcome = decideRoadmapVersion({
+      candidate: successor({ roadmapVersionId: V1 }),
+      head: folded(),
+      knownVersions: [folded()],
+    });
+    expect(outcome).toEqual({ ok: false, reason: "VERSION_ID_REUSED", at: "candidate.roadmapVersionId" });
+  });
+
+  it("is judged after the three claims about the head, so a replayed version is the non-successor it is", () => {
+    // Version 1's own value again, under the same identity: the coarser claim
+    // wins, as the cascade orders every other pair.
+    const replayed = decideRoadmapVersion({ candidate: candidate(), head: folded(), knownVersions: [folded()] });
+    expect(replayed).toEqual({ ok: false, reason: "VERSION_NOT_MONOTONIC", at: "candidate.version" });
+    const stale = decideRoadmapVersion({
+      candidate: successor({ roadmapVersionId: V1, expectedHeadDigest: DIGEST_THREE }),
+      head: folded(),
+      knownVersions: [folded()],
+    });
+    expect(!stale.ok && stale.reason).toBe("HEAD_MISMATCH");
+  });
+
+  it("is judged before a rollback's claims", () => {
+    const outcome = decideRoadmapVersion({
+      candidate: successor({ roadmapVersionId: V1, kind: "ROLLBACK", restoresVersionId: V3 }),
+      head: folded(),
+      knownVersions: [folded()],
+    });
+    expect(!outcome.ok && outcome.reason).toBe("VERSION_ID_REUSED");
   });
 });
 
@@ -319,8 +353,8 @@ describe("the decision reads nothing and mints nothing", () => {
  *
  * **The oracle models the cascade AS CODED (C2a), every stage:** schema-invalid
  * → `head.initiativeId` mismatch → `knownVersions` initiative mismatch (all
- * three `REQUEST_INVALID`) → monotonicity → parent → head digest →
- * restores-unknown → rollback digest. An oracle that elided the early stages
+ * three `REQUEST_INVALID`) → monotonicity → parent → head digest → identity
+ * reuse → restores-unknown → rollback digest. An oracle that elided the early stages
  * would agree with a wrong implementation on every request that violates a late
  * rule and an early one together, which is most of them.
  */
@@ -344,6 +378,7 @@ describe("the roadmap-version decision is total and ordered (G9)", () => {
       ["monotonic", "VERSION_NOT_MONOTONIC", "candidate.version"],
       ["parent", "PARENT_MISMATCH", "candidate.parentVersionId"],
       ["headDigest", "HEAD_MISMATCH", "candidate.expectedHeadDigest"],
+      ["idReused", "VERSION_ID_REUSED", "candidate.roadmapVersionId"],
       ["restoresUnknown", "RESTORES_UNKNOWN_VERSION", "candidate.restoresVersionId"],
       ["rollbackDigest", "ROLLBACK_DIGEST_MISMATCH", "candidate.contentDigest"],
     ];
@@ -384,6 +419,11 @@ describe("the roadmap-version decision is total and ordered (G9)", () => {
     if (add("monotonic")) candidateValue = { ...candidateValue, version: intBetween(random, 3, 9) };
     if (add("parent")) candidateValue = { ...candidateValue, parentVersionId: V3 };
     if (add("headDigest")) candidateValue = { ...candidateValue, expectedHeadDigest: DIGEST_THREE };
+    // Drawn on an EDIT only, so a rollback case draws exactly the sequence it drew
+    // before this stage existed and the two rollback stages stay reachable on the
+    // fixed seeds; identity reuse against a rollback's claims is a named example
+    // above.
+    if (!rollback && add("idReused")) candidateValue = { ...candidateValue, roadmapVersionId: V1 };
     if (rollback && add("restoresUnknown")) {
       candidateValue = { ...candidateValue, restoresVersionId: V3 };
     }
@@ -397,7 +437,7 @@ describe("the roadmap-version decision is total and ordered (G9)", () => {
     };
   }
 
-  it("never throws and always returns one of the seven outcomes", () => {
+  it("never throws and always returns one of the eight outcomes", () => {
     forAll("totality", 0x9d0c_0001, ITERATIONS, generate, ({ request }) => {
       const outcome = decideRoadmapVersion(request);
       if (outcome.ok) {
@@ -454,7 +494,7 @@ describe("the roadmap-version decision is total and ordered (G9)", () => {
       const outcome = decideRoadmapVersion(generate(makeRandom(0x9d0c_0002 + i)).request);
       reached.add(outcome.ok ? "GRANT" : outcome.reason);
     }
-    // All six refusals plus the grant.
+    // All seven refusals plus the grant.
     expect([...reached].sort()).toEqual([...ROADMAP_VERSION_REFUSALS, "GRANT"].sort());
   });
 });

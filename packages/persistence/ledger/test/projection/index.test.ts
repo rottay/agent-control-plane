@@ -15,6 +15,8 @@ import {
 import type { ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
+import { LedgerRoadmapVersionRefusedError } from "../../src/errors/index.js";
+
 import {
   applyArtifactEventToSnapshot,
   artifactBlobKey,
@@ -51,6 +53,10 @@ import {
   nextExecutionRouteProjection,
   initiativeRegistrationPayloadOf,
   nextInitiativeProjection,
+  applyInitiativeEventToSnapshot,
+  assertRoadmapVersionUnfolded,
+  createInitiativeProjectionSnapshot,
+  nextRoadmapVersionProjection,
   nextRoutingAssignmentFromInitiative,
   nextRoutingAssignmentProjection,
   GLOBAL_ASSIGNMENT_REFUSALS,
@@ -4204,5 +4210,140 @@ describe("the dispatch pin reads three ways, by cohort, and the fold refuses wha
     if (one === null || again === null || other === null) throw new Error("expected three rows");
     expect(canonicalDispatchBirth(one)).toBe(canonicalDispatchBirth(again));
     expect(canonicalDispatchBirth(one)).not.toBe(canonicalDispatchBirth(other));
+  });
+});
+
+/**
+ * The roadmap-version fold refuses by name, on both keys, for the rebuild and the
+ * live step alike (P-26/A, ADR 0110; Fable C2).
+ *
+ * Pure: the snapshot is the rebuild's, folded here event by event. `test/ledger`
+ * plants the same histories in a real stream and rebuilds them.
+ */
+describe("the roadmap-version fold refuses a second claim and a malformed payload by name (P-26/A)", () => {
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+  const OTHER = "55555555-5555-4555-8555-555555555555";
+  const V1 = "66666666-6666-4666-8666-666666666601";
+  const V2 = "66666666-6666-4666-8666-666666666602";
+
+  function version(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      roadmapVersionId: V1,
+      initiativeId: INITIATIVE,
+      version: 1,
+      contentDigest: "a".repeat(64),
+      parentVersionId: null,
+      expectedHeadDigest: null,
+      kind: "EDIT",
+      restoresVersionId: null,
+      recordedBy: "kimi/k3/coordinator/01",
+      recordedAt: "2026-09-24T12:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  function recorded(transitionId: string, payload: Record<string, unknown>, initiativeId = INITIATIVE): InitiativeEvent {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: "77777777-7777-4777-8777-7777777777" + String(transitionId.length).padStart(2, "0"),
+      initiativeId,
+      transitionId,
+      idempotencyKey: initiativeId + "/1/" + transitionId,
+      type: "ROADMAP_VERSION_RECORDED",
+      fromStatus: "ACTIVE",
+      toStatus: "ACTIVE",
+      emittedBy: "kimi/k3/coordinator/01",
+      occurredAt: "2026-09-24T12:00:00.000Z",
+      recordedAt: "2026-09-24T12:00:00.000Z",
+      payload,
+    } as InitiativeEvent;
+  }
+
+  const SUCCESSOR = { roadmapVersionId: V2, version: 2, contentDigest: "b".repeat(64), parentVersionId: V1, expectedHeadDigest: "a".repeat(64) };
+
+  function refusal(action: () => unknown): { readonly reason: string; readonly at: string } {
+    try {
+      action();
+    } catch (error: unknown) {
+      if (error instanceof LedgerRoadmapVersionRefusedError) return { reason: error.reason, at: error.at };
+      throw error;
+    }
+    throw new Error("expected a named refusal");
+  }
+
+  it("refuses a payload that does not parse, and one naming another initiative, where it used to project nothing", () => {
+    expect(refusal(() => nextRoadmapVersionProjection(recorded("roadmap.bad", { note: "no version" }), 2)).reason).toBe("REQUEST_INVALID");
+    expect(refusal(() => nextRoadmapVersionProjection(recorded("roadmap.v1", version({ kind: "REWRITE" })), 2))).toEqual({
+      reason: "REQUEST_INVALID",
+      at: "candidate.kind",
+    });
+    expect(refusal(() => nextRoadmapVersionProjection(recorded("roadmap.v1", version({ initiativeId: OTHER })), 2))).toEqual({
+      reason: "REQUEST_INVALID",
+      at: "candidate.initiativeId",
+    });
+    // Any other type is still no row, never a refusal.
+    expect(nextRoadmapVersionProjection({ ...recorded("x", {}), type: "INITIATIVE_STATE_CHANGED" } as InitiativeEvent, 2)).toBeNull();
+  });
+
+  it("refuses a second claim on an identity, and a second claim on a number, in the rebuild's snapshot", () => {
+    const byId = createInitiativeProjectionSnapshot();
+    applyInitiativeEventToSnapshot(byId, recorded("roadmap.v1", version()), 2);
+    const firstRow = byId.roadmapVersions.get(V1);
+    expect(refusal(() => {
+      applyInitiativeEventToSnapshot(byId, recorded("roadmap.v2", version({ ...SUCCESSOR, roadmapVersionId: V1 })), 3);
+    })).toEqual({
+      reason: "VERSION_ID_REUSED",
+      at: "candidate.roadmapVersionId",
+    });
+    // The first row is never overwritten: the map a rebuild writes from still holds it.
+    expect(byId.roadmapVersions.get(V1)).toEqual(firstRow);
+    expect(byId.roadmapVersions.size).toBe(1);
+
+    const byNumber = createInitiativeProjectionSnapshot();
+    applyInitiativeEventToSnapshot(byNumber, recorded("roadmap.v1", version()), 2);
+    expect(refusal(() => {
+      applyInitiativeEventToSnapshot(byNumber, recorded("roadmap.v1b", version({ roadmapVersionId: V2 })), 3);
+    })).toEqual({
+      reason: "VERSION_NOT_MONOTONIC",
+      at: "candidate.version",
+    });
+    expect(byNumber.roadmapVersions.size).toBe(1);
+  });
+
+  it("folds a clean history to the same rows twice, and one number in each of two initiatives is not a duplicate", () => {
+    const fold = (): readonly unknown[] => {
+      const snapshot = createInitiativeProjectionSnapshot();
+      applyInitiativeEventToSnapshot(snapshot, recorded("roadmap.v1", version()), 2);
+      applyInitiativeEventToSnapshot(snapshot, recorded("roadmap.v2", version(SUCCESSOR)), 3);
+      applyInitiativeEventToSnapshot(
+        snapshot,
+        recorded("roadmap.v1", version({ roadmapVersionId: "66666666-6666-4666-8666-666666666603", initiativeId: OTHER }), OTHER),
+        4,
+      );
+      return [...snapshot.roadmapVersions.values()];
+    };
+    const once = fold();
+    expect(once).toHaveLength(3);
+    expect(fold()).toEqual(once);
+  });
+
+  it("asks both keys of whatever holds the fold, identity first", () => {
+    const row = nextRoadmapVersionProjection(recorded("roadmap.v1", version()), 2);
+    if (row === null) throw new Error("expected a row");
+    const asked: string[] = [];
+    const holder = (id: boolean, number: boolean) => ({
+      hasVersionId: (value: string) => (asked.push("id:" + value), id),
+      hasVersionNumber: (initiativeId: string, value: number) => (asked.push("number:" + initiativeId + ":" + String(value)), number),
+    });
+    expect(refusal(() => {
+      assertRoadmapVersionUnfolded(row, holder(true, true));
+    }).reason).toBe("VERSION_ID_REUSED");
+    expect(refusal(() => {
+      assertRoadmapVersionUnfolded(row, holder(false, true));
+    }).reason).toBe("VERSION_NOT_MONOTONIC");
+    asked.length = 0;
+    assertRoadmapVersionUnfolded(row, holder(false, false));
+    expect(asked).toEqual(["id:" + V1, "number:" + INITIATIVE + ":1"]);
   });
 });

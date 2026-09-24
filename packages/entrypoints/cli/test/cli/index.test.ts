@@ -1311,6 +1311,8 @@ describe("integrity", () => {
         "DROP INDEX ux_account_events__account_id__version;" +
         "DROP TABLE account_event_integrity;",
     );
+    // P-26/A: migration 24's unique index goes too, or the re-applied 24 aborts on it.
+    rewind.exec("DROP INDEX ux_roadmap_version_read_model__initiative_id__version;");
     rewind.exec(
       "DROP TRIGGER tr_control_plane_events__validate_v2_coordinate;" +
         "DROP INDEX ux_response_occurrence_read_model__prompt;" +
@@ -1371,7 +1373,13 @@ describe("integrity", () => {
     ).toHaveLength(1);
     expect(
       (reapplied.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v,
-    ).toBe(23);
+    ).toBe(24);
+    // P-26/A: and it re-applied 24 without aborting — the unique index is back.
+    expect(
+      reapplied
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+        .all("ux_roadmap_version_read_model__initiative_id__version"),
+    ).toHaveLength(1);
     // P-15 escalón C: and it re-applied 23 over the delivery table 13 recreated,
     // without aborting — the three pin columns and both triggers are back.
     expect(

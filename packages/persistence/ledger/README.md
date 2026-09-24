@@ -45,7 +45,7 @@ ledger.close();
 | `getWorker(identity)` / `listWorkers(query?)` | Derived worker read model, ordered by identity. |
 | `getExecutionRoute(taskId, attempt)` / `listExecutionRoutes(taskId)` | The route an attempt was admitted on, keyed by the pair. Null, or empty, when nothing recorded one. |
 | `getOutboxCommand(commandId)` / `listOutboxCommands()` | An outbox command folded from its own events, or every one in intention order: what a lost outbox cache is rebuilt to. No table holds it. |
-| `appendInitiativeEvent(event, causation?)` | The same pipeline on the initiative stream: validate, canonicalize, append. |
+| `appendInitiativeEvent(event, causation?)` | The same pipeline on the initiative stream: validate, canonicalize, append. A `ROADMAP_VERSION_RECORDED` that is not an exact replay is judged by `decideRoadmapVersion` inside the append's transaction and refused as `LedgerRoadmapVersionRefusedError` (P-26/A). |
 | `appendRegistryEvent(document, causation?)` | The same pipeline on the registry stream: one version of one configuration document, on its own chain. A unit door; there is no registry batch. In `src/`, only `publishRegistryDocument` calls it (L-P15R-1). |
 | `getRegistryDocumentVersion(documentId, documentVersion)` | One recorded version of one configuration document by coordinate, whatever key wrote it, or null. What the publication decides a replay or a conflict against. |
 | `appendArtifactEvent(event, causation?)` | The registry stream's second door: one artifact event, `subject_kind = 'ARTIFACT'`, parsed by `@acp/contracts`' `ArtifactRegistryEvent` and folded into the four artifact read models in the same transaction. Facts of the bytes, never the bytes, and no file is touched. |
@@ -58,7 +58,7 @@ ledger.close();
 | `getInitiative(id)` | Derived initiative read model, or null. |
 | `listRoadmapVersions(id)` | An initiative's recorded roadmap versions, in version order. |
 | `listInitiativeEvents(query?)` | Sequence-ordered page of the initiative stream. |
-| `decideRoadmapVersion(request)` | Pure. The caller supplies the folded head; nothing here reads a ledger. |
+| `decideRoadmapVersion(request)` | Pure. The caller supplies the folded head; nothing here reads a ledger. Two callers: the initiative door, which is the law, and the gateway seam, which is the fast path. Seven words, `ROADMAP_VERSION_REFUSALS`. |
 | `decideInitiativeRegistration(request)` | Pure. Parses a candidate through `Initiative`, guards included, and compares it with the registration the stream holds under the same id: grant, replay or `CONFLICT`. |
 | `registerInitiative(input)` | The one registration both doors call: decide, publish the objective to the private plane, append one `INITIATIVE_REGISTERED` whose closed payload carries the objective's digest and reference. Handles, instants, the pid and identifiers are injected; it opens nothing and reads no clock. |
 | `publishRegistryDocument(input)` | The one publication of a `MODEL_VERSION`, a `ROUTING_ASSIGNMENT_GLOBAL` or a `PRICE_TABLE` (P-15/R, ADR 0104): derives the digest, the key and a version 5 event id, answers an exact retry as a replay, refuses a version recorded otherwise, and carries the door's refusals by field and word. `acp registry` calls it. |
@@ -151,9 +151,9 @@ way to notice.
 Every error is typed and carries a `code`. None of them embeds event content,
 so all of them are safe to log or attach to a checkpoint.
 
-Fourteen classes are exported, and this is the complete list — the
+Fifteen classes are exported, and this is the complete list — the
 architecture fence asserts it against the barrel in both directions, so a
-fifteenth class cannot arrive without appearing here.
+sixteenth class cannot arrive without appearing here.
 
 | Class | Raised when |
 | --- | --- |
@@ -171,6 +171,7 @@ fifteenth class cannot arrive without appearing here.
 | `LedgerIntegrityError` | an integrity check finds the stored state inconsistent |
 | `LedgerQueryError` | a query is malformed — a bad cursor, an out-of-range limit |
 | `LedgerArtifactEncryptionConflictError` | a publication would reuse a blob generation under another encryption status, key reference or profile; a deduplication never changes a blob's encryption |
+| `LedgerRoadmapVersionRefusedError` | the initiative door refuses a roadmap version by the decision's word, or the fold meets a second claim on a version's identity or number; carries `reason` and `at`, never the roadmap |
 
 ## Tables
 
@@ -1556,6 +1557,48 @@ exactly.
 No recorder or producer, and no read verb or route (C and later). No FINAL and no
 zero by default. `TOKEN_USAGE_RECORDED`, the rollups and quota are untouched. No
 price, cost or valuation (P-33).
+
+## A roadmap version is decided at the door, and unique by number
+
+P-26/A (ADR 0110; requirement A2): revisions are immutable, carry author, digest
+and OCC, and `(initiative_id, version)` uniqueness is a constraint, not a convention.
+
+### The door decides
+
+Optimistic concurrency on an initiative's roadmap is the door's, not the caller's.
+`appendInitiativeEvent` runs `decideRoadmapVersion` under the append's own
+`BEGIN IMMEDIATE`, after the exact replay, the identity check and the contiguity
+guard and before causation, head and `INSERT`, over `listRoadmapVersions`' fold,
+which that transaction keeps level with the stream. An exact replay returns the
+stored record and is never re-judged, even after the head moved; the same key with
+other content is `LedgerIdempotencyConflictError` before any decision; a new event
+whose version is not the head's successor, or whose claims about the head are
+false, is `LedgerRoadmapVersionRefusedError` with the decision's word. A payload
+naming another initiative is refused even on a first version. The seventh word,
+`VERSION_ID_REUSED`, refuses an identity the fold already holds.
+
+### Insert-only, on both keys
+
+A recorded version is immutable: the read model's write is a plain `INSERT`, and
+the fold shared by the live step and the rebuild refuses a second claim on a
+`roadmapVersionId` (`VERSION_ID_REUSED`) or on an `(initiativeId, version)`
+(`VERSION_NOT_MONOTONIC`) by name, before the primary key or the unique index could
+refuse it anonymously. A payload that is not a `RoadmapVersion`, or names another
+initiative, is refused too, where it used to project nothing. A ledger whose stream
+already holds such an event no longer rebuilds; `verifyIntegrity()` reports it as a
+`PROJECTION` problem at its sequence rather than throwing.
+
+### Migration 24, and what its failure does
+
+Migration 24 adds `ux_roadmap_version_read_model__initiative_id__version`, a unique
+index beside migration 4's plain one, and nothing else. Its preflight counts the
+**stream**, not the read model, for both families — two events with one
+`(initiativeId, version)`, two with one `roadmapVersionId` — and names up to twenty
+of each, as UUIDs and integers, inside `LedgerMigrationError`. A refusal rolls back
+every pending migration: the ledger stays at 23 and does not open under this build,
+while the previous build still opens it. Nothing is deduplicated, renumbered or
+deleted; what to do with such a ledger is the owner's decision (an exception entry,
+or a quarantined ledger).
 
 ## Integrity
 
