@@ -112,6 +112,31 @@ La planificación de olas y conflictos vive en [paralelización](../../roadmap/p
 | P-34 | Presupuesto efectivo y anomalías de consumo | `DESIGN_READY` | contratos §5 y §7; [interacción §5](../../architecture/contracts/interaction/index.md); execution §11 | admisión/enforcement: P-19, P-22, P-23/garantías, P-32/captura, P-33/catalogo; cierre completo: P-33, P-30 | operativa: rutas y perfil de detección/acción explícito |
 | P-35 | Evaluaciones, duelos, desempeño y política de routing | `DESIGN_READY` | integraciones fila 15; [interacción §4](../../architecture/contracts/interaction/index.md); planning §9.3; economy §7 | P-33, P-16, P-28; runner/juez con gasto: P-34; cierre M11: P-29, P-31 | operativa: rutas; autorización de gasto para evaluar |
 
+#### Extensión de P-35: decisiones delegadas
+
+Incorporada por orden expresa del owner, separada del alcance original de la fila
+anterior. **PLANIFICADA, no DESIGN_READY ni SCOPE_FROZEN.** Jev + Laya son los dos
+adapters IA requeridos para esta entrega; reglas o mocks no sustituyen al segundo.
+Al llegar a P-35, el DT debe incorporar esta extensión al brief y al perfil, no
+tratarla como una sugerencia externa ni omitirla silenciosamente. El
+[roadmap §2.1](../../roadmap/index.md#21-decisiones-delegadas) posee el alcance y
+su medición separada; [integraciones §8](../../architecture/integrations/index.md#8-decisiones-delegadas)
+posee arquitectura y aceptación; [paralelismo §1.5](../../roadmap/parallelism/index.md#15-decisiones-delegadas)
+posee su concurrencia. No agrega IDs de cierre a los 39 originales.
+
+| Corte de la extensión | Dependencias y condición de salida |
+| --- | --- |
+| Diseño y oráculos | Preparación RO adelantable. Antes de declarar DESIGN_READY: contrato, diccionario/migración y folds, métricas/umbrales previos al benchmark, versiones/perfiles, negativos y boundaries de autoridad adjudicados. Paths y permisos se congelan al abrir. |
+| Camino neutral con consumidor | Diseño aceptado; capacidades de planning P-28/P-29 que use el caller, elegibilidad P-19, recuperación P-18 y composición P-23. Asignación explícita/reglas y recomendaciones usan el mismo contrato; sin puerto huérfano ni efectos antes de su habilitación. |
+| Adapters Jev + Laya | Camino neutral aceptado; descriptor, normalización y tests espejo por adapter. Integración serial; las dos implementaciones reales y sus límites deben quedar probados. |
+| Evaluación y observación | Dependencias originales de P-35 intactas; P-32/P-33 para uso/precios, P-34 antes de gasto y P-29/P-31 para cierre M11. Corpus/oráculo independiente, conformidad compartida y calidad por perfil. Shadow también requiere consumo admitido. |
+| Delegación automática acotada | Cortes previos aceptados; P-19, P-18/recuperación, P-23, P-29 y P-34 conformes. Aplicación con revalidación/OCC, replay, fallback y rollback probados; promoción explícita de política sin autorizar P9. |
+
+P-15, los cierres anteriores y el funcionamiento base no dependen de Jev/Laya.
+Si la evaluación de Laya falla, no se certifica sustitución: se eleva una opción
+de reemplazo al owner. Una limitación declarada no convierte un requisito de este
+perfil en aprobado ni autoriza cerrar la extensión con un solo adapter.
+
 ### 1.7 M12–M14 — portabilidad, distribución y certificación
 
 | ID | Packet | Diseño | Contratos y schemas | Depende de | Falta congelar |

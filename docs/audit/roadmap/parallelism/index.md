@@ -155,6 +155,27 @@ razón registrada: bloqueo externo, requisito compartido que desbloquea varios
 consumidores, o eliminación comprobable de retrabajo. No se agregan nuevos
 entregables para justificar más agentes, ni se promete una fecha sólo por abrirlos.
 
+### 1.5 Decisiones delegadas
+
+La extensión Jev + Laya de [roadmap §2.1](../index.md#21-decisiones-delegadas)
+conserva el writer único y las dependencias del
+[inventario](../../implementation/packets/index.md). No se adelanta a la primera
+tarea útil ni convierte preparación documental en implementación aceptada.
+
+| Instancia | Paralelo permitido | Integración / condición de salida |
+| --- | --- | --- |
+| Cuentas y planificación aún en desarrollo | Preparación RO del contrato y oráculos junto a P-19 o P-26/P-28, sólo con referencias fijadas y sin restar recursos al camino crítico | Un mapa de Jev y otro de Laya pueden contrastar límites, privacidad y conformidad; no llaman APIs ni descargan pesos por esta orden. |
+| Contrato del decisor congelado | Un apoyo prepara normalización/negativos de Jev y otro los de Laya; revisión independiente del contrato compartido | El único writer integra el camino neutral y después cada adapter. Ninguno modifica contratos, migraciones, registry o lockfile por su cuenta. |
+| Observabilidad P-30/P-31 | Preparar la proyección de eventos neutrales sobre el contrato estable | No crear dependencias inversas: telemetría y cuentas cierran su scope original sin esperar Jev/Laya. La extensión consume sus capacidades reales al cerrar. |
+| Verificación y evaluación | Revisiones RO de privacidad, semántica y arquitectura sobre el mismo snapshot; diseño del siguiente caso independiente | Una batería pesada o benchmark local pesado por vez. No sumar un modelo residente que compita con builds/drills; cada ejecución real tiene recursos y consumo autorizados. |
+| Promoción de recomendación a automático | Preparar casos de revocación, carreras, replay, fallback y rollback mientras se verifica el corte anterior | No habilitar hasta cerrar dependencias, conformidad de ambos adapters y calidad del perfil; ninguna votación entre agentes sustituye un gate. |
+
+Sin contrato estable, dos implementaciones en paralelo producirían supuestos
+incompatibles: primero se congela la interfaz y el oráculo común. La operatoria
+vigente no permite writers simultáneos aun con archivos disjuntos; la aceleración
+proviene de preparación y revisión, no de ramas nuevas ni aceptación parcial.
+La ampliación se registra separada del baseline de 39 IDs, como manda el roadmap.
+
 ## 2. Grafo de conflictos al congelar el scope
 
 El brief fija R(p) (entradas/autoridad), W(p) (escrituras canónicas), O(p)

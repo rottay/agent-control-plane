@@ -103,6 +103,55 @@ habilita M7 sólo por componer un cliente: necesita recuperación, control del r
 conformidad del perfil. Su diseño H-5 conserva el estado que declara el inventario.
 M13 sigue siendo incremental, sin gran renombrado previo a la primera tarea útil.
 
+### 2.1 Decisiones delegadas
+
+**Incorporación expresa del owner: Jev + Laya, no Jev solo.** ACP planifica y
+ejecuta features mediante workflows persistentes; delegar una decisión es una
+capacidad propia, no una dependencia de una marca. El usuario puede asignar roles
+y modelos explícitamente, aplicar reglas, pedir una recomendación o delegar una
+selección automática dentro de límites. Cambiar el decisor no cambia el plan,
+las tareas, su evidencia ni la autoridad del control plane.
+
+Se incorpora como **extensión de evaluaciones y routing P-35/M11**, con consumidor
+en planificación y coordinación. Es opcional para la operación del producto,
+pero la entrega seleccionada incluye **dos adapters IA reales: Jev y Laya**.
+Reglas y mocks son útiles para desarrollo y fallback, no satisfacen la segunda
+implementación. Una compatibilidad de API no demuestra equivalencia de calidad.
+
+Primer caso completo: elegir quién implementa, verifica o audita un paso entre
+candidatos ya admitidos por rol, capacidad, cuenta, cuota y presupuesto. El
+decisor evalúa opciones; ACP conserva autorización, reservas, despacho, calidad,
+recuperación y evidencia. No es un planificador universal, un segundo scheduler
+ni un sustituto del motor durable. Clasificar fallos o sugerir otras transiciones
+requiere operaciones y pruebas propias; no queda habilitado implícitamente.
+
+**No se intercala en P-15 ni bloquea la primera tarea útil.** Sus cortes y
+dependencias de desarrollo/habilitación tienen dueño en
+[packets](../implementation/packets/index.md). Su contrato, arquitectura, datos,
+proveedores y aceptación tienen dueño en
+[integraciones §8](../architecture/integrations/index.md#8-decisiones-delegadas).
+La [agenda de paralelismo](parallelism/index.md#15-decisiones-delegadas) permite
+preparación RO adelantada, no otro writer ni pruebas pesadas simultáneas.
+
+Orden de entrega: contrato y oráculos → camino neutral con consumidor → adapters
+Jev y Laya → conformidad y evaluación → observación/recomendación → delegación
+automática acotada. Ninguna etapa hereda aceptación de la siguiente. Los dos
+adapters deben superar el mismo perfil contractual y de calidad antes de anunciar
+sustitución. Si Laya no alcanza ese perfil, la extensión no cierra: se presenta
+una alternativa al owner, sin omitir la segunda implementación silenciosamente.
+
+Esta ampliación queda **planificada, no implementada ni DESIGN_READY**. No cambia
+el alcance ni los cierres anteriores de los 39 packets. Al abrirla, el DT fija su
+perfil y avance separado del baseline original; no se absorbe trabajo nuevo
+silenciosamente en el porcentaje anterior. P-35 conserva el readiness de su
+alcance original, no lo extiende automáticamente a este agregado. La certificación
+del perfil que anuncie esta capacidad exige su cierre completo; el producto base
+sigue funcionando sin activarla.
+
+La orden actual incorpora documentación. No autoriza instalaciones, descarga de
+pesos, gasto de API/suscripción, nuevas cuentas, UI, publicación ni P9. Los smokes
+reales conservan la autorización de perfil y límites exigida por el repositorio.
+
 ---
 
 ## 3. Gates

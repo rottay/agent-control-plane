@@ -80,6 +80,10 @@ integración: son puertas y su regla vive en
 autorización y la misma respuesta por cada puerta; la lectura desacoplada del
 renderizado.
 
+La extensión de las familias **13 (routing) y 15 (evaluación)** para decisiones
+delegadas se define en [§8](#8-decisiones-delegadas). No crea otra familia ni otro
+registry, y no altera la columna histórica «hoy» de esta tabla.
+
 ---
 
 ## 4. Descriptor de adapter
@@ -166,3 +170,158 @@ implementarse.
 - [MCP lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle) y [MCP tools](https://modelcontextprotocol.io/specification/2025-06-18/server/tools) — negociación de capacidades y errores de herramienta.
 - [OTLP](https://opentelemetry.io/docs/specs/otlp/) — protocolo neutral, respuestas parciales y límites.
 - [A2A specification](https://a2a-protocol.org/latest/specification/) — candidato de comunicación entre agentes externos; no integrado por este plan.
+
+---
+
+## 8. Decisiones delegadas
+
+Alcance seleccionado para planificación por el owner: **Jev + Laya** detrás de un
+contrato propio. El [roadmap §2.1](../../roadmap/index.md#21-decisiones-delegadas)
+posee su ubicación; [packets](../../implementation/packets/index.md), dependencias
+y readiness; [paralelismo](../../roadmap/parallelism/index.md#15-decisiones-delegadas),
+la agenda de trabajo. Esta sección posee el diseño de la capacidad, no su permiso
+de ejecución ni una afirmación de soporte actual.
+
+### 8.1 Capacidad antes que proveedor
+
+Primer caso: **seleccionar un candidato elegible para una responsabilidad de un
+paso**. La configuración admite asignación explícita, reglas deterministas,
+recomendación con aceptación y delegación automática acotada. Usa la precedencia
+STEP → INITIATIVE → GLOBAL de la política existente, no otra jerarquía.
+
+La plataforma construye el conjunto admisible y aplica el resultado. El modelo
+no inventa cuota, permisos o capacidades; no omite verificadores, no aprueba un
+commit, no cambia criterios de aceptación y no modifica un roadmap por resolver
+una elección. Planificar una feature compleja y evaluar una decisión acotada son
+operaciones distintas. Puntuar otras propiedades o decidir nuevas transiciones
+queda fuera del primer perfil hasta especificar y probar sus contratos.
+
+### 8.2 Dueños, estructura y contrato
+
+- `planning` posee recomendación/delegación y su aplicación al plan. Consume un
+  puerto neutral de evaluación: nombre semántico propuesto
+  `DecisionEvaluationPort`, reutilizando o evolucionando un puerto existente
+  antes de crear otro. El primer corte incluye un consumidor real.
+- `accounts` conserva registry, elegibilidad, cuotas y reservas. `runtime`
+  conserva efectos, permisos, límites, ejecución y recuperación. Sus capacidades
+  se componen por puertos, sin imports dominio→dominio de conveniencia.
+- `economy` registra uso/costo y `observation` proyecta hechos. No se crea otro
+  ledger, catálogo de modelos, sistema de precios o fuente de facturación.
+- `edges` implementa Jev y Laya: SDK, formato privado, errores y transporte. La
+  raíz de composición inyecta el adapter. Ningún tipo o constante de vendor sale
+  hacia `kernel` o `domains`; tampoco un `if` de marca repartido entre consumidores.
+
+Folder/index, declaraciones de tipos/interfaces/enums en hojas del contexto y
+tests espejo bajo `test/`. Compartir contratos y vocabularios, no clonar helpers
+para permitir trabajo paralelo. Los paths exactos se fijan contra el HEAD de
+apertura; no crear ahora paquetes vacíos ni una bolsa global de tipos.
+
+El contrato inicial expresa **selección**, no las primitivas de una marca:
+
+| Parte | Contenido semántico a congelar antes de implementar |
+| --- | --- |
+| Solicitud | Identidad lógica, iniciativa/tarea/paso y revisión; rol; candidatos por ID y atributos permitidos; criterio y contexto mínimo por referencias/digests; versiones de registry, política y perfil; watermarks relevantes; deadline, límites y modo de delegación. |
+| Respuesta | Selección o abstención; identidad efectiva/versionada de adapter y modelo; evidencia y uso disponibles. No exige explicación textual ni razonamiento privado a un modelo que no los produce. |
+| Rechazos | No disponibilidad, capacidad incompatible, respuesta inválida, vencimiento y límites alcanzados; formas tipadas exhaustivas, no éxito vacío ni fallback silencioso. |
+| Confianza | Opcional, con procedencia/calibración y perfil. No es un porcentaje universal de exactitud ni una escala comparable entre proveedores por defecto. |
+
+Los IDs de proveedores/adapters son abiertos; operaciones, estados y errores del
+contrato son versionados, validados y exhaustivos. El núcleo filtra antes de la
+consulta y revalida revisión, permisos, elegibilidad, cuota y reserva antes del
+efecto. Un candidato ajeno al conjunto, una cuenta drenada o una política revocada
+se rechazan aunque el modelo declare confianza alta. La aplicación usa OCC/CAS;
+dos decisiones concurrentes no adquieren el mismo derecho de despacho.
+
+### 8.3 Dos implementaciones, no dos autoridades
+
+| Adapter | Función | Condiciones de conformidad |
+| --- | --- | --- |
+| Jev / TypeSafe | Decisiones estructuradas por API, normalizadas al contrato propio | Versión efectiva pineada, credencial opaca, egress autorizado, límites de contexto y retries efectivos. Su API no consume una cuota de suscripción Claude/Kimi por equivalencia. |
+| Laya | Decisiones estructuradas locales/self-hosted, normalizadas al mismo contrato | Versión/checkpoint y digest de pesos, licencia, idiomas, contexto y recursos declarados. Endpoint local restringido, no exposición pública por defecto. Compatibilidad HTTP no equivale a calidad demostrada. |
+
+Las reglas deterministas existentes siguen siendo camino base y fallback
+explícito: **no cuentan como la segunda implementación IA**. Tampoco cuenta un
+mock. El usuario puede prescindir de ambos adapters; seleccionar uno ausente
+produce un rechazo claro o el fallback autorizado, no una instalación automática.
+
+Laya declara límites importantes de generalización zero-shot. Su checkpoint
+afinado sobre un benchmark no demuestra calidad en nuestras tareas. Debe pasar
+el perfil independiente de §8.5; si no lo alcanza, no se vende como sustituto
+equivalente y se propone un reemplazo al owner. La inferencia local tiene costo
+de memoria y CPU/GPU: no se presume gratuita ni se inicia un residente por defecto.
+
+### 8.4 Persistencia, seguridad y recuperación
+
+Reutilizar el registry único, política versionada, streams y artefactos privados.
+Evaluar primero la extensión de recomendaciones, consultas y asignaciones de
+[planificación](../database/planning/index.md), sin confundir recomendación con
+aprobación ni introducir una base paralela. Antes de `DESIGN_READY` se fija el
+diccionario físico: snake_case, PK/FK, nulidad, constraints, evento dueño,
+transacción/OCC, migración y fold/rebuild. Ninguna columna por marca ni copia de
+candidatos/ratings en un JSON desnormalizado sin autoridad. Si hace falta una
+entidad nueva, su semántica y dueño se adjudican antes de escribir DDL.
+
+Registrar identidad y pins de la consulta, conjunto candidato, contexto por
+referencia privada, resultado, aplicación o rechazo, causalidad y consumo conocido
+o UNKNOWN. La consulta es un efecto con intención y límites **también en shadow**.
+Una decisión registrada se reproduce desde el ledger: no se vuelve a consultar
+para reconstruirla. Si hubo llamada pero falta un resultado durable, se trata la
+incertidumbre según las capacidades del adapter; no se promete exactamente una
+facturación cuando el proveedor no ofrece deduplicación.
+
+El cambio de adapter rige una nueva decisión o continuación autorizada, no
+reescribe resultados anteriores. Fallback, máximo de intentos, timeout y consumo
+son explícitos y trazables. Un único dueño del retry: no reintentos ocultos del
+SDK sumados a los del motor, ni carrera/votación Jev + Laya por defecto. Un duelo
+deliberado son dos efectos presupuestados, no redundancia invisible.
+
+Minimizar y redactar datos antes del egress. No enviar transcripts, repos completos,
+credenciales o argumentos sensibles por conveniencia. Tratar el contexto como
+datos no confiables; no asumir retención cero del proveedor. La decisión no puede
+ampliar autoridad aunque siga instrucciones adversariales en ese contexto.
+Ausencia o caída del pack no afecta tareas independientes ni obliga a instalar
+Restate, Temporal u otro framework concreto para funcionar.
+
+### 8.5 Evaluación y aceptación
+
+Congelar antes del benchmark un corpus independiente del entrenamiento/tuning,
+con oráculos externos, tareas representativas, español/inglés, casos ambiguos,
+contexto adversarial y cambios de elegibilidad. Comparar con las reglas existentes.
+Fijar por perfil los mínimos de calidad, cobertura de abstención y no-regresión,
+latencia p50/p95, uso/costo por decisión y tarea aceptada, rework y recursos.
+Los valores concretos quedan en el brief aprobado **antes** de ejecutar, no se
+eligen mirando resultados. Si faltan, la extensión no es `DESIGN_READY`.
+Seguridad no se promedia: cero decisiones aplicadas fuera de los límites admitidos.
+
+Aceptación obligatoria de la extensión:
+
+1. Jev y Laya reales pasan la misma suite contractual y un caso desde una puerta
+   del producto, dentro del perfil y consumo autorizados. No se exige respuesta
+   probabilística idéntica, sino garantías y calidad mínima comunes.
+2. Selección explícita y reglas funcionan sin instalar los dos adapters. Ausencia,
+   caída, timeout, respuesta inválida, abstención o capacidad incompatible tienen
+   resultado honesto; no disparan un proveedor alternativo sin política y permiso.
+3. DRAIN, cambio de cuota, revisión/política revocada, respuesta tardía, candidato
+   desconocido y concurrencia se revalidan antes de aplicar. No hay doble despacho.
+4. Crash/replay/retirada de adapter conservan decisiones y evidencia previas sin
+   una nueva consulta silenciosa, ampliación de presupuesto o efecto duplicado.
+5. Canarios privados ausentes de ledger público, SSE, logs, errores, trazas y
+   proyecciones. Uso ausente queda UNKNOWN; la observabilidad no factura.
+6. Cambio por configuración sin tocar el workflow, SDKs aislados, tipos separados,
+   tests espejo y verificación independiente del snapshot exacto.
+7. Observación/recomendación preceden a la promoción automática acotada, con
+   rollback de política probado. Un score de confianza o dos adapters que compilan
+   no habilitan autonomía ni cierran el perfil.
+
+Esta aceptación no reemplaza los gates existentes. Gasto de smokes, instalación,
+descarga de pesos, ampliación de datos enviados y P9 requieren su autoridad propia.
+No se prometen ahorros porcentuales ni migración en vivo por compartir contrato.
+
+Referencias para revalidar al abrir el packet:
+[Jev: contrato conceptual](https://docs.typesafe.ai/introduction),
+[versiones y límites](https://docs.typesafe.ai/models),
+[confianza](https://docs.typesafe.ai/confidence),
+[limitaciones](https://docs.typesafe.ai/model-jaggedness/jev-1.13),
+[privacidad](https://typesafe.ai/legal/privacy-policy) y
+[Laya: licencia, implementación y límites](https://huggingface.co/convaiinnovations/laya).
+Documentación externa no equivale a evidencia de funcionamiento en ACP.
