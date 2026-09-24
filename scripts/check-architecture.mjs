@@ -11791,6 +11791,35 @@ const P26A_WRITE_SET = [
   "packages/entrypoints/gateway/test/build-server/index.test.ts",
 ];
 
+/**
+ * P-37, the sha-256 seam: the protocol's private `Sha256Hex` folds into contracts'
+ * (the debt ADR 0107 named; decision 171; no ADR, ND-1).
+ *
+ * Contracts puts its `Sha256Hex` on both barrels; the protocol deletes its
+ * byte-identical, never-exported copy and imports the contract's, leaving all 21
+ * use sites textually unchanged; `EffectIdParam` is now an alias of contracts'
+ * schema and does not reach the protocol barrel. L-P37S-1 closes the blind side of
+ * the cross-package name gate for the protocol: a copy that is never exported is
+ * never a collision.
+ *
+ * **Pins that move.** `CONTRACTS_SCHEMA_EXPORTS` 171 -> **172**; `PATH_SCOPED_LAWS`
+ * 162 -> **163**. `CONTRACT_VERSION`, `API_CONTRACT_VERSION`, `MIGRATIONS`, the
+ * protocol barrel and every event vocabulary do not move.
+ *
+ * **Nine paths; none is new.**
+ */
+const P37S_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12035,6 +12064,7 @@ const WRITE_SET = [
   ...P15E_WRITE_SET,
   ...P24A_WRITE_SET,
   ...P26A_WRITE_SET,
+  ...P37S_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13547,6 +13577,12 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the roadmap-version law runs inside the append, and a version is written insert-only",
     scope: "packages/persistence/ledger/src/ledger/index.ts",
+  },
+  // P-37, the sha-256 seam. One new path-shaped surface, so one new row: the register
+  // and the `requireScope` call sites both move 162 -> 163 for L-P37S-1.
+  {
+    law: "the protocol declares no sha-256 grammar of its own",
+    scope: "packages/kernel/protocol/src/**",
   },
 ];
 
@@ -21589,6 +21625,9 @@ if (accountsIndex === null) {
   // read imports it -- and the union its leaf derives. 169 -> 171.
   "EFFECT_OUTCOME_STATUSES",
   "EffectOutcomeStatus",
+  // P-37, the sha-256 seam (the debt ADR 0107 named): `Sha256Hex`, on the barrel so
+  // the protocol reads the contract's grammar instead of a private copy. 171 -> 172.
+  "Sha256Hex",
 ];
 
   const schemasBarrel = readIfPresent("packages/kernel/contracts/src/schemas/index.ts");
@@ -25871,6 +25910,62 @@ if (tracked.status === 0) {
   }
   requireScope("a pinned schema is compared in one place, by value", scanned);
   notes.push("a pinned schema is compared in one place, by value, and the port compares through it");
+}
+
+// L-P37S-1 -- the protocol declares no sha-256 grammar of its own (P-37, the sha-256
+// seam; decision 171).
+//
+// The cross-package name gate matches exported declarations only, so a copy that is
+// never exported is never a collision: that is how the protocol's private
+// `Sha256Hex` survived beside contracts' until P-37 folded it. Over every tracked
+// `packages/kernel/protocol/src/` `.ts` file, comments stripped: no declaration of
+// `Sha256Hex` (`const`, `let`, `var`, `function`, `class`, `type`); no 64-digit hex
+// class in a regex or string (`[0-9a-f]{64}`, `[a-f0-9]{64}`, either with `A-F`); and
+// the barrel exports no `Sha256Hex`. `schemas/index.ts` must import `Sha256Hex` from
+// `@acp/contracts`, so the law has the authority it protects in view.
+//
+// Stated limit: a text-level matcher. A grammar spelled another way (`{64,64}`, a
+// class written `[\da-f]`, `\p{Hex}`, a length check plus a character test, a
+// pattern assembled at runtime), a second schema under another name built from
+// such a spelling, or a copy outside `protocol/src` is not seen. The other raw
+// `/^[0-9a-f]{64}$/` predicates across `packages/*/*/src` (P-37 ND-3, eighteen files)
+// are a later seam's, not this law's.
+{
+  const PROTOCOL_SCHEMAS = "packages/kernel/protocol/src/schemas/index.ts";
+  const PROTOCOL_BARREL = "packages/kernel/protocol/src/index.ts";
+  const DECLARES = /\b(?:const|let|var|function|class|type|interface)\s+Sha256Hex\b/;
+  const HEX64 = /\[(?:0-9a-f|a-f0-9)(?:A-F)?\]\{64\}|\[(?:0-9A-F|A-F0-9)a-f\]\{64\}/;
+  let scanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const sources = new Set(present);
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/kernel\/protocol\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const source = readIfPresent(relativePath);
+      if (source === null) continue;
+      scanned += 1;
+      const code = stripComments(source);
+      if (DECLARES.test(code)) {
+        fail(relativePath + " declares its own Sha256Hex; the protocol reads @acp/contracts' (L-P37S-1)");
+      }
+      if (HEX64.test(code)) {
+        fail(relativePath + " holds a 64-digit hex grammar; the protocol reads @acp/contracts' Sha256Hex (L-P37S-1)");
+      }
+      if (relativePath === PROTOCOL_BARREL && /\bSha256Hex\b/.test(code)) {
+        fail(PROTOCOL_BARREL + " names Sha256Hex; the name has one home, @acp/contracts (L-P37S-1)");
+      }
+    }
+    const schemas = stripComments(readIfPresent(PROTOCOL_SCHEMAS) ?? "");
+    const contractsImport = [...schemas.matchAll(/import\s*\{([^}]*)\}\s*from\s*"@acp\/contracts";/g)].some((match) =>
+      (match[1] ?? "").split(",").some((piece) => piece.trim() === "Sha256Hex"),
+    );
+    if (!contractsImport) {
+      fail(PROTOCOL_SCHEMAS + " no longer imports Sha256Hex from @acp/contracts (L-P37S-1)");
+    }
+  }
+  requireScope("the protocol declares no sha-256 grammar of its own", scanned);
+  notes.push("the protocol declares no sha-256 grammar of its own, and reads @acp/contracts' Sha256Hex");
 }
 
 // L-P26A-1 -- the roadmap-version law runs inside the append, and a version is

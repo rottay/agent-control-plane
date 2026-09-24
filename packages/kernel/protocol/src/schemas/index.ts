@@ -23,6 +23,7 @@ import {
   WorkerRole,
   CanonicalInstant,
   ResultContractSchema,
+  Sha256Hex,
   Timestamp,
   findCredentialViolations,
   findTranscriptViolations,
@@ -95,9 +96,11 @@ export const MAX_ACCOUNT_ACTIONS = 500;
 // Primitive value shapes
 // ---------------------------------------------------------------------------
 
-const Sha256Hex = z
-  .string()
-  .regex(/^[0-9a-f]{64}$/, "expected a lowercase sha-256 hex digest");
+// `Sha256Hex` is `@acp/contracts`' schema, imported above (P-37; the debt ADR 0107
+// named). This module held a byte-identical private copy that the cross-package
+// name gate could not see, because it was never exported; it declares none now, and
+// L-P37S-1 keeps it so. Not re-exported from this package's barrel: the name has one
+// home.
 
 const Uuid = z.uuid();
 
@@ -2932,10 +2935,11 @@ export type TaskLifecycleResponse = z.infer<typeof TaskLifecycleResponse>;
 // ---------------------------------------------------------------------------
 
 /**
- * An effect id: the ledger's own shape, 64 lowercase hex — this module's one sha-256
- * grammar under the name the route reads it by. Exported to the routes module inside
- * this package (P-15/F), so the path parameter is this grammar rather than a second
- * regex; deliberately not on the package barrel.
+ * An effect id: the ledger's own shape, 64 lowercase hex — `@acp/contracts`' one
+ * sha-256 grammar, `Sha256Hex`, under the name the route reads it by (P-37 folded the
+ * private copy this used to alias). Exported to the routes module inside this package
+ * (P-15/F), so the path parameter is that grammar rather than a second regex;
+ * deliberately not on the package barrel.
  */
 export const EffectIdParam = Sha256Hex;
 const EffectId = EffectIdParam;

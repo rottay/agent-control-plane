@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { CONTROL_PLANE_EVENT_TYPES } from "@acp/contracts";
+import { CONTROL_PLANE_EVENT_TYPES, Sha256Hex } from "@acp/contracts";
 
 import {
   API_ALLOWED_METHODS,
@@ -87,6 +87,8 @@ import {
   TaskEffectResultResponse,
   TaskEffectsResponse,
 } from "../../src/index.js";
+import * as protocolBarrel from "../../src/index.js";
+import { EffectIdParam } from "../../src/schemas/index.js";
 
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
@@ -3400,5 +3402,111 @@ describe("P-15/F: the effect reads on the wire (ADR 0107)", () => {
     expect(API_ERROR_CODES).toContain("PRIVATE_READ_UNCONFIGURED");
     expect(API_ERROR_CODES).toContain("WRITE_BEARER_UNCONFIGURED");
     expect(API_CONTRACT_VERSION).toBe("0.19.0");
+  });
+});
+
+/**
+ * The sha-256 digest grammar's verdicts, captured from protocol's private copy BEFORE
+ * P-37 folded it into contracts' `Sha256Hex` (run against the 1cf47ef build). Verdict,
+ * zod issue code and message, per vector; the fold moves the schema's home, never an
+ * answer.
+ */
+const HEX = "0123456789abcdef".repeat(4);
+const SHA256_HEX_CAPTURED: readonly (readonly [string, unknown, boolean, string | null, string | null])[] = [
+  ["valid", HEX, true, null, null],
+  ["short63", HEX.slice(0, 63), false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+  ["long65", HEX + "0", false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+  ["upperFirst", "A" + HEX.slice(1), false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+  ["upperLater", HEX.slice(0, 40) + "F" + HEX.slice(41), false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+  ["nonHexG", HEX.slice(0, 63) + "g", false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+  ["empty", "", false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+  ["number", 42, false, "invalid_type", "Invalid input: expected string, received number"],
+  ["nullValue", null, false, "invalid_type", "Invalid input: expected string, received null"],
+  ["withNewline", HEX + "\n", false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+];
+
+/** One schema's answers over the captured table, in its shape. */
+function sha256Verdicts(schema: { safeParse: (value: unknown) => { success: boolean; error?: { issues: readonly { code: string; message: string }[] } } }): unknown[] {
+  return SHA256_HEX_CAPTURED.map(([name, value]) => {
+    const parsed = schema.safeParse(value);
+    const issue = parsed.error?.issues[0];
+    return [name, parsed.success, issue?.code ?? null, issue?.message ?? null];
+  });
+}
+const SHA256_HEX_EXPECTED = SHA256_HEX_CAPTURED.map(([name, , ok, code, message]) => [name, ok, code, message]);
+
+describe("the protocol reads contracts' sha-256 grammar and declares none (P-37)", () => {
+  const SCHEMAS_SOURCE = resolve(dirname(fileURLToPath(import.meta.url)), "../../src/schemas/index.ts");
+
+  it("identity: EffectIdParam is contracts' Sha256Hex, and this package declares and re-exports none", () => {
+    expect(EffectIdParam).toBe(Sha256Hex);
+    const source = readFileSync(SCHEMAS_SOURCE, "utf8");
+    expect(source).not.toMatch(/\b(?:const|let|var)\s+Sha256Hex\b/);
+    expect(source).not.toContain("[0-9a-f]{64}");
+    expect(Object.keys(protocolBarrel)).not.toContain("Sha256Hex");
+    expect(Object.keys(protocolBarrel)).not.toContain("EffectIdParam");
+  });
+
+  it("differential: the verdicts, codes and messages captured before the fold, unchanged", () => {
+    expect(sha256Verdicts(EffectIdParam)).toEqual(SHA256_HEX_EXPECTED);
+  });
+
+  const DIGEST = "c".repeat(64);
+  const AT = "2026-09-24T12:00:00.000Z";
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+
+  /** A response family's digest field: admitted as lowercase hex, refused uppercase, by the one message. */
+  function digestFamily(parse: (digest: string) => { success: boolean; error?: { issues: readonly { path: readonly PropertyKey[]; message: string }[] } }, path: string): void {
+    expect(parse(DIGEST).success, path).toBe(true);
+    const refused = parse(DIGEST.toUpperCase());
+    expect(refused.success, path).toBe(false);
+    expect(refused.error?.issues.map((issue) => [issue.path.map(String).join("."), issue.message])).toEqual([
+      [path, "expected a lowercase sha-256 hex digest"],
+    ]);
+  }
+
+  it("one response fixture per family still parses: the initiative head digest", () => {
+    digestFamily(
+      (digest) =>
+        InitiativeSummary.safeParse({
+          initiativeId: INITIATIVE,
+          slug: "acp-p37",
+          title: "The P-37 seam",
+          objective: null,
+          status: "ACTIVE",
+          eventCount: 2,
+          headRoadmapDigest: digest,
+          roadmapVersionCount: 1,
+          taskCount: 0,
+          rollup: { tokensUsed: 0, tokensReserved: 0, skippedMalformed: 0 },
+          createdAt: AT,
+          updatedAt: AT,
+        }),
+      "headRoadmapDigest",
+    );
+  });
+
+  it("one response fixture per family still parses: a roadmap version's contentDigest", () => {
+    digestFamily(
+      (digest) =>
+        RoadmapVersionDto.safeParse({
+          roadmapVersionId: "66666666-6666-4666-8666-666666666601",
+          initiativeId: INITIATIVE,
+          version: 1,
+          contentDigest: digest,
+          parentVersionId: null,
+          kind: "EDIT",
+          restoresVersionId: null,
+          recordedBy: "kimi/k3/coordinator/01",
+          recordedAt: AT,
+          sequence: 2,
+          head: true,
+        }),
+      "contentDigest",
+    );
+  });
+
+  it("one response fixture per family still parses: the effect id on the effect-result route", () => {
+    digestFamily((digest) => EffectIdParam.safeParse(digest), "");
   });
 });

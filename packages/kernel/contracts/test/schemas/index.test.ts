@@ -85,7 +85,11 @@ import {
   CanonicalInstant,
   Timestamp,
   isCanonicalInstant,
+  Sha256Hex,
 } from "../../src/index.js";
+import * as contractsBarrel from "../../src/index.js";
+import * as schemasBarrel from "../../src/schemas/index.js";
+import { Sha256Hex as PrimitiveSha256Hex } from "../../src/schemas/primitives/index.js";
 import type { DriverAccepted, DriverOutcome } from "../../src/index.js";
 
 /** One complete usage report: every class known and summed (P-15/D2). */
@@ -3365,5 +3369,47 @@ describe("P-15/I: the canonical instant is one predicate and one schema, and its
     expect(CanonicalInstant.safeParse("2026-09-23T12:00:00Z").error?.issues.map((issue) => issue.message)).toEqual([
       "expected the canonical instant: ISO-8601 in UTC with milliseconds, a real calendar date",
     ]);
+  });
+});
+
+/**
+ * The sha-256 digest grammar's verdicts, captured from protocol's private copy BEFORE
+ * P-37 folded it into contracts' `Sha256Hex` (run against the 1cf47ef build). Verdict,
+ * zod issue code and message, per vector; the fold moves the schema's home, never an
+ * answer.
+ */
+const HEX = "0123456789abcdef".repeat(4);
+const SHA256_HEX_CAPTURED: readonly (readonly [string, unknown, boolean, string | null, string | null])[] = [
+  ["valid", HEX, true, null, null],
+  ["short63", HEX.slice(0, 63), false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+  ["long65", HEX + "0", false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+  ["upperFirst", "A" + HEX.slice(1), false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+  ["upperLater", HEX.slice(0, 40) + "F" + HEX.slice(41), false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+  ["nonHexG", HEX.slice(0, 63) + "g", false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+  ["empty", "", false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+  ["number", 42, false, "invalid_type", "Invalid input: expected string, received number"],
+  ["nullValue", null, false, "invalid_type", "Invalid input: expected string, received null"],
+  ["withNewline", HEX + "\n", false, "invalid_format", "expected a lowercase sha-256 hex digest"],
+];
+
+/** One schema's answers over the captured table, in its shape. */
+function sha256Verdicts(schema: { safeParse: (value: unknown) => { success: boolean; error?: { issues: readonly { code: string; message: string }[] } } }): unknown[] {
+  return SHA256_HEX_CAPTURED.map(([name, value]) => {
+    const parsed = schema.safeParse(value);
+    const issue = parsed.error?.issues[0];
+    return [name, parsed.success, issue?.code ?? null, issue?.message ?? null];
+  });
+}
+const SHA256_HEX_EXPECTED = SHA256_HEX_CAPTURED.map(([name, , ok, code, message]) => [name, ok, code, message]);
+
+describe("Sha256Hex is on both barrels, the protocol's one sha-256 grammar (P-37)", () => {
+  it("is the primitives' schema on the root and the schema barrel, not a copy", () => {
+    expect(contractsBarrel.Sha256Hex).toBe(PrimitiveSha256Hex);
+    expect(schemasBarrel.Sha256Hex).toBe(PrimitiveSha256Hex);
+    expect(Sha256Hex).toBe(PrimitiveSha256Hex);
+  });
+
+  it("reproduces the verdicts, codes and messages captured from the protocol's copy before the fold", () => {
+    expect(sha256Verdicts(Sha256Hex)).toEqual(SHA256_HEX_EXPECTED);
   });
 });

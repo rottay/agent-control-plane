@@ -36,7 +36,7 @@ this table against the barrel.
 
 | Module | What it declares |
 | --- | --- |
-| `primitives` | the shared scalars — `CONTRACT_VERSION`, timestamps, uuids, repo-relative paths — and the one canonical-instant predicate and schema, `isCanonicalInstant` and `CanonicalInstant` |
+| `primitives` | the shared scalars — `CONTRACT_VERSION`, timestamps, uuids, repo-relative paths — and the one canonical-instant predicate and schema, `isCanonicalInstant` and `CanonicalInstant`; and `Sha256Hex`, the one sha-256 digest grammar, which the protocol reads rather than redeclaring (P-37) |
 | `credential-guards` | the credential and transcript scanners, and the refinement that attaches them |
 | `shared-references` | opaque references: a digest paired with the path it names |
 | `worker-identity` | the worker role vocabulary and the identity string it composes |
