@@ -111,8 +111,9 @@ fence asserts the two cannot disagree. Read together:
   server is contacted anywhere in this repository.
 - **Every unimplemented facility is a refusal or an absence, not a gap.** The
   server-initiated stream is never opened, resumption is not implemented,
-  batching is refused, no `origin` header is sent, redirects are refused rather
-  than followed and `nextCursor` is not followed. Every field of the record has
+  batching is refused, no `origin` header is sent, and redirects are refused
+  rather than followed. `nextCursor` is followed since P-24, every page bounded
+  (below). Every field of the record has
   the claim it stands behind stated here, and the fence asserts the two agree
   **field by field** (L-B4B-17) — a record key nobody explains, or a claim no
   key backs, fails the fence rather than drifting. A drill stands behind each
@@ -136,6 +137,55 @@ fence asserts the two cannot disagree. Read together:
   resource block is refused rather than dropped, because omitting what cannot
   be represented would hand the caller a shortened answer it has no way to
   recognize as shortened.
+
+## A tool is called only under the schema it was allowed with (P-24, ADR 0109)
+
+**The pin.** Every allowlist entry carries a required `inputSchema`, never
+defaulted: the interface the operator reviewed. Admission refuses a pin that is
+absent or not an object, whose `type` is not `"object"`, deeper than
+`TOOL_SCHEMA_DEPTH_MAX` or larger than `TOOL_SCHEMA_BYTES_MAX`, and names the entry
+and field it refused (`descriptor.tools[i].inputSchema`). The schema is
+pinned per tool by value: the port compares the advertised `inputSchema` with the
+pin by JSON value equality — key order is free, arrays are ordered, `0` and `-0`
+are one number, `$ref` is a literal never resolved, a changed `description` or an
+added key is a difference — and a difference is `SCHEMA_MISMATCH` before any
+`tools/call` is sent. **The plane never validates a call's `arguments` against
+either schema**: the pin binds the allow decision to the interface the operator
+reviewed, nothing more. A tool has no version in the revision this client speaks,
+so the pin is the version, and a changed schema is a re-pin: a reviewed change to
+the operator's document, never a rewrite the plane makes from what a server says.
+
+**The listing.** `nextCursor` is followed to the end. A `null`, a non-string or an
+empty cursor is `PROTOCOL_VIOLATION` (the reference SDKs type it optional and not
+nullable; the empty cursor is this plane's rule), and so is a repeated cursor or a
+tool name advertised twice (this plane's rule: the allowlist is keyed by name). A
+cursor over `TOOL_CURSOR_BYTES_MAX`, a page past `TOOL_LIST_PAGES_MAX`, a tool past
+`TOOL_LIST_TOOLS_MAX` and a listing past its deadline are `RESULT_UNBOUNDED`,
+refused and never truncated. Which bound binds what: a page's **bytes** are bound
+by the frame ceiling (`TOOL_FRAME_BYTES_MAX`) before any listing bound applies, the
+listing's **count** by pages and tools, its **shape** by cursor bytes and schema
+depth. The deadline, `TOOL_LIST_DEADLINE_MS`, is one timer that sets a flag read
+between pages — never mid-request — so an expired listing keeps its connection; each
+page keeps its own call timeout, so the worst case is the deadline plus one page.
+
+**The two windows.** A `notifications/tools/list_changed` invalidates the listing
+a connection has cached. One arriving while a listing is assembled restarts it,
+once; the port reads it again after obtaining a listing and before sending, and
+re-lists once — a guard, which on stdio nothing can reach (the chain to the call's
+write yields to no I/O) and on loopback only microtask interleaving can; a second
+change in either place is `RESULT_UNBOUNDED`. What this
+guarantees is a precondition, not a transaction: no `tools/call` is sent on a
+connection whose last listing did not advertise the pinned schema. A change after
+that listing — while a call is in flight, or from a server that never sends
+`list_changed` — is not seen by that call. At the doors today one operation is one
+connection is one call, so the second window collapses into the first; the daemon
+composition, with long-lived connections, owns the choice between re-listing per
+call and trusting the notification.
+
+**What is not read.** A tool's `outputSchema` and `structuredContent` are not read,
+and neither are its `title` or `annotations`: hints a server offers are not
+authority, and `writes` stays the operator's. The discovery listing reaches no
+door as a verb of its own.
 
 `TOOL_MCP_PROTOCOL_VERSION` records the revision the client speaks and now also
 compares: `initialize` refuses a server that agrees a different revision, or
@@ -229,7 +279,7 @@ join and the receipt live.
 | `TOOL_WRITE_ROLES` | the closed set of roles that may drive a writing tool |
 | `ToolWriteRole` | its member type |
 | `holdsToolWriteAuthority` | the membership test the port decides by |
-| `ToolAllowlistEntry` | one permitted tool, and whether it writes |
+| `ToolAllowlistEntry` | one permitted tool, whether it writes, and its pinned `inputSchema` |
 | `ToolServerDescriptor` | untrusted, config-shaped server input |
 | `ToolCallRequest` | one call, as the plane's caller states it |
 | `TOOL_ARGUMENTS_BYTES_MAX` | the argument ceiling |
@@ -237,6 +287,12 @@ join and the receipt live.
 | `TOOL_FRAME_BYTES_MAX` | the wire frame ceiling |
 | `TOOL_CONTENT_STRING_MAX` | the per-block content ceiling |
 | `TOOL_CALL_TIMEOUT_MS` | how long one call may stay unanswered |
+| `TOOL_LIST_PAGES_MAX` | the most pages one listing may take |
+| `TOOL_LIST_TOOLS_MAX` | the most tools one listing may carry |
+| `TOOL_CURSOR_BYTES_MAX` | the largest cursor a listing may be handed |
+| `TOOL_LIST_DEADLINE_MS` | one listing's deadline, read between pages |
+| `TOOL_SCHEMA_BYTES_MAX` | the largest pin an allowlist entry may carry |
+| `TOOL_SCHEMA_DEPTH_MAX` | the deepest pin, and the depth past which schemas never compare equal |
 | `TOOL_SERVER_LIFETIME_MS` | the child's hard backstop |
 | `TOOL_SERVER_ENV_KEYS` | the whole environment a tool server child receives |
 | `TOOL_HTTP_REQUEST_TIMEOUT_MS` | how long one loopback request may stay unanswered |
@@ -259,6 +315,6 @@ join and the receipt live.
 | `SessionLiveness` | the liveness predicate, read and never pushed |
 | `ToolProtocolPortInput` | the servers and the liveness join |
 | `ToolCallOutcome` | content plus a receipt, or a refusal plus a receipt |
-| `ToolListingOutcome` | the allowlist intersected with the advertisement |
+| `ToolListingOutcome` | the allowlist entries advertised under their pins, or the first mismatch |
 | `ToolProtocolPort` | the port itself |
 | `createToolProtocolPort` | its constructor |

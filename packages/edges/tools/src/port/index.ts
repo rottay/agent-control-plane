@@ -23,7 +23,7 @@
 import { parseWorkerIdentity } from "@acp/contracts";
 
 import type { AdmittedToolServer } from "../admission/index.js";
-import type { ToolClient, ToolTransportConnection } from "../client/index.js";
+import type { AdvertisedTool, ToolClient, ToolClientOutcome, ToolTransportConnection } from "../client/index.js";
 import { createToolClient } from "../client/index.js";
 import type { ToolAllowlistEntry, ToolCallRequest, ToolRefusal } from "../contract/index.js";
 import {
@@ -35,6 +35,7 @@ import {
 import { toolFrameBytes } from "../jsonrpc/index.js";
 import type { ToolCallReceipt } from "../receipt/index.js";
 import { toolReceipt, toolResultIsUnsafe } from "../receipt/index.js";
+import { jsonEqual } from "../schema-equality/index.js";
 import type { ToolHttpLoopbackConnection } from "../http-loopback/index.js";
 import { openToolHttpLoopbackConnection } from "../http-loopback/index.js";
 import { openToolStdioConnection } from "../stdio/index.js";
@@ -87,6 +88,12 @@ interface Connection {
    */
   readonly transport: ToolTransportConnection;
   readonly client: ToolClient;
+  /**
+   * The listing this connection last saw, or null before the first (P-24). A
+   * `list_changed` notification invalidates it: the port re-lists before it
+   * trusts it again.
+   */
+  listing: readonly AdvertisedTool[] | null;
 }
 
 /**
@@ -146,9 +153,59 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
       server.kind === "STDIO"
         ? openToolStdioConnection(server, lifetimeMs)
         : openToolHttpLoopbackConnection(server);
-    const connection: Connection = { sessionId, transport, client: createToolClient(transport) };
+    const connection: Connection = { sessionId, transport, client: createToolClient(transport), listing: null };
     connections.set(key, connection);
     return connection;
+  };
+
+  /**
+   * The listing a call or a listing may trust (P-24, ADR 0109; C5).
+   *
+   * The cached one unless a `list_changed` invalidated it. A change announced
+   * while the client assembles a listing is the client's to handle: it restarts
+   * that listing once (a notification in the same read as the last page is
+   * consumed there, before `listTools` returns). The second read of the flag
+   * below, after obtaining the listing and before anything is sent, is a
+   * **guard** for a transport that yields between the listing and the send: on
+   * stdio nothing does (the chain to the call's write is microtasks only, so no
+   * frame can arrive there), and on loopback only the SSE reader's `await`
+   * continuations can interleave, nondeterministically. No deterministic row
+   * reaches it. A second change there is `RESULT_UNBOUNDED`. What this guarantees
+   * is a precondition, not a transaction: no `tools/call` is sent on a connection
+   * whose last listing did not advertise the pinned schema. A change after that
+   * — on stdio, after the call frame is written; or from a server that never
+   * notifies — is not seen by the call.
+   */
+  const trustedListing = async (connection: Connection): Promise<ToolClientOutcome<readonly AdvertisedTool[]>> => {
+    if (connection.listing === null || connection.client.takeListChanged()) {
+      const listed = await connection.client.listTools();
+      if (!listed.ok) return listed;
+      connection.listing = listed.value;
+    }
+    if (connection.client.takeListChanged()) {
+      const relisted = await connection.client.listTools();
+      if (!relisted.ok) return relisted;
+      connection.listing = relisted.value;
+      if (connection.client.takeListChanged()) {
+        connection.listing = null;
+        return { ok: false, refusal: "RESULT_UNBOUNDED", at: "server.tools" };
+      }
+    }
+    return { ok: true, value: connection.listing };
+  };
+
+  /**
+   * Where the pinned tool's listing disagrees with its pin, or null when it agrees.
+   *
+   * The paths carry no tool name: the request already names the tool, and a
+   * bounded name (up to 120 characters) spliced into `server.tools.<name>.inputSchema`
+   * would overflow the protocol's 120-character `at`. `server.tools` says the tool
+   * was not advertised; `server.tools.inputSchema` says it was, under another schema.
+   */
+  const mismatchOf = (listing: readonly AdvertisedTool[], entry: ToolAllowlistEntry): string | null => {
+    const advertised = listing.find((tool) => tool.name === entry.name);
+    if (advertised === undefined) return "server.tools";
+    return jsonEqual(advertised.inputSchema, entry.inputSchema) ? null : "server.tools.inputSchema";
   };
 
   return {
@@ -169,9 +226,9 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
         return { ok: false, refusal: "PROTOCOL_VIOLATION", at: "server.process" };
       }
 
-      const listed = await connection.client.listTools();
+      const listed = await trustedListing(connection);
       if (!listed.ok) {
-        await drop(connectionKey(sessionId, serverId));
+        if (listed.refusal === "PROTOCOL_VIOLATION") await drop(connectionKey(sessionId, serverId));
         return { ok: false, refusal: listed.refusal, at: listed.at };
       }
 
@@ -181,11 +238,18 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
       // allowlist names but the server does not serve is not listed as
       // available. Reporting the allowlist alone would promise tools that are
       // not there; reporting the advertisement alone would abandon the bound.
-      const advertised = new Set(listed.value);
-      return {
-        ok: true,
-        tools: Object.freeze(server.allowlist.filter((entry) => advertised.has(entry.name))),
-      };
+      // P-24: an allowlisted tool advertised under another schema is not
+      // silently dropped; the first one refuses the whole listing.
+      const available: ToolAllowlistEntry[] = [];
+      for (const entry of server.allowlist) {
+        const at = mismatchOf(listed.value, entry);
+        if (at === null) {
+          available.push(entry);
+        } else if (at.endsWith(".inputSchema")) {
+          return { ok: false, refusal: "SCHEMA_MISMATCH", at };
+        }
+      }
+      return { ok: true, tools: Object.freeze(available) };
     },
 
     async callTool(request: ToolCallRequest): Promise<ToolCallOutcome> {
@@ -280,6 +344,22 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
         return refuse("PROTOCOL_VIOLATION", "server.process");
       }
 
+      // 7. Discovery before the call (P-24, ADR 0109): the tool must be advertised
+      //    on this connection's trusted listing, under a schema JSON-equal to the
+      //    pin, or nothing is sent. A mismatch keeps the connection: the peer is
+      //    still speaking the protocol.
+      const listed = await trustedListing(connection);
+      if (!listed.ok) {
+        const carried = transportRefusalOf(connection.transport);
+        if (listed.refusal === "PROTOCOL_VIOLATION" || carried !== null) {
+          await drop(connectionKey(request.sessionId, request.serverId));
+        }
+        if (carried !== null) return refuse(carried.refusal, carried.at);
+        return refuse(listed.refusal, listed.at);
+      }
+      const mismatch = mismatchOf(listed.value, entry);
+      if (mismatch !== null) return refuse("SCHEMA_MISMATCH", mismatch);
+
       const called = await connection.client.callTool(request.toolName, request.arguments);
       if (!called.ok) {
         // A framing violation, an unmatched id or a peer that never answered
@@ -303,7 +383,7 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
         return refuse(called.refusal, called.at, called.result);
       }
 
-      // 7/8. The result ceiling was applied by the client; the privacy guard is
+      // 8/9. The result ceiling was applied by the client; the privacy guard is
       //      applied here, where the contracts guards live. No content is
       //      returned on a violation — not filtered content, none.
       if (toolResultIsUnsafe(called.value.value)) {

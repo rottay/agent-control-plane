@@ -18,6 +18,10 @@ import type { ToolRefusal } from "../contract/index.js";
 import {
   TOOL_CALL_TIMEOUT_MS,
   TOOL_CONTENT_STRING_MAX,
+  TOOL_CURSOR_BYTES_MAX,
+  TOOL_LIST_DEADLINE_MS,
+  TOOL_LIST_PAGES_MAX,
+  TOOL_LIST_TOOLS_MAX,
   TOOL_MCP_CLIENT_NAME,
   TOOL_MCP_PROTOCOL_VERSION,
   TOOL_RESULT_BYTES_MAX,
@@ -70,9 +74,27 @@ export interface ToolCallResult {
   readonly value: unknown;
 }
 
+/** One tool a server advertised, as far as this client reads it (P-24). */
+export interface AdvertisedTool {
+  readonly name: string;
+  readonly inputSchema: Readonly<Record<string, unknown>>;
+}
+
 export interface ToolClient {
   readonly initialize: () => Promise<ToolClientOutcome<string>>;
-  readonly listTools: () => Promise<ToolClientOutcome<readonly string[]>>;
+  /**
+   * The server's whole listing, every page followed (P-24, ADR 0109).
+   *
+   * A `notifications/tools/list_changed` that arrives while the listing is in
+   * progress restarts it, once; a second is `RESULT_UNBOUNDED`.
+   */
+  readonly listTools: () => Promise<ToolClientOutcome<readonly AdvertisedTool[]>>;
+  /**
+   * Whether a `notifications/tools/list_changed` arrived since the last listing
+   * finished, and clear it. The port reads it after obtaining a listing and
+   * before sending a call.
+   */
+  readonly takeListChanged: () => boolean;
   readonly callTool: (
     name: string,
     args: Readonly<Record<string, unknown>>,
@@ -82,6 +104,11 @@ export interface ToolClient {
 
 const AT_RESPONSE = "server.response";
 const AT_RESULT = "server.result";
+const AT_TOOLS = "server.tools";
+const AT_CURSOR = "server.tools.nextCursor";
+
+/** The notification that invalidates a listing (MCP 2025-06-18, tools). */
+const LIST_CHANGED = "notifications/tools/list_changed";
 
 function refused<T>(
   refusal: ToolRefusal,
@@ -113,6 +140,8 @@ export function createToolClient(connection: ToolTransportConnection): ToolClien
   const pending = new Map<number, Pending>();
   let broken = false;
   let initialized = false;
+  // Set by a `list_changed` notification; read by the listing and the port.
+  let listChanged = false;
 
   const breakAll = (): void => {
     broken = true;
@@ -128,7 +157,12 @@ export function createToolClient(connection: ToolTransportConnection): ToolClien
       breakAll();
       return;
     }
-    if (outcome.kind === "NOTIFICATION") return;
+    if (outcome.kind === "NOTIFICATION") {
+      // A flag, not a reader: the listing and the port read it at their own
+      // points. Every other notification is recognized and dropped, as before.
+      if (outcome.method === LIST_CHANGED) listChanged = true;
+      return;
+    }
     const entry = pending.get(outcome.response.id);
     // An answer to a request this client never sent. The stream is no longer
     // one this client can reason about, so it is not merely ignored.
@@ -229,30 +263,98 @@ export function createToolClient(connection: ToolTransportConnection): ToolClien
     return { ok: true, value: null };
   };
 
-  return {
-    initialize,
-
-    async listTools(): Promise<ToolClientOutcome<readonly string[]>> {
-      const start = await ready();
-      if (!start.ok) return start;
-      const outcome = await request("tools/list", {});
+  /**
+   * Every page of one listing, each rule checked where it applies (P-24).
+   *
+   * `nextCursor` absent ends the listing. `null`, a non-string and `""` are
+   * `PROTOCOL_VIOLATION`: the reference SDKs type it optional and not nullable,
+   * and an empty cursor is the plane's own refusal. A repeated cursor (a cycle)
+   * and a tool name advertised twice (the allowlist is keyed by name, the
+   * plane's rule) are violations too; a cursor over its bytes, a page past
+   * `TOOL_LIST_PAGES_MAX`, a tool past `TOOL_LIST_TOOLS_MAX` and an expired
+   * deadline are `RESULT_UNBOUNDED`, refused and never truncated.
+   */
+  const listAllPages = async (
+    isExpired: () => boolean,
+  ): Promise<ToolClientOutcome<readonly AdvertisedTool[]>> => {
+    const tools: AdvertisedTool[] = [];
+    const names = new Set<string>();
+    const cursors = new Set<string>();
+    let cursor: string | null = null;
+    for (let page = 1; ; page += 1) {
+      const outcome = await request("tools/list", cursor === null ? {} : { cursor });
       if (!outcome.ok) return outcome;
       const result = outcome.value;
       if (typeof result !== "object" || result === null || Array.isArray(result)) {
         return refused("PROTOCOL_VIOLATION", AT_RESPONSE);
       }
-      const tools = (result as Record<string, unknown>)["tools"];
-      if (!Array.isArray(tools)) return refused("PROTOCOL_VIOLATION", AT_RESPONSE);
-      const names: string[] = [];
-      for (const tool of tools) {
+      const shape = result as Record<string, unknown>;
+      const listed = shape["tools"];
+      if (!Array.isArray(listed)) return refused("PROTOCOL_VIOLATION", AT_RESPONSE);
+      for (const tool of listed as readonly unknown[]) {
         if (typeof tool !== "object" || tool === null || Array.isArray(tool)) {
           return refused("PROTOCOL_VIOLATION", AT_RESPONSE);
         }
         const name = (tool as Record<string, unknown>)["name"];
+        const inputSchema = (tool as Record<string, unknown>)["inputSchema"];
         if (typeof name !== "string") return refused("PROTOCOL_VIOLATION", AT_RESPONSE);
-        names.push(name);
+        // The revision requires a schema on every tool.
+        if (typeof inputSchema !== "object" || inputSchema === null || Array.isArray(inputSchema)) {
+          return refused("PROTOCOL_VIOLATION", AT_TOOLS);
+        }
+        if (names.has(name)) return refused("PROTOCOL_VIOLATION", AT_TOOLS);
+        names.add(name);
+        if (tools.length === TOOL_LIST_TOOLS_MAX) return refused("RESULT_UNBOUNDED", AT_TOOLS);
+        tools.push(Object.freeze({ name, inputSchema: inputSchema as Readonly<Record<string, unknown>> }));
       }
-      return { ok: true, value: Object.freeze(names) };
+      if (!Object.hasOwn(shape, "nextCursor")) return { ok: true, value: Object.freeze(tools) };
+      const next = shape["nextCursor"];
+      if (typeof next !== "string" || next === "") return refused("PROTOCOL_VIOLATION", AT_CURSOR);
+      if (toolFrameBytes(next) > TOOL_CURSOR_BYTES_MAX) return refused("RESULT_UNBOUNDED", AT_CURSOR);
+      if (cursors.has(next)) return refused("PROTOCOL_VIOLATION", AT_CURSOR);
+      cursors.add(next);
+      if (page === TOOL_LIST_PAGES_MAX) return refused("RESULT_UNBOUNDED", AT_TOOLS);
+      // Read between pages: after this page's response, before the next request.
+      if (isExpired()) return refused("RESULT_UNBOUNDED", AT_TOOLS);
+      cursor = next;
+    }
+  };
+
+  return {
+    initialize,
+
+    async listTools(): Promise<ToolClientOutcome<readonly AdvertisedTool[]>> {
+      const start = await ready();
+      if (!start.ok) return start;
+      // One listing-level deadline, read between pages and never mid-request
+      // (C4): the stream stays at a known offset, so an expired listing keeps
+      // its connection. No clock is read; the timer only sets a flag.
+      let expired = false;
+      const deadline = setTimeout(() => {
+        expired = true;
+      }, TOOL_LIST_DEADLINE_MS);
+      (deadline as { unref?: () => void }).unref?.();
+      try {
+        // A change announced while the listing is being assembled would mix two
+        // generations of it: restart once, and refuse a second.
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          listChanged = false;
+          const listing = await listAllPages(() => expired);
+          if (!listing.ok) return listing;
+          // Read through a cast: the flag is set by `accept`, across the await,
+          // which the compiler's narrowing of the assignment above cannot see.
+          if (!(listChanged as boolean)) return listing;
+        }
+        return refused("RESULT_UNBOUNDED", AT_TOOLS);
+      } finally {
+        clearTimeout(deadline);
+      }
+    },
+
+    takeListChanged(): boolean {
+      const was = listChanged;
+      listChanged = false;
+      return was;
     },
 
     async callTool(

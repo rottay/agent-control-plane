@@ -21,7 +21,10 @@ import {
 } from "@acp/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { TOOL_LIST_PAGES_MAX } from "@acp/tools";
+
 import { buildServer } from "../../src/build-server/index.js";
+import { loadToolServers } from "../../src/tool-calls/index.js";
 
 /**
  * Evidence for the tool-call door (V2-B4b stage 3C).
@@ -104,7 +107,9 @@ function writeFakeServer(
       "    return;",
       "  }",
       "  if (message.method === 'tools/list') {",
-      "    send({ jsonrpc: '2.0', id: message.id, result: { tools: [{ name: 'docs.search' }] } });",
+      "    send({ jsonrpc: '2.0', id: message.id, result: { tools: [",
+      "      { name: 'docs.search', inputSchema: { type: 'object' } },",
+      "      { name: 'docs.write', inputSchema: { type: 'object' } }] } });",
       "    return;",
       "  }",
       "  if (message.method === 'tools/call') {",
@@ -138,8 +143,8 @@ function toolDocument(dir: string, pidLog: string, delayMs = 0, errorResult = fa
         command: fake.command,
         args: fake.args,
         tools: [
-          { name: "docs.search", writes: false },
-          { name: "docs.write", writes: true },
+          { name: "docs.search", writes: false, inputSchema: { type: "object" } },
+          { name: "docs.write", writes: true, inputSchema: { type: "object" } },
         ],
       },
     ]),
@@ -853,5 +858,250 @@ describe("a coordinate another process holds", () => {
     expect(response.statusCode).toBe(200);
     expect(ToolCallExecuteResponse.parse(response.json()).replayed).toBe(false);
     await h.app.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-24 (ADR 0109): the door lists before it calls, and calls only under the pin
+// ---------------------------------------------------------------------------
+
+/** What the P-24 fake advertises, and how it pages and announces. */
+interface P24Script {
+  readonly advertises?: readonly string[];
+  readonly schemas?: Readonly<Record<string, unknown>>;
+  readonly pageSize?: number;
+  readonly cursorCycle?: boolean;
+  readonly listChangedBeforeCall?: boolean;
+}
+
+/**
+ * This suite's own P-24 fake: pages its listing, logs every method it is asked
+ * for (`list <cursor>` / `call <name>`) and its pid, and can announce a
+ * `list_changed` in the same write as the listing's last page.
+ */
+function writeP24Server(dir: string, pidLog: string, methodLog: string, script: P24Script): { command: string; args: string[] } {
+  const path = join(dir, "fake-mcp-p24.mjs");
+  writeFileSync(
+    path,
+    [
+      "import { appendFileSync } from 'node:fs';",
+      "appendFileSync(" + JSON.stringify(pidLog) + ", String(process.pid) + '\\n');",
+      "const LOG = " + JSON.stringify(methodLog) + ";",
+      "const ADVERTISES = " + JSON.stringify(script.advertises ?? ["docs.search", "docs.write"]) + ";",
+      "const SCHEMAS = " + JSON.stringify(script.schemas ?? {}) + ";",
+      "const PAGE = " + JSON.stringify(script.pageSize ?? null) + ";",
+      "const CYCLE = " + JSON.stringify(script.cursorCycle === true) + ";",
+      "const CHANGED = " + JSON.stringify(script.listChangedBeforeCall === true) + ";",
+      "let announced = false;",
+      "let buffer = '';",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', (chunk) => {",
+      "  buffer += chunk;",
+      "  let index = buffer.indexOf('\\n');",
+      "  while (index >= 0) {",
+      "    const line = buffer.slice(0, index);",
+      "    buffer = buffer.slice(index + 1);",
+      "    index = buffer.indexOf('\\n');",
+      "    if (line.trim() !== '') handle(JSON.parse(line));",
+      "  }",
+      "});",
+      "function frame(value) { return JSON.stringify(value) + '\\n'; }",
+      "function handle(message) {",
+      "  const { id, method, params } = message;",
+      "  if (method === 'initialize') {",
+      "    process.stdout.write(frame({ jsonrpc: '2.0', id, result: { protocolVersion: '2025-06-18',",
+      "      capabilities: { tools: { listChanged: true } }, serverInfo: { name: 'fake', version: '0' } } }));",
+      "    return;",
+      "  }",
+      "  if (method === 'notifications/initialized') return;",
+      "  if (method === 'tools/list') {",
+      "    const cursor = params && typeof params.cursor === 'string' ? params.cursor : null;",
+      "    appendFileSync(LOG, 'list ' + String(cursor) + '\\n');",
+      "    const all = ADVERTISES.map((name) => ({ name, inputSchema: Object.hasOwn(SCHEMAS, name) ? SCHEMAS[name] : { type: 'object' } }));",
+      "    const size = PAGE === null ? all.length : PAGE;",
+      "    const start = cursor === null ? 0 : Number(cursor.slice(1));",
+      "    const result = { tools: all.slice(start, start + size) };",
+      "    if (start + size < all.length) result.nextCursor = CYCLE && start > 0 ? 'c' + String(size) : 'c' + String(start + size);",
+      "    let out = frame({ jsonrpc: '2.0', id, result });",
+      "    if (CHANGED && !announced && result.nextCursor === undefined) {",
+      "      announced = true;",
+      "      out += frame({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });",
+      "    }",
+      "    process.stdout.write(out);",
+      "    return;",
+      "  }",
+      "  if (method === 'tools/call') {",
+      "    appendFileSync(LOG, 'call ' + String(params && params.name) + '\\n');",
+      "    process.stdout.write(frame({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'the answer' }] } }));",
+      "  }",
+      "}",
+    ].join("\n"),
+    "utf8",
+  );
+  chmodSync(path, 0o700);
+  return { command: realpathSync(process.execPath), args: [path] };
+}
+
+/** The pin every P-24 row's allowlist carries for `docs.search`. */
+const P24_PIN = { type: "object", properties: { q: { type: "string" } } };
+
+/** The E rows, shared in shape with the other door's suite (parity is asserted in the gateway's parity suite). */
+const P24_ROWS: readonly {
+  readonly row: string;
+  readonly script: P24Script;
+  readonly expect: { readonly outcome: string; readonly refusal: string | null; readonly at: string | null };
+  readonly log: readonly string[];
+}[] = [
+  {
+    row: "E1: pin equal to the advertisement, tool on page 1",
+    script: { schemas: { "docs.search": P24_PIN } },
+    expect: { outcome: "COMPLETED", refusal: null, at: null },
+    log: ["list null", "call docs.search"],
+  },
+  {
+    row: "E2: the tool on page 3 of 3",
+    script: { advertises: ["a.1", "a.2", "docs.search"], pageSize: 1, schemas: { "docs.search": P24_PIN } },
+    expect: { outcome: "COMPLETED", refusal: null, at: null },
+    log: ["list null", "list c1", "list c2", "call docs.search"],
+  },
+  {
+    row: "E3: one nested key differs",
+    script: { schemas: { "docs.search": { type: "object", properties: { q: { type: "number" } } } } },
+    expect: { outcome: "REFUSED", refusal: "SCHEMA_MISMATCH", at: "server.tools.inputSchema" },
+    log: ["list null"],
+  },
+  {
+    row: "E4: allowlisted, not advertised",
+    script: { advertises: ["docs.write"] },
+    expect: { outcome: "REFUSED", refusal: "SCHEMA_MISMATCH", at: "server.tools" },
+    log: ["list null"],
+  },
+  {
+    row: "E5: a cursor cycle",
+    script: { advertises: ["a.1", "a.2", "a.3", "docs.search"], pageSize: 1, cursorCycle: true, schemas: { "docs.search": P24_PIN } },
+    expect: { outcome: "REFUSED", refusal: "PROTOCOL_VIOLATION", at: "server.tools.nextCursor" },
+    log: ["list null", "list c1"],
+  },
+  {
+    row: "E7: a list_changed between the listing and the call",
+    script: { schemas: { "docs.search": P24_PIN }, listChangedBeforeCall: true },
+    expect: { outcome: "COMPLETED", refusal: null, at: null },
+    log: ["list null", "list null", "call docs.search"],
+  },
+  {
+    row: "E8: pages past TOOL_LIST_PAGES_MAX",
+    script: {
+      advertises: [...Array.from({ length: TOOL_LIST_PAGES_MAX }, (_, index) => "a." + String(index)), "docs.search"],
+      pageSize: 1,
+      schemas: { "docs.search": P24_PIN },
+    },
+    expect: { outcome: "REFUSED", refusal: "RESULT_UNBOUNDED", at: "server.tools" },
+    log: Array.from({ length: TOOL_LIST_PAGES_MAX }, (_, index) => "list " + (index === 0 ? "null" : "c" + String(index))),
+  },
+];
+
+/** The operator document for a P-24 row: `docs.search` pinned (or not, for E6), `docs.write` pinned to the smallest schema. */
+function p24Document(dir: string, fake: { command: string; args: string[] }, pinned = true): string {
+  const path = join(dir, "tool-servers-p24.json");
+  writeFileSync(
+    path,
+    JSON.stringify([
+      {
+        serverId: "docs",
+        transport: "STDIO",
+        command: fake.command,
+        args: fake.args,
+        tools: [
+          pinned ? { name: "docs.search", writes: false, inputSchema: P24_PIN } : { name: "docs.search", writes: false },
+          { name: "docs.write", writes: true, inputSchema: { type: "object" } },
+        ],
+      },
+    ]),
+    "utf8",
+  );
+  chmodSync(path, 0o600);
+  return path;
+}
+
+function methodLines(path: string): readonly string[] {
+  try {
+    return readFileSync(path, "utf8").split("\n").filter((line) => line !== "");
+  } catch {
+    return [];
+  }
+}
+
+describe("P-24: the API door lists before it calls, and calls only under the pin (E1-E8)", () => {
+  /** A seeded ledger, a bearer and a P-24 fake for one row; the API door posted once. */
+  async function runRow(script: P24Script): Promise<{
+    readonly statusCode: number;
+    readonly payload: unknown;
+    readonly dir: string;
+    readonly pidLog: string;
+    readonly methodLog: string;
+    readonly ledgerPath: string;
+  }> {
+    const dir = root();
+    mkdirSync(join(dir, "ledger"), { recursive: true });
+    const ledgerPath = join(dir, "ledger", "acp.sqlite3");
+    const pidLog = join(dir, "pids.log");
+    const methodLog = join(dir, "methods.log");
+    writeFileSync(pidLog, "", "utf8");
+    const taskId = randomUUID();
+    const ledger = openLedger(ledgerPath);
+    ledger.append(makeEvent(taskId));
+    ledger.close();
+    const fake = writeP24Server(dir, pidLog, methodLog, script);
+    const app = buildServer({ ledgerPath, writeBearerPath: tokenFile(dir), toolServersPath: p24Document(dir, fake) });
+    try {
+      const response = await app.inject({ method: "POST", url: url(taskId), headers: AUTH, payload: body({ taskId }) });
+      return { statusCode: response.statusCode, payload: response.json(), dir, pidLog, methodLog, ledgerPath };
+    } finally {
+      await app.close();
+    }
+  }
+
+  for (const row of P24_ROWS) {
+    it(row.row, async () => {
+      const ran = await runRow(row.script);
+      expect(ran.statusCode).toBe(200);
+      // The existing response schema still parses the new word: it crosses by grammar.
+      const payload = ToolCallExecuteResponse.parse(ran.payload);
+      expect({ outcome: payload.outcome, refusal: payload.refusal, at: payload.at }).toEqual(row.expect);
+      expect(methodLines(ran.methodLog)).toEqual(row.log);
+      const ledger = openLedger(ran.ledgerPath, { readOnly: true });
+      const recorded = ledger.listEvents({ limit: 100 }).events.map((entry) => entry.event).filter((event) => event.type === "TOOL_CALL_RECORDED");
+      ledger.close();
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]?.payload).toMatchObject({ refusal: row.expect.refusal });
+      if (row.expect.refusal !== null) expect(recorded[0]?.payload).toMatchObject({ resultBytes: 0, contentBlocks: 0 });
+      const started = readFileSync(ran.pidLog, "utf8").split("\n").filter((line) => line.trim() !== "").map(Number);
+      expect(started.length).toBeGreaterThan(0);
+      for (const pid of started) expect(() => process.kill(pid, 0)).toThrow();
+    });
+  }
+
+  it("E6: refuses a document with an unpinned tool as DOCUMENT_NOT_ADMITTED, forwards no path, and starts no child", async () => {
+    const dir = root();
+    mkdirSync(join(dir, "ledger"), { recursive: true });
+    const ledgerPath = join(dir, "ledger", "acp.sqlite3");
+    const pidLog = join(dir, "pids.log");
+    writeFileSync(pidLog, "", "utf8");
+    const taskId = randomUUID();
+    const ledger = openLedger(ledgerPath);
+    ledger.append(makeEvent(taskId));
+    ledger.close();
+    const document = p24Document(dir, writeP24Server(dir, pidLog, join(dir, "methods.log"), {}), false);
+    expect(loadToolServers(document)).toEqual({ ok: false, reason: "DOCUMENT_NOT_ADMITTED" });
+    const app = buildServer({ ledgerPath, writeBearerPath: tokenFile(dir), toolServersPath: document });
+    try {
+      const response = await app.inject({ method: "POST", url: url(taskId), headers: AUTH, payload: body({ taskId }) });
+      expect(response.statusCode).toBe(503);
+      expect(ApiError.parse(response.json()).error.code).toBe("TOOL_SERVERS_UNCONFIGURED");
+      expect(response.body).not.toContain("inputSchema");
+    } finally {
+      await app.close();
+    }
+    expect(readFileSync(pidLog, "utf8")).toBe("");
   });
 });

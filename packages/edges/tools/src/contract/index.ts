@@ -75,6 +75,12 @@ export type ToolTransportUnresolved = typeof TOOL_TRANSPORT_UNRESOLVED;
  * When P-07 brings the effect outcome vocabulary, the §16 translation layer
  * maps `REFUSED`/`RESULT_IS_ERROR` to `FAILED`; this package does not mint
  * that word ahead of its owner.
+ *
+ * `SCHEMA_MISMATCH` (P-24, ADR 0109) is the port's refusal when the listing this
+ * connection last saw does not advertise the tool (`at: "server.tools"`), or
+ * advertises it with an `inputSchema` that is not JSON-equal to the one the
+ * operator pinned (`at: "server.tools.inputSchema"`). It is decided before any
+ * `tools/call` is sent.
  */
 export const TOOL_REFUSALS = [
   "ARGUMENTS_UNBOUNDED",
@@ -83,6 +89,7 @@ export const TOOL_REFUSALS = [
   "RESULT_IS_ERROR",
   "RESULT_UNBOUNDED",
   "RESULT_UNSAFE",
+  "SCHEMA_MISMATCH",
   "SERVER_NOT_ADMITTED",
   "SESSION_NOT_LIVE",
   "TOOL_NOT_ALLOWED",
@@ -114,10 +121,22 @@ export function holdsToolWriteAuthority(role: WorkerRole): boolean {
   return (TOOL_WRITE_ROLES as readonly string[]).includes(role);
 }
 
-/** One tool a server is permitted to be asked for, and whether it writes. */
+/**
+ * One tool a server is permitted to be asked for, whether it writes, and the
+ * interface the operator allowed it under (P-24, ADR 0109).
+ *
+ * `inputSchema` is **required and never defaulted**: it is the value the operator
+ * reviewed, and the port calls the tool only on a connection whose last listing
+ * advertised a JSON-equal schema. It is a pin on the interface, not a validator of
+ * the call: the plane never checks `arguments` against it. There is no tool
+ * version in the MCP revision this client speaks, so the pin is the version and a
+ * changed schema is a re-pin — a reviewed change to the operator's document, never
+ * something the plane rewrites from what a server advertises.
+ */
 export interface ToolAllowlistEntry {
   readonly name: string;
   readonly writes: boolean;
+  readonly inputSchema: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -161,6 +180,32 @@ export const TOOL_RESULT_BYTES_MAX = 65_536;
 export const TOOL_FRAME_BYTES_MAX = 131_072;
 export const TOOL_CONTENT_STRING_MAX = 4_096;
 export const TOOL_CALL_TIMEOUT_MS = 30_000;
+
+/**
+ * The listing's bounds (P-24, ADR 0109), each a refusal and never a truncation.
+ *
+ * Which bound binds what: a page's **bytes** are bound by the frame ceiling
+ * ({@link TOOL_FRAME_BYTES_MAX}) before any of these applies, so a listing's
+ * **count** is bound across pages by pages and tools, and its **shape** by the
+ * cursor's bytes and the schema's depth. `TOOL_SCHEMA_BYTES_MAX` binds the
+ * operator's pin at admission; an advertised schema is bound by its frame.
+ */
+export const TOOL_LIST_PAGES_MAX = 16;
+export const TOOL_LIST_TOOLS_MAX = 256;
+export const TOOL_CURSOR_BYTES_MAX = 1_024;
+export const TOOL_SCHEMA_BYTES_MAX = 16_384;
+export const TOOL_SCHEMA_DEPTH_MAX = 32;
+
+/**
+ * The whole listing's deadline, read **between pages** and never mid-request.
+ *
+ * One timer, armed when a listing starts, sets a flag; the flag is read after a
+ * page's response and before the next request, so the stream is always at a known
+ * offset and an expired listing is `RESULT_UNBOUNDED` with the connection kept.
+ * Each page keeps its own {@link TOOL_CALL_TIMEOUT_MS}, so the worst case is this
+ * deadline plus one page's timeout. No clock is read.
+ */
+export const TOOL_LIST_DEADLINE_MS = 60_000;
 
 /**
  * The hard lifetime of a tool server child, passed to `spawn` as its `timeout`.
@@ -257,7 +302,12 @@ export const MCP_PROTOCOL_RECORD = Object.freeze({
   BATCHING: "REFUSED",
   ORIGIN_HEADER: "NOT_SENT",
   REDIRECTS: "manual; 3xx refused as TRANSPORT_REFUSED",
-  LIST_PAGINATION: "UNFOLLOWED",
+  LIST_PAGINATION:
+    "followed; bounded by pages, tools, cursor bytes and a listing deadline; a repeated cursor refused",
+  TOOL_SCHEMA: "pinned per tool by value; JSON-equal or SCHEMA_MISMATCH before any tools/call; arguments never validated",
+  LIST_CHANGED:
+    "invalidates the cached listing; a change during a listing restarts it once; a guard re-checks before send; a change after the last listing this connection saw is not seen",
+  OUTPUT_SCHEMA: "NOT_READ",
   IS_ERROR_RESULT: "refused as RESULT_IS_ERROR; error content discarded whole",
   CONTENT_BLOCKS: "text only; every other kind refused",
 } as const);

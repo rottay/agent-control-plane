@@ -68,6 +68,25 @@ export interface FakeToolServerScript {
   readonly callLog?: string;
   /** Append this child's pid here at startup, one per line. */
   readonly pidLog?: string;
+  /**
+   * P-24. The schema a tool is advertised under, by name; every other tool is
+   * advertised as `{ type: "object" }`, the smallest conformant schema.
+   */
+  readonly schemas?: Readonly<Record<string, unknown>>;
+  /** Tools per `tools/list` page; the listing is one page when absent. */
+  readonly pageSize?: number;
+  /** Every page after the first points back at the first cursor: a cycle. */
+  readonly cursorCycle?: boolean;
+  /** The first page ends with `nextCursor: ""`. */
+  readonly emptyCursor?: boolean;
+  /** The first page ends with `nextCursor: null`. */
+  readonly nullCursor?: boolean;
+  /** Emit `notifications/tools/list_changed` right after the first complete listing. */
+  readonly listChangedBeforeCall?: boolean;
+  /** Emit `notifications/tools/list_changed` right after the first page of the first listing. */
+  readonly listChangedMidListing?: boolean;
+  /** Append every `tools/list` here, one line per page, as `list <cursor>`. */
+  readonly listLog?: string;
 }
 
 /**
@@ -119,6 +138,16 @@ export function writeFakeToolServer(
     "const SERVER_NAME = " + JSON.stringify(script.serverName ?? "fake-mcp") + ";",
     "const CALL_LOG = " + JSON.stringify(script.callLog ?? null) + ";",
     "const PID_LOG = " + JSON.stringify(script.pidLog ?? null) + ";",
+    "const SCHEMAS = " + JSON.stringify(script.schemas ?? {}) + ";",
+    "const PAGE_SIZE = " + JSON.stringify(script.pageSize ?? null) + ";",
+    "const CURSOR_CYCLE = " + JSON.stringify(script.cursorCycle === true) + ";",
+    "const EMPTY_CURSOR = " + JSON.stringify(script.emptyCursor === true) + ";",
+    "const NULL_CURSOR = " + JSON.stringify(script.nullCursor === true) + ";",
+    "const CHANGED_BEFORE_CALL = " + JSON.stringify(script.listChangedBeforeCall === true) + ";",
+    "const CHANGED_MID_LISTING = " + JSON.stringify(script.listChangedMidListing === true) + ";",
+    "const LIST_LOG = " + JSON.stringify(script.listLog ?? null) + ";",
+    "let changedBeforeSent = false;",
+    "let changedMidSent = false;",
     "const fs = await import('node:fs');",
     "if (PID_LOG !== null) fs.appendFileSync(PID_LOG, String(process.pid) + '\\n');",
     "const send = (message) => { process.stdout.write(JSON.stringify(message) + '\\n'); };",
@@ -150,7 +179,25 @@ export function writeFakeToolServer(
     "  }",
     "  if (method === 'notifications/initialized') return;",
     "  if (method === 'tools/list') {",
-    "    reply(id, { tools: ADVERTISES.map((name) => ({ name, description: name, inputSchema: { type: 'object' } })) });",
+    "    const cursor = params && typeof params.cursor === 'string' ? params.cursor : null;",
+    "    if (LIST_LOG !== null) fs.appendFileSync(LIST_LOG, 'list ' + String(cursor) + '\\n');",
+    "    const all = ADVERTISES.map((name) => ({ name, description: name,",
+    "      inputSchema: Object.hasOwn(SCHEMAS, name) ? SCHEMAS[name] : { type: 'object' } }));",
+    "    const size = PAGE_SIZE === null ? all.length : PAGE_SIZE;",
+    "    const start = cursor === null ? 0 : Number(cursor.slice(1));",
+    "    const page = all.slice(start, start + size);",
+    "    const result = { tools: page };",
+    "    if (start + size < all.length) result.nextCursor = CURSOR_CYCLE && start > 0 ? 'c' + String(size) : 'c' + String(start + size);",
+    "    if (cursor === null && EMPTY_CURSOR) result.nextCursor = '';",
+    "    if (cursor === null && NULL_CURSOR) result.nextCursor = null;",
+    // The notification rides in the same write as the page it follows, so the
+    // client reads the two together: the fixture drives the announced change
+    // deterministically rather than racing the call.
+    "    let changed = false;",
+    "    if (CHANGED_MID_LISTING && !changedMidSent && cursor === null && result.nextCursor !== undefined) { changedMidSent = true; changed = true; }",
+    "    if (CHANGED_BEFORE_CALL && !changedBeforeSent && result.nextCursor === undefined) { changedBeforeSent = true; changed = true; }",
+    "    const notification = changed ? JSON.stringify({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' }) + '\\n' : '';",
+    "    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n' + notification);",
     "    return;",
     "  }",
     "  if (method === 'tools/call') {",

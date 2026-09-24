@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { WorkerIdentityString } from "@acp/contracts";
+
 import { admitToolServer } from "../../src/admission/index.js";
 import type { AdmittedHttpLoopbackToolServer } from "../../src/admission/index.js";
 import {
@@ -8,6 +10,8 @@ import {
   TOOL_MCP_PROTOCOL_VERSION,
 } from "../../src/contract/index.js";
 import { openToolHttpLoopbackConnection } from "../../src/http-loopback/index.js";
+import { createToolProtocolPort } from "../../src/port/index.js";
+import type { ToolProtocolPort } from "../../src/port/index.js";
 import { initializeBody, jsonRpcBody, scriptFetch } from "../testing/index.js";
 import type { ScriptedFetch, ScriptedHttpAnswer } from "../testing/index.js";
 
@@ -28,6 +32,7 @@ import type { ScriptedFetch, ScriptedHttpAnswer } from "../testing/index.js";
  */
 
 const URL_TEXT = "http://127.0.0.1:9000/mcp";
+const IMPLEMENTER = "claude/opus/implementer/01" as WorkerIdentityString;
 let scripted: ScriptedFetch | null = null;
 
 afterEach(() => {
@@ -40,7 +45,7 @@ function server(): AdmittedHttpLoopbackToolServer {
     serverId: "docs",
     transport: "HTTP_LOOPBACK",
     url: URL_TEXT,
-    tools: [{ name: "docs.search", writes: false }],
+    tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }],
   });
   if (!outcome.ok) throw new Error("fixture endpoint was not admitted: " + outcome.at);
   if (outcome.server.kind !== "HTTP_LOOPBACK") throw new Error("fixture is not a loopback server");
@@ -357,5 +362,114 @@ describe("broken once, broken for good", () => {
     expect(peer.calls()).toEqual([]);
     await connection.close();
     expect(peer.calls()).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-24 (ADR 0109): the paginated listing and the pinned call, on the loopback leg
+// ---------------------------------------------------------------------------
+
+describe("the loopback leg lists every page and calls only under the pin (P-24)", () => {
+  const CHANGED = JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+
+  /**
+   * A peer serving `pages` (each a list of `{name, inputSchema}`), answering a
+   * call with text, and optionally announcing a change after its first page.
+   */
+  function pagedPeer(
+    pages: readonly (readonly Record<string, unknown>[])[],
+    options: { readonly changedAfterFirstPage?: boolean } = {},
+  ): { readonly methods: () => readonly string[]; readonly cursors: () => readonly unknown[] } {
+    const methods: string[] = [];
+    const cursors: unknown[] = [];
+    let announced = false;
+    scripted = scriptFetch((body: string) => {
+      const parsed = JSON.parse(body) as { method?: string; id?: number; params?: { cursor?: unknown } };
+      methods.push(parsed.method ?? "");
+      const id = parsed.id ?? 0;
+      if (parsed.method === "initialize") return { status: 200, headers: JSON_HEADERS, body: initializeBody(id) };
+      if (parsed.method === "notifications/initialized") return { status: 202 };
+      if (parsed.method === "tools/list") {
+        cursors.push(parsed.params?.cursor);
+        const index = typeof parsed.params?.cursor === "string" ? Number(parsed.params.cursor.slice(1)) : 0;
+        const result: Record<string, unknown> = { tools: pages[index] ?? [] };
+        if (index + 1 < pages.length) result["nextCursor"] = "p" + String(index + 1);
+        const frames = ["data: " + jsonRpcBody(id, result) + "\n\n"];
+        if (options.changedAfterFirstPage === true && !announced && index === 0) {
+          announced = true;
+          frames.push("data: " + CHANGED + "\n\n");
+        }
+        return { status: 200, headers: SSE_HEADERS, body: frames.join("") };
+      }
+      return { status: 200, headers: JSON_HEADERS, body: jsonRpcBody(id, { content: [{ type: "text", text: "the answer" }] }) };
+    });
+    return { methods: () => methods, cursors: () => cursors };
+  }
+
+  const PIN = { type: "object", properties: { q: { type: "string" } } };
+  const loopbackPort = (): ToolProtocolPort => {
+    const admitted = admitToolServer({
+      serverId: "docs",
+      transport: "HTTP_LOOPBACK",
+      url: URL_TEXT,
+      tools: [{ name: "docs.search", writes: false, inputSchema: PIN }],
+    });
+    if (!admitted.ok) throw new Error("fixture endpoint was not admitted: " + admitted.at);
+    return createToolProtocolPort({ servers: [admitted.server], liveness: { isLive: () => true } });
+  };
+  const callOn = (target: ToolProtocolPort) =>
+    target.callTool({ sessionId: "s", serverId: "docs", toolName: "docs.search", identity: IMPLEMENTER, arguments: {} });
+
+  it("E1: completes a call whose tool is on the only page", async () => {
+    const peer = pagedPeer([[{ name: "docs.search", inputSchema: PIN }]]);
+    const target = loopbackPort();
+    try {
+      expect(await callOn(target)).toMatchObject({ ok: true, content: ["the answer"] });
+      expect(peer.methods().filter((method) => method === "tools/list")).toHaveLength(1);
+    } finally {
+      await target.closeAll();
+    }
+  });
+
+  it("E2: follows three pages with their cursors, then calls once", async () => {
+    const peer = pagedPeer([
+      [{ name: "a.1", inputSchema: PIN }],
+      [{ name: "a.2", inputSchema: PIN }],
+      [{ name: "docs.search", inputSchema: PIN }],
+    ]);
+    const target = loopbackPort();
+    try {
+      expect((await callOn(target)).ok).toBe(true);
+      expect(peer.cursors()).toEqual([undefined, "p1", "p2"]);
+      expect(peer.methods().filter((method) => method === "tools/call")).toHaveLength(1);
+    } finally {
+      await target.closeAll();
+    }
+  });
+
+  it("E3: refuses a nested difference as SCHEMA_MISMATCH and sends no call", async () => {
+    const peer = pagedPeer([[{ name: "docs.search", inputSchema: { type: "object", properties: { q: { type: "number" } } } }]]);
+    const target = loopbackPort();
+    try {
+      expect(await callOn(target)).toMatchObject({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.inputSchema" });
+      expect(peer.methods()).not.toContain("tools/call");
+    } finally {
+      await target.closeAll();
+    }
+  });
+
+  it("restarts a listing a change interrupted, once, and then calls", async () => {
+    const peer = pagedPeer(
+      [[{ name: "a.1", inputSchema: PIN }], [{ name: "docs.search", inputSchema: PIN }]],
+      { changedAfterFirstPage: true },
+    );
+    const target = loopbackPort();
+    try {
+      expect((await callOn(target)).ok).toBe(true);
+      expect(peer.cursors()).toEqual([undefined, "p1", undefined, "p1"]);
+      expect(peer.methods().filter((method) => method === "tools/call")).toHaveLength(1);
+    } finally {
+      await target.closeAll();
+    }
   });
 });

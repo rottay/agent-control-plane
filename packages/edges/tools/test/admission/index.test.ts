@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { admitToolServer } from "../../src/admission/index.js";
-import { TOOL_SERVER_ENV_KEYS } from "../../src/contract/index.js";
+import { admitToolServer, admitToolServers } from "../../src/admission/index.js";
+import { TOOL_SCHEMA_BYTES_MAX, TOOL_SCHEMA_DEPTH_MAX, TOOL_SERVER_ENV_KEYS } from "../../src/contract/index.js";
 import type { ToolServerDescriptor } from "../../src/contract/index.js";
 import {
   makeToolFixtureDir,
@@ -29,7 +29,7 @@ const stdio = (overrides: Partial<ToolServerDescriptor> = {}): ToolServerDescrip
   transport: "STDIO",
   command,
   args,
-  tools: [{ name: "docs.search", writes: false }],
+  tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }],
   ...overrides,
 });
 
@@ -43,7 +43,7 @@ describe("a stdio descriptor is admitted, and its environment is built not inher
     // stdio arm, and the loopback arm deliberately has none.
     if (outcome.server.kind !== "STDIO") return;
     expect(outcome.server.command).toBe(command);
-    expect(outcome.server.allowlist).toEqual([{ name: "docs.search", writes: false }]);
+    expect(outcome.server.allowlist).toEqual([{ name: "docs.search", writes: false, inputSchema: { type: "object" } }]);
   });
 
   it("gives the child exactly the allowlisted variables and nothing ambient", () => {
@@ -140,7 +140,7 @@ describe("the stdio fields are admitted, never assumed", () => {
     const descriptor: ToolServerDescriptor = {
       serverId: "docs",
       transport: "STDIO",
-      tools: [{ name: "docs.search", writes: false }],
+      tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }],
     };
     expect(admitToolServer(descriptor)).toEqual({
       ok: false,
@@ -162,12 +162,12 @@ describe("the stdio fields are admitted, never assumed", () => {
       admitToolServer(
         stdio({
           tools: [
-            { name: "docs.search", writes: false },
-            { name: "docs.search", writes: true },
+            { name: "docs.search", writes: false, inputSchema: { type: "object" } },
+            { name: "docs.search", writes: true, inputSchema: { type: "object" } },
           ],
         }),
       ),
-    ).toEqual({ ok: false, refusal: "SERVER_NOT_ADMITTED", at: "descriptor.tools" });
+    ).toEqual({ ok: false, refusal: "SERVER_NOT_ADMITTED", at: "descriptor.tools[1].name" });
   });
 
   it("refuses an empty serverId", () => {
@@ -204,11 +204,11 @@ describe("a name outside the bounded grammar never reaches a spawn (V2-B4b stage
     ["docs/search", "a slash"],
     ["x".repeat(121), "one character past the bound"],
     [".docs.search", "a leading dot"],
-  ])("refuses tool name %j (%s) at descriptor.tools", (name) => {
-    expect(admitToolServer(stdio({ tools: [{ name, writes: false }] }))).toEqual({
+  ])("refuses tool name %j (%s) at descriptor.tools[0].name", (name) => {
+    expect(admitToolServer(stdio({ tools: [{ name, writes: false, inputSchema: { type: "object" } }] }))).toEqual({
       ok: false,
       refusal: "SERVER_NOT_ADMITTED",
-      at: "descriptor.tools",
+      at: "descriptor.tools[0].name",
     });
   });
 
@@ -220,12 +220,12 @@ describe("a name outside the bounded grammar never reaches a spawn (V2-B4b stage
       admitToolServer(
         stdio({
           tools: [
-            { name: "docs.search", writes: false },
-            { name: "docs write", writes: true },
+            { name: "docs.search", writes: false, inputSchema: { type: "object" } },
+            { name: "docs write", writes: true, inputSchema: { type: "object" } },
           ],
         }),
       ),
-    ).toEqual({ ok: false, refusal: "SERVER_NOT_ADMITTED", at: "descriptor.tools" });
+    ).toEqual({ ok: false, refusal: "SERVER_NOT_ADMITTED", at: "descriptor.tools[1].name" });
   });
 
   it("still admits the names the package already uses", () => {
@@ -238,7 +238,7 @@ describe("a name outside the bounded grammar never reaches a spawn (V2-B4b stage
       expect(outcome.ok).toBe(true);
       if (!outcome.ok) continue;
       expect(outcome.server.serverId).toBe(serverId);
-      expect(outcome.server.allowlist).toEqual([{ name: "docs.search", writes: false }]);
+      expect(outcome.server.allowlist).toEqual([{ name: "docs.search", writes: false, inputSchema: { type: "object" } }]);
     }
   });
 });
@@ -272,7 +272,7 @@ describe("the loopback leg is admitted, and the refusal finally has a sibling (V
       serverId: "docs",
       transport: "HTTP_LOOPBACK",
       url: "http://127.0.0.1:9000/mcp",
-      tools: [{ name: "docs.search", writes: false }],
+      tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }],
       ...overrides,
     } as unknown as ToolServerDescriptor;
   }
@@ -316,7 +316,7 @@ describe("the loopback leg is admitted, and the refusal finally has a sibling (V
       // reached. Pre-existing behaviour, asserted as it is rather than as the
       // field name might suggest.
       ["port too high", loopback({ url: "http://127.0.0.1:70000/mcp" }), "descriptor.url"],
-      ["no url", { serverId: "docs", transport: "HTTP_LOOPBACK", tools: [{ name: "docs.search", writes: false }] }, "descriptor.url"],
+      ["no url", { serverId: "docs", transport: "HTTP_LOOPBACK", tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }] }, "descriptor.url"],
     ];
     for (const [label, descriptor, at] of cases) {
       const outcome = admitToolServer(descriptor as ToolServerDescriptor);
@@ -353,7 +353,7 @@ describe("the loopback leg is admitted, and the refusal finally has a sibling (V
       transport: "STDIO",
       command,
       url: "http://127.0.0.1:9000/mcp",
-      tools: [{ name: "docs.search", writes: false }],
+      tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }],
     });
     expect(outcome.ok).toBe(false);
     if (!outcome.ok) {
@@ -362,5 +362,124 @@ describe("the loopback leg is admitted, and the refusal finally has a sibling (V
         at: "descriptor.url",
       });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-24 (ADR 0109): the schema pin, and one indexed `at` grammar (C2, C7)
+// ---------------------------------------------------------------------------
+
+describe("every allowlist entry pins the schema it was allowed under (P-24)", () => {
+  const withPin = (inputSchema: unknown): ToolServerDescriptor =>
+    stdio({ tools: [{ name: "docs.search", writes: false, inputSchema } as unknown as ToolServerDescriptor["tools"][number]] });
+
+  /** A schema `levels` containers deep, the outermost an object schema. */
+  const deepPin = (levels: number): Record<string, unknown> => {
+    let value: unknown = "leaf";
+    for (let level = 1; level < levels; level += 1) value = { child: value };
+    return { type: "object", nested: value };
+  };
+
+  it("refuses a pin that is absent, null or not an object, at the entry's field", () => {
+    for (const pin of [undefined, null, [], "object", 1, true]) {
+      expect({ pin: (JSON.stringify(pin) as string | undefined) ?? "undefined", outcome: admitToolServer(withPin(pin)) }).toEqual({
+        pin: (JSON.stringify(pin) as string | undefined) ?? "undefined",
+        outcome: { ok: false, refusal: "SERVER_NOT_ADMITTED", at: "descriptor.tools[0].inputSchema" },
+      });
+    }
+  });
+
+  it("refuses a pin that is not an object schema: no conformant server could match it (C2)", () => {
+    for (const pin of [{ type: "array" }, {}, { type: null }, { type: "string" }]) {
+      expect(admitToolServer(withPin(pin))).toEqual({
+        ok: false,
+        refusal: "SERVER_NOT_ADMITTED",
+        at: "descriptor.tools[0].inputSchema",
+      });
+    }
+    expect(admitToolServer(withPin({ type: "object" })).ok).toBe(true);
+  });
+
+  it("admits a pin at its byte bound and refuses one past it", () => {
+    const sized = (bytes: number): Record<string, unknown> => {
+      const empty = JSON.stringify({ type: "object", description: "" }).length;
+      return { type: "object", description: "d".repeat(bytes - empty) };
+    };
+    expect(JSON.stringify(sized(TOOL_SCHEMA_BYTES_MAX)).length).toBe(TOOL_SCHEMA_BYTES_MAX);
+    expect(admitToolServer(withPin(sized(TOOL_SCHEMA_BYTES_MAX))).ok).toBe(true);
+    expect(admitToolServer(withPin(sized(TOOL_SCHEMA_BYTES_MAX + 1)))).toEqual({
+      ok: false,
+      refusal: "SERVER_NOT_ADMITTED",
+      at: "descriptor.tools[0].inputSchema",
+    });
+  });
+
+  it("admits a pin at its depth bound and refuses one past it", () => {
+    expect(admitToolServer(withPin(deepPin(TOOL_SCHEMA_DEPTH_MAX))).ok).toBe(true);
+    expect(admitToolServer(withPin(deepPin(TOOL_SCHEMA_DEPTH_MAX + 1)))).toEqual({
+      ok: false,
+      refusal: "SERVER_NOT_ADMITTED",
+      at: "descriptor.tools[0].inputSchema",
+    });
+  });
+
+  it("keeps a frozen copy of the pin, so a later edit of the caller's object changes nothing", () => {
+    const pin: Record<string, unknown> = { type: "object", properties: { q: { type: "string" } } };
+    const outcome = admitToolServer(withPin(pin));
+    if (!outcome.ok) throw new Error("expected an admission");
+    pin["type"] = "array";
+    const admitted = outcome.server.allowlist[0]?.inputSchema;
+    expect(admitted).toEqual({ type: "object", properties: { q: { type: "string" } } });
+    expect(Object.isFrozen(admitted)).toBe(true);
+    expect(Object.isFrozen((admitted as { properties: object }).properties)).toBe(true);
+  });
+});
+
+describe("the allowlist loop names the entry and the field it refused (P-24, C7)", () => {
+  const entry = (overrides: Record<string, unknown>): unknown => ({
+    name: "docs.search",
+    writes: false,
+    inputSchema: { type: "object" },
+    ...overrides,
+  });
+  const tools = (...entries: unknown[]): ToolServerDescriptor["tools"] =>
+    entries as unknown as ToolServerDescriptor["tools"];
+
+  it("keeps descriptor.tools for the array itself", () => {
+    expect(admitToolServer(stdio({ tools: [] }))).toEqual({ ok: false, refusal: "SERVER_NOT_ADMITTED", at: "descriptor.tools" });
+    expect(admitToolServer(stdio({ tools: "x" as unknown as ToolServerDescriptor["tools"] }))).toEqual({
+      ok: false,
+      refusal: "SERVER_NOT_ADMITTED",
+      at: "descriptor.tools",
+    });
+  });
+
+  it("indexes an entry that is not an object, and each field defect", () => {
+    const rows: readonly (readonly [ToolServerDescriptor["tools"], string])[] = [
+      [tools(entry({}), null), "descriptor.tools[1]"],
+      [tools(entry({}), []), "descriptor.tools[1]"],
+      [tools(entry({}), "docs.search"), "descriptor.tools[1]"],
+      [tools(entry({ name: 7 })), "descriptor.tools[0].name"],
+      [tools(entry({ writes: "no" })), "descriptor.tools[0].writes"],
+      [tools(entry({}), entry({ name: "docs.write", inputSchema: undefined })), "descriptor.tools[1].inputSchema"],
+      [tools(entry({}), entry({})), "descriptor.tools[1].name"],
+    ];
+    for (const [list, at] of rows) {
+      expect(admitToolServer(stdio({ tools: list }))).toEqual({ ok: false, refusal: "SERVER_NOT_ADMITTED", at });
+    }
+  });
+
+  it("carries the index through the document as servers[k].tools[i].<field>", () => {
+    expect(
+      admitToolServers([
+        {
+          serverId: "docs",
+          transport: "STDIO",
+          command,
+          args,
+          tools: [{ name: "docs.search", writes: false }],
+        },
+      ]),
+    ).toEqual({ ok: false, refusal: "SERVER_NOT_ADMITTED", at: "servers[0].tools[0].inputSchema" });
   });
 });

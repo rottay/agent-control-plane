@@ -6,8 +6,14 @@ import {
   TOOL_ARGUMENTS_BYTES_MAX,
   TOOL_CALL_TIMEOUT_MS,
   TOOL_CONTENT_STRING_MAX,
+  TOOL_CURSOR_BYTES_MAX,
   TOOL_FRAME_BYTES_MAX,
+  TOOL_LIST_DEADLINE_MS,
+  TOOL_LIST_PAGES_MAX,
+  TOOL_LIST_TOOLS_MAX,
   TOOL_REFUSALS,
+  TOOL_SCHEMA_BYTES_MAX,
+  TOOL_SCHEMA_DEPTH_MAX,
   TOOL_RESULT_BYTES_MAX,
   TOOL_SERVER_ENV_KEYS,
   TOOL_HTTP_CLOSE_TIMEOUT_MS,
@@ -38,7 +44,7 @@ describe("the tool vocabulary is closed and honest", () => {
   it("keeps the refusals sorted, distinct and non-empty", () => {
     expect([...TOOL_REFUSALS]).toEqual([...TOOL_REFUSALS].slice().sort());
     expect(new Set(TOOL_REFUSALS).size).toBe(TOOL_REFUSALS.length);
-    expect(TOOL_REFUSALS.length).toBe(10);
+    expect(TOOL_REFUSALS.length).toBe(11);
   });
 
   it("pins the refusal vocabulary exactly, in order (P-11)", () => {
@@ -54,6 +60,8 @@ describe("the tool vocabulary is closed and honest", () => {
       "RESULT_IS_ERROR",
       "RESULT_UNBOUNDED",
       "RESULT_UNSAFE",
+      // P-24 (ADR 0109): sorts between RESULT_UNSAFE and SERVER_NOT_ADMITTED.
+      "SCHEMA_MISMATCH",
       "SERVER_NOT_ADMITTED",
       "SESSION_NOT_LIVE",
       "TOOL_NOT_ALLOWED",
@@ -123,7 +131,7 @@ describe("the unresolved word is a receipt coordinate, not a transport (V2-B4b S
       serverId: "docs",
       transport: TOOL_TRANSPORT_UNRESOLVED as unknown as "STDIO",
       command: "/bin/true",
-      tools: [{ name: "docs.search", writes: false }],
+      tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }],
     });
     expect(outcome).toEqual({
       ok: false,
@@ -143,13 +151,13 @@ describe("the loopback leg's vocabulary and its capability record (V2-B4b S4-1)"
       serverId: "docs",
       transport: "STDIO",
       command: realpathSync(process.execPath),
-      tools: [{ name: "docs.search", writes: false }],
+      tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }],
     });
     const loopbackOutcome = admitToolServer({
       serverId: "docs",
       transport: "HTTP_LOOPBACK",
       url: "http://127.0.0.1:9000/mcp",
-      tools: [{ name: "docs.search", writes: false }],
+      tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }],
     });
     const emitted = [stdioOutcome, loopbackOutcome]
       .filter((outcome) => outcome.ok)
@@ -209,5 +217,43 @@ describe("the loopback leg's vocabulary and its capability record (V2-B4b S4-1)"
     // names the refusal word the README and the drills stand behind.
     expect(MCP_PROTOCOL_RECORD.IS_ERROR_RESULT).toContain("RESULT_IS_ERROR");
     expect(MCP_PROTOCOL_RECORD.IS_ERROR_RESULT).not.toBe("UNHANDLED");
+  });
+});
+
+describe("P-24 (ADR 0109): the record names the pin, the listing and what is not read", () => {
+  it("records pagination as followed and bounded, and keeps the README marker", () => {
+    expect(MCP_PROTOCOL_RECORD.LIST_PAGINATION).toContain("followed");
+    expect(MCP_PROTOCOL_RECORD.LIST_PAGINATION).toContain("repeated cursor refused");
+    expect(MCP_PROTOCOL_RECORD.TOOL_SCHEMA).toContain("SCHEMA_MISMATCH");
+    expect(MCP_PROTOCOL_RECORD.TOOL_SCHEMA).toContain("arguments never validated");
+    expect(MCP_PROTOCOL_RECORD.LIST_CHANGED).toContain("not seen");
+    expect(MCP_PROTOCOL_RECORD.OUTPUT_SCHEMA).toBe("NOT_READ");
+  });
+
+  it("orders the listing's bounds the way they nest", () => {
+    // A listing deadline shorter than one page's timeout could never be read
+    // between pages; a cursor or a pin larger than a frame could never arrive.
+    expect(TOOL_LIST_DEADLINE_MS).toBeGreaterThan(TOOL_CALL_TIMEOUT_MS);
+    expect(TOOL_CURSOR_BYTES_MAX).toBeLessThan(TOOL_FRAME_BYTES_MAX);
+    expect(TOOL_SCHEMA_BYTES_MAX).toBeLessThan(TOOL_FRAME_BYTES_MAX);
+    expect(TOOL_LIST_PAGES_MAX).toBeGreaterThan(0);
+    expect(TOOL_LIST_TOOLS_MAX).toBeGreaterThan(0);
+    expect(TOOL_SCHEMA_DEPTH_MAX).toBeGreaterThan(0);
+  });
+
+  it("keeps every new field path inside the protocol's 120-character at", () => {
+    // The longest paths this cut produces: the mismatch paths carry no tool name
+    // (a 120-character bounded name would overflow), and the admission path
+    // carries indices, not names.
+    const paths = [
+      "server.tools",
+      "server.tools.inputSchema",
+      "server.tools.nextCursor",
+      "descriptor.tools[" + String(TOOL_LIST_TOOLS_MAX) + "].inputSchema",
+      "servers[" + String(TOOL_LIST_TOOLS_MAX) + "].tools[" + String(TOOL_LIST_TOOLS_MAX) + "].inputSchema",
+    ];
+    for (const path of paths) expect({ path, fits: path.length <= 120 }).toEqual({ path, fits: true });
+    // What the named form would have cost: a name at the grammar's bound.
+    expect(("server.tools." + "x".repeat(120) + ".inputSchema").length).toBeGreaterThan(120);
   });
 });

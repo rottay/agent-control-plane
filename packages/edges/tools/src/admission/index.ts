@@ -28,7 +28,14 @@ import type {
   ToolServerDescriptor,
   ToolTransportKind,
 } from "../contract/index.js";
-import { TOOL_SERVER_ENV_KEYS, TOOL_TRANSPORT_KINDS } from "../contract/index.js";
+import {
+  TOOL_SCHEMA_BYTES_MAX,
+  TOOL_SCHEMA_DEPTH_MAX,
+  TOOL_SERVER_ENV_KEYS,
+  TOOL_TRANSPORT_KINDS,
+} from "../contract/index.js";
+import { toolFrameBytes } from "../jsonrpc/index.js";
+import { jsonDepthWithin } from "../schema-equality/index.js";
 
 /**
  * A server the plane has decided it may talk to.
@@ -189,6 +196,39 @@ function buildToolServerEnv(): Readonly<Record<string, string>> {
 }
 
 /**
+ * Admit an operator's schema pin (P-24, ADR 0109), or `null`.
+ *
+ * Required and never defaulted: a JSON object whose `type` is `"object"` (the
+ * revision requires it of every tool, so a pin that cannot match a conformant
+ * server is a dead entry), at most {@link TOOL_SCHEMA_DEPTH_MAX} containers deep
+ * and at most {@link TOOL_SCHEMA_BYTES_MAX} bytes serialized. The admitted pin is
+ * a frozen copy, so nothing the caller still holds can change it after review.
+ */
+function admitPin(value: unknown): Readonly<Record<string, unknown>> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if ((value as Record<string, unknown>)["type"] !== "object") return null;
+  // Depth before bytes: the depth walk ends at the bound, so a cycle a caller
+  // built by hand is refused before anything serializes it.
+  if (!jsonDepthWithin(value, TOOL_SCHEMA_DEPTH_MAX)) return null;
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    return null;
+  }
+  if (toolFrameBytes(serialized) > TOOL_SCHEMA_BYTES_MAX) return null;
+  return deepFreeze(JSON.parse(serialized) as Record<string, unknown>);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null) {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/**
  * Decide whether the plane may talk to this server, and refuse field-exactly.
  *
  * Every failure names the descriptor field that caused it. A refusal that said
@@ -280,11 +320,16 @@ export function admitToolServer(descriptor: ToolServerDescriptor): ToolAdmission
   const tools = rawTools as readonly unknown[];
   if (tools.length === 0) return refuse("SERVER_NOT_ADMITTED", "descriptor.tools");
 
+  // P-24 (C7): one `at` grammar for the loop, indexed. The array itself is
+  // `descriptor.tools`; an entry that is not an object is `descriptor.tools[i]`;
+  // a field defect names the field.
   const names = new Set<string>();
   const allowlist: ToolAllowlistEntry[] = [];
-  for (const raw of tools) {
-    if (raw === null || typeof raw !== "object") {
-      return refuse("SERVER_NOT_ADMITTED", "descriptor.tools");
+  for (let index = 0; index < tools.length; index += 1) {
+    const at = "descriptor.tools[" + String(index) + "]";
+    const raw = tools[index];
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+      return refuse("SERVER_NOT_ADMITTED", at);
     }
     const entry = raw as Record<string, unknown>;
     const name = entry["name"];
@@ -294,17 +339,15 @@ export function admitToolServer(descriptor: ToolServerDescriptor): ToolAdmission
     // emptiness check is kept beside the grammar rather than folded into it:
     // it states the intent the grammar happens to imply, and it is the one a
     // reader checks first.
-    if (
-      typeof name !== "string" ||
-      name.length === 0 ||
-      !BOUNDED_IDENTIFIER.test(name) ||
-      typeof writes !== "boolean"
-    ) {
-      return refuse("SERVER_NOT_ADMITTED", "descriptor.tools");
+    if (typeof name !== "string" || name.length === 0 || !BOUNDED_IDENTIFIER.test(name)) {
+      return refuse("SERVER_NOT_ADMITTED", at + ".name");
     }
-    if (names.has(name)) return refuse("SERVER_NOT_ADMITTED", "descriptor.tools");
+    if (typeof writes !== "boolean") return refuse("SERVER_NOT_ADMITTED", at + ".writes");
+    const inputSchema = admitPin(entry["inputSchema"]);
+    if (inputSchema === null) return refuse("SERVER_NOT_ADMITTED", at + ".inputSchema");
+    if (names.has(name)) return refuse("SERVER_NOT_ADMITTED", at + ".name");
     names.add(name);
-    allowlist.push(Object.freeze({ name, writes }));
+    allowlist.push(Object.freeze({ name, writes, inputSchema }));
   }
 
   if (isLoopback) {

@@ -39,7 +39,7 @@ function admit(script: FakeToolServerScript): AdmittedStdioToolServer {
     transport: "STDIO",
     command: fake.command,
     args: fake.args,
-    tools: [{ name: "docs.search", writes: false }],
+    tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }],
   });
   if (!outcome.ok) throw new Error("fixture server was not admitted: " + outcome.at);
   if (outcome.server.kind !== "STDIO") throw new Error("fixture server is not a stdio server");
@@ -56,7 +56,10 @@ describe("the stdio transport speaks MCP to a real child", () => {
     const client = createToolClient(connection);
 
     await expect(client.initialize()).resolves.toEqual({ ok: true, value: "docs-server" });
-    await expect(client.listTools()).resolves.toEqual({ ok: true, value: ["docs.search"] });
+    await expect(client.listTools()).resolves.toEqual({
+      ok: true,
+      value: [{ name: "docs.search", inputSchema: { type: "object" } }],
+    });
 
     const called = await client.callTool("docs.search", { q: "acp" });
     expect(called.ok).toBe(true);

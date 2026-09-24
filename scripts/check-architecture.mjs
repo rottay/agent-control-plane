@@ -11623,6 +11623,54 @@ const P15F_WRITE_SET = [
 ];
 
 /**
+ * P-24, first cut: a tool is called only under the schema it was allowed with
+ * (ADR 0109; decisions 161-164; Fable pre-audit C1-C7, adopted).
+ *
+ * Fixtures only: the tools edge's allowlist entry gains a required `inputSchema`
+ * pin, compared by JSON value equality (`schema-equality`, the one comparison);
+ * the client follows `nextCursor` under pages, tools, cursor-bytes and a listing
+ * deadline; the port lists before every call on a per-connection cache that a
+ * `list_changed` invalidates, and refuses a missing or different schema with one
+ * new word, `SCHEMA_MISMATCH`, before any `tools/call`. No door source moves: both
+ * doors defer to the shared admission and render a refusal by grammar, and E1-E8
+ * run through both with parity. L-P24-1 and L-P24-2 keep the path.
+ *
+ * **Pins that move.** `TOOL_REFUSALS` 10 -> **11**; `TOOLS_PUBLIC_EXPORTS` +6;
+ * `MCP_PROTOCOL_RECORD` +3 keys and L-B4B-17's table +3 rows; `PATH_SCOPED_LAWS`
+ * 159 -> **161**. `CONTRACT_VERSION`, `MIGRATIONS`, `API_CONTRACT_VERSION`,
+ * `CONTRACTS_SCHEMA_EXPORTS` and `RUNTIME_PUBLIC_EXPORTS` do not move: the new
+ * word crosses runtime, ledger and protocol by grammar.
+ *
+ * **Twenty-four paths; four are new.**
+ */
+const P24A_WRITE_SET = [
+  "packages/edges/tools/src/contract/index.ts",
+  "packages/edges/tools/src/admission/index.ts",
+  "packages/edges/tools/src/client/index.ts",
+  "packages/edges/tools/src/port/index.ts",
+  "packages/edges/tools/src/schema-equality/index.ts",
+  "packages/edges/tools/test/schema-equality/index.test.ts",
+  "packages/edges/tools/src/index.ts",
+  "packages/edges/tools/README.md",
+  "packages/edges/tools/test/testing/index.ts",
+  "packages/edges/tools/test/client/index.test.ts",
+  "packages/edges/tools/test/port/index.test.ts",
+  "packages/edges/tools/test/admission/index.test.ts",
+  "packages/edges/tools/test/contract/index.test.ts",
+  "packages/edges/tools/test/operation/index.test.ts",
+  "packages/edges/tools/test/http-loopback/index.test.ts",
+  "packages/edges/tools/test/stdio/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0109-a-tool-is-called-only-under-the-schema-it-was-allowed-with.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+];
+
+/**
  * P-15 escalón E: the real API and local clients, and the one credential resolver
  * that serves them (ADR 0108; owner authorization C4 and decision E-ND-1, the
  * DT's rulings E-ND-2..12, Fable C-E1..C-E11; decisions 155-159).
@@ -11938,6 +11986,7 @@ const WRITE_SET = [
   ...P15I_WRITE_SET,
   ...P15F_WRITE_SET,
   ...P15E_WRITE_SET,
+  ...P24A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13432,6 +13481,18 @@ const PATH_SCOPED_LAWS = [
   {
     law: "a credential lives in the resolver and the composition, and reaches only the two factories",
     scope: "packages/*/*/src/**",
+  },
+  // P-24, first cut. Two new path-shaped surfaces, so two new rows: the register
+  // and the `requireScope` call sites both move 159 -> 161 for L-P24-1 and
+  // L-P24-2. L-B4B-17's concordance table gains three rows in its own law and adds
+  // none.
+  {
+    law: "the tool listing is asked in one place, and every page is bounded",
+    scope: "packages/edges/tools/src/**",
+  },
+  {
+    law: "a pinned schema is compared in one place, by value",
+    scope: "packages/edges/tools/src/**",
   },
 ];
 
@@ -22905,6 +22966,13 @@ const TOOLS_PUBLIC_EXPORTS = [
   "MCP_PROTOCOL_RECORD",
   "TOOL_CONTENT_STRING_MAX",
   "TOOL_CALL_TIMEOUT_MS",
+  // P-24 (ADR 0109): the listing's bounds and the pin's.
+  "TOOL_LIST_PAGES_MAX",
+  "TOOL_LIST_TOOLS_MAX",
+  "TOOL_CURSOR_BYTES_MAX",
+  "TOOL_LIST_DEADLINE_MS",
+  "TOOL_SCHEMA_BYTES_MAX",
+  "TOOL_SCHEMA_DEPTH_MAX",
   "TOOL_SERVER_LIFETIME_MS",
   "TOOL_SERVER_ENV_KEYS",
   "TOOL_MCP_PROTOCOL_VERSION",
@@ -25570,6 +25638,10 @@ if (tracked.status === 0) {
         ["LIST_PAGINATION", "nextCursor"],
         ["IS_ERROR_RESULT", "isError"],
         ["CONTENT_BLOCKS", "content blocks"],
+        // P-24 (ADR 0109): the pin, the invalidation and what is not read.
+        ["TOOL_SCHEMA", "pinned per tool by value"],
+        ["LIST_CHANGED", "list_changed"],
+        ["OUTPUT_SCHEMA", "outputSchema"],
       ];
       const declaredKeys = new Set(
         [...record.matchAll(/^\s{2}([A-Z][A-Z0-9_]*):/gm)].map((match) => match[1]),
@@ -25632,6 +25704,119 @@ if (tracked.status === 0) {
     }
     notes.push(exported.size + " tool edge exports, pinned by equality");
   }
+}
+
+// L-P24-1 -- the tool listing is asked in one place, and every page is bounded
+// (P-24, ADR 0109; decision 163).
+//
+// Over every tracked `packages/edges/tools/src/` file, comments stripped: the
+// `"tools/list"` literal appears only in `client/index.ts`, once, inside
+// `listAllPages`, whose body names the listing's bounds (`TOOL_LIST_PAGES_MAX`,
+// `TOOL_LIST_TOOLS_MAX`, `TOOL_CURSOR_BYTES_MAX`) and reads `nextCursor`; and
+// `listTools` arms `TOOL_LIST_DEADLINE_MS`. It checks the site, not the arity or
+// the loop's behaviour: the client suite's page, tool, cursor and deadline rows
+// carry that.
+//
+// Stated limit: a text-level matcher. The method name built from pieces, spelled
+// in single quotes (`'tools/list'`) or as a template (`` `tools/list` ``), or a second
+// listing loop that reaches `request` without the double-quoted literal, is not seen
+// (verifier note 1).
+{
+  const TOOLS_LIST_SITE = "packages/edges/tools/src/client/index.ts";
+  let scanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const sources = new Set(present);
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/edges\/tools\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const source = readIfPresent(relativePath);
+      if (source === null) continue;
+      scanned += 1;
+      const code = stripComments(source);
+      const literals = code.split('"tools/list"').length - 1;
+      if (relativePath !== TOOLS_LIST_SITE && literals > 0) {
+        fail(relativePath + ' names "tools/list"; only ' + TOOLS_LIST_SITE + " asks for a listing (L-P24-1)");
+      }
+      if (relativePath === TOOLS_LIST_SITE) {
+        if (literals !== 1) fail(TOOLS_LIST_SITE + ' names "tools/list" ' + String(literals) + " times; the listing is asked in one place (L-P24-1)");
+        const start = code.indexOf("const listAllPages = async");
+        const end = start === -1 ? -1 : code.indexOf("\n  };\n", start);
+        const body = start === -1 || end === -1 ? "" : code.slice(start, end);
+        if (!body.includes('"tools/list"')) fail(TOOLS_LIST_SITE + ' asks for "tools/list" outside listAllPages (L-P24-1)');
+        for (const bound of ["TOOL_LIST_PAGES_MAX", "TOOL_LIST_TOOLS_MAX", "TOOL_CURSOR_BYTES_MAX", "nextCursor"]) {
+          if (!body.includes(bound)) fail(TOOLS_LIST_SITE + " no longer names " + bound + " in listAllPages; every page is bounded (L-P24-1)");
+        }
+        // The timer itself must be armed with the deadline: an import of the name
+        // beside some other `setTimeout` is not a deadline.
+        if (!/setTimeout\(\(\)\s*=>\s*\{[^}]*\},\s*TOOL_LIST_DEADLINE_MS\s*\)/.test(code)) {
+          fail(TOOLS_LIST_SITE + " no longer arms TOOL_LIST_DEADLINE_MS; the listing has a deadline (L-P24-1)");
+        }
+      }
+    }
+  }
+  requireScope("the tool listing is asked in one place, and every page is bounded", scanned);
+  notes.push("the tool listing is asked in one place, and its loop names every bound");
+}
+
+// L-P24-2 -- a pinned schema is compared in one place, by value (P-24, ADR 0109;
+// decision 163).
+//
+// Over every tracked `packages/edges/tools/src/` file, comments stripped:
+// `jsonEqual` is declared once, in `schema-equality/index.ts`, and nowhere else;
+// the port compares through it; and no file compares an `inputSchema` any other
+// way — no `===`/`!==` on a line naming two schemas, no `isDeepStrictEqual`, no
+// `JSON.stringify(` of one beside a comparison. A shape check of one schema
+// (`=== null`, `typeof`) is not a comparison and is left alone.
+//
+// Stated limit: a text-level matcher. A comparison spread over two lines, a
+// one-line comparison through an alias of an `inputSchema` value
+// (`const s = x.inputSchema; s === y`), loose `==` over serialized schemas, or a
+// helper under another name that walks two schemas is not seen (verifier note 2);
+// the schema suite's rows are the behaviour.
+{
+  const EQUALITY_SITE = "packages/edges/tools/src/schema-equality/index.ts";
+  const PORT_SITE = "packages/edges/tools/src/port/index.ts";
+  let scanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const sources = new Set(present);
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/edges\/tools\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const source = readIfPresent(relativePath);
+      if (source === null) continue;
+      scanned += 1;
+      const code = stripComments(source);
+      const declares = /\bfunction\s+jsonEqual\b|\b(?:const|let|var)\s+jsonEqual\b/.test(code);
+      if (relativePath === EQUALITY_SITE) {
+        if (!/export function jsonEqual\(/.test(code)) fail(EQUALITY_SITE + " no longer declares jsonEqual (L-P24-2)");
+      } else if (declares) {
+        fail(relativePath + " declares jsonEqual; the one comparison lives in " + EQUALITY_SITE + " (L-P24-2)");
+      }
+      if (relativePath !== EQUALITY_SITE) {
+        for (const line of code.split("\n")) {
+          // Two schemas on one comparison line, a deep-equality call, or a
+          // serialized schema compared: a shape check (`=== null`, `typeof`) of
+          // one schema is not a comparison of two.
+          const compares = /[!=]==/.test(line);
+          if (
+            /inputSchema\s*[!=]==\s*[\w$.[\]"']*inputSchema/.test(line) ||
+            (/inputSchema/.test(line) && /isDeepStrictEqual|deepStrictEqual/.test(line)) ||
+            (compares && /JSON\.stringify\([^)]*inputSchema/.test(line))
+          ) {
+            fail(relativePath + " compares an inputSchema outside jsonEqual: " + line.trim().slice(0, 120) + " (L-P24-2)");
+          }
+        }
+      }
+    }
+    const port = readIfPresent(PORT_SITE);
+    if (port === null || !/jsonEqual\(/.test(stripComments(port))) {
+      fail(PORT_SITE + " no longer compares through jsonEqual; the pin is checked before the call (L-P24-2)");
+    }
+  }
+  requireScope("a pinned schema is compared in one place, by value", scanned);
+  notes.push("a pinned schema is compared in one place, by value, and the port compares through it");
 }
 
 // --- 21c. V2-B5/R11: the telemetry export edge ------------------------------

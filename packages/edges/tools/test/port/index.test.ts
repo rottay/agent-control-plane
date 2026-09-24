@@ -7,6 +7,7 @@ import type { AdmittedToolServer } from "../../src/admission/index.js";
 import {
   TOOL_ARGUMENTS_BYTES_MAX,
   TOOL_CALL_TIMEOUT_MS,
+  TOOL_LIST_PAGES_MAX,
   TOOL_TRANSPORT_UNRESOLVED,
 } from "../../src/contract/index.js";
 import { createToolProtocolPort } from "../../src/port/index.js";
@@ -27,14 +28,14 @@ const REVIEWER = "claude/opus/reviewer/01" as WorkerIdentityString;
 const SESSION = "task-1/1/acct-1";
 
 const ALLOWLIST = [
-  { name: "docs.search", writes: false },
-  { name: "docs.write", writes: true },
-  { name: "docs.huge", writes: false },
-  { name: "docs.leak", writes: false },
-  { name: "docs.silent", writes: false },
-  { name: "docs.malformed", writes: false },
-  { name: "docs.error", writes: false },
-  { name: "docs.rpcerror", writes: false },
+  { name: "docs.search", writes: false, inputSchema: { type: "object" } },
+  { name: "docs.write", writes: true, inputSchema: { type: "object" } },
+  { name: "docs.huge", writes: false, inputSchema: { type: "object" } },
+  { name: "docs.leak", writes: false, inputSchema: { type: "object" } },
+  { name: "docs.silent", writes: false, inputSchema: { type: "object" } },
+  { name: "docs.malformed", writes: false, inputSchema: { type: "object" } },
+  { name: "docs.error", writes: false, inputSchema: { type: "object" } },
+  { name: "docs.rpcerror", writes: false, inputSchema: { type: "object" } },
 ];
 
 /**
@@ -166,7 +167,7 @@ describe("listTools intersects the allowlist with what the server advertises", (
 
   it("drops an allowlist entry the server does not actually serve", async () => {
     const narrowed = createToolProtocolPort({
-      servers: [{ ...server, allowlist: [...ALLOWLIST, { name: "docs.absent", writes: false }] }],
+      servers: [{ ...server, allowlist: [...ALLOWLIST, { name: "docs.absent", writes: false, inputSchema: { type: "object" } }] }],
       liveness: { isLive: () => true },
     });
     const listed = await narrowed.listTools(SESSION, "docs");
@@ -475,7 +476,7 @@ describe("the acceptance measures the port, not the fake's good manners", () => 
         transport: "STDIO",
         command: fake.command,
         args: fake.args,
-        tools: [{ name: "docs.search", writes: false }],
+        tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }],
       });
       expect(admitted.ok).toBe(true);
       if (!admitted.ok) return;
@@ -547,6 +548,16 @@ describe("both transports obey one set of rules (V2-B4b S4-1)", () => {
         };
       }
       if (parsed.method === "notifications/initialized") return { status: 202 };
+      // P-24: the port lists before it calls; the peer advertises the allowlist under its pins.
+      if (parsed.method === "tools/list") {
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: jsonRpcBody(parsed.id ?? id, {
+            tools: ALLOWLIST.map((entry) => ({ name: entry.name, inputSchema: entry.inputSchema })),
+          }),
+        };
+      }
       return {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -571,6 +582,16 @@ describe("both transports obey one set of rules (V2-B4b S4-1)", () => {
         };
       }
       if (parsed.method === "notifications/initialized") return { status: 202 };
+      // P-24: the port lists before it calls; the peer advertises the allowlist under its pins.
+      if (parsed.method === "tools/list") {
+        return {
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: jsonRpcBody(parsed.id ?? id, {
+            tools: ALLOWLIST.map((entry) => ({ name: entry.name, inputSchema: entry.inputSchema })),
+          }),
+        };
+      }
       return {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -797,6 +818,220 @@ describe("both transports obey one set of rules (V2-B4b S4-1)", () => {
       // Both are reaped, and the stdio child by pid.
       const reaped = await both.closeAll();
       expect(reaped.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-24 (ADR 0109): discovery before every call, under the pinned schema
+// ---------------------------------------------------------------------------
+
+describe("the port lists before it calls, and calls only under the pinned schema (P-24)", () => {
+  let extraPorts: ToolProtocolPort[] = [];
+  let listLog = "";
+
+  afterEach(async () => {
+    for (const extra of extraPorts) await extra.closeAll();
+    extraPorts = [];
+  });
+
+  /** A port over a fresh fake with the P-24 options, sharing this file's logs. */
+  function portWith(options: Parameters<typeof writeFakeToolServer>[1], allowlist = ALLOWLIST): ToolProtocolPort {
+    listLog = dir + "/lists.log";
+    const fake = writeFakeToolServer(dir + "/p24-" + String(extraPorts.length), {
+      callLog,
+      pidLog,
+      listLog,
+      advertises: allowlist.map((entry) => entry.name),
+      answers: { "docs.search": { kind: "TEXT", blocks: ["the answer"] } },
+      ...options,
+    });
+    const admitted = admitToolServer({ serverId: "docs", transport: "STDIO", command: fake.command, args: fake.args, tools: allowlist });
+    if (!admitted.ok) throw new Error("fixture server was not admitted: " + admitted.at);
+    const created = createToolProtocolPort({ servers: [admitted.server], liveness: { isLive: (sessionId) => live.has(sessionId) } });
+    extraPorts.push(created);
+    return created;
+  }
+
+  const callOn = (target: ToolProtocolPort, toolName = "docs.search") =>
+    target.callTool({ sessionId: SESSION, serverId: "docs", toolName, identity: IMPLEMENTER, arguments: { q: "acp" } });
+
+  it("finds a tool on page 3 of 3: three listings, then one call", async () => {
+    const outcome = await callOn(portWith({ pageSize: 3, advertises: ["a.1", "a.2", "a.3", "a.4", "a.5", "a.6", "docs.search"] }));
+    expect(outcome.ok).toBe(true);
+    expect(readToolCallLog(listLog)).toEqual(["list null", "list c3", "list c6"]);
+    expect(readToolCallLog(callLog)).toEqual(["docs.search"]);
+  });
+
+  it("refuses a nested schema difference as SCHEMA_MISMATCH, sends no call, and keeps the connection", async () => {
+    const differing = { type: "object", properties: { q: { type: "number" } } };
+    const pinned = [{ name: "docs.search", writes: false, inputSchema: { type: "object", properties: { q: { type: "string" } } } }];
+    const target = portWith({ schemas: { "docs.search": differing } }, pinned);
+    const outcome = await callOn(target);
+    expect(outcome).toMatchObject({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.inputSchema" });
+    expect(outcome.receipt).toMatchObject({ outcome: "REFUSED", refusal: "SCHEMA_MISMATCH", resultBytes: 0, contentBlocks: 0 });
+    expect(readToolCallLog(callLog)).toEqual([]);
+    expect(childPids().every(pidAlive)).toBe(true);
+  });
+
+  it("refuses an allowlisted tool the server does not advertise, at server.tools", async () => {
+    const outcome = await callOn(portWith({ advertises: ["docs.write"] }));
+    expect(outcome).toMatchObject({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools" });
+    expect(readToolCallLog(callLog)).toEqual([]);
+  });
+
+  it("accepts an equal schema whatever its key order", async () => {
+    const pinned = [{ name: "docs.search", writes: false, inputSchema: { type: "object", properties: { q: { type: "string" } }, required: ["q"] } }];
+    const reordered = { required: ["q"], properties: { q: { type: "string" } }, type: "object" };
+    expect((await callOn(portWith({ schemas: { "docs.search": reordered } }, pinned))).ok).toBe(true);
+  });
+
+  it("refuses a cursor cycle as PROTOCOL_VIOLATION and reaps the child", async () => {
+    const outcome = await callOn(portWith({ pageSize: 1, cursorCycle: true, advertises: ["a.1", "a.2", "a.3", "docs.search"] }));
+    expect(outcome).toMatchObject({ ok: false, refusal: "PROTOCOL_VIOLATION", at: "server.tools.nextCursor" });
+    expect(readToolCallLog(callLog)).toEqual([]);
+    const pids = childPids();
+    expect(pids.length).toBeGreaterThan(0);
+    await vi.waitFor(() => {
+      expect(pids.some(pidAlive)).toBe(false);
+    });
+  });
+
+  it("refuses a listing past TOOL_LIST_PAGES_MAX as RESULT_UNBOUNDED and keeps the connection", async () => {
+    const names = Array.from({ length: TOOL_LIST_PAGES_MAX + 1 }, (_, index) => "a." + String(index));
+    const outcome = await callOn(portWith({ pageSize: 1, advertises: names }));
+    expect(outcome).toMatchObject({ ok: false, refusal: "RESULT_UNBOUNDED", at: "server.tools" });
+    expect(outcome.receipt).toMatchObject({ resultBytes: 0, contentBlocks: 0 });
+    expect(readToolCallLog(callLog)).toEqual([]);
+    expect(childPids().every(pidAlive)).toBe(true);
+  });
+
+  it("reuses the connection's listing for a second call", async () => {
+    const target = portWith({});
+    expect((await callOn(target)).ok).toBe(true);
+    expect((await callOn(target)).ok).toBe(true);
+    expect(readToolCallLog(listLog)).toEqual(["list null"]);
+    expect(readToolCallLog(callLog)).toEqual(["docs.search", "docs.search"]);
+  });
+
+  it("re-lists after a list_changed that followed the listing: two listings, one call (E7)", async () => {
+    const outcome = await callOn(portWith({ listChangedBeforeCall: true }));
+    expect(outcome.ok).toBe(true);
+    expect(readToolCallLog(listLog)).toEqual(["list null", "list null"]);
+    expect(readToolCallLog(callLog)).toEqual(["docs.search"]);
+  });
+
+  it("restarts a listing a list_changed interrupted, once", async () => {
+    const outcome = await callOn(portWith({ pageSize: 1, listChangedMidListing: true, advertises: ["a.1", "docs.search"] }));
+    expect(outcome.ok).toBe(true);
+    expect(readToolCallLog(listLog)).toEqual(["list null", "list c1", "list null", "list c1"]);
+    expect(readToolCallLog(callLog)).toEqual(["docs.search"]);
+  });
+
+  it("decides liveness, the allowlist and write authority before any listing", async () => {
+    const target = portWith({});
+    live.delete(SESSION);
+    expect(await callOn(target)).toMatchObject({ refusal: "SESSION_NOT_LIVE" });
+    live.add(SESSION);
+    expect(await callOn(target, "shell.exec")).toMatchObject({ refusal: "TOOL_NOT_ALLOWED" });
+    expect(
+      await target.callTool({ sessionId: SESSION, serverId: "docs", toolName: "docs.write", identity: REVIEWER, arguments: {} }),
+    ).toMatchObject({ refusal: "IDENTITY_FORBIDS_WRITE" });
+    expect(readToolCallLog(listLog)).toEqual([]);
+    expect(childPids()).toEqual([]);
+  });
+
+  it("lists only allowlist entries advertised under their pin, and refuses the listing on a mismatch", async () => {
+    const equal = await portWith({ advertises: ["docs.search"] }).listTools(SESSION, "docs");
+    expect(equal).toEqual({ ok: true, tools: [ALLOWLIST[0]] });
+    const differing = await portWith({ schemas: { "docs.write": { type: "object", required: ["x"] } } }).listTools(SESSION, "docs");
+    expect(differing).toEqual({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.inputSchema" });
+  });
+});
+
+describe("the two windows over the loopback leg (P-24, C5)", () => {
+  const URL = "http://127.0.0.1:9100/mcp";
+  const CHANGED = JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+  let scripted: ScriptedFetch | null = null;
+  let methods: string[] = [];
+
+  afterEach(() => {
+    scripted?.restore();
+    scripted = null;
+    methods = [];
+  });
+
+  /** A peer that answers every list, and optionally every call, with a trailing list_changed. */
+  function peer(options: { readonly changedOnList: number; readonly changedOnCall: boolean }): void {
+    let lists = 0;
+    scripted = scriptFetch((body: string) => {
+      const parsed = JSON.parse(body) as { method?: string; id?: number };
+      methods.push(parsed.method ?? "");
+      const id = parsed.id ?? 0;
+      if (parsed.method === "initialize") return { status: 200, headers: { "content-type": "application/json" }, body: initializeBody(id) };
+      if (parsed.method === "notifications/initialized") return { status: 202 };
+      const sse = (frames: readonly string[]): { status: number; headers: Record<string, string>; body: string } => ({
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+        body: frames.map((frame) => "data: " + frame + "\n\n").join(""),
+      });
+      if (parsed.method === "tools/list") {
+        lists += 1;
+        const listing = jsonRpcBody(id, { tools: [{ name: "docs.search", inputSchema: { type: "object" } }] });
+        return sse(lists <= options.changedOnList ? [listing, CHANGED] : [listing]);
+      }
+      const answer = jsonRpcBody(id, { content: [{ type: "text", text: "the answer" }] });
+      return sse(options.changedOnCall ? [answer, CHANGED] : [answer]);
+    });
+  }
+
+  function loopback(): ToolProtocolPort {
+    const admitted = admitToolServer({
+      serverId: "docs",
+      transport: "HTTP_LOOPBACK",
+      url: URL,
+      tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }],
+    });
+    if (!admitted.ok) throw new Error("loopback fixture was not admitted: " + admitted.at);
+    return createToolProtocolPort({ servers: [admitted.server], liveness: { isLive: () => true } });
+  }
+
+  const callOn = (target: ToolProtocolPort) =>
+    target.callTool({ sessionId: SESSION, serverId: "docs", toolName: "docs.search", identity: IMPLEMENTER, arguments: {} });
+
+  it("re-lists once after a change announced with the listing, then calls", async () => {
+    peer({ changedOnList: 1, changedOnCall: false });
+    const target = loopback();
+    try {
+      expect((await callOn(target)).ok).toBe(true);
+      expect(methods.filter((method) => method === "tools/list")).toHaveLength(2);
+      expect(methods.filter((method) => method === "tools/call")).toHaveLength(1);
+    } finally {
+      await target.closeAll();
+    }
+  });
+
+  it("refuses a listing changed again on its re-list, and sends no call", async () => {
+    peer({ changedOnList: 2, changedOnCall: false });
+    const target = loopback();
+    try {
+      expect(await callOn(target)).toMatchObject({ ok: false, refusal: "RESULT_UNBOUNDED", at: "server.tools" });
+      expect(methods).not.toContain("tools/call");
+    } finally {
+      await target.closeAll();
+    }
+  });
+
+  it("does not see a change that follows the call it answered, and the next call re-lists (window A, stated)", async () => {
+    peer({ changedOnList: 0, changedOnCall: true });
+    const target = loopback();
+    try {
+      expect((await callOn(target)).ok).toBe(true);
+      expect(methods.filter((method) => method === "tools/list")).toHaveLength(1);
+      expect((await callOn(target)).ok).toBe(true);
+      expect(methods.filter((method) => method === "tools/list")).toHaveLength(2);
+    } finally {
+      await target.closeAll();
     }
   });
 });

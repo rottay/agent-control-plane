@@ -26,8 +26,8 @@ const IMPLEMENTER = "claude/opus/implementer/01" as WorkerIdentityString;
 const SCOPE = "tool/7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a01/1/0";
 
 const ALLOWLIST = [
-  { name: "docs.search", writes: false },
-  { name: "docs.leak", writes: false },
+  { name: "docs.search", writes: false, inputSchema: { type: "object" } },
+  { name: "docs.leak", writes: false, inputSchema: { type: "object" } },
 ];
 
 /**
@@ -224,6 +224,30 @@ describe("ok agrees with the receipt, or the answer becomes a refusal", () => {
     expect(outcome.receipt.outcome).toBe("REFUSED");
     expect(outcome.receipt.refusal).toBe("TOOL_NOT_ALLOWED");
   });
+
+  it("leaves a SCHEMA_MISMATCH refusal coherent: no content, the same word, and no call (P-24)", async () => {
+    const fake = writeFakeToolServer(dir + "/mismatch", {
+      callLog: dir + "/mismatch-calls.log",
+      pidLog,
+      advertises: ["docs.search"],
+      schemas: { "docs.search": { type: "object", required: ["q"] } },
+      answers: { "docs.search": { kind: "TEXT", blocks: ["must not be carried"] } },
+    });
+    const admitted = admitToolServer({ serverId: "docs", transport: "STDIO", command: fake.command, args: fake.args, tools: ALLOWLIST });
+    if (!admitted.ok) throw new Error("fixture server was not admitted: " + admitted.at);
+    const scope = openToolOperation({ scopeId: SCOPE, servers: [admitted.server] });
+    let outcome;
+    try {
+      outcome = await scope.callTool({ sessionId: SCOPE, serverId: "docs", toolName: "docs.search", identity: IMPLEMENTER, arguments: {} });
+    } finally {
+      await scope.close();
+    }
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect([outcome.refusal, outcome.at]).toEqual(["SCHEMA_MISMATCH", "server.tools.inputSchema"]);
+    expect(JSON.stringify(outcome)).not.toContain("must not be carried");
+    expect(outcome.receipt).toMatchObject({ outcome: "REFUSED", refusal: "SCHEMA_MISMATCH", resultBytes: 0, contentBlocks: 0 });
+    expect(readToolCallLog(dir + "/mismatch-calls.log")).toEqual([]);
+  });
 });
 
 describe("a whole tool document is admitted all or nothing", () => {
@@ -239,7 +263,7 @@ describe("a whole tool document is admitted all or nothing", () => {
       transport: "STDIO",
       command: fake.command,
       args: fake.args,
-      tools: [{ name: "docs.search", writes: false }],
+      tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }],
     };
   }
 

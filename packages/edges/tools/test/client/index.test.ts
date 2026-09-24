@@ -5,6 +5,10 @@ import type { ToolClient } from "../../src/client/index.js";
 import {
   TOOL_CALL_TIMEOUT_MS,
   TOOL_CONTENT_STRING_MAX,
+  TOOL_CURSOR_BYTES_MAX,
+  TOOL_LIST_DEADLINE_MS,
+  TOOL_LIST_PAGES_MAX,
+  TOOL_LIST_TOOLS_MAX,
   TOOL_MCP_CLIENT_NAME,
   TOOL_MCP_PROTOCOL_VERSION,
   TOOL_RESULT_BYTES_MAX,
@@ -51,6 +55,9 @@ async function answerHandshake(connection: ScriptedToolConnection): Promise<void
   await flush();
 }
 
+/** The smallest schema a conformant server may advertise. */
+const OBJECT = { type: "object" } as const;
+
 /** The last frame the client wrote. */
 const lastFrame = (connection: ScriptedToolConnection): string => {
   const frames = connection.written();
@@ -79,7 +86,7 @@ describe("the handshake happens once, and states what this client is", () => {
     const { connection, client } = connected();
     const listing = client.listTools();
     await answerHandshake(connection);
-    connection.emit(resultFrame(requestIdOf(lastFrame(connection)), { tools: [{ name: "a" }] }));
+    connection.emit(resultFrame(requestIdOf(lastFrame(connection)), { tools: [{ name: "a", inputSchema: OBJECT }] }));
     await listing;
 
     const before = connection.written().length;
@@ -87,22 +94,32 @@ describe("the handshake happens once, and states what this client is", () => {
     await flush();
     expect(requestMethodOf(lastFrame(connection))).toBe("tools/list");
     expect(connection.written().length).toBe(before + 1);
-    connection.emit(resultFrame(requestIdOf(lastFrame(connection)), { tools: [{ name: "a" }] }));
-    await expect(second).resolves.toEqual({ ok: true, value: ["a"] });
+    connection.emit(resultFrame(requestIdOf(lastFrame(connection)), { tools: [{ name: "a", inputSchema: OBJECT }] }));
+    await expect(second).resolves.toEqual({ ok: true, value: [{ name: "a", inputSchema: OBJECT }] });
   });
 });
 
 describe("tools/list and tools/call carry what the server said", () => {
-  it("returns the advertised names", async () => {
+  it("returns the advertised names with their schemas (P-24)", async () => {
     const { connection, client } = connected();
     const listing = client.listTools();
     await answerHandshake(connection);
+    const schema = { type: "object", properties: { q: { type: "string" } } };
     connection.emit(
       resultFrame(requestIdOf(lastFrame(connection)), {
-        tools: [{ name: "docs.search" }, { name: "shell.exec" }],
+        tools: [
+          { name: "docs.search", inputSchema: schema },
+          { name: "shell.exec", inputSchema: OBJECT },
+        ],
       }),
     );
-    await expect(listing).resolves.toEqual({ ok: true, value: ["docs.search", "shell.exec"] });
+    await expect(listing).resolves.toEqual({
+      ok: true,
+      value: [
+        { name: "docs.search", inputSchema: schema },
+        { name: "shell.exec", inputSchema: OBJECT },
+      ],
+    });
   });
 
   it("returns the text blocks and the size of the answer", async () => {
@@ -414,4 +431,210 @@ describe("the agreed revision is compared, not assumed (V2-B4b S4-1)", () => {
       });
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// P-24 (ADR 0109): the whole listing, every page followed and every bound held
+// ---------------------------------------------------------------------------
+
+/** One advertised tool, with the smallest conformant schema unless told otherwise. */
+const tool = (name: string, inputSchema: unknown = OBJECT): Record<string, unknown> => ({ name, inputSchema });
+
+/** Answer the listing's pages in order, one per request, and return what the client wrote. */
+async function answerPages(connection: ScriptedToolConnection, pages: readonly unknown[]): Promise<void> {
+  for (const page of pages) {
+    await flush();
+    const frame = lastFrame(connection);
+    if (requestMethodOf(frame) !== "tools/list") return;
+    connection.emit(resultFrame(requestIdOf(frame), page));
+  }
+  await flush();
+}
+
+const listRequests = (connection: ScriptedToolConnection): readonly Record<string, unknown>[] =>
+  connection
+    .written()
+    .map((frame) => JSON.parse(frame) as { method?: string; params?: Record<string, unknown> })
+    .filter((frame) => frame.method === "tools/list")
+    .map((frame) => frame.params ?? {});
+
+describe("the listing follows every page, and bounds every one (P-24)", () => {
+  it("follows nextCursor to the end, asking with exactly {cursor} after the first page", async () => {
+    const { connection, client } = connected();
+    const listing = client.listTools();
+    await answerHandshake(connection);
+    await answerPages(connection, [
+      { tools: [tool("a")], nextCursor: "c1" },
+      { tools: [tool("b")], nextCursor: "c2" },
+      { tools: [tool("c")] },
+    ]);
+    await expect(listing).resolves.toEqual({ ok: true, value: [tool("a"), tool("b"), tool("c")] });
+    expect(listRequests(connection)).toEqual([{}, { cursor: "c1" }, { cursor: "c2" }]);
+  });
+
+  const refusals: readonly (readonly [string, unknown, string, string])[] = [
+    ["a null cursor", { tools: [tool("a")], nextCursor: null }, "PROTOCOL_VIOLATION", "server.tools.nextCursor"],
+    ["an empty cursor", { tools: [tool("a")], nextCursor: "" }, "PROTOCOL_VIOLATION", "server.tools.nextCursor"],
+    ["a numeric cursor", { tools: [tool("a")], nextCursor: 2 }, "PROTOCOL_VIOLATION", "server.tools.nextCursor"],
+    ["a cursor over its bytes", { tools: [tool("a")], nextCursor: "c".repeat(TOOL_CURSOR_BYTES_MAX + 1) }, "RESULT_UNBOUNDED", "server.tools.nextCursor"],
+    ["a tool with no schema", { tools: [{ name: "a" }] }, "PROTOCOL_VIOLATION", "server.tools"],
+    ["a tool whose schema is an array", { tools: [tool("a", [])] }, "PROTOCOL_VIOLATION", "server.tools"],
+    ["a tool whose schema is null", { tools: [tool("a", null)] }, "PROTOCOL_VIOLATION", "server.tools"],
+    ["a name advertised twice on one page", { tools: [tool("a"), tool("a")] }, "PROTOCOL_VIOLATION", "server.tools"],
+  ];
+  for (const [label, page, refusal, at] of refusals) {
+    it("refuses " + label, async () => {
+      const { connection, client } = connected();
+      const listing = client.listTools();
+      await answerHandshake(connection);
+      await answerPages(connection, [page]);
+      await expect(listing).resolves.toEqual({ ok: false, refusal, at });
+    });
+  }
+
+  it("admits a cursor at its bound", async () => {
+    const { connection, client } = connected();
+    const listing = client.listTools();
+    await answerHandshake(connection);
+    await answerPages(connection, [{ tools: [tool("a")], nextCursor: "c".repeat(TOOL_CURSOR_BYTES_MAX) }, { tools: [] }]);
+    await expect(listing).resolves.toEqual({ ok: true, value: [tool("a")] });
+  });
+
+  it("refuses a repeated cursor (a cycle) and a name repeated across pages", async () => {
+    const cycle = connected();
+    const cycled = cycle.client.listTools();
+    await answerHandshake(cycle.connection);
+    await answerPages(cycle.connection, [
+      { tools: [tool("a")], nextCursor: "c1" },
+      { tools: [tool("b")], nextCursor: "c1" },
+    ]);
+    await expect(cycled).resolves.toEqual({ ok: false, refusal: "PROTOCOL_VIOLATION", at: "server.tools.nextCursor" });
+
+    const twice = connected();
+    const doubled = twice.client.listTools();
+    await answerHandshake(twice.connection);
+    await answerPages(twice.connection, [{ tools: [tool("a")], nextCursor: "c1" }, { tools: [tool("a")] }]);
+    await expect(doubled).resolves.toEqual({ ok: false, refusal: "PROTOCOL_VIOLATION", at: "server.tools" });
+  });
+
+  it("admits TOOL_LIST_PAGES_MAX pages and refuses one more, unanswered", async () => {
+    const pages = (count: number): unknown[] =>
+      Array.from({ length: count }, (_, index) =>
+        index === count - 1 ? { tools: [tool("t" + String(index))] } : { tools: [tool("t" + String(index))], nextCursor: "c" + String(index) },
+      );
+    const atBound = connected();
+    const bounded = atBound.client.listTools();
+    await answerHandshake(atBound.connection);
+    await answerPages(atBound.connection, pages(TOOL_LIST_PAGES_MAX));
+    const admitted = await bounded;
+    expect(admitted.ok && admitted.value.length).toBe(TOOL_LIST_PAGES_MAX);
+
+    const past = connected();
+    const unbounded = past.client.listTools();
+    await answerHandshake(past.connection);
+    await answerPages(past.connection, pages(TOOL_LIST_PAGES_MAX + 1));
+    await expect(unbounded).resolves.toEqual({ ok: false, refusal: "RESULT_UNBOUNDED", at: "server.tools" });
+    // Refused before the page past the bound is asked for.
+    expect(listRequests(past.connection)).toHaveLength(TOOL_LIST_PAGES_MAX);
+  });
+
+  it("admits TOOL_LIST_TOOLS_MAX tools and refuses one more", async () => {
+    const names = (count: number): Record<string, unknown>[] => Array.from({ length: count }, (_, index) => tool("t" + String(index)));
+    const atBound = connected();
+    const bounded = atBound.client.listTools();
+    await answerHandshake(atBound.connection);
+    await answerPages(atBound.connection, [{ tools: names(TOOL_LIST_TOOLS_MAX) }]);
+    const admitted = await bounded;
+    expect(admitted.ok && admitted.value.length).toBe(TOOL_LIST_TOOLS_MAX);
+
+    const past = connected();
+    const unbounded = past.client.listTools();
+    await answerHandshake(past.connection);
+    await answerPages(past.connection, [{ tools: names(TOOL_LIST_TOOLS_MAX + 1) }]);
+    await expect(unbounded).resolves.toEqual({ ok: false, refusal: "RESULT_UNBOUNDED", at: "server.tools" });
+  });
+});
+
+describe("the listing's deadline is read between pages, never mid-request (P-24, C4)", () => {
+  it("lets a page in flight complete, then refuses before the next request, and keeps the connection", async () => {
+    vi.useFakeTimers();
+    const { connection, client } = connected();
+    const listing = client.listTools();
+    await answerHandshake(connection);
+    await flush();
+    // Each page answers inside its own timeout, and the listing as a whole runs
+    // past its deadline while page 3 is in flight.
+    const answerAfter = async (ms: number, page: unknown): Promise<void> => {
+      vi.advanceTimersByTime(ms);
+      connection.emit(resultFrame(requestIdOf(lastFrame(connection)), page));
+      await flush();
+    };
+    expect(TOOL_LIST_DEADLINE_MS).toBeGreaterThan(TOOL_CALL_TIMEOUT_MS);
+    await answerAfter(TOOL_CALL_TIMEOUT_MS - 1_000, { tools: [tool("a")], nextCursor: "c1" });
+    await answerAfter(TOOL_CALL_TIMEOUT_MS - 1_000, { tools: [tool("b")], nextCursor: "c2" });
+    const elapsed = 2 * (TOOL_CALL_TIMEOUT_MS - 1_000);
+    await answerAfter(TOOL_LIST_DEADLINE_MS - elapsed, { tools: [tool("c")], nextCursor: "c3" });
+    await expect(listing).resolves.toEqual({ ok: false, refusal: "RESULT_UNBOUNDED", at: "server.tools" });
+    // Page 3 completed; page 4 was never asked for.
+    expect(listRequests(connection)).toHaveLength(3);
+    expect(connection.closes()).toBe(0);
+
+    // The connection is still usable: a later listing lists anew.
+    const again = client.listTools();
+    await answerPages(connection, [{ tools: [tool("a")] }]);
+    await expect(again).resolves.toEqual({ ok: true, value: [tool("a")] });
+  });
+
+  it("clears its timer when the listing finishes first", async () => {
+    vi.useFakeTimers();
+    const { connection, client } = connected();
+    const listing = client.listTools();
+    await answerHandshake(connection);
+    await answerPages(connection, [{ tools: [tool("a")] }]);
+    await listing;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("a list_changed notification invalidates a listing (P-24, C5)", () => {
+  const changed = JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/list_changed" }) + "\n";
+
+  it("restarts a listing it arrived during, once", async () => {
+    const { connection, client } = connected();
+    const listing = client.listTools();
+    await answerHandshake(connection);
+    await flush();
+    connection.emit(resultFrame(requestIdOf(lastFrame(connection)), { tools: [tool("a")], nextCursor: "c1" }));
+    connection.emit(changed);
+    await answerPages(connection, [{ tools: [tool("b")] }, { tools: [tool("z")] }]);
+    await expect(listing).resolves.toEqual({ ok: true, value: [tool("z")] });
+    expect(listRequests(connection)).toEqual([{}, { cursor: "c1" }, {}]);
+  });
+
+  it("refuses a listing changed twice while it was assembled", async () => {
+    const { connection, client } = connected();
+    const listing = client.listTools();
+    await answerHandshake(connection);
+    await flush();
+    connection.emit(resultFrame(requestIdOf(lastFrame(connection)), { tools: [tool("a")] }));
+    connection.emit(changed);
+    await flush();
+    connection.emit(resultFrame(requestIdOf(lastFrame(connection)), { tools: [tool("a")] }));
+    connection.emit(changed);
+    await flush();
+    await expect(listing).resolves.toEqual({ ok: false, refusal: "RESULT_UNBOUNDED", at: "server.tools" });
+  });
+
+  it("reports a change announced after the listing once, then clears it", async () => {
+    const { connection, client } = connected();
+    const listing = client.listTools();
+    await answerHandshake(connection);
+    await answerPages(connection, [{ tools: [tool("a")] }]);
+    await listing;
+    expect(client.takeListChanged()).toBe(false);
+    connection.emit(changed);
+    await flush();
+    expect(client.takeListChanged()).toBe(true);
+    expect(client.takeListChanged()).toBe(false);
+  });
 });
