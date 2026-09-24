@@ -2147,7 +2147,7 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
       "  const at = process.argv.indexOf('--session-id');",
       "  const session = at >= 0 ? process.argv[at + 1] : 'session-recorded';",
       "  const out = (value) => process.stdout.write(JSON.stringify(value) + '\\n');",
-      "  out({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601' });",
+      "  out({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601', claude_code_version: '2.1.280' });",
       "  out({ type: 'assistant', message: { id: 'msg_recorded_1', content: [{ type: 'text', text }] } });",
       "  out({ type: 'result', subtype: 'success', is_error: false, session_id: session,",
       "    usage: { input_tokens: 1, output_tokens: 2, cache_creation_input_tokens: 3, cache_read_input_tokens: 4 } });",

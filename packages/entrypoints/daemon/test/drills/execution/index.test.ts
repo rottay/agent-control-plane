@@ -541,7 +541,7 @@ function resolvedCliRoute(): ResolvedRoute {
 
 /** Claude headless stream JSON: `started`, a usage-bearing turn, a result. */
 const CLAUDE_LINES: readonly string[] = [
-  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
+  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL, claude_code_version: "2.1.280" }),
   JSON.stringify({ type: "assistant", message: { usage: { output_tokens: TOKENS } } }),
   // The session's one usage report is the result's (P-15/D2, ADR 0105).
   JSON.stringify({ type: "result", subtype: "turn_completed", session_id: "session-drill", usage: { input_tokens: 0, output_tokens: TOKENS, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
@@ -1517,7 +1517,7 @@ const B7T_TOKENS_B = 765;
  * own total. Before D2 each assistant record was a report and they were summed.
  */
 const B7T_TWO_USAGE_LINES: readonly string[] = [
-  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
+  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL, claude_code_version: "2.1.280" }),
   JSON.stringify({ type: "assistant", message: { id: "msg-a", usage: { output_tokens: B7T_TOKENS_A } } }),
   JSON.stringify({ type: "assistant", message: { id: "msg-b", usage: { output_tokens: B7T_TOKENS_B } } }),
   JSON.stringify({ type: "result", subtype: "turn_completed", session_id: "session-b7t", usage: { input_tokens: 0, output_tokens: B7T_TOKENS_A + B7T_TOKENS_B, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
@@ -2257,7 +2257,7 @@ describe("the production daemon owns and reaps its provider children (V2-B4a)", 
     // that never closes the session. The child is left running, which before
     // B4a meant running forever with nothing able to name it.
     const unexpressible: readonly string[] = [
-      JSON.stringify({ type: "system", subtype: "init", model: "m".repeat(200) }),
+      JSON.stringify({ type: "system", subtype: "init", model: "m".repeat(200), claude_code_version: "2.1.280" }),
     ];
     const { binary, root, pidFile } = fakeProviderBinary(unexpressible, { linger: true });
 
@@ -3149,7 +3149,7 @@ describe("P8: a tracked deletion digests the empty string, and only a tracked de
 
 /** A Claude turn that reports it needs a human, between `init` and `result`. */
 const F4_AUTH_LINES: readonly string[] = [
-  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
+  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL, claude_code_version: "2.1.280" }),
   JSON.stringify({ type: "system", subtype: "auth_required" }),
   JSON.stringify({ type: "assistant", message: { usage: { output_tokens: TOKENS } } }),
   JSON.stringify({ type: "result", subtype: "turn_completed", session_id: "session-f4", usage: { input_tokens: 0, output_tokens: TOKENS, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
@@ -3259,11 +3259,14 @@ describe("F4: the plane records the pressure a provider reports", () => {
  * the trail to record and the drill would prove nothing.
  *
  * This frame fails one layer later instead, which is the layer that matters:
- * the parser accepts any non-empty model, payload shaping bounds strings at
- * 200, and `ExecutionEvent` bounds `resolvedModel` at 120 — so the third
- * record parses, normalizes, and then **fails the contract in the port**,
- * which throws `StreamFailure` *after* the earlier events have already been
- * yielded. `terminated` catches it and yields an `error` terminal.
+ * the parser reads a `result`'s `subtype` as an open state token, payload
+ * shaping bounds strings at 200, and `ExecutionEvent` bounds `state.toState`
+ * at 40 — so the third record parses, normalizes, and then **fails the
+ * contract in the port**, which throws `StreamFailure` *after* the earlier
+ * events have already been yielded. `terminated` catches it and yields an
+ * `error` terminal. Until P-15/A2 the frame was a second `init` over the
+ * `resolvedModel` bound; one session now has one `init` (ADR 0112, decision
+ * 181), and a second is refused in the parser, whole chunk and all.
  *
  * It is one of the six ways a real stream reaches that terminal, it is the
  * same mechanism the landed `b4a-reap` case uses, and it needs **no test seam,
@@ -3271,9 +3274,9 @@ describe("F4: the plane records the pressure a provider reports", () => {
  * option**.
  */
 const F4E_UNEXPRESSIBLE_LINES: readonly string[] = [
-  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
+  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL, claude_code_version: "2.1.280" }),
   JSON.stringify({ type: "system", subtype: "auth_required" }),
-  JSON.stringify({ type: "system", subtype: "init", model: "m".repeat(200) }),
+  JSON.stringify({ type: "result", subtype: "u".repeat(60) }),
 ];
 
 describe("F4a errata: a failed execution records what its trail already said", () => {
@@ -3322,7 +3325,8 @@ describe("F4a errata: a failed execution records what its trail already said", (
         "LOGIN_REQUIRED",
         "MALFORMED_EVENT",
         "session failed",
-        "mmmmmmmmmm",
+        "uuuuuuuuuu",
+        "UUUUUUUUUU",
         "http",
         binary,
         root,
@@ -3765,7 +3769,7 @@ const F5_DRILL_TASKS = [
  * nothing, so the turn's result carries the count before the stream goes wrong.
  */
 const F5_SPENDING_UNEXPRESSIBLE_LINES: readonly string[] = [
-  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
+  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL, claude_code_version: "2.1.280" }),
   JSON.stringify({ type: "assistant", message: { usage: { output_tokens: TOKENS } } }),
   JSON.stringify({
     type: "result",
@@ -3774,7 +3778,7 @@ const F5_SPENDING_UNEXPRESSIBLE_LINES: readonly string[] = [
     usage: { input_tokens: 0, output_tokens: TOKENS, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
   }),
   JSON.stringify({ type: "system", subtype: "auth_required" }),
-  JSON.stringify({ type: "system", subtype: "init", model: "m".repeat(200) }),
+  JSON.stringify({ type: "result", subtype: "u".repeat(60) }),
 ];
 
 /** Two claude bindings whose routed subject spends before it fails. */
@@ -3800,8 +3804,8 @@ function twoProvidersSpendingRoute(): ReturnType<typeof twoProviders> {
  * about their account.
  */
 const F5_UNEXPRESSIBLE_LINES: readonly string[] = [
-  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL }),
-  JSON.stringify({ type: "system", subtype: "init", model: "m".repeat(200) }),
+  JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL, claude_code_version: "2.1.280" }),
+  JSON.stringify({ type: "result", subtype: "u".repeat(60) }),
 ];
 
 /** Two claude bindings where BOTH subjects fail, so a landed walk still fails. */
@@ -5334,6 +5338,7 @@ const CLAUDE_CAPTURE = join(REPO_ROOT, "packages", "edges", "providers", "test",
 interface CapturedStreams {
   readonly CAPTURED_AUTH_FAILURE: readonly string[];
   readonly CAPTURED_SUCCESS: readonly string[];
+  readonly CAPTURED_2_1_281_SUCCESS: readonly string[];
 }
 
 async function capturedStreams(): Promise<CapturedStreams> {
@@ -5345,7 +5350,11 @@ async function capturedStreams(): Promise<CapturedStreams> {
     }
     return value as readonly string[];
   };
-  return { CAPTURED_AUTH_FAILURE: lines("CAPTURED_AUTH_FAILURE"), CAPTURED_SUCCESS: lines("CAPTURED_SUCCESS") };
+  return {
+    CAPTURED_AUTH_FAILURE: lines("CAPTURED_AUTH_FAILURE"),
+    CAPTURED_SUCCESS: lines("CAPTURED_SUCCESS"),
+    CAPTURED_2_1_281_SUCCESS: lines("CAPTURED_2_1_281_SUCCESS"),
+  };
 }
 
 /** The real Claude adapter over a node child that speaks `lines` and exits with `exitCode`. */
@@ -5434,7 +5443,7 @@ function readResult(world: P07dWorld, reference: string): { bytes: Buffer; docum
 /** A synthetic stream in the captured shape: init, one assistant text, and a result carrying `isError`. */
 function synLines(text: string, isError: boolean): readonly string[] {
   return [
-    JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL, session_id: "00000000-0000-4000-8000-000000000001" }),
+    JSON.stringify({ type: "system", subtype: "init", model: RESOLVED_MODEL, session_id: "00000000-0000-4000-8000-000000000001", claude_code_version: "2.1.280" }),
     JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text }], usage: { output_tokens: 1 } } }),
     JSON.stringify({
       type: "result",
@@ -5864,10 +5873,10 @@ function d4EchoChild(options: { readonly isError: boolean }): {
     "  const session = at >= 0 ? process.argv[at + 1] : 'session-d4';",
     "  const out = (value) => process.stdout.write(JSON.stringify(value) + '\\n');",
     // The captured success sample's five record kinds, in its order (P-15/D4 v2).
-    "  out({ type: 'system', subtype: 'commands_changed' });",
-    "  out({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601' });",
+    "  out({ type: 'system', subtype: 'commands_changed', commands: [], uuid: '00000000-0000-4000-8000-0000000000d4', session_id: session });",
+    "  out({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601', claude_code_version: '2.1.280' });",
     "  out({ type: 'assistant', message: { id: 'msg_d4_1', content: [{ type: 'text', text }] } });",
-    "  out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } });",
+    "  out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', resetsAt: 1, rateLimitType: 'five_hour', overageStatus: 'rejected', overageDisabledReason: 'org_level_disabled', isUsingOverage: false, unifiedWindows: { five_hour: { utilization: 1, resetsAt: 1 }, seven_day: { utilization: 1, resetsAt: 1 } } }, uuid: '00000000-0000-4000-8000-0000000000d5', session_id: session });",
     "  out({ type: 'result', subtype: 'success', is_error: " + String(options.isError) + ", session_id: session,",
     "    usage: { input_tokens: 5, output_tokens: 7, cache_creation_input_tokens: 11, cache_read_input_tokens: 13 } });",
     "  process.exit(" + (options.isError ? "1" : "0") + ");",
@@ -6239,12 +6248,15 @@ function fPadded(instruction: string): string {
   return answer;
 }
 
-type FChildMode = "ECHO" | "PADDED" | "AUTH_FAILURE" | "ERROR_EXIT_0" | "KILLED";
+type FChildMode = "ECHO" | "PADDED" | "AUTH_FAILURE" | "CAPTURED_2_1_281" | "CAPTURED_2_1_281_SANITIZED" | "ERROR_EXIT_0" | "KILLED";
 
 /**
  * A synthetic child behind the real Claude adapter's argv, on D4's echo child's
  * mould. `ECHO` and `PADDED` answer the instruction (the second padded past the
  * block list); `AUTH_FAILURE` replays the captured authentication failure, exit 1;
+ * `CAPTURED_2_1_281` replays the 2.1.281 capture, exit 0, with the answer the
+ * sanitizer emptied restored to the `"ok"` the capture's summary records (P-15/A2,
+ * ADR 0112); `CAPTURED_2_1_281_SANITIZED` replays it byte for byte, answer empty;
  * `ERROR_EXIT_0` is the crossed pair, `is_error` with exit 0 and the text "boom";
  * `KILLED` starts an answer and is killed before any result.
  */
@@ -6252,7 +6264,15 @@ async function fChild(mode: FChildMode): Promise<{ readonly binary: string; read
   const directory = d4Directory();
   const spawnLog = join(directory, "spawns.log");
   const binary = join(directory, "fake-claude");
-  const captured = mode === "AUTH_FAILURE" ? (await capturedStreams()).CAPTURED_AUTH_FAILURE : [];
+  const streams = await capturedStreams();
+  const captured =
+    mode === "AUTH_FAILURE"
+      ? streams.CAPTURED_AUTH_FAILURE
+      : mode === "CAPTURED_2_1_281"
+        ? streams.CAPTURED_2_1_281_SUCCESS.map((line) => line.split('"text":""').join('"text":"ok"').split('"result":""').join('"result":"ok"'))
+        : mode === "CAPTURED_2_1_281_SANITIZED"
+          ? streams.CAPTURED_2_1_281_SUCCESS
+          : [];
   const program = [
     "#!" + realpathSync(process.execPath),
     "const fs = require('node:fs');",
@@ -6265,11 +6285,11 @@ async function fChild(mode: FChildMode): Promise<{ readonly binary: string; read
     "  const session = at >= 0 ? process.argv[at + 1] : 'session-f';",
     "  const out = (value) => process.stdout.write(JSON.stringify(value) + '\\n');",
     "  const mode = " + JSON.stringify(mode) + ";",
-    "  if (mode === 'AUTH_FAILURE') {",
+    "  if (mode === 'AUTH_FAILURE' || mode === 'CAPTURED_2_1_281' || mode === 'CAPTURED_2_1_281_SANITIZED') {",
     "    for (const line of " + JSON.stringify([...captured]) + ") process.stdout.write(line.split('00000000-0000-4000-8000-000000000001').join(session) + '\\n');",
-    "    process.exit(1);",
+    "    process.exit(mode === 'AUTH_FAILURE' ? 1 : 0);",
     "  }",
-    "  out({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601' });",
+    "  out({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601', claude_code_version: '2.1.280' });",
     "  if (mode === 'KILLED') {",
     "    out({ type: 'assistant', message: { id: 'msg_f_1', content: [{ type: 'text', text: 'half an answer' }] } });",
     "    process.kill(process.pid, 'SIGKILL');",
@@ -6278,7 +6298,7 @@ async function fChild(mode: FChildMode): Promise<{ readonly binary: string; read
     "  let answer = mode === 'ERROR_EXIT_0' ? 'boom' : text;",
     "  if (mode === 'PADDED') { while (answer.length <= " + String(F_OVERFLOW_AT + 50) + ") answer += " + JSON.stringify(F_PAD) + "; }",
     "  out({ type: 'assistant', message: { id: 'msg_f_1', content: [{ type: 'text', text: answer }] } });",
-    "  out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } });",
+    "  out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', resetsAt: 1, rateLimitType: 'five_hour', overageStatus: 'rejected', overageDisabledReason: 'org_level_disabled', isUsingOverage: false, unifiedWindows: { five_hour: { utilization: 1, resetsAt: 1 }, seven_day: { utilization: 1, resetsAt: 1 } } }, uuid: '00000000-0000-4000-8000-0000000000d5', session_id: session });",
     "  out({ type: 'result', subtype: 'success', is_error: mode === 'ERROR_EXIT_0', session_id: session,",
     "    usage: { input_tokens: 5, output_tokens: 7, cache_creation_input_tokens: 11, cache_read_input_tokens: 13 } });",
     // Not `process.exit`: a pipe drains asynchronously, and exiting at once would
@@ -6638,6 +6658,51 @@ describe("P-15/F: a result is read back by reference, through both new doors, be
     await fExpectBothDoors(databasePath, taskId, {
       listed: { outcomeStatus: "FAILED", hasResult: false },
       document: { state: "NO_RESULT_RECORDED", outcomeStatus: "FAILED", cohort: "CURRENT", result: null },
+    });
+  }, 300_000);
+
+  it("T-D1 (P-15/A2, ADR 0112): the 2.1.281 capture through the doors: one observation of the four classes, no quota signal, SUCCEEDED", async () => {
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true });
+    const child = await fChild("CAPTURED_2_1_281");
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG)])).resolves.toBe(0);
+    expect(readFileSync(child.spawnLog, "utf8")).toBe("spawned\n");
+
+    const ledger = openLedger(databasePath);
+    ledgers.push(ledger);
+    const events = d4Events(ledger, taskId);
+    const types = events.map((event) => event.type);
+    // The result's usage, once: the three thinking-token estimates and the rate-limit
+    // numbers are no observation (every number in the sanitized capture is 1).
+    const observations = events.filter((event) => event.type === "USAGE_OBSERVATION_RECORDED");
+    expect(observations).toHaveLength(1);
+    expect(observations[0]?.payload["usageObservation"]).toMatchObject({
+      reportKind: "CUMULATIVE",
+      isFinal: 1,
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheWriteTokens: 1,
+      cacheReadTokens: 1,
+      totalTokens: 4,
+    });
+    expect(types).not.toContain("TOKEN_USAGE_RECORDED");
+    // allowed_warning on the seven-day window is no pressure here: P-19's to map.
+    expect(types.filter((type) => /QUOTA|PRESSURE|AUTH_REQUIRED/.test(type))).toEqual([]);
+    expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
+    // The answer, "ok", read back through both doors.
+    const document = await fExpectBothDoors(databasePath, taskId, {
+      listed: { outcomeStatus: "SUCCEEDED", hasResult: true },
+      document: { state: "RESULT", outcomeStatus: "SUCCEEDED", cohort: "CURRENT" },
+    });
+    const blocks = ((document["result"] as Record<string, unknown>)["document"] as Record<string, unknown>)["blocks"] as Record<string, unknown>[];
+    expect(blocks.map((block) => block["text"])).toEqual(["ok"]);
+  }, 300_000);
+
+  it("T-D1 control (Fable C1): the same capture replayed unmodified, its answer empty, fails the task with NO_OUTPUT — the restored answer is load-bearing", async () => {
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true });
+    const child = await fChild("CAPTURED_2_1_281_SANITIZED");
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG)])).rejects.toMatchObject({
+      name: "OperationFailedError",
+      reason: "NO_OUTPUT",
     });
   }, 300_000);
 

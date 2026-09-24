@@ -9,17 +9,19 @@ import type {
   AdmittedBinary,
   AdmittedConfigRoot,
   AdmittedWorkdir,
+  ParseCursor,
   ProviderAdapter,
   SessionLimits,
   SessionRequest,
 } from "../../src/contract/index.js";
+import { EMPTY_CURSOR } from "../../src/contract/index.js";
 import { AdapterError } from "../../src/errors/index.js";
 import type { NormalizedEvent } from "../../src/events/index.js";
 import { admitBinary } from "../../src/process/spawn/index.js";
 import { descriptorEnablesWrites, isReadOnlyIdentity, startSession } from "../../src/session/index.js";
 import { claudeAdapter } from "../../src/claude/index.js";
 import { fakeAdapter, fakeProviderArgv, scriptedAdapter } from "../testing/index.js";
-import { CAPTURED_AUTH_FAILURE, CAPTURED_SUCCESS } from "../testing/claude-capture/index.js";
+import { CAPTURED_2_1_281_SUCCESS, CAPTURED_AUTH_FAILURE, CAPTURED_SUCCESS } from "../testing/claude-capture/index.js";
 import type { FakeScript } from "../testing/index.js";
 
 const TMP_ROOT = realpathSync(tmpdir());
@@ -775,5 +777,74 @@ describe("P-07 C: a session hands output to its sink and nowhere else, and repor
     expect(session.exit()).toBeNull();
     expect(session.operation()).toBeNull();
     return session.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15/A2 — a session's CLI version is its own (T-S1, ADR 0112)
+// ---------------------------------------------------------------------------
+
+describe("P-15/A2: two sessions over the one adapter keep their versions apart (T-S1)", () => {
+  /** 2.1.281's thinking record, which only a 2.1.281 session admits. */
+  const THINKING = CAPTURED_2_1_281_SUCCESS[1] ?? "";
+
+  it("two cursors, one per version, interleaved record by record: the thinking record passes on 2.1.281 and refuses on 2.1.280", () => {
+    // One adapter object holding no state of its own: a provider name and three methods.
+    expect(Object.keys(claudeAdapter).sort()).toEqual(["describe", "negotiate", "parse", "provider"]);
+    let old: ParseCursor = EMPTY_CURSOR;
+    let current: ParseCursor = EMPTY_CURSOR;
+    const oldLines = [CAPTURED_SUCCESS[0] ?? "", CAPTURED_SUCCESS[1] ?? "", THINKING];
+    const currentLines = [CAPTURED_2_1_281_SUCCESS[0] ?? "", THINKING, THINKING];
+    const verdicts: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const a = claudeAdapter.parse((currentLines[index] ?? "") + "\n", current);
+      verdicts.push("2.1.281:" + (a.ok ? "ok" : a.code));
+      if (a.ok) current = a.cursor;
+      const b = claudeAdapter.parse((oldLines[index] ?? "") + "\n", old);
+      verdicts.push("2.1.280:" + (b.ok ? "ok" : b.code));
+      if (b.ok) old = b.cursor;
+    }
+    expect(verdicts).toEqual([
+      "2.1.281:ok",
+      "2.1.280:ok",
+      "2.1.281:ok",
+      "2.1.280:ok",
+      "2.1.281:ok",
+      "2.1.280:UNKNOWN_EVENT",
+    ]);
+    expect({ current: current.cliVersion, old: old.cliVersion }).toEqual({ current: "2.1.281", old: "2.1.280" });
+    // The frozen empty cursor both started from is untouched.
+    expect(EMPTY_CURSOR).toEqual({ partial: "", recordIndex: 0 });
+  });
+
+  it("two live Sessions run at once over claudeAdapter: the 2.1.281 one succeeds, the 2.1.280 one refuses the thinking record", async () => {
+    const [current, old] = await Promise.all([
+      claudeRun({ lines: CAPTURED_2_1_281_SUCCESS, exitCode: 0 }),
+      claudeRun({
+        lines: [CAPTURED_SUCCESS[0] ?? "", CAPTURED_SUCCESS[1] ?? "", THINKING, ...CAPTURED_SUCCESS.slice(2)],
+        exitCode: 0,
+        lingerMs: 5_000,
+      }),
+    ]);
+    expect(current.state).not.toBe("FAILED");
+    expect(current.operation).toBe("SUCCEEDED");
+    expect(current.events.map((event) => event.name)).toContain("session.started");
+    expect(old.state).toBe("FAILED");
+    expect(old.health).toContain("UNKNOWN_EVENT");
+    expect(old.operation).toBeNull();
+  });
+
+  it("a 2.1.999 init fails its session PROTOCOL_UNSUPPORTED, and a 2.1.281 session beside it is unaffected", async () => {
+    const init = JSON.parse(CAPTURED_2_1_281_SUCCESS[0] ?? "{}") as Record<string, unknown>;
+    init["claude_code_version"] = "2.1.999";
+    const [refused, admitted] = await Promise.all([
+      claudeRun({ lines: [JSON.stringify(init), ...CAPTURED_2_1_281_SUCCESS.slice(1)], exitCode: 0, lingerMs: 5_000 }),
+      claudeRun({ lines: CAPTURED_2_1_281_SUCCESS, exitCode: 0 }),
+    ]);
+    expect(refused.state).toBe("FAILED");
+    expect(refused.health).toContain("PROTOCOL_UNSUPPORTED");
+    expect(refused.events).toEqual([]);
+    expect(refused.operation).toBeNull();
+    expect(admitted.operation).toBe("SUCCEEDED");
   });
 });

@@ -1,16 +1,23 @@
 /**
- * The two captured Claude CLI streams, sanitized (P-07 escalón C, ADR 0099).
+ * The captured Claude CLI streams, sanitized (P-07 escalón C, ADR 0099; P-15/A2,
+ * ADR 0112).
  *
  * **Provenance.** Two runs the owner authorized on 2026-09-22, each run once:
  * Claude CLI `2.1.280`, `--model haiku`, the adapter-shaped environment, the
- * prompt on stdin. Kept here as string literals because every fixture in this
- * repository is a TypeScript literal; the sanitized files they were copied from
- * are evidence outside the tree, identified by digest:
+ * prompt on stdin; and one run the owner authorized on 2026-09-24, run once, of
+ * Claude CLI `2.1.281` after its auto-update, tools disabled, one turn. Kept here
+ * as string literals because every fixture in this repository is a TypeScript
+ * literal; the sanitized files they were copied from are evidence outside the
+ * tree, identified by digest:
  *
- * | Sample | Constant | Exit | sha256 of the sanitized file |
- * | --- | --- | --- | --- |
- * | 1, an authentication failure | `CAPTURED_AUTH_FAILURE` | 1 | `e8c72c6f4d5185c168cbe8def1cf3b9128a1404aaa690f2019217b7b2c25c502` |
- * | 2, a success | `CAPTURED_SUCCESS` | 0 | `01132951fe2a7b0e6062b0f5997b033d0276822230f3c3c72ff3f0c2a398d312` |
+ * | Sample | Constant | CLI | Exit | sha256 of the sanitized file |
+ * | --- | --- | --- | --- | --- |
+ * | 1, an authentication failure | `CAPTURED_AUTH_FAILURE` | 2.1.280 | 1 | `e8c72c6f4d5185c168cbe8def1cf3b9128a1404aaa690f2019217b7b2c25c502` |
+ * | 2, a success | `CAPTURED_SUCCESS` | 2.1.280 | 0 | `01132951fe2a7b0e6062b0f5997b033d0276822230f3c3c72ff3f0c2a398d312` |
+ * | 3, a success | `CAPTURED_2_1_281_SUCCESS` | 2.1.281 | 0 | `a1bd7d8214e337aa4f111e1e5d7ef0a76f8dcd79071d0ab3027713bfd85e095a` |
+ *
+ * Sample 3's literals are the sanitized file's eight lines byte for byte: joined by
+ * `\n` with a trailing `\n`, they hash to the digest above.
  *
  * **What was replaced.** Every record type and field name is kept; only values
  * changed. Sample 1: `session_id`, every `uuid`, `assistant.message.id` and the
@@ -21,7 +28,12 @@
  * `request_id` and the thinking `signature` by fixture tokens,
  * `commands_changed.commands` emptied, and **every number** inside the usage,
  * `modelUsage` and `rate_limit_info` records, the cost and the timings by `1`.
- * The usage and rate-limit numbers are placeholders, not observations.
+ * The usage and rate-limit numbers are placeholders, not observations. Sample 3:
+ * the same rules — ids, paths and timings by fixed placeholders, `signature` and
+ * `request_id` by fixture tokens, **every number** by `1` (the thinking-token
+ * estimates, the rate-limit numbers and the usage among them), and the assistant
+ * text and the result's `result` emptied (the capture's summary records that the
+ * unsanitized `result` was `"ok"`), so sample 3 carries no output text.
  *
  * **What they prove, and what they do not.** Sample 1: a `result` carries a
  * boolean `is_error` and a string `result`, `is_error: true` coincided with exit
@@ -30,8 +42,13 @@
  * `is_api_error_message: true`. Sample 2: `is_error: false` coincided with exit
  * 0, the output text is the assistant `text` block (`"ok"`), a `thinking` block is
  * not output, and the stream opens with `system/commands_changed` and carries a
- * `rate_limit_event`. Not observed: `is_error: true` with exit 0, `is_error:
- * false` with a non-zero exit, a signal exit, any other CLI version.
+ * `rate_limit_event`. Sample 3: 2.1.281 opens with `init` (no `commands_changed`),
+ * carries three `system/thinking_tokens` records before the first assistant record,
+ * and a `rate_limit_event` whose status is `allowed_warning` on the `seven_day`
+ * window, with `utilization` and `surpassedThreshold` and without the two overage
+ * keys; its `result` has 2.1.280's key set. Not observed: `is_error: true` with
+ * exit 0, `is_error: false` with a non-zero exit, a signal exit, any other CLI
+ * version.
  */
 
 /** Sample 1, three records: the CLI was not logged in and exited 1. */
@@ -49,4 +66,16 @@ export const CAPTURED_SUCCESS: readonly string[] = [
   "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"id\":\"msg_fixture_000000000000000001\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":1,\"cache_read_input_tokens\":1,\"cache_creation\":{\"ephemeral_5m_input_tokens\":1,\"ephemeral_1h_input_tokens\":1},\"output_tokens\":1,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"input_transformations\":[],\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-000000000033\",\"timestamp\":\"1970-01-01T00:00:00.000Z\",\"request_id\":\"req_fixture_000000000000000001\"}",
   "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\",\"resetsAt\":1,\"rateLimitType\":\"five_hour\",\"overageStatus\":\"rejected\",\"overageDisabledReason\":\"org_level_disabled\",\"isUsingOverage\":false,\"unifiedWindows\":{\"five_hour\":{\"utilization\":1,\"resetsAt\":1},\"seven_day\":{\"utilization\":1,\"resetsAt\":1}}},\"uuid\":\"00000000-0000-4000-8000-000000000034\",\"session_id\":\"00000000-0000-4000-8000-000000000001\"}",
   "{\"duration_api_ms\":1,\"stop_reason\":\"end_turn\",\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"total_cost_usd\":1,\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":1,\"cache_read_input_tokens\":1,\"output_tokens\":1,\"output_tokens_details\":{\"thinking_tokens\":1},\"server_tool_use\":{\"web_search_requests\":1,\"web_fetch_requests\":1},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":1,\"ephemeral_5m_input_tokens\":1},\"inference_geo\":\"not_available\",\"iterations\":[{\"input_tokens\":1,\"output_tokens\":1,\"cache_read_input_tokens\":1,\"cache_creation_input_tokens\":1,\"cache_creation\":{\"ephemeral_5m_input_tokens\":1,\"ephemeral_1h_input_tokens\":1},\"type\":\"message\"}],\"speed\":\"standard\"},\"modelUsage\":{\"claude-haiku-4-5-20251001\":{\"inputTokens\":1,\"outputTokens\":1,\"cacheReadInputTokens\":1,\"cacheCreationInputTokens\":1,\"webSearchRequests\":1,\"costUSD\":1,\"contextWindow\":1,\"maxOutputTokens\":1,\"thinkingTokens\":1,\"canonicalModel\":\"claude-haiku-4-5\",\"provider\":\"firstParty\",\"costBasis\":\"list\"}},\"permission_denials\":[],\"terminal_reason\":\"completed\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\",\"subagent_stats\":{\"spawned\":0,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":0},\"started_in_background\":0,\"max_depth\":0,\"spawned_by_subagents\":0,\"completed\":0,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{}},\"is_error\":false,\"num_turns\":1,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"ok\",\"ttft_ms\":1,\"type\":\"result\",\"duration_ms\":1,\"uuid\":\"00000000-0000-4000-8000-000000000035\",\"ttft_stream_ms\":1,\"time_to_request_ms\":1,\"first_content_frame_ms\":1,\"queued_turn_count\":0,\"result_index\":0}",
+];
+
+/** Sample 3, eight records: CLI 2.1.281, a one-turn answer, exit 0. */
+export const CAPTURED_2_1_281_SUCCESS: readonly string[] = [
+  "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fixture/cwd\",\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"tools\":[],\"mcp_servers\":[],\"model\":\"claude-haiku-4-5-20251001\",\"permissionMode\":\"plan\",\"slash_commands\":[],\"terminal_slash_commands\":[],\"apiKeySource\":\"none\",\"claude_code_version\":\"2.1.281\",\"output_style\":\"default\",\"agents\":[],\"skills\":[],\"plugins\":[],\"capabilities\":[\"interrupt_receipt_v1\",\"interrupt_cancel_queued_v1\",\"msg_lifecycle_v1\",\"mcp_read_resource_v1\",\"mcp_tool_ui_meta_v1\"],\"analytics_disabled\":false,\"product_feedback_disabled\":false,\"uuid\":\"00000000-0000-4000-8000-100000000002\",\"messaging_socket_path\":\"/fixture/socket.sock\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\",\"per_turn_effort_active\":false,\"view_mode\":\"default\"}",
+  "{\"type\":\"system\",\"subtype\":\"thinking_tokens\",\"estimated_tokens\":1,\"estimated_tokens_delta\":1,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000003\"}",
+  "{\"type\":\"system\",\"subtype\":\"thinking_tokens\",\"estimated_tokens\":1,\"estimated_tokens_delta\":1,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000004\"}",
+  "{\"type\":\"system\",\"subtype\":\"thinking_tokens\",\"estimated_tokens\":1,\"estimated_tokens_delta\":1,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000005\"}",
+  "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"id\":\"msg_fixture_000000000006\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"fixture-signature\"}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":1,\"cache_read_input_tokens\":1,\"cache_creation\":{\"ephemeral_5m_input_tokens\":1,\"ephemeral_1h_input_tokens\":1},\"output_tokens\":1,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"input_transformations\":[],\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000007\",\"timestamp\":\"1970-01-01T00:00:00.000Z\",\"request_id\":\"req_fixture_000000000008\"}",
+  "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"id\":\"msg_fixture_000000000006\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"\"}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":1,\"cache_read_input_tokens\":1,\"cache_creation\":{\"ephemeral_5m_input_tokens\":1,\"ephemeral_1h_input_tokens\":1},\"output_tokens\":1,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"input_transformations\":[],\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000009\",\"timestamp\":\"1970-01-01T00:00:00.000Z\",\"request_id\":\"req_fixture_000000000008\"}",
+  "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed_warning\",\"resetsAt\":1,\"rateLimitType\":\"seven_day\",\"utilization\":1,\"isUsingOverage\":false,\"surpassedThreshold\":1,\"unifiedWindows\":{\"five_hour\":{\"utilization\":1,\"resetsAt\":1},\"seven_day\":{\"utilization\":1,\"resetsAt\":1}}},\"uuid\":\"00000000-0000-4000-8000-100000000010\",\"session_id\":\"00000000-0000-4000-8000-000000000001\"}",
+  "{\"duration_api_ms\":1,\"stop_reason\":\"end_turn\",\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"total_cost_usd\":1,\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":1,\"cache_read_input_tokens\":1,\"output_tokens\":1,\"output_tokens_details\":{\"thinking_tokens\":1},\"server_tool_use\":{\"web_search_requests\":1,\"web_fetch_requests\":1},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":1,\"ephemeral_5m_input_tokens\":1},\"inference_geo\":\"not_available\",\"iterations\":[{\"input_tokens\":1,\"output_tokens\":1,\"cache_read_input_tokens\":1,\"cache_creation_input_tokens\":1,\"cache_creation\":{\"ephemeral_5m_input_tokens\":1,\"ephemeral_1h_input_tokens\":1},\"type\":\"message\"}],\"speed\":\"standard\"},\"modelUsage\":{\"claude-haiku-4-5-20251001\":{\"inputTokens\":1,\"outputTokens\":1,\"cacheReadInputTokens\":1,\"cacheCreationInputTokens\":1,\"webSearchRequests\":1,\"costUSD\":1,\"contextWindow\":1,\"maxOutputTokens\":1,\"thinkingTokens\":1,\"canonicalModel\":\"claude-haiku-4-5\",\"provider\":\"firstParty\",\"costBasis\":\"list\"}},\"permission_denials\":[],\"terminal_reason\":\"completed\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\",\"subagent_stats\":{\"spawned\":1,\"requested\":{\"background\":1,\"foreground\":1,\"unset\":1},\"started_in_background\":1,\"max_depth\":1,\"spawned_by_subagents\":1,\"completed\":1,\"failed\":1,\"killed\":{\"parent\":1,\"user\":1,\"system\":1},\"refused\":{\"depth_limit\":1,\"concurrency_limit\":1,\"budget\":1},\"by_type\":{}},\"is_error\":false,\"num_turns\":1,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"\",\"ttft_ms\":1,\"type\":\"result\",\"duration_ms\":1,\"uuid\":\"00000000-0000-4000-8000-100000000011\",\"ttft_stream_ms\":1,\"time_to_request_ms\":1,\"first_content_frame_ms\":1,\"queued_turn_count\":1,\"result_index\":1}",
 ];

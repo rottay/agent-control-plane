@@ -36,7 +36,7 @@ absent so one cannot come back alongside its directory.
 
 | Provider | Surface | Framing | Built against |
 | --- | --- | --- | --- |
-| `claudeAdapter` | `claude -p --output-format stream-json --verbose` | line-delimited records | the headless `stream-json` surface, and two captured runs (ADR 0099, ADR 0101) |
+| `claudeAdapter` | `claude -p --output-format stream-json --verbose` | line-delimited records | the headless `stream-json` surface, and three captured runs of two CLI versions (ADR 0099, ADR 0101, ADR 0112) |
 | `kimiAdapter` | `kimi acp` | NDJSON, stable ACP v1 | a pinned ACP v1 schema |
 | `codexAdapter` | `codex app-server --listen stdio://` | **UNKNOWN** | the offline schema the Codex CLI generates for its own protocol |
 
@@ -89,6 +89,41 @@ Codex the claim is checked mechanically against the vendored schema: the tests
 extract every method the protocol defines and prove the tables partition it
 with nothing left over, so a regeneration that changes the surface fails the
 suite rather than leaving a stale claim standing.
+
+**What the Claude parser admits, and on what evidence (P-15 escalón A2, ADR 0112).**
+The Claude parser admits exactly what three authorized captures show: two of CLI
+2.1.280 (2026-09-22) and one of 2.1.281 (2026-09-24). Its `init` reads
+`claude_code_version`:
+
+- a version outside the observed list is `PROTOCOL_UNSUPPORTED`, and the refusal names
+  the version only when it has the `x.y.z` grammar;
+- an absent or empty version is `MALFORMED_EVENT`;
+- a second `init` in one session is `MALFORMED_EVENT`;
+- before `init`, only a table row a capture shows there is read (today 2.1.280's
+  `commands_changed`). An `assistant`, `user`, `result` or `auth_required` record with
+  no version is `MALFORMED_EVENT`, and so is any other row. So a stream without `init`
+  is never read as a success.
+
+The records that carry no signal are one table, unexported:
+
+- `system/commands_changed` (2.1.280);
+- `system/thinking_tokens` (2.1.281);
+- `rate_limit_event` (both versions).
+
+Each row has exact keys per version and a gate per field, and only the words the
+captures show are admitted. A key, word or record from another version is refused.
+
+The version and the no-signal records seen before `init` travel in the parse cursor,
+never in module state, and `init` re-judges those records against the version it
+names. No row emits a signal, so neither the thinking-token estimates nor the
+rate-limit numbers become usage or pressure. `allowed_warning` is admitted and not
+interpreted; mapping it is P-19's. `isUsingOverage: true` is refused like any
+unobserved word.
+
+**The gate fires after spawn.** It refuses at the stream's first `init`, after the CLI
+is running, so it names the cause of a failure but does not prevent spend. A pre-spawn
+version gate is a later cut. A new CLI version is refused until a capture of it is
+authorized, taken and admitted row by row.
 
 ## Three transports, not one
 

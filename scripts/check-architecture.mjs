@@ -11898,6 +11898,53 @@ const P26B_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-15, cut A2: the Claude adapter admits what a capture shows (ADR 0112; decisions
+ * 178-183; prestate v3 and Fable pre-audit C1-C8, adopted as rulings).
+ *
+ * The parser's no-signal records move into one named, frozen, unexported admission
+ * table with strict keys per CLI version (2.1.280 and 2.1.281, one authorized capture
+ * each); `init` gains the version gate, refusing an unobserved version with
+ * `PROTOCOL_UNSUPPORTED`; the version and the records seen before `init` live in the
+ * parse cursor, never in module state; one `init` per session. The providers contract
+ * widens `ParseOutcome`'s refusal union by that one word and gains the two cursor
+ * fields. L-P15A2-1 keeps the new numbers inside the table and the version in the
+ * cursor.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 165 -> **166**; the ADR corpus 111 -> 112.
+ * **Pins that do not.** `ADAPTER_ERROR_CODES` (19), `PROVIDERS_PUBLIC_EXPORTS` (97),
+ * `CONTRACT_VERSION` (2.10.0), `API_CONTRACT_VERSION` (0.20.0), `MIGRATIONS` (25),
+ * `CONTRACTS_SCHEMA_EXPORTS` (178), the Claude usage policy's digest, and PC-D3's
+ * trail pin.
+ *
+ * The seven test files that emit a Claude `init` are restamped with the observed
+ * version `2.1.280` (ND-A2-14); the two synthetic daemon children that emit a
+ * `commands_changed` or a `rate_limit_event` are restamped to the observed 2.1.280
+ * records. v1.1: before `init` only a row a capture shows there is read, so the lease
+ * drills' six bare-`result` children gain the observed `init` (DT admission, 17 -> 18
+ * paths).
+ */
+const P15A2_WRITE_SET = [
+  "docs/architecture/0112-the-claude-adapter-admits-what-a-capture-shows.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "packages/edges/providers/README.md",
+  "packages/edges/providers/src/claude/index.ts",
+  "packages/edges/providers/src/contract/index.ts",
+  "packages/edges/providers/test/claude/index.test.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/edges/providers/test/session/index.test.ts",
+  "packages/edges/providers/test/testing/claude-capture/index.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/leases/index.test.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12144,6 +12191,7 @@ const WRITE_SET = [
   ...P26A_WRITE_SET,
   ...P37S_WRITE_SET,
   ...P26B_WRITE_SET,
+  ...P15A2_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13673,6 +13721,12 @@ const PATH_SCOPED_LAWS = [
   {
     law: "a roadmap step's digests and rank have one home",
     scope: "packages/*/*/src/**",
+  },
+  // P-15 cut A2. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 165 -> 166 for L-P15A2-1.
+  {
+    law: "the Claude adapter's new numbers stay in its admission table, and its version lives in the cursor",
+    scope: "packages/edges/providers/src/claude/index.ts",
   },
 ];
 
@@ -26255,6 +26309,152 @@ if (tracked.status === 0) {
   }
   requireScope("a roadmap step's digests and rank have one home", scanned);
   notes.push("a roadmap step's digests and rank have one home, and the prefix is the contract's");
+}
+
+// L-P15A2-1 -- the Claude adapter's new numbers stay in its admission table, and its
+// version lives in the cursor (P-15 cut A2, ADR 0112; decision 182; Fable C1).
+//
+// Over the comment-stripped `providers/src/claude/index.ts`:
+//
+// (i) the literals `estimated_tokens`, `estimated_tokens_delta`, `utilization`,
+//     `surpassedThreshold` and `isUsingOverage` each appear inside the span of the one
+//     declaration `const CLAUDE_NO_SIGNAL_RECORDS ... = Object.freeze(` ... `);` --
+//     from the declaration to the parenthesis that closes that call, found by a
+//     string-aware count -- and nowhere outside it, so never in `resultUsage` and never
+//     where a step or a pressure is built;
+// (ii) no `let` or `var` (followed by whitespace or by a destructuring `[` or `{`), and
+//     no `new Map`, `new WeakMap`, `new Set` or `new WeakSet` (with or without type
+//     arguments, bare or qualified by `globalThis.`), at module scope (brace depth 0,
+//     outside strings), so a session's version has nowhere to live but its cursor;
+// (iii) `CLAUDE_OBSERVED_CLI_VERSIONS` is declared once and named exactly once more,
+//     inside `function readInit(`, which the one `subtype === "init"` arm returns;
+// (iv) `PROTOCOL_UNSUPPORTED` appears at exactly two sites, one inside
+//     `function buildArgv(` (the pre-argv refusal) and one inside `function readInit(`
+//     (the version gate), so no later row borrows the word.
+//
+// Stated limit: a text-level matcher. It does not see a table split in two, a literal
+// assembled from pieces or spelled with escapes, or a regular expression literal
+// holding a quote or a brace. Nor does it see module state held in a mutated
+// module-scope `const` object or array, a class static field or a helper's closure,
+// or a default version (`??=` a version literal) or a second version list. The
+// verifier drove each of these, and the behaviour suites catch every one: the adapter
+// suite's per-row negatives, the two-session drill and the port's after-spawn drill.
+{
+  const SITE = "packages/edges/providers/src/claude/index.ts";
+  const LAW = "the Claude adapter's new numbers stay in its admission table, and its version lives in the cursor";
+  const FENCED = ["estimated_tokens", "estimated_tokens_delta", "utilization", "surpassedThreshold", "isUsingOverage"];
+  /** Index just past the quoted literal that opens at `at`. */
+  const skipQuoted = (code, at) => {
+    const quote = code[at];
+    let index = at + 1;
+    while (index < code.length && code[index] !== quote) index += code[index] === "\\" ? 2 : 1;
+    return index + 1;
+  };
+  /** The index just past the bracket that closes the one opening at `open`, outside strings; -1 if none. */
+  const closing = (code, open, opener, closer) => {
+    let depth = 0;
+    for (let index = open; index < code.length; ) {
+      const char = code[index];
+      if (char === '"' || char === "'" || char === "`") {
+        index = skipQuoted(code, index);
+        continue;
+      }
+      if (char === opener) depth += 1;
+      if (char === closer) {
+        depth -= 1;
+        if (depth === 0) return index + 1;
+      }
+      index += 1;
+    }
+    return -1;
+  };
+  /** The code at brace depth 0 outside strings, every other character blanked. */
+  const moduleScope = (code) => {
+    let depth = 0;
+    let out = "";
+    for (let index = 0; index < code.length; ) {
+      const char = code[index];
+      if (char === '"' || char === "'" || char === "`") {
+        const end = skipQuoted(code, index);
+        out += " ".repeat(end - index);
+        index = end;
+        continue;
+      }
+      if (char === "{") depth += 1;
+      out += depth === 0 ? char : char === "\n" ? "\n" : " ";
+      if (char === "}") depth -= 1;
+      index += 1;
+    }
+    return out;
+  };
+  /** [start, end) of `function <name>(`'s body, or null. */
+  const functionBody = (code, name) => {
+    const head = code.indexOf("function " + name + "(");
+    if (head === -1) return null;
+    const open = code.indexOf("{", closing(code, code.indexOf("(", head), "(", ")"));
+    const end = open === -1 ? -1 : closing(code, open, "{", "}");
+    return end === -1 ? null : [open, end];
+  };
+  const within = (span, at) => span !== null && at >= span[0] && at < span[1];
+  const sites = (code, word) => [...code.matchAll(new RegExp("\\b" + word + "\\b", "g"))].map((match) => match.index);
+  let scanned = 0;
+  const source = readIfPresent(SITE);
+  if (source !== null) {
+    scanned += 1;
+    const code = stripComments(source);
+    const declarations = sites(code, "const CLAUDE_NO_SIGNAL_RECORDS");
+    let table = null;
+    if (declarations.length !== 1) {
+      fail(SITE + " declares CLAUDE_NO_SIGNAL_RECORDS " + String(declarations.length) + " times; the admission table is one (L-P15A2-1)");
+    } else {
+      const head = /^const CLAUDE_NO_SIGNAL_RECORDS(?:\s*:[^=;]*)?\s*=\s*Object\.freeze\(/.exec(code.slice(declarations[0]));
+      const open = head === null ? -1 : declarations[0] + head[0].length - 1;
+      const end = open === -1 ? -1 : closing(code, open, "(", ")");
+      if (end === -1 || !/^\s*;/.test(code.slice(end))) {
+        fail(SITE + " no longer declares CLAUDE_NO_SIGNAL_RECORDS as one Object.freeze(...) call (L-P15A2-1)");
+      } else {
+        table = [declarations[0], end];
+      }
+    }
+    for (const word of FENCED) {
+      const at = sites(code, word);
+      if (table !== null && !at.some((index) => within(table, index))) {
+        fail(SITE + " no longer names " + word + " inside CLAUDE_NO_SIGNAL_RECORDS (L-P15A2-1)");
+      }
+      if (at.some((index) => !within(table, index))) {
+        fail(SITE + " names " + word + " outside CLAUDE_NO_SIGNAL_RECORDS; a number the stream carries stays in the admission table (L-P15A2-1)");
+      }
+    }
+    const scope = moduleScope(code);
+    if (/\b(?:let|var)\b(?=[\s[{])/.test(scope)) {
+      fail(SITE + " declares a module-scope let or var; a session's state lives in its cursor (L-P15A2-1)");
+    }
+    if (/\bnew\s+(?:globalThis\s*\.\s*)?(?:Map|WeakMap|Set|WeakSet)\b/.test(scope)) {
+      fail(SITE + " builds a module-scope Map, WeakMap, Set or WeakSet; a session's state lives in its cursor (L-P15A2-1)");
+    }
+    const readInit = functionBody(code, "readInit");
+    const buildArgv = functionBody(code, "buildArgv");
+    if (readInit === null) fail(SITE + " no longer declares function readInit (L-P15A2-1)");
+    if (code.split('subtype === "init"').length !== 2 || !/if \(subtype === "init"\) return readInit\(/.test(code)) {
+      fail(SITE + " no longer reads init in one arm that returns readInit (L-P15A2-1)");
+    }
+    const versions = sites(code, "CLAUDE_OBSERVED_CLI_VERSIONS");
+    const declared = sites(code, "const CLAUDE_OBSERVED_CLI_VERSIONS");
+    const read = versions.filter((index) => !declared.some((at) => at + "const ".length === index));
+    if (declared.length !== 1 || read.length !== 1 || !within(readInit, read[0])) {
+      fail(SITE + " must declare CLAUDE_OBSERVED_CLI_VERSIONS once and read it once, in readInit (L-P15A2-1)");
+    }
+    const refusals = sites(code, "PROTOCOL_UNSUPPORTED");
+    if (
+      refusals.length !== 2 ||
+      refusals.filter((index) => within(buildArgv, index)).length !== 1 ||
+      refusals.filter((index) => within(readInit, index)).length !== 1
+    ) {
+      fail(SITE + " names PROTOCOL_UNSUPPORTED " + String(refusals.length) + " times; exactly two sites, the pre-argv refusal and the version gate (L-P15A2-1)");
+    }
+  }
+  requireScope(LAW, scanned);
+  notes.push("the Claude adapter's new numbers stay in its admission table, and its version lives in the cursor");
 }
 
 // --- 21c. V2-B5/R11: the telemetry export edge ------------------------------

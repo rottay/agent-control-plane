@@ -290,7 +290,258 @@ function writeToolTarget(message: unknown): string | null {
 
 type RecordOutcome =
   | { readonly ok: true; readonly signals: readonly ProviderSignal[] }
-  | { readonly ok: false; readonly code: "UNKNOWN_EVENT" | "MALFORMED_EVENT" };
+  | {
+      readonly ok: false;
+      readonly code: Extract<ParseOutcome, { readonly ok: false }>["code"];
+      /** What the refusal may name beyond its record index; absent when nothing may be echoed. */
+      readonly detail?: string;
+    };
+
+/**
+ * The Claude CLI versions whose streams this parser has evidence for (P-15/A2, ADR 0112).
+ *
+ * One authorized capture each: 2.1.280 (2026-09-22, P-07 escalón C) and 2.1.281
+ * (2026-09-24). `init` names the version; a version outside this list is a stream
+ * this adapter has no evidence for and is refused with the descriptor's word. The
+ * refusal fires at the first record, after the CLI was spawned: it does not prevent
+ * spend, and a pre-spawn gate is ND-A2-7's.
+ */
+const CLAUDE_OBSERVED_CLI_VERSIONS: readonly string[] = Object.freeze(["2.1.280", "2.1.281"]);
+
+/** The one grammar a refused version may be echoed in (Fable C4); anything else is not echoed. */
+const CLI_VERSION_GRAMMAR = /^\d+\.\d+\.\d+$/;
+
+/**
+ * How one field of a no-signal record is admitted.
+ *
+ * - `string`: a non-empty string; `count`: a reportable token count; `number`: a
+ *   finite number, never negative; `boolean`; `array`: an array, its contents not
+ *   read. A value of another type is `MALFORMED_EVENT`.
+ * - `oneOf`: one of the words observed. Any other value, `null` included, is
+ *   `UNKNOWN_EVENT`: a word never observed is a record this parser has no evidence
+ *   for.
+ * - `record`: an object whose keys are exactly the nested gate's.
+ */
+type AdmissionGate =
+  | "string"
+  | "count"
+  | "number"
+  | "boolean"
+  | "array"
+  | { readonly oneOf: readonly unknown[] }
+  | { readonly record: Readonly<Record<string, AdmissionGate>> };
+
+/**
+ * One no-signal record kind: the versions it was observed in, and its exact fields in
+ * each. `beforeInitIn` names the versions whose capture shows it before `init`; a row
+ * without it is never read before `init`.
+ */
+interface NoSignalRecordRow {
+  readonly observedIn: readonly string[];
+  readonly beforeInitIn?: readonly string[];
+  readonly keysByVersion: Readonly<Record<string, Readonly<Record<string, AdmissionGate>>>>;
+}
+
+/**
+ * The records this parser admits and reads nothing from (P-15/A2, ADR 0112), measured
+ * key by key against the two captures and no further.
+ *
+ * Keyed by `type` or `type/subtype`. Every record is held three ways: its version
+ * must be one it was observed in; its keys must be exactly that version's, so a key
+ * lawful in one version and seen in the other refuses; and every value must pass its
+ * gate. No row emits a signal, so none of these numbers can become a step, a usage
+ * report, a pressure, a cost or a decision: `estimated_tokens` is an estimate, and
+ * the rate-limit numbers are the provider's quota telemetry, whose mapping to a
+ * pressure is P-19's. `isUsingOverage` admits only `false`: a `true` refuses as any
+ * unobserved word does, so the parser does not tell the two apart and the S1 assert
+ * is the owner's instrument for the no-overage criterion.
+ */
+const CLAUDE_NO_SIGNAL_RECORDS: Readonly<Record<string, NoSignalRecordRow>> = Object.freeze({
+  "system/commands_changed": {
+    observedIn: ["2.1.280"],
+    beforeInitIn: ["2.1.280"],
+    keysByVersion: {
+      "2.1.280": { type: "string", subtype: "string", commands: "array", uuid: "string", session_id: "string" },
+    },
+  },
+  "system/thinking_tokens": {
+    observedIn: ["2.1.281"],
+    keysByVersion: {
+      "2.1.281": {
+        type: "string",
+        subtype: "string",
+        estimated_tokens: "count",
+        estimated_tokens_delta: "count",
+        session_id: "string",
+        uuid: "string",
+      },
+    },
+  },
+  rate_limit_event: {
+    observedIn: ["2.1.280", "2.1.281"],
+    keysByVersion: {
+      "2.1.280": {
+        type: "string",
+        uuid: "string",
+        session_id: "string",
+        rate_limit_info: {
+          record: {
+            status: { oneOf: ["allowed", "allowed_warning"] },
+            resetsAt: "number",
+            rateLimitType: { oneOf: ["five_hour", "seven_day"] },
+            overageStatus: { oneOf: ["rejected"] },
+            overageDisabledReason: { oneOf: ["org_level_disabled"] },
+            isUsingOverage: { oneOf: [false] },
+            unifiedWindows: {
+              record: {
+                five_hour: { record: { utilization: "number", resetsAt: "number" } },
+                seven_day: { record: { utilization: "number", resetsAt: "number" } },
+              },
+            },
+          },
+        },
+      },
+      "2.1.281": {
+        type: "string",
+        uuid: "string",
+        session_id: "string",
+        rate_limit_info: {
+          record: {
+            status: { oneOf: ["allowed", "allowed_warning"] },
+            resetsAt: "number",
+            rateLimitType: { oneOf: ["five_hour", "seven_day"] },
+            utilization: "number",
+            isUsingOverage: { oneOf: [false] },
+            surpassedThreshold: "number",
+            unifiedWindows: {
+              record: {
+                five_hour: { record: { utilization: "number", resetsAt: "number" } },
+                seven_day: { record: { utilization: "number", resetsAt: "number" } },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+});
+
+type AdmissionVerdict = "ADMITTED" | "UNKNOWN_EVENT" | "MALFORMED_EVENT";
+
+function admitValue(value: unknown, gate: AdmissionGate): AdmissionVerdict {
+  if (gate === "string") return typeof value === "string" && value !== "" ? "ADMITTED" : "MALFORMED_EVENT";
+  if (gate === "count") return isReportableTokenCount(value) ? "ADMITTED" : "MALFORMED_EVENT";
+  if (gate === "number") {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? "ADMITTED" : "MALFORMED_EVENT";
+  }
+  if (gate === "boolean") return typeof value === "boolean" ? "ADMITTED" : "MALFORMED_EVENT";
+  if (gate === "array") return Array.isArray(value) ? "ADMITTED" : "MALFORMED_EVENT";
+  if ("oneOf" in gate) return gate.oneOf.includes(value) ? "ADMITTED" : "UNKNOWN_EVENT";
+  return isRecord(value) ? admitFields(value, gate.record) : "MALFORMED_EVENT";
+}
+
+/** Exactly the gated keys, each admitted: a missing or an extra key is a shape never observed. */
+function admitFields(value: Record<string, unknown>, fields: Readonly<Record<string, AdmissionGate>>): AdmissionVerdict {
+  const lawful = Object.keys(fields);
+  const present = Object.keys(value);
+  if (present.length !== lawful.length || present.some((key) => !lawful.includes(key))) return "UNKNOWN_EVENT";
+  for (const key of lawful) {
+    const gate = fields[key];
+    if (gate === undefined) return "UNKNOWN_EVENT";
+    const verdict = admitValue(value[key], gate);
+    if (verdict !== "ADMITTED") return verdict;
+  }
+  return "ADMITTED";
+}
+
+function admitUnder(record: Record<string, unknown>, row: NoSignalRecordRow, version: string): AdmissionVerdict {
+  if (!row.observedIn.includes(version)) return "UNKNOWN_EVENT";
+  const fields = row.keysByVersion[version];
+  return fields === undefined ? "UNKNOWN_EVENT" : admitFields(record, fields);
+}
+
+/**
+ * What one `parse` call carries from record to record: the cursor's state, unpacked
+ * into a local the call owns. Never module state.
+ */
+interface StreamState {
+  readonly stepMessageIds: string[];
+  version: string | undefined;
+  preInitRecords: { readonly kind: string; readonly admittedIn: readonly string[] }[];
+}
+
+/**
+ * A no-signal record, judged against the table.
+ *
+ * After `init`, against that version's row. Before it, only a row a capture shows
+ * before `init` is read (v1.1), and only against the versions whose capture shows it
+ * there (ND-A2-10): admitted if any admits it, and the versions that did are kept in
+ * the cursor, so `init` re-judges the record against the version it names (Fable C2).
+ * A row never observed before `init` is `MALFORMED_EVENT` there. A record no version
+ * admits is `MALFORMED_EVENT` when every version found its shape wrong, and
+ * `UNKNOWN_EVENT` otherwise.
+ */
+function readNoSignal(record: Record<string, unknown>, kind: string, state: StreamState): RecordOutcome {
+  const row = Object.prototype.hasOwnProperty.call(CLAUDE_NO_SIGNAL_RECORDS, kind)
+    ? CLAUDE_NO_SIGNAL_RECORDS[kind]
+    : undefined;
+  if (row === undefined) return { ok: false, code: "UNKNOWN_EVENT" };
+  if (state.version !== undefined) {
+    const verdict = admitUnder(record, row, state.version);
+    return verdict === "ADMITTED" ? { ok: true, signals: [] } : { ok: false, code: verdict };
+  }
+  const preInit = row.beforeInitIn ?? [];
+  if (preInit.length === 0) return { ok: false, code: "MALFORMED_EVENT" };
+  const verdicts = preInit.map((version) => ({ version, verdict: admitUnder(record, row, version) }));
+  const admittedIn = verdicts.filter((entry) => entry.verdict === "ADMITTED").map((entry) => entry.version);
+  if (admittedIn.length === 0) {
+    return {
+      ok: false,
+      code: verdicts.every((entry) => entry.verdict === "MALFORMED_EVENT") ? "MALFORMED_EVENT" : "UNKNOWN_EVENT",
+    };
+  }
+  const seen = state.preInitRecords.some(
+    (entry) => entry.kind === kind && entry.admittedIn.join("\n") === admittedIn.join("\n"),
+  );
+  if (!seen) state.preInitRecords.push({ kind, admittedIn });
+  return { ok: true, signals: [] };
+}
+
+/**
+ * The stream's `system/init`: the model it resolved and the CLI version it names.
+ *
+ * In order: a second `init` in one session is `MALFORMED_EVENT`, whatever it names
+ * (Fable C3: one session, one `init`, the verdict-once rule applied whole); the model
+ * must be a non-empty string; `claude_code_version` absent, empty or not a string is
+ * `MALFORMED_EVENT`; a version outside the observed list is refused with the
+ * descriptor's word, naming the version only in the grammar above (Fable C4); and
+ * every no-signal record seen before it must have been admitted under that version
+ * (Fable C2), or the `init` is `MALFORMED_EVENT`. The rest of the record is
+ * environment inventory and is not read.
+ */
+function readInit(record: Record<string, unknown>, state: StreamState): RecordOutcome {
+  if (state.version !== undefined) return { ok: false, code: "MALFORMED_EVENT" };
+  const model = record["model"];
+  if (typeof model !== "string" || model === "") return { ok: false, code: "MALFORMED_EVENT" };
+  const version = record["claude_code_version"];
+  if (typeof version !== "string" || version === "") return { ok: false, code: "MALFORMED_EVENT" };
+  if (!CLAUDE_OBSERVED_CLI_VERSIONS.includes(version)) {
+    return {
+      ok: false,
+      code: "PROTOCOL_UNSUPPORTED",
+      ...(CLI_VERSION_GRAMMAR.test(version) ? { detail: "CLI version " + version } : {}),
+    };
+  }
+  if (state.preInitRecords.some((entry) => !entry.admittedIn.includes(version))) {
+    return { ok: false, code: "MALFORMED_EVENT" };
+  }
+  state.version = version;
+  state.preInitRecords = [];
+  return {
+    ok: true,
+    signals: [{ kind: "started", resolvedModel: model, protocolVersion: CLAUDE_STREAM_PROTOCOL }],
+  };
+}
 
 /**
  * Read one stream-json record.
@@ -300,10 +551,11 @@ type RecordOutcome =
  * stream we may claim to have read.
  */
 /**
- * `stepMessageIds` is the parse's running list of distinct assistant message ids,
- * extended here in place: it is what the result's report counts as its steps.
+ * `state` is the parse's running state, updated here in place: the distinct assistant
+ * message ids (what the result's report counts as its steps), the CLI version once
+ * `init` named it, and the no-signal records seen before `init`.
  */
-function readRecord(raw: string, stepMessageIds: string[]): RecordOutcome {
+function readRecord(raw: string, state: StreamState): RecordOutcome {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw) as unknown;
@@ -315,33 +567,29 @@ function readRecord(raw: string, stepMessageIds: string[]): RecordOutcome {
   const type = parsed["type"];
   if (typeof type !== "string") return { ok: false, code: "MALFORMED_EVENT" };
 
+  // Before `init` names a version, only a table row a capture shows before `init` is
+  // read (P-15/A2 v1.1, ADR 0112). A message, a tool echo, a result or an
+  // `auth_required` with no version is a stream no capture shows, so an `init` the CLI
+  // stopped sending cannot turn into a success read against no version at all.
+  if (state.version === undefined && (type === "assistant" || type === "user" || type === "result")) {
+    return { ok: false, code: "MALFORMED_EVENT" };
+  }
+
   switch (type) {
     case "system": {
       const subtype = parsed["subtype"];
       if (typeof subtype !== "string") return { ok: false, code: "MALFORMED_EVENT" };
-      if (subtype === "init") {
-        const model = parsed["model"];
-        if (typeof model !== "string" || model === "") {
-          return { ok: false, code: "MALFORMED_EVENT" };
-        }
-        return {
-          ok: true,
-          signals: [
-            { kind: "started", resolvedModel: model, protocolVersion: CLAUDE_STREAM_PROTOCOL },
-          ],
-        };
-      }
+      if (subtype === "init") return readInit(parsed, state);
       if (subtype === "auth_required") {
+        // Documented (ADR 0041), never captured, and its position unobserved: read only
+        // after `init`.
+        if (state.version === undefined) return { ok: false, code: "MALFORMED_EVENT" };
         // A classified reason only. Never the prompt, the URL or the code.
         return { ok: true, signals: [{ kind: "authRequired", reason: "LOGIN_REQUIRED" }] };
       }
-      if (subtype === "commands_changed") {
-        // Observed as the first record of the captured success sample (CLI
-        // 2.1.280, 2026-09-22; P-07 escalón C, ADR 0099). Recognized, and it says
-        // nothing about the session: no signal.
-        return { ok: true, signals: [] };
-      }
-      return { ok: false, code: "UNKNOWN_EVENT" };
+      // `commands_changed` (2.1.280) and `thinking_tokens` (2.1.281) say nothing
+      // about the session: the table admits them, and anything else is refused.
+      return readNoSignal(parsed, "system/" + subtype, state);
     }
 
     case "assistant": {
@@ -358,7 +606,7 @@ function readRecord(raw: string, stepMessageIds: string[]): RecordOutcome {
       const messageId = message["id"];
       if (messageId !== undefined) {
         if (typeof messageId !== "string" || messageId === "") return { ok: false, code: "MALFORMED_EVENT" };
-        if (!stepMessageIds.includes(messageId)) stepMessageIds.push(messageId);
+        if (!state.stepMessageIds.includes(messageId)) state.stepMessageIds.push(messageId);
       }
 
       // Output text (P-07 escalón C, ADR 0099): the `text` blocks of the message,
@@ -383,16 +631,11 @@ function readRecord(raw: string, stepMessageIds: string[]): RecordOutcome {
       // measurement of its own.
       return { ok: true, signals: [] };
 
-    case "rate_limit_event": {
-      // Observed in the captured success sample, with `status: "allowed"`, and
-      // recognized as carrying no signal only in that form. Any other status —
-      // absent, not a string, or a word never observed — is an event this parser
-      // has no evidence for, so it fails closed. It is NEVER mapped to quota
-      // pressure: a mapping would be a capability claim (ADR 0099).
-      const info = parsed["rate_limit_info"];
-      if (!isRecord(info) || info["status"] !== "allowed") return { ok: false, code: "UNKNOWN_EVENT" };
-      return { ok: true, signals: [] };
-    }
+    case "rate_limit_event":
+      // Admitted by the table under the words and keys the captures show, and NEVER
+      // mapped to quota pressure: a mapping would be a capability claim (ADR 0099),
+      // and `allowed_warning` is P-19's to map.
+      return readNoSignal(parsed, "rate_limit_event", state);
 
     case "result": {
       const subtype = parsed["subtype"];
@@ -412,7 +655,7 @@ function readRecord(raw: string, stepMessageIds: string[]): RecordOutcome {
       // observed; the exit is a separate fact the session reports.
       // The session's one usage report, from the CLI's own total (P-15/D2), ahead of
       // the state the record reports, in the transports' shared order.
-      const report = resultUsage(parsed, stepMessageIds.length);
+      const report = resultUsage(parsed, state.stepMessageIds.length);
       if (report === "MALFORMED") return { ok: false, code: "MALFORMED_EVENT" };
       const signals: ProviderSignal[] = report === null ? [] : [report];
       signals.push({ kind: "state", toState: subtype.toUpperCase() });
@@ -478,18 +721,33 @@ export const claudeAdapter: ProviderAdapter = {
     const partial = parts.pop() ?? "";
     const events: ProviderSignal[] = [];
     let index = cursor.recordIndex;
-    const stepMessageIds = [...(cursor.stepMessageIds ?? [])];
+    const state: StreamState = {
+      stepMessageIds: [...(cursor.stepMessageIds ?? [])],
+      version: cursor.cliVersion,
+      preInitRecords: [...(cursor.preInitRecords ?? [])],
+    };
 
     for (const line of parts) {
       if (line.trim() === "") continue;
-      const outcome = readRecord(line, stepMessageIds);
+      const outcome = readRecord(line, state);
       if (!outcome.ok) {
-        return { ok: false, code: outcome.code, detail: "record " + String(index) };
+        const named = outcome.detail === undefined ? "" : ", " + outcome.detail;
+        return { ok: false, code: outcome.code, detail: "record " + String(index) + named };
       }
       events.push(...outcome.signals);
       index += 1;
     }
-    return { ok: true, events, cursor: { partial, recordIndex: index, stepMessageIds } };
+    return {
+      ok: true,
+      events,
+      cursor: {
+        partial,
+        recordIndex: index,
+        stepMessageIds: state.stepMessageIds,
+        ...(state.version === undefined ? {} : { cliVersion: state.version }),
+        ...(state.preInitRecords.length === 0 ? {} : { preInitRecords: state.preInitRecords }),
+      },
+    };
   },
 
   /**

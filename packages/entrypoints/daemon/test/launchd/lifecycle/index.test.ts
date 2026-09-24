@@ -272,7 +272,7 @@ afterAll(() => {
  */
 function executionConfigIn(root: string): DaemonExecutionConfig {
   const lines = [
-    JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-20260115" }),
+    JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-20260115", claude_code_version: "2.1.280" }),
     JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 1234 } } }),
     JSON.stringify({ type: "result", subtype: "turn_completed" }),
   ];

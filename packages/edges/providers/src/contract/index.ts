@@ -287,17 +287,44 @@ export interface ParseCursor {
    * because one message may arrive as several records; absent means none seen.
    */
   readonly stepMessageIds?: readonly string[];
+  /**
+   * The CLI version the stream's own `init` named, once it has, for an adapter whose
+   * admissions depend on it (P-15/A2, ADR 0112). Carried across chunks with the rest
+   * of the cursor; absent until `init`. Never module state: two sessions hold two
+   * cursors.
+   */
+  readonly cliVersion?: string;
+  /**
+   * The no-signal records seen before `init`, by kind, each with the observed versions
+   * whose rows admitted it (P-15/A2, ADR 0112). `init` re-judges them against the
+   * version it names, so a record that arrived before the version did is held to that
+   * version's rows all the same. Distinct entries only; absent once `init` is read.
+   */
+  readonly preInitRecords?: readonly { readonly kind: string; readonly admittedIn: readonly string[] }[];
 }
 
 export const EMPTY_CURSOR: ParseCursor = Object.freeze({ partial: "", recordIndex: 0 });
 
+/**
+ * What one `parse` call made of a chunk.
+ *
+ * A refusal is `UNKNOWN_EVENT` (a record this parser has no evidence for),
+ * `MALFORMED_EVENT` (a recognized record with the wrong shape), or
+ * `PROTOCOL_UNSUPPORTED`: a stream this adapter has no evidence for, named by the
+ * stream itself (P-15/A2, ADR 0112). That is the descriptor's meaning (ADR 0034)
+ * carried into the parse, not a new one.
+ */
 export type ParseOutcome =
   | {
       readonly ok: true;
       readonly events: readonly ProviderSignal[];
       readonly cursor: ParseCursor;
     }
-  | { readonly ok: false; readonly code: "UNKNOWN_EVENT" | "MALFORMED_EVENT"; readonly detail: string };
+  | {
+      readonly ok: false;
+      readonly code: "UNKNOWN_EVENT" | "MALFORMED_EVENT" | "PROTOCOL_UNSUPPORTED";
+      readonly detail: string;
+    };
 
 /** The fields of one usage report, exactly the execution port's `usage` member without its kind. */
 export type UsageReportFields = Readonly<Omit<Extract<ExecutionEvent, { readonly kind: "usage" }>, "kind">>;

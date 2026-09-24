@@ -118,7 +118,7 @@ function fakeProviderRoot(): string {
   writeFileSync(
     join(created, "fake-provider"),
     "#!/usr/bin/env node\n" +
-      "const lines = [JSON.stringify({ type: 'result', subtype: 'success', is_error: false })];\n" +
+      "const lines = [JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601', claude_code_version: '2.1.280' }), JSON.stringify({ type: 'result', subtype: 'success', is_error: false })];\n" +
       'for (const line of lines) process.stdout.write(line + "\\n");\n' +
       "process.exit(0);\n",
     { mode: 0o700 },
@@ -196,7 +196,7 @@ function worktree(): string {
   writeFileSync(
     join(created, "fake-provider"),
     "#!/usr/bin/env node\n" +
-      "const lines = [JSON.stringify({ type: 'result', subtype: 'success', is_error: false })];\n" +
+      "const lines = [JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601', claude_code_version: '2.1.280' }), JSON.stringify({ type: 'result', subtype: 'success', is_error: false })];\n" +
       'for (const line of lines) process.stdout.write(line + "\\n");\n' +
       "process.exit(0);\n",
     { mode: 0o700 },
@@ -675,6 +675,7 @@ function barrierWorktree(mine: string, theirs: string, gate: string): string {
       "writeFileSync(join(" + JSON.stringify(gate) + ", " + JSON.stringify(mine) + "), 'x');\n" +
       "const until = Date.now() + 60000;\n" +
       "while (Date.now() < until && !existsSync(join(" + JSON.stringify(gate) + ", " + JSON.stringify(theirs) + "))) {}\n" +
+      "process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601', claude_code_version: '2.1.280' }) + '\\n');\n" +
       "process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false }) + '\\n');\n" +
       "process.exit(0);\n",
     { mode: 0o700 },
@@ -701,6 +702,7 @@ function heldWorktree(name: string, gate: string): string {
       "writeFileSync(join(" + JSON.stringify(gate) + ", " + JSON.stringify(name + ".pid") + "), String(process.pid));\n" +
       "const until = Date.now() + 120000;\n" +
       "while (Date.now() < until && !existsSync(join(" + JSON.stringify(gate) + ", " + JSON.stringify(name + ".go") + "))) {}\n" +
+      "process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601', claude_code_version: '2.1.280' }) + '\\n');\n" +
       "process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false }) + '\\n');\n" +
       "process.exit(0);\n",
     { mode: 0o700 },
@@ -1182,6 +1184,7 @@ function writingWorktree(fileName: string): string {
     "#!/usr/bin/env node\n" +
       "require('node:fs').writeFileSync(require('node:path').join(" +
       JSON.stringify(created) + ", " + JSON.stringify(fileName) + "), 'written by the walk');\n" +
+      "process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601', claude_code_version: '2.1.280' }) + '\\n');\n" +
       "process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false }) + '\\n');\n" +
       "process.exit(0);\n",
     { mode: 0o700 },
@@ -1325,7 +1328,7 @@ describe("both execution paths enforce the declared write-set", () => {
     worktrees.push(created);
     writeFileSync(
       join(created, "fake-provider"),
-      "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false }) + '\\n');\nprocess.exit(0);\n",
+      "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-opus-5-20260601', claude_code_version: '2.1.280' }) + '\\n');\nprocess.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false }) + '\\n');\nprocess.exit(0);\n",
       { mode: 0o700 },
     );
     const taskId = randomUUID();

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,7 +43,7 @@ import {
   synMessagesStream,
   syntheticCanary,
 } from "../testing/index.js";
-import { CAPTURED_AUTH_FAILURE, CAPTURED_SUCCESS } from "../testing/claude-capture/index.js";
+import { CAPTURED_2_1_281_SUCCESS, CAPTURED_AUTH_FAILURE, CAPTURED_SUCCESS } from "../testing/claude-capture/index.js";
 import type { FakeScript } from "../testing/index.js";
 
 /**
@@ -177,7 +177,7 @@ async function drain(
 
 /** Claude headless stream JSON: `started`, a usage-bearing turn, a result. */
 const CLAUDE_LINES: readonly string[] = [
-  JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-20260115" }),
+  JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-20260115", claude_code_version: "2.1.280" }),
   JSON.stringify({ type: "assistant", message: { id: "msg-1", usage: { output_tokens: TOKENS } } }),
   // The session's one usage report is the result's (P-15/D2): the assistant record's
   // usage above is not read.
@@ -822,7 +822,7 @@ describe("the port surfaces what the provider resolved, verbatim", () => {
     const other = "claude-sonnet-5-20260115";
     const port = portFor({
       "acct-primary": binding(claudeAdapter, [
-        JSON.stringify({ type: "system", subtype: "init", model: other }),
+        JSON.stringify({ type: "system", subtype: "init", model: other, claude_code_version: "2.1.280" }),
         JSON.stringify({ type: "result", subtype: "turn_completed" }),
       ]),
     });
@@ -938,7 +938,7 @@ describe("what this transport can and cannot say", () => {
   it("synthesizes exactly one completed on a clean close, carrying the last step", async () => {
     const port = portFor({
       "acct-primary": binding(claudeAdapter, [
-        JSON.stringify({ type: "system", subtype: "init", model: "m" }),
+        JSON.stringify({ type: "system", subtype: "init", model: "m", claude_code_version: "2.1.280" }),
         JSON.stringify({ type: "assistant", message: { id: "msg-1", usage: { output_tokens: 10 } } }),
         JSON.stringify({ type: "assistant", message: { id: "msg-2", usage: { output_tokens: 20 } } }),
         JSON.stringify({
@@ -964,7 +964,7 @@ describe("what this transport can and cannot say", () => {
   it("emits no write event, because the CLI adapters never hand it one", async () => {
     const port = portFor({
       "acct-primary": binding(claudeAdapter, [
-        JSON.stringify({ type: "system", subtype: "init", model: "m" }),
+        JSON.stringify({ type: "system", subtype: "init", model: "m", claude_code_version: "2.1.280" }),
         JSON.stringify({
           type: "assistant",
           message: { content: [{ type: "tool_use", name: "Edit" }], usage: { output_tokens: 7 } },
@@ -996,7 +996,7 @@ describe("what this transport can and cannot say", () => {
     // transport, and the port reports it as an error rather than a clean close.
     const port = portFor({
       "acct-primary": binding(claudeAdapter, [
-        JSON.stringify({ type: "system", subtype: "init", model: "m" }),
+        JSON.stringify({ type: "system", subtype: "init", model: "m", claude_code_version: "2.1.280" }),
         JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Edit" }] } }),
       ]),
     });
@@ -1887,5 +1887,116 @@ describe("the real HTTP clients through the port (P-15/E)", () => {
       );
       expect(limited.at(-1)).toMatchObject({ kind: "error", detail: "PROVIDER_RATE_LIMITED" });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15/A2 — the version gate fires after spawn, at the port (T-G1, ADR 0112)
+// ---------------------------------------------------------------------------
+
+describe("P-15/A2: an unobserved CLI version fails the execution after spawn, and nothing after its init is read (T-G1)", () => {
+  /**
+   * The 2.1.281 sample as a full success stream with a non-empty answer, its init
+   * naming `version`: the sanitized capture's text is empty, and an absent output
+   * would prove nothing, so the answer is `ok` in both scripts.
+   */
+  function successStream(version: string): readonly string[] {
+    const init = JSON.parse(CAPTURED_2_1_281_SUCCESS[0] ?? "{}") as Record<string, unknown>;
+    init["claude_code_version"] = version;
+    const text = JSON.parse(CAPTURED_2_1_281_SUCCESS[5] ?? "{}") as Record<string, unknown>;
+    (text["message"] as Record<string, unknown>)["content"] = [{ type: "text", text: "ok" }];
+    return [
+      JSON.stringify(init),
+      ...CAPTURED_2_1_281_SUCCESS.slice(1, 5),
+      JSON.stringify(text),
+      ...CAPTURED_2_1_281_SUCCESS.slice(6),
+    ];
+  }
+
+  /** A port whose one child writes its pid to a file before it writes a byte of stream. */
+  function pidReportingPort(lines: readonly string[], pidFile: string, lingerMs: number): ModelExecutionPort {
+    const root = drillRoot();
+    const base = scriptedAdapter(claudeAdapter, { lines, exitCode: 0, lingerMs });
+    const adapter: ProviderAdapter = {
+      ...base,
+      describe(req) {
+        const descriptor = base.describe(req);
+        const [flag, program] = descriptor.argv;
+        const announce = "require('node:fs').writeFileSync(" + JSON.stringify(pidFile) + ", String(process.pid));";
+        return { ...descriptor, argv: [flag ?? "-e", announce + "\n" + (program ?? "")] };
+      },
+    };
+    return portFor({
+      "acct-primary": {
+        adapter,
+        binary: NODE,
+        configRoot: root as AdmittedConfigRoot,
+        workdir: root as AdmittedWorkdir,
+        limits: limits(),
+      },
+    });
+  }
+
+  async function reaped(pid: number): Promise<boolean> {
+    for (let waited = 0; waited < 2_000; waited += 10) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return true;
+      }
+      await new Promise<void>((resolveWait) => {
+        setTimeout(resolveWait, 10);
+      });
+    }
+    return false;
+  }
+
+  it("positive control: the same stream stamped 2.1.281 spawns, yields one usage, the output, SUCCEEDED and completed", async () => {
+    const pidFile = join(drillRoot(), "child.pid");
+    const sunk: string[] = [];
+    const trail = await drain(pidReportingPort(successStream("2.1.281"), pidFile, 0), route(), request(), (delta) => sunk.push(delta));
+    expect(existsSync(pidFile)).toBe(true);
+    expect(trail.map((event) => event.kind)).toEqual(["started", "usage", "state", "processExited", "operationResult", "completed"]);
+    expect(trail.find((event) => event.kind === "operationResult")).toEqual({ kind: "operationResult", status: "SUCCEEDED" });
+    expect(sunk).toEqual(["ok"]);
+    expect(await reaped(Number.parseInt(readFileSync(pidFile, "utf8"), 10))).toBe(true);
+  });
+
+  it("B1 (v1.1): a stream with no init — each of the verifier's three — ends in error{TRANSPORT_UNAVAILABLE}, with no usage, output or verdict, and the child reaped", async () => {
+    const full = successStream("2.1.281");
+    const commands = CAPTURED_SUCCESS[0] ?? "";
+    const thinking = CAPTURED_2_1_281_SUCCESS[1] ?? "";
+    for (const [name, lines] of [
+      ["the 2.1.281 body without its init", full.slice(1)],
+      ["the 2.1.280 success without its init", [commands, ...CAPTURED_SUCCESS.slice(2)]],
+      ["commands_changed and thinking_tokens with no init", [commands, thinking, ...full.slice(4)]],
+    ] as const) {
+      const pidFile = join(drillRoot(), "child.pid");
+      const sunk: string[] = [];
+      const trail = await drain(pidReportingPort(lines, pidFile, 5_000), route(), request(), (delta) => sunk.push(delta));
+      expect(existsSync(pidFile), name).toBe(true);
+      expect(trail.at(-1), name).toMatchObject({ kind: "error", refusal: "TRANSPORT_UNAVAILABLE", detail: "session failed: MALFORMED_EVENT" });
+      for (const kind of ["started", "usage", "operationResult", "completed"]) {
+        expect({ name, kind, present: trail.some((event) => event.kind === kind) }).toEqual({ name, kind, present: false });
+      }
+      expect({ name, sunk }).toEqual({ name, sunk: [] });
+      expect(await reaped(Number.parseInt(readFileSync(pidFile, "utf8"), 10)), name).toBe(true);
+    }
+  });
+
+  it("after spawn: init{2.1.999} then a full success stream ends in error{TRANSPORT_UNAVAILABLE}, with no usage, output or operationResult, and the child reaped", async () => {
+    const pidFile = join(drillRoot(), "child.pid");
+    const sunk: string[] = [];
+    const trail = await drain(pidReportingPort(successStream("2.1.999"), pidFile, 5_000), route(), request(), (delta) => sunk.push(delta));
+    // The child WAS spawned: the gate is in the parser, on the stream, and prevents no spend.
+    expect(existsSync(pidFile)).toBe(true);
+    const last = trail.at(-1);
+    expect(last).toMatchObject({ kind: "error", refusal: "TRANSPORT_UNAVAILABLE", detail: "session failed: PROTOCOL_UNSUPPORTED" });
+    // Nothing after the refused init was read: no usage, no output, no verdict.
+    for (const kind of ["started", "usage", "operationResult", "completed"]) {
+      expect({ kind, present: trail.some((event) => event.kind === kind) }).toEqual({ kind, present: false });
+    }
+    expect(sunk).toEqual([]);
+    expect(await reaped(Number.parseInt(readFileSync(pidFile, "utf8"), 10))).toBe(true);
   });
 });

@@ -127,6 +127,7 @@ new records from `_template.md`, which carries the required fields.
 | 0109 | [A tool is called only under the schema it was allowed with](0109-a-tool-is-called-only-under-the-schema-it-was-allowed-with.md) | accepted |
 | 0110 | [The roadmap-version law runs inside the append](0110-the-roadmap-version-law-runs-inside-the-append.md) | accepted |
 | 0111 | [A roadmap version declares its steps, all or none](0111-a-roadmap-version-declares-its-steps-all-or-none.md) | accepted |
+| 0112 | [The Claude adapter admits what a capture shows](0112-the-claude-adapter-admits-what-a-capture-shows.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

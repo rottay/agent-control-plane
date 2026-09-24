@@ -224,7 +224,7 @@ function scenario(name: string): string {
  * wiring and nothing about any provider; every capability stays UNKNOWN by law.
  */
 const FAKE_PROVIDER_LINES: readonly string[] = [
-  JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-20260115" }),
+  JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-5-20260115", claude_code_version: "2.1.280" }),
   JSON.stringify({ type: "assistant", message: { usage: { output_tokens: 1234 } } }),
   // The session's one usage report is the result's (P-15/D2, ADR 0105).
   JSON.stringify({ type: "result", subtype: "turn_completed", session_id: "session-fallback", usage: { input_tokens: 0, output_tokens: 1234, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 } }),
