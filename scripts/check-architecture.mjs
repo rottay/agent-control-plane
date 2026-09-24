@@ -11945,6 +11945,33 @@ const P15A2_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * Fence-limits errata (decision 184; map v1, DT ruling: option (a), widen; no ADR).
+ *
+ * L-P26B-1's one-writer check widens from one exact-case spelling in one file to an
+ * `INSERT`, `INSERT OR <conflict>` or `REPLACE` `INTO initiative_events` in any case,
+ * whitespace and quoting, over every tracked src `.ts`/`.tsx` file of every package,
+ * with exactly one match inside `#insertInitiativeRow`; its comment is made true and
+ * its stated limit names concatenation, a schema-qualified name, an SQL comment between
+ * the keywords, a literal written with escapes, a src file that is not `.ts`/`.tsx`
+ * and a writer outside src.
+ * L-P37S-1's stated limit names zod's `z.hash("sha256")` and `z.hex()` with a length
+ * of 64, and a protocol-barrel re-export under another name. The P-16 row gains D-B-1,
+ * owned by P-16/A1.
+ *
+ * **Pins that move: none.** `PATH_SCOPED_LAWS` stays 166; L-P26B-1's register row
+ * names the widened scope. No version, migration or ADR moves. One computed count
+ * moves: the widened scope string holds `, ` and so is no longer a
+ * `PACKAGE_PATH_LITERAL`, and `STRUCTURAL_TOPOLOGY_CERTIFIED` prints 480 live law
+ * literals, not 481; no coverage is lost (the door path is still held by the
+ * L-P26A-1 row and by `DOOR_SITE`), and no doc pins the count.
+ */
+const ERRATA_WRITE_SET = [
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "scripts/check-architecture.mjs",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12192,6 +12219,7 @@ const WRITE_SET = [
   ...P37S_WRITE_SET,
   ...P26B_WRITE_SET,
   ...P15A2_WRITE_SET,
+  ...ERRATA_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13714,9 +13742,11 @@ const PATH_SCOPED_LAWS = [
   // P-26 cut B. Two new path-shaped surfaces, so two new rows: the register and the
   // `requireScope` call sites both move 163 -> 165 for L-P26B-1 and L-P26B-2.
   // L-P26A-1 and L-P15F-1 are amended in their own rows and add none.
+  // The fence-limits errata (decision 184) widens L-P26B-1's writer check to every
+  // src file in place: its row's scope grows and the register does not move.
   {
     law: "the single initiative door writes no step and no version that counts steps",
-    scope: "packages/persistence/ledger/src/ledger/index.ts",
+    scope: "packages/persistence/ledger/src/ledger/index.ts, packages/*/*/src/**",
   },
   {
     law: "a roadmap step's digests and rank have one home",
@@ -26080,8 +26110,13 @@ if (tracked.status === 0) {
 //
 // Stated limit: a text-level matcher. A grammar spelled another way (`{64,64}`, a
 // class written `[\da-f]`, `\p{Hex}`, a length check plus a character test, a
-// pattern assembled at runtime), a second schema under another name built from
-// such a spelling, or a copy outside `protocol/src` is not seen. The other raw
+// pattern assembled at runtime), zod's own library spellings -- `z.hash("sha256")`
+// and `z.hex()` with a length of 64 -- which hold no hex class and are
+// case-insensitive, so a schema built from them is looser than contracts' lowercase
+// grammar, not merely a copy of it; a protocol-barrel re-export of the schema under
+// another name (an alias such as `EffectIdParam`, kept off the barrel today by a
+// docblock only); a second schema under another name built from such a spelling, or
+// a copy outside `protocol/src` is not seen (errata, decision 184). The other raw
 // `/^[0-9a-f]{64}$/` predicates across `packages/*/*/src` (P-37 ND-3, eighteen files)
 // are a later seam's, not this law's.
 {
@@ -26202,15 +26237,25 @@ if (tracked.status === 0) {
 // `#appendInitiativeInTransaction` refuses a `"ROADMAP_STEP_DECLARED"` and a
 // `ROADMAP_VERSION_RECORDED` whose `stepCount` is above 0, both before its
 // `#insertInitiativeRow(`; `appendInitiativeBatch(` exists and reaches
-// `#insertInitiativeRow(` only after `#assertRoadmapVersionGranted(`; and the stream's
-// one `INSERT INTO initiative_events` is inside `#insertInitiativeRow` (Fable C-B5), so
-// a second door writing rows by its own SQL is a checked fact, not a stated limit.
+// `#insertInitiativeRow(` only after `#assertRoadmapVersionGranted(`; and the stream
+// has exactly one SQL writer across `packages/*/*/src`, inside `#insertInitiativeRow`
+// (Fable C-B5): an `INSERT`, `INSERT OR <conflict>` or `REPLACE` `INTO
+// initiative_events`, any case and whitespace, the name optionally quoted (`"`, `'`,
+// a backtick or `[`). Widened by the fence-limits errata (decision 184): until then
+// the match was one exact-case spelling over one file.
 //
-// Stated limit: a text-level matcher over one file. A refusal reached through a helper
-// under another name, or a refusal whose condition is neutralized while its text stays
+// Stated limit: a text-level matcher. A refusal reached through a helper under
+// another name, or a refusal whose condition is neutralized while its text stays
 // (`... && false`, bitten on a disposable copy and still passing) is not seen; the
 // ledger drills that feed the single door a step and a counting version are the
-// behaviour.
+// behaviour. A table name assembled by concatenation or interpolation
+// (`"INSERT INTO " + table`), a schema-qualified name (`main.initiative_events`), an
+// SQL comment between the keywords (`INSERT /* x */ INTO`, or `--` to end of line), a
+// literal written with escapes (whitespace as `\n` or `\t`, a `\u` or `\x` escape
+// in a keyword or the name), all of which SQLite still runs as a write; a file under
+// src that is not `.ts`/`.tsx` (`.js`, `.mjs`, `.sql`); and a writer outside
+// `packages/*/*/src`, are not seen. "Any case and whitespace" means whitespace written
+// as such in the source, not as an escape.
 {
   const DOOR_SITE = "packages/persistence/ledger/src/ledger/index.ts";
   let scanned = 0;
@@ -26242,12 +26287,37 @@ if (tracked.status === 0) {
     if (decided === -1 || inserted === -1 || decided > inserted) {
       fail(DOOR_SITE + " appendInitiativeBatch no longer decides the batch before it inserts a row (L-P26B-1)");
     }
-    // The one row writer (Fable C-B5): exactly one INSERT into the stream, inside it.
-    const writes = code.split("INSERT INTO initiative_events").length - 1;
-    const writer = body(code, "  #insertInitiativeRow(");
-    if (writes !== 1 || !writer.includes("INSERT INTO initiative_events")) {
-      fail(DOOR_SITE + " writes initiative_events " + String(writes) + " times or outside #insertInitiativeRow; the stream has one row writer (L-P26B-1)");
+  }
+  // The one row writer (Fable C-B5), over every tracked src file: exactly one SQL write
+  // into the stream, and it is inside `#insertInitiativeRow`.
+  const STREAM_WRITE = /\b(?:INSERT(?:\s+OR\s+\w+)?|REPLACE)\s+INTO\s+["'`[]?initiative_events\b/gi;
+  const writes = [];
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const sources = new Set(present);
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      if (relativePath !== DOOR_SITE) scanned += 1;
+      const code = stripComments(file);
+      for (const match of code.matchAll(STREAM_WRITE)) writes.push({ relativePath, code, at: match.index ?? 0 });
     }
+  }
+  const only = writes.length === 1 ? writes[0] : undefined;
+  const writerStart = only === undefined ? -1 : only.code.indexOf("  #insertInitiativeRow(");
+  const writerEnd = writerStart === -1 ? -1 : only.code.indexOf("\n  }\n", writerStart);
+  if (only === undefined || only.relativePath !== DOOR_SITE || writerEnd === -1 || only.at < writerStart || only.at > writerEnd) {
+    fail(
+      "initiative_events is written " +
+        String(writes.length) +
+        " times across packages/*/*/src (" +
+        [...new Set(writes.map((write) => write.relativePath))].join(", ") +
+        ") or outside " +
+        DOOR_SITE +
+        " #insertInitiativeRow; the stream has one row writer (L-P26B-1)",
+    );
   }
   requireScope("the single initiative door writes no step and no version that counts steps", scanned);
   notes.push("the single initiative door writes no step and no version that counts steps, and the batch door decides first");
