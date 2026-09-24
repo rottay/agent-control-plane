@@ -1365,6 +1365,16 @@ export interface InitiativeAppendResult {
   readonly record: InitiativeEventRecord;
 }
 
+/**
+ * What `appendInitiativeBatch` answers (P-26 cut B, ADR 0111): every record of the
+ * batch, in batch order, and how many were written — all of them, or none for a
+ * whole-batch replay. A partial batch is never an answer; it is a conflict.
+ */
+export interface InitiativeBatchResult {
+  readonly insertedCount: number;
+  readonly records: readonly InitiativeEventRecord[];
+}
+
 export interface InitiativeEventQuery {
   /** Exclusive sequence cursor. Pass the previous page nextCursor. */
   readonly afterSequence?: number | undefined;
@@ -1439,6 +1449,47 @@ export interface RoadmapVersionReadModel {
   readonly recordedBy: string;
   readonly recordedAt: string;
   /** The initiative-stream position the version was recorded at. */
+  readonly sequence: number;
+  /**
+   * The contract version the version was recorded under (P-26 cut B, migration 25):
+   * the cohort's key.
+   */
+  readonly recordingContractVersion: string;
+  /** The steps it declares; null on a version recorded before steps existed. */
+  readonly stepCount: number | null;
+  /** The private manifest's reference and digest; both null when it declares none. */
+  readonly stepManifestArtifactReferenceId: string | null;
+  readonly stepManifestSha256: string | null;
+}
+
+/**
+ * The lifecycle of a roadmap step (planning §3). A declaration writes `DECLARED`
+ * and nothing in this build writes another: transitions are P-27's and dispatch's.
+ */
+export const ROADMAP_STEP_STATES = ["DECLARED", "READY", "RUNNING", "PAUSED", "DONE", "CANCELLED"] as const;
+export type RoadmapStepState = (typeof ROADMAP_STEP_STATES)[number];
+
+/** One declared step of one roadmap version, folded from its `ROADMAP_STEP_DECLARED`. */
+export interface RoadmapStepReadModel {
+  readonly roadmapVersionId: string;
+  readonly stepId: string;
+  readonly stepIndex: number;
+  readonly title: string;
+  readonly objectiveSha256: string;
+  readonly acceptanceSha256: string;
+  readonly expectedWriteSetSha256: string;
+  readonly dependencyRank: number;
+  readonly state: RoadmapStepState;
+  /** Null until a STEP-scoped routing assignment exists (P-28); none does in this build. */
+  readonly routingAssignmentVersion: number | null;
+  readonly sequence: number;
+}
+
+/** One dependency of one declared step, on another step of the same version. */
+export interface RoadmapStepDependencyReadModel {
+  readonly roadmapVersionId: string;
+  readonly stepId: string;
+  readonly dependsOnStepId: string;
   readonly sequence: number;
 }
 

@@ -18,7 +18,7 @@ import { z } from "zod";
  * is a producer whose output nobody can predict. What may hold more than one
  * value is the *reader's* set below.
  */
-export const CONTRACT_VERSION = "2.9.0" as const;
+export const CONTRACT_VERSION = "2.10.0" as const;
 
 /**
  * The contract versions a **reader** accepts (P-18/protocolo A, ADR 0072).
@@ -90,6 +90,14 @@ export const CONTRACT_VERSION = "2.9.0" as const;
  * `DISPATCH_INTENDED` pins the price catalog version it will be valued against, and
  * migration 23 keys that on a closed list of the seven versions no build before it
  * could stamp with a pin. `"2.8.0"` joins the others here for ever.
+ *
+ * **Nine members from P-26 cut B (ADR 0111), on both reasons at once.** From 2.10.0
+ * a `RoadmapVersion` carries its step count and the reference and digest of its
+ * private step manifest, and migration 25 keys that on a closed list of the eight
+ * versions no build before it could stamp with steps: a cohort. And each
+ * `ROADMAP_STEP_DECLARED` carries digests and a rank the door re-derives from the
+ * manifest rather than believes: an identity, ADR 0076's class. `"2.9.0"` joins the
+ * others here for ever.
  */
 export const SUPPORTED_CONTRACT_VERSIONS = [
   "2.2.0",
@@ -100,6 +108,7 @@ export const SUPPORTED_CONTRACT_VERSIONS = [
   "2.7.0",
   "2.8.0",
   "2.9.0",
+  "2.10.0",
 ] as const;
 
 /**

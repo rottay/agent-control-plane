@@ -2,12 +2,15 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   ApiError,
   InitiativeRoadmapResponse,
+  InitiativeTimelineResponse,
   LEDGER_CONTRACT_VERSION,
   ROADMAP_CONTENT_MAX_BYTES,
+  ROADMAP_STEP_MANIFEST_MAX_BYTES,
   ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES,
   RoadmapVersionWriteRequest,
   RoadmapVersionWriteResponse,
@@ -16,9 +19,16 @@ import {
 // (V2-B1f/F3): one home, and this suite reads the checkpoint side of the same
 // rule in P9 below.
 import {
+  GENESIS_SHA256,
   LedgerIdempotencyConflictError,
   LedgerRoadmapVersionRefusedError,
   ROADMAP_VERSION_REFUSALS,
+  canonicalJsonStringify,
+  chainDigest,
+  artifactBlobLeaseStorePath,
+  openArtifactBlobLeaseStore,
+  openArtifactPlane,
+  recordRoadmapRevision,
   artifactRootFor,
   hasArtifact,
   openLedger,
@@ -42,7 +52,7 @@ import * as writeSeam from "../../src/roadmap-write/index.js";
  * checked against a stub.
  *
  * The refusal cases are one per name, and the vocabulary itself is asserted
- * exact against the landed module — a suite that covered six of seven refusals
+ * exact against the landed module — a suite that covered eleven of twelve refusals
  * while claiming the vocabulary would be the overclaim shape this repository
  * keeps finding.
  */
@@ -300,12 +310,13 @@ describe("door two: the decision's refusals are 409, by name", () => {
   it("covers the landed vocabulary exactly, with nothing invented", () => {
     // The seam adds exactly two names of its own — one for the store's
     // refusals, one for a lost race (P8-8G R1) — and re-exports the
-    // decision's seven unchanged. The seventh, VERSION_ID_REUSED (P-26/A), is
-    // unreachable from this route, which mints a fresh identity per request.
+    // decision's twelve unchanged. VERSION_ID_REUSED (P-26/A) is unreachable from
+    // this route, which mints a fresh identity per request; the five step words
+    // (P-26 cut B) reach it only from a request that carries `steps`.
     expect([...ROADMAP_WRITE_REFUSALS]).toEqual(
       [...ROADMAP_VERSION_REFUSALS, "CONTENT_REJECTED", "WRITE_CONFLICT"].sort(),
     );
-    expect(ROADMAP_VERSION_REFUSALS.length).toBe(7);
+    expect(ROADMAP_VERSION_REFUSALS.length).toBe(12);
     expect([...ROADMAP_VERSION_REFUSALS]).toContain("VERSION_ID_REUSED");
     // Both seam names are the seam's, not the decision's: the decision knows
     // nothing about a store or about concurrency.
@@ -498,6 +509,7 @@ describe("R1: the race loser hears the truth, and only the race loser", () => {
       roadmapVersionId: randomUUID(),
       // The collision: an id the ledger already holds.
       eventId: takenEventId,
+      steps: null,
     });
     reader.close();
 
@@ -533,6 +545,7 @@ describe("R1: the race loser hears the truth, and only the race loser", () => {
         // Not a uuid: the ledger refuses the event on shape, which is neither
         // of the two conflict codes and must therefore propagate.
         eventId: "not-a-uuid",
+        steps: null,
       }),
     ).toThrow();
     reader.close();
@@ -733,6 +746,9 @@ describe("P-26/A: the roadmap-version law runs inside the append, and the route 
         restoresVersionId: null,
         recordedBy: COORDINATOR,
         recordedAt: AT,
+        stepCount: 0,
+        stepManifestArtifactReferenceId: null,
+        stepManifestSha256: null,
       }),
     );
     other.close();
@@ -760,6 +776,7 @@ describe("P-26/A: the roadmap-version law runs inside the append, and the route 
       recordedAt: AT,
       roadmapVersionId: randomUUID(),
       eventId: randomUUID(),
+      steps: null,
     });
     reader.close();
 
@@ -782,6 +799,344 @@ describe("P-26/A: the roadmap-version law runs inside the append, and the route 
     await retryApp.close();
     expect(retry.statusCode).toBe(409);
     expect(ApiError.parse(retry.json()).error.message).toContain("HEAD_MISMATCH");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-26 cut B: a version declares its steps (ADR 0111)
+// ---------------------------------------------------------------------------
+
+function manifestStep(stepId: string, dependsOn: readonly string[] = []): Record<string, unknown> {
+  return {
+    stepId,
+    title: "Step " + stepId,
+    objective: "The private objective of " + stepId + ".",
+    acceptance: "The private acceptance of " + stepId + ".",
+    expectedWriteSet: ["packages/" + stepId + "/index.ts"],
+    dependsOn: [...dependsOn],
+  };
+}
+
+/** A→B, A→C: the map's S1 manifest. */
+function steps(entries: readonly Record<string, unknown>[] = [manifestStep("A"), manifestStep("B", ["A"]), manifestStep("C", ["A"])]) {
+  return { manifestContractVersion: 1, steps: entries };
+}
+
+function readSteps(path: string, roadmapVersionId: string) {
+  const reader = openLedger(path, { readOnly: true });
+  try {
+    return {
+      steps: reader.listRoadmapSteps(roadmapVersionId),
+      dependencies: reader.listRoadmapStepDependencies(roadmapVersionId),
+      events: reader.listInitiativeEvents().events,
+    };
+  } finally {
+    reader.close();
+  }
+}
+
+describe("P-26/B: a roadmap version declares its steps through the real route", () => {
+  it("S1: v1 with three steps is 200, one contiguous batch, ranks 0/1/1, a private PLAN_DOCUMENT, and a 0.20.0 timeline", async () => {
+    const { path, initiativeId } = seed();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const response = await app.inject({ method: "POST", url: roadmapUrl(initiativeId), payload: { ...body(), steps: steps() }, headers: AUTH });
+    expect(response.statusCode).toBe(200);
+    const parsed = RoadmapVersionWriteResponse.parse(response.json());
+    expect(parsed.version.stepCount).toBe(3);
+    expect(parsed.version.stepManifestSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(response.json())).not.toContain("private objective");
+
+    const { steps: rows, dependencies, events } = readSteps(path, parsed.version.roadmapVersionId);
+    const batch = events.slice(-4);
+    expect(batch.map((record) => record.event.type)).toEqual([
+      "ROADMAP_VERSION_RECORDED",
+      "ROADMAP_STEP_DECLARED",
+      "ROADMAP_STEP_DECLARED",
+      "ROADMAP_STEP_DECLARED",
+    ]);
+    expect(batch.map((record) => record.sequence - (batch[0]?.sequence ?? 0))).toEqual([0, 1, 2, 3]);
+    expect(rows.map((row) => [row.stepId, row.dependencyRank])).toEqual([["A", 0], ["B", 1], ["C", 1]]);
+    expect(dependencies).toHaveLength(2);
+    for (const record of events) expect(record.canonicalJson).not.toContain("private objective");
+
+    const timeline = await app.inject({ method: "GET", url: "/api/v1/initiatives/" + initiativeId + "/events" });
+    expect(timeline.statusCode).toBe(200);
+    const items = InitiativeTimelineResponse.parse(timeline.json()).items;
+    expect(items.filter((item) => item.type === "ROADMAP_STEP_DECLARED")).toHaveLength(3);
+    expect(items.filter((item) => item.type === "ROADMAP_VERSION_RECORDED")).toHaveLength(1);
+    await app.close();
+  });
+
+  it("S2: v2 without steps counts 0 and names no manifest, and v1's steps are untouched", async () => {
+    const { path, initiativeId } = seed();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const first = RoadmapVersionWriteResponse.parse(
+      (await app.inject({ method: "POST", url: roadmapUrl(initiativeId), payload: { ...body(), steps: steps() }, headers: AUTH })).json(),
+    );
+    const second = await app.inject({
+      method: "POST",
+      url: roadmapUrl(initiativeId),
+      payload: body({ content: "# two\n", expectedHeadDigest: first.version.contentDigest }),
+      headers: AUTH,
+    });
+    await app.close();
+    expect(second.statusCode).toBe(200);
+    const parsed = RoadmapVersionWriteResponse.parse(second.json());
+    expect([parsed.version.stepCount, parsed.version.stepManifestSha256]).toEqual([0, null]);
+    expect(readSteps(path, parsed.version.roadmapVersionId).steps).toEqual([]);
+    expect(readSteps(path, first.version.roadmapVersionId).steps).toHaveLength(3);
+  });
+
+  it("S3: a cycle is 409 WRITE_REFUSED naming STEP_DEPENDENCY_CYCLE, and nothing is appended", async () => {
+    const { path, initiativeId } = seed();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const before = readSteps(path, randomUUID()).events.length;
+    const response = await app.inject({
+      method: "POST",
+      url: roadmapUrl(initiativeId),
+      payload: { ...body(), steps: steps([manifestStep("A", ["B"]), manifestStep("B", ["A"])]) },
+      headers: AUTH,
+    });
+    await app.close();
+    expect(response.statusCode).toBe(409);
+    const envelope = ApiError.parse(response.json());
+    expect(envelope.error.code).toBe("WRITE_REFUSED");
+    expect(envelope.error.message).toContain("STEP_DEPENDENCY_CYCLE");
+    expect(readSteps(path, randomUUID()).events.length).toBe(before);
+  });
+
+  it("S4: a self-edge, an unknown dependency and a repeated stepId are refused at the schema, 400, at the field", async () => {
+    // Measured, against the map's S4: the request parses the contract's manifest
+    // whole, and the manifest refuses these three itself, so they never reach a
+    // decision. STEP_DECLARATION_INVALID is the door's word for a raw batch.
+    const { path, initiativeId } = seed();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    for (const [manifest, field] of [
+      [steps([manifestStep("A", ["A"])]), "steps.steps.0.dependsOn.0"],
+      [steps([manifestStep("A", ["Z"])]), "steps.steps.0.dependsOn.0"],
+      [steps([manifestStep("A"), manifestStep("A")]), "steps.steps.1"],
+    ] as const) {
+      const response = await app.inject({ method: "POST", url: roadmapUrl(initiativeId), payload: { ...body(), steps: manifest }, headers: AUTH });
+      expect(response.statusCode, field).toBe(400);
+      const envelope = ApiError.parse(response.json());
+      expect(envelope.error.code).toBe("BAD_REQUEST");
+      expect(envelope.error.detail).toBe(field);
+    }
+    await app.close();
+  });
+
+  it("S5/S5b: a rollback re-declares the restored steps; another manifest, or steps onto a stepless version, is ROLLBACK_STEPS_MISMATCH", async () => {
+    const { path, initiativeId } = seed();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const post = async (payload: Record<string, unknown>) => app.inject({ method: "POST", url: roadmapUrl(initiativeId), payload, headers: AUTH });
+    const first = RoadmapVersionWriteResponse.parse((await post({ ...body({ content: "# one\n" }), steps: steps() })).json());
+    const second = RoadmapVersionWriteResponse.parse(
+      (await post(body({ content: "# two\n", expectedHeadDigest: first.version.contentDigest }))).json(),
+    );
+    const rollbackTo = (target: RoadmapVersionWriteResponse, head: RoadmapVersionWriteResponse, content: string) =>
+      body({ content, expectedHeadDigest: head.version.contentDigest, kind: "ROLLBACK", restoresVersionId: target.version.roadmapVersionId });
+
+    const other = await post({ ...rollbackTo(first, second, "# one\n"), steps: steps([manifestStep("A")]) });
+    expect(other.statusCode).toBe(409);
+    expect(ApiError.parse(other.json()).error.message).toContain("ROLLBACK_STEPS_MISMATCH");
+
+    const onto = await post({ ...rollbackTo(second, second, "# two\n"), steps: steps() });
+    expect(onto.statusCode).toBe(409);
+    expect(ApiError.parse(onto.json()).error.message).toContain("ROLLBACK_STEPS_MISMATCH");
+
+    const plain = await post(rollbackTo(second, second, "# two\n"));
+    expect(plain.statusCode).toBe(200);
+    const third = RoadmapVersionWriteResponse.parse(plain.json());
+    expect([third.version.stepCount, third.version.stepManifestSha256]).toEqual([0, null]);
+
+    const restored = await post({ ...rollbackTo(first, third, "# one\n"), steps: steps() });
+    expect(restored.statusCode).toBe(200);
+    const fourth = RoadmapVersionWriteResponse.parse(restored.json());
+    expect(fourth.version.stepManifestSha256).toBe(first.version.stepManifestSha256);
+    const shape = (rows: ReturnType<typeof readSteps>["steps"]) => rows.map((row) => [row.stepId, row.objectiveSha256, row.dependencyRank]);
+    expect(shape(readSteps(path, fourth.version.roadmapVersionId).steps)).toEqual(shape(readSteps(path, first.version.roadmapVersionId).steps));
+    await app.close();
+  });
+
+  it("S6: the exact batch again is a whole-batch replay, one set of rows", async () => {
+    const { path, initiativeId } = seed();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const first = RoadmapVersionWriteResponse.parse(
+      (await app.inject({ method: "POST", url: roadmapUrl(initiativeId), payload: { ...body(), steps: steps() }, headers: AUTH })).json(),
+    );
+    await app.close();
+    const writable = openLedger(path);
+    const batch = writable
+      .listInitiativeEvents({ initiativeId })
+      .events.filter((record) => record.event.transitionId.startsWith("roadmap.v1"))
+      .map((record) => record.event);
+    const replay = writable.appendInitiativeBatch(batch);
+    writable.close();
+    expect(replay.insertedCount).toBe(0);
+    expect(readSteps(path, first.version.roadmapVersionId).steps).toHaveLength(3);
+  });
+
+  it("S7: a stale fold meets a batch that landed first, and the seam answers WRITE_CONFLICT, never a throw", async () => {
+    const { path, initiativeId } = seed();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const v1 = RoadmapVersionWriteResponse.parse(
+      (await app.inject({ method: "POST", url: roadmapUrl(initiativeId), payload: body(), headers: AUTH })).json(),
+    );
+    await app.close();
+
+    const reader = openLedger(path, { readOnly: true });
+    const stale = reader.listRoadmapVersions(initiativeId);
+
+    // Another producer records v2 with steps first, through the same producer.
+    const other = openLedger(path);
+    const leaseStore = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(path), { incarnationId: randomUUID(), createdAt: AT });
+    const landed = recordRoadmapRevision({
+      reader: other,
+      writable: other,
+      plane: openArtifactPlane({ ledger: other, leaseStore, ledgerPath: path }),
+      initiativeId,
+      request: { content: "# theirs\n", expectedHeadDigest: v1.version.contentDigest, kind: "EDIT", restoresVersionId: null, recordedBy: COORDINATOR, steps: steps() },
+      recordedAt: AT,
+      roadmapVersionId: randomUUID(),
+      eventId: randomUUID(),
+      holderPid: process.pid,
+      stepIdentities: {
+        stepEventIds: [randomUUID(), randomUUID(), randomUUID()],
+        commandId: randomUUID(),
+        artifactPinId: randomUUID(),
+        artifactReferenceId: randomUUID(),
+        intentionEventId: randomUUID(),
+        terminalEventId: randomUUID(),
+      },
+    });
+    leaseStore.close();
+    other.close();
+    expect(landed.ok).toBe(true);
+
+    const staleReader: Ledger = new Proxy(reader, {
+      get(target, property) {
+        if (property === "listRoadmapVersions") return () => stale;
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const outcome = recordRoadmapVersion({
+      ledger: staleReader,
+      initiativeId,
+      request: { content: "# mine\n", expectedHeadDigest: v1.version.contentDigest, kind: "EDIT", restoresVersionId: null, recordedBy: COORDINATOR, steps: steps([manifestStep("X")]) as never },
+      recordedAt: AT,
+      roadmapVersionId: randomUUID(),
+      eventId: randomUUID(),
+      steps: {
+        identities: {
+          stepEventIds: [randomUUID()],
+          commandId: randomUUID(),
+          artifactPinId: randomUUID(),
+          artifactReferenceId: randomUUID(),
+          intentionEventId: randomUUID(),
+          terminalEventId: randomUUID(),
+        },
+        holderPid: process.pid,
+        leaseStoreIncarnationId: randomUUID(),
+      },
+    });
+    reader.close();
+    expect(outcome).toEqual({ ok: false, reason: "WRITE_CONFLICT", at: "roadmapVersion" });
+    expect(recordedPayloads(path, initiativeId).map((payload) => payload["version"])).toEqual([1, 2]);
+  });
+
+  it("S8 (P-P18-2): a 2.9.0 history rewound to 24 migrates under 2.10.0, verifies and rebuilds, and takes S1 on top", async () => {
+    const { path, initiativeId } = seed();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const first = RoadmapVersionWriteResponse.parse(
+      (await app.inject({ method: "POST", url: roadmapUrl(initiativeId), payload: body(), headers: AUTH })).json(),
+    );
+    await app.close();
+
+    // The history as the previous build wrote it: every initiative event and every
+    // roadmap payload at 2.9.0, no step field, the chain recomputed; then migration
+    // 25 undone, so this build meets a ledger at 24.
+    const raw = new DatabaseSync(path);
+    const triggers = raw
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name IN ('initiative_events_deny_update', 'initiative_events_deny_delete')")
+      .all() as { sql: string }[];
+    raw.exec("DROP TRIGGER initiative_events_deny_update; DROP TRIGGER initiative_events_deny_delete;");
+    let previous = GENESIS_SHA256;
+    for (const row of raw.prepare("SELECT sequence, event_json FROM initiative_events ORDER BY sequence").all() as { sequence: number; event_json: string }[]) {
+      const decoded = JSON.parse(row.event_json) as Record<string, unknown>;
+      decoded["contractVersion"] = "2.9.0";
+      if (decoded["type"] === "ROADMAP_VERSION_RECORDED") {
+        const cohort = new Set(["stepCount", "stepManifestArtifactReferenceId", "stepManifestSha256"]);
+        decoded["payload"] = {
+          ...Object.fromEntries(Object.entries(decoded["payload"] as Record<string, unknown>).filter(([key]) => !cohort.has(key))),
+          contractVersion: "2.9.0",
+        };
+      }
+      const rewritten = canonicalJsonStringify(decoded);
+      const digest = chainDigest(previous, rewritten);
+      raw
+        .prepare("UPDATE initiative_events SET event_json = ?, contract_version = ?, previous_sha256 = ?, event_sha256 = ? WHERE sequence = ?")
+        .run(rewritten, "2.9.0", previous, digest, row.sequence);
+      previous = digest;
+    }
+    raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = 'initiative_head_event_sha256'").run(previous);
+    raw.prepare("UPDATE projection_watermark SET source_head_sha256 = ? WHERE source_stream = 'initiative_events'").run(previous);
+    for (const trigger of triggers) raw.exec(trigger.sql);
+    raw.exec(
+      "DROP TRIGGER tr_roadmap_version_read_model__validate_steps_on_update;" +
+        "DROP TRIGGER tr_roadmap_version_read_model__validate_steps_on_insert;" +
+        "ALTER TABLE roadmap_version_read_model DROP COLUMN step_manifest_sha256;" +
+        "ALTER TABLE roadmap_version_read_model DROP COLUMN step_manifest_artifact_reference_id;" +
+        "ALTER TABLE roadmap_version_read_model DROP COLUMN step_count;" +
+        "ALTER TABLE roadmap_version_read_model DROP COLUMN recording_contract_version;" +
+        "DROP TABLE roadmap_step_dependency;" +
+        "DROP TABLE roadmap_step_read_model;" +
+        "DELETE FROM projection_watermark WHERE projection_name IN ('roadmap_step_read_model', 'roadmap_step_dependency');" +
+        "DELETE FROM schema_migrations WHERE version >= 25;",
+    );
+    raw.close();
+
+    // The server's handle is read-only and may not migrate; a writable open does.
+    const migrated = openLedger(path);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(25);
+    expect(migrated.listRoadmapVersions(initiativeId).map((row) => [row.recordingContractVersion, row.stepCount])).toEqual([["2.9.0", null]]);
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+    const rows = migrated.listRoadmapVersions(initiativeId);
+    migrated.rebuildReadModel();
+    expect(migrated.listRoadmapVersions(initiativeId)).toEqual(rows);
+    migrated.close();
+
+    const reopened = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const history = InitiativeRoadmapResponse.parse((await reopened.inject({ method: "GET", url: roadmapUrl(initiativeId) })).json());
+    expect(history.items.map((item) => [item.version, item.stepCount, item.stepManifestSha256])).toEqual([[1, null, null]]);
+    const onTop = await reopened.inject({
+      method: "POST",
+      url: roadmapUrl(initiativeId),
+      payload: { ...body({ content: "# two\n", expectedHeadDigest: first.version.contentDigest }), steps: steps() },
+      headers: AUTH,
+    });
+    await reopened.close();
+    expect(onTop.statusCode).toBe(200);
+    expect(RoadmapVersionWriteResponse.parse(onTop.json()).version.stepCount).toBe(3);
+  });
+
+  it("S9: a body at the new transport limit is admitted, one byte over is the transport's refusal", async () => {
+    const { path, initiativeId } = seed();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const limit = ROADMAP_CONTENT_MAX_BYTES + ROADMAP_STEP_MANIFEST_MAX_BYTES + ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES;
+    const payload = JSON.stringify({ ...body({ content: "x".repeat(ROADMAP_CONTENT_MAX_BYTES) }), steps: steps() });
+    // JSON admits trailing whitespace, so the body is padded to the byte it tests.
+    const at = payload + " ".repeat(limit - Buffer.byteLength(payload, "utf8"));
+    const over = at + " ";
+    expect(Buffer.byteLength(at, "utf8")).toBe(limit);
+    const admitted = await app.inject({ method: "POST", url: roadmapUrl(initiativeId), payload: at, headers: { ...AUTH, "content-type": "application/json" } });
+    expect(admitted.statusCode).toBe(200);
+    const refused = await app.inject({ method: "POST", url: roadmapUrl(initiativeId), payload: over, headers: { ...AUTH, "content-type": "application/json" } });
+    // Measured, against the map's "413": the plane classifies every framework 4xx
+    // as 400 BAD_REQUEST, naming the framework's code in `detail`.
+    expect(refused.statusCode).toBe(400);
+    expect(ApiError.parse(refused.json()).error.detail).toBe("FST_ERR_CTP_BODY_TOO_LARGE");
+    await app.close();
   });
 });
 

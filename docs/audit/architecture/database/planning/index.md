@@ -60,11 +60,16 @@ declarado acá es proyección: se borra y reconstruye a un vector de cabezas fij
 | `recorded_by` | TEXT | NOT NULL | — |
 | `recorded_at` | TEXT | NOT NULL | — |
 | `sequence` | INTEGER | NOT NULL | `applied_sequence` de esta fila en `initiative_events`. |
+| `recording_contract_version` | TEXT | NULL en DDL | **Aditivo** (migración 25, P-26 corte B; admisión del DT, ND-B1). Versión de contrato con que se registró la versión: la llave de la cohorte. Requerida en toda fila por trigger; la migración la escribe desde el evento de cada versión. |
+| `step_count` | INTEGER | NULL | **Aditivo** (migración 25). Pasos que declara la versión, `0..200`. `NULL` exactamente en la cohorte anterior (`2.2.0` … `2.9.0`, lista cerrada); requerida desde `2.10.0`. |
+| `step_manifest_artifact_reference_id` | TEXT | NULL | **Aditivo** (migración 25). La referencia del manifiesto privado de pasos (`PLAN_DOCUMENT`, scope `INITIATIVE`); nula junto con el digest. |
+| `step_manifest_sha256` | TEXT | NULL | **Aditivo** (migración 25). Digest del manifiesto; nulo junto con la referencia, y sólo presente con `step_count > 0`. |
 
 ### Índices / OCC / transacción / rebuild
 
 | Objeto | Forma |
 | --- | --- |
+| `tr_roadmap_version_read_model__validate_steps_on_insert` / `__on_update` | **Aditivo** (migración 25). La cohorte por lista cerrada, en los dos caminos por los que llega una fila; la primera sentencia atrapa la versión `NULL`. |
 | `roadmap_version_read_model_by_initiative` | `INDEX (initiative_id, version)`, legacy. |
 | `ux_roadmap_version_read_model__initiative_id__version` | **Aditivo.** `UNIQUE INDEX (initiative_id, version)`. Dos versiones de roadmap con el mismo número para la misma iniciativa es corrupción del fold, no un caso válido. |
 | Transacción / Rebuild | Igual patrón que §1. |
@@ -87,6 +92,7 @@ no muta los pasos de la anterior (§7.4 canónico).
 | `expected_write_set_sha256` | TEXT | NOT NULL | — |
 | `state` | TEXT | NOT NULL | `CHECK IN ('DECLARED','READY','RUNNING','PAUSED','DONE','CANCELLED')`. |
 | `routing_assignment_version` | INTEGER | NULL | `NULL` hasta que exista una asignación con scope `STEP` para este paso; en su ausencia rige la precedencia `INITIATIVE` luego `GLOBAL` (ver §6). |
+| `dependency_rank` | INTEGER | NOT NULL | `CHECK >= 0`. **Admisión del DT (ND-B1, P-26 corte B).** El resultado del cómputo de ciclo de §4, registrado en el evento que declaró las dependencias del paso: el camino más largo desde un paso sin dependencias (0 para uno así). Un grafo acíclico es exactamente uno donde todo rango existe; la puerta lo recalcula desde el manifiesto y rechaza una diferencia. |
 | `sequence` | INTEGER | NOT NULL | — |
 
 ### Índices / OCC / transacción / rebuild
@@ -94,6 +100,7 @@ no muta los pasos de la anterior (§7.4 canónico).
 | Objeto | Forma |
 | --- | --- |
 | `pk_roadmap_step_read_model` | `PRIMARY KEY (roadmap_version_id, step_id)` — corrige el defecto: la forma legada (`step_id` PK simple) colisionaba entre versiones de roadmap. |
+| `ux_roadmap_step_read_model__roadmap_version_id__step_index` | `UNIQUE INDEX (roadmap_version_id, step_index)` (P-26 corte B): un índice por paso dentro de su versión. |
 | `ix_roadmap_step_read_model__state` | `INDEX (roadmap_version_id, state, step_index)`. |
 | Rebuild | Determinista desde `initiative_events`. |
 

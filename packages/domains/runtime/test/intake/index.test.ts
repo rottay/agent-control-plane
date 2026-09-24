@@ -190,6 +190,9 @@ function recordRoadmapVersion(ledger: Ledger, initiativeId: string, roadmapVersi
       restoresVersionId: null,
       recordedBy: COORDINATOR,
       recordedAt: CREATED_AT,
+      stepCount: 0,
+      stepManifestArtifactReferenceId: null,
+      stepManifestSha256: null,
     },
   });
 }

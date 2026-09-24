@@ -1812,6 +1812,8 @@ describe("the initiative data plane's shapes", () => {
       recordedAt: AT,
       sequence: 1,
       head: true,
+      stepCount: 0,
+      stepManifestSha256: null,
     };
     expect(RoadmapVersionDto.safeParse(version).success).toBe(true);
     expect(RoadmapVersionDto.safeParse({ ...version, contentDigest: "nope" }).success).toBe(false);
@@ -2304,7 +2306,7 @@ describe("the initiative registration's wire contract (P-14/B)", () => {
 
   it("N-P14B-14: moves the API version and the write table, and adds no error code", () => {
     // `0.16.0` when it landed; P-14/C's sixth write door moved it again.
-    expect(API_CONTRACT_VERSION).toBe("0.19.0");
+    expect(API_CONTRACT_VERSION).toBe("0.20.0");
     expect(isWriteRoute("initiatives")).toBe(true);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(16);
@@ -2461,13 +2463,13 @@ describe("the task intake's wire contract (P-14/C)", () => {
   });
 
   it("N-P14C-23: moves the API version and the write table, and adds no method and no error code", () => {
-    expect(API_CONTRACT_VERSION).toBe("0.19.0");
+    expect(API_CONTRACT_VERSION).toBe("0.20.0");
     expect(isWriteRoute("tasks")).toBe(true);
     expect(API_WRITE_ROUTES).toHaveLength(6);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(16);
-    // Derived from `CONTRACT_VERSION`, which P-15 escalón C moved to 2.9.0 (ADR 0103).
-    expect(LEDGER_CONTRACT_VERSION).toBe("2.9.0");
+    // Derived from `CONTRACT_VERSION`, which P-26 cut B moved to 2.10.0 (ADR 0111).
+    expect(LEDGER_CONTRACT_VERSION).toBe("2.10.0");
   });
 });
 
@@ -2594,7 +2596,7 @@ describe("the registry publication's request (P-15/R, ADR 0104)", () => {
       RegistryPublicationResponse.safeParse({ ...response, document: { ...response.document, documentKind: "CAPABILITY_POLICY" } }).success,
     ).toBe(false);
     // No route parses it: the API contract version and the write table do not move.
-    expect(API_CONTRACT_VERSION).toBe("0.19.0");
+    expect(API_CONTRACT_VERSION).toBe("0.20.0");
     expect(API_WRITE_ROUTES).toHaveLength(6);
   });
 });
@@ -3086,7 +3088,7 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.19.0");
+    expect(API_CONTRACT_VERSION).toBe("0.20.0");
   });
 
   it("names the thirteenth error code, and the version the surface now stands at", () => {
@@ -3103,7 +3105,7 @@ describe("the tool call's wire contract", () => {
     // that did not move with it is exactly the point — the version tracks the
     // whole surface, not one list. The number stays a literal so it is asserted
     // rather than echoed.
-    expect(API_CONTRACT_VERSION).toBe("0.19.0");
+    expect(API_CONTRACT_VERSION).toBe("0.20.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
@@ -3116,7 +3118,7 @@ describe("the tool call's wire contract", () => {
     expect(API_ERROR_CODES).toContain("CAPABILITY_UNSUPPORTED");
     expect(API_ERROR_CODES).toContain("SCENARIO_UNCONFIGURED");
     expect(API_ERROR_CODES).toHaveLength(16);
-    expect(API_CONTRACT_VERSION).toBe("0.19.0");
+    expect(API_CONTRACT_VERSION).toBe("0.20.0");
 
     // The distinction is the reason both exist. `SCENARIO_UNCONFIGURED` is an
     // operator problem a restart fixes, on the shape
@@ -3401,7 +3403,7 @@ describe("P-15/F: the effect reads on the wire (ADR 0107)", () => {
   it("names the private read's unconfigured server apart from the write door's", () => {
     expect(API_ERROR_CODES).toContain("PRIVATE_READ_UNCONFIGURED");
     expect(API_ERROR_CODES).toContain("WRITE_BEARER_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.19.0");
+    expect(API_CONTRACT_VERSION).toBe("0.20.0");
   });
 });
 
@@ -3501,6 +3503,8 @@ describe("the protocol reads contracts' sha-256 grammar and declares none (P-37)
           recordedAt: AT,
           sequence: 2,
           head: true,
+          stepCount: 0,
+          stepManifestSha256: null,
         }),
       "contentDigest",
     );

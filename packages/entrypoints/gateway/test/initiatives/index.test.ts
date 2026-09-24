@@ -235,6 +235,9 @@ function seed(): Seeded {
           restoresVersionId: entry.restores,
           recordedBy: COORDINATOR,
           recordedAt: AT,
+          stepCount: 0,
+          stepManifestArtifactReferenceId: null,
+          stepManifestSha256: null,
         },
       }),
     );
@@ -720,6 +723,9 @@ describe("GET /api/v1/initiatives/:initiativeId/roadmap/content", () => {
           restoresVersionId: null,
           recordedBy: COORDINATOR,
           recordedAt: AT,
+          stepCount: 0,
+          stepManifestArtifactReferenceId: null,
+          stepManifestSha256: null,
         },
       }),
     );

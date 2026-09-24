@@ -3034,6 +3034,164 @@ CREATE UNIQUE INDEX ux_roadmap_version_read_model__initiative_id__version
   ON roadmap_version_read_model (initiative_id, version);
 `,
   },
+  {
+    version: 25,
+    name: "roadmap_steps",
+    sql: `
+-- A roadmap version declares its steps (P-26 cut B, ADR 0111; planning §2-§4).
+--
+-- **The version gains its cohort, additively.** Four nullable columns on
+-- \`roadmap_version_read_model\`, with no default: \`recording_contract_version\`, the
+-- cohort's key, written for every row already there by code in this same
+-- transaction after this text runs (migration 18's refold); \`step_count\`; and the
+-- private manifest's reference and digest. Version-independent row law is a CHECK,
+-- each spelled so a NULL cannot pass by accident: a count in bounds, a digest of 64
+-- lowercase hex, the reference and the digest both NULL or both set, a manifest only
+-- on a version that counts steps, and a version that counts steps only with a
+-- manifest — both directions, so the base holds what the contract holds.
+ALTER TABLE roadmap_version_read_model ADD COLUMN recording_contract_version TEXT
+  CONSTRAINT ck_roadmap_version_read_model__recording_contract_version
+    CHECK (recording_contract_version IS NULL OR length(recording_contract_version) > 0);
+
+ALTER TABLE roadmap_version_read_model ADD COLUMN step_count INTEGER
+  CONSTRAINT ck_roadmap_version_read_model__step_count
+    CHECK (step_count IS NULL OR (step_count >= 0 AND step_count <= 200));
+
+ALTER TABLE roadmap_version_read_model ADD COLUMN step_manifest_artifact_reference_id TEXT
+  CONSTRAINT ck_roadmap_version_read_model__step_manifest_artifact_reference_id
+    CHECK (step_manifest_artifact_reference_id IS NULL OR length(step_manifest_artifact_reference_id) > 0);
+
+ALTER TABLE roadmap_version_read_model ADD COLUMN step_manifest_sha256 TEXT
+  CONSTRAINT ck_roadmap_version_read_model__step_manifest_sha256
+    CHECK (step_manifest_sha256 IS NULL OR (length(step_manifest_sha256) = 64 AND step_manifest_sha256 NOT GLOB '*[^0-9a-f]*'))
+  CONSTRAINT ck_roadmap_version_read_model__step_manifest_pair
+    CHECK ((step_manifest_sha256 IS NULL) = (step_manifest_artifact_reference_id IS NULL))
+  CONSTRAINT ck_roadmap_version_read_model__step_manifest_count
+    CHECK (step_manifest_sha256 IS NULL OR (step_count IS NOT NULL AND step_count > 0))
+  CONSTRAINT ck_roadmap_version_read_model__step_count_manifest
+    CHECK (step_count IS NULL OR step_count = 0 OR step_manifest_sha256 IS NOT NULL);
+
+-- The cohort, by trigger, on both paths a row arrives by: a rebuild INSERTs and the
+-- backfill UPDATEs. The cohort before is a CLOSED list frozen here, never a
+-- comparison of version strings: the eight are every version a build before this
+-- migration could stamp, and the contract's \`PRE_ROADMAP_STEP_CONTRACT_VERSIONS\`
+-- spells the same eight. \`x NOT IN (...)\` is NULL when \`x\` is NULL, so a row
+-- without a version is caught by the first statement and never let through by the
+-- third.
+CREATE TRIGGER tr_roadmap_version_read_model__validate_steps_on_insert
+BEFORE INSERT ON roadmap_version_read_model
+BEGIN
+  SELECT RAISE(ABORT, 'roadmap_version_read_model.recording_contract_version is required on every version')
+  WHERE NEW.recording_contract_version IS NULL;
+
+  SELECT RAISE(ABORT, 'roadmap_version_read_model.step_count, step_manifest_artifact_reference_id and step_manifest_sha256 must be NULL on a version of contract version 2.2.0, 2.3.0, 2.4.0, 2.5.0, 2.6.0, 2.7.0, 2.8.0 or 2.9.0')
+  WHERE NEW.recording_contract_version IN ('2.2.0', '2.3.0', '2.4.0', '2.5.0', '2.6.0', '2.7.0', '2.8.0', '2.9.0')
+    AND (NEW.step_count IS NOT NULL OR NEW.step_manifest_artifact_reference_id IS NOT NULL OR NEW.step_manifest_sha256 IS NOT NULL);
+
+  SELECT RAISE(ABORT, 'roadmap_version_read_model.step_count is required on a version of every later contract version')
+  WHERE NEW.recording_contract_version NOT IN ('2.2.0', '2.3.0', '2.4.0', '2.5.0', '2.6.0', '2.7.0', '2.8.0', '2.9.0')
+    AND NEW.step_count IS NULL;
+END;
+
+CREATE TRIGGER tr_roadmap_version_read_model__validate_steps_on_update
+BEFORE UPDATE OF recording_contract_version, step_count, step_manifest_artifact_reference_id, step_manifest_sha256
+ON roadmap_version_read_model
+BEGIN
+  SELECT RAISE(ABORT, 'roadmap_version_read_model.recording_contract_version is required on every version')
+  WHERE NEW.recording_contract_version IS NULL;
+
+  SELECT RAISE(ABORT, 'roadmap_version_read_model.step_count, step_manifest_artifact_reference_id and step_manifest_sha256 must be NULL on a version of contract version 2.2.0, 2.3.0, 2.4.0, 2.5.0, 2.6.0, 2.7.0, 2.8.0 or 2.9.0')
+  WHERE NEW.recording_contract_version IN ('2.2.0', '2.3.0', '2.4.0', '2.5.0', '2.6.0', '2.7.0', '2.8.0', '2.9.0')
+    AND (NEW.step_count IS NOT NULL OR NEW.step_manifest_artifact_reference_id IS NOT NULL OR NEW.step_manifest_sha256 IS NOT NULL);
+
+  SELECT RAISE(ABORT, 'roadmap_version_read_model.step_count is required on a version of every later contract version')
+  WHERE NEW.recording_contract_version NOT IN ('2.2.0', '2.3.0', '2.4.0', '2.5.0', '2.6.0', '2.7.0', '2.8.0', '2.9.0')
+    AND NEW.step_count IS NULL;
+END;
+
+-- One row per declared step (planning §3). The primary key is the pair, because a
+-- step id is stable across versions and one version never mutates another's steps.
+-- \`dependency_rank\` is the cycle computation's result the declaring event carries
+-- (planning §4; ND-B1, DT admission). \`state\` is spelled so a NULL is refused
+-- rather than passed by \`NULL IN (...)\`.
+CREATE TABLE roadmap_step_read_model (
+  roadmap_version_id         TEXT    NOT NULL,
+  step_id                    TEXT    NOT NULL,
+  step_index                 INTEGER NOT NULL,
+  title                      TEXT    NOT NULL,
+  objective_sha256           TEXT    NOT NULL,
+  acceptance_sha256          TEXT    NOT NULL,
+  expected_write_set_sha256  TEXT    NOT NULL,
+  dependency_rank            INTEGER NOT NULL,
+  state                      TEXT    NOT NULL,
+  routing_assignment_version INTEGER,
+  sequence                   INTEGER NOT NULL,
+  CONSTRAINT pk_roadmap_step_read_model PRIMARY KEY (roadmap_version_id, step_id),
+  CONSTRAINT fk_roadmap_step_read_model__roadmap_version_read_model
+    FOREIGN KEY (roadmap_version_id) REFERENCES roadmap_version_read_model (roadmap_version_id),
+  CONSTRAINT ck_roadmap_step_read_model__step_index CHECK (step_index >= 0),
+  CONSTRAINT ck_roadmap_step_read_model__dependency_rank CHECK (dependency_rank >= 0),
+  CONSTRAINT ck_roadmap_step_read_model__state
+    CHECK (state IS NOT NULL AND state IN ('DECLARED', 'READY', 'RUNNING', 'PAUSED', 'DONE', 'CANCELLED')),
+  CONSTRAINT ck_roadmap_step_read_model__objective_sha256
+    CHECK (length(objective_sha256) = 64 AND objective_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_roadmap_step_read_model__acceptance_sha256
+    CHECK (length(acceptance_sha256) = 64 AND acceptance_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_roadmap_step_read_model__expected_write_set_sha256
+    CHECK (length(expected_write_set_sha256) = 64 AND expected_write_set_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_roadmap_step_read_model__routing_assignment_version
+    CHECK (routing_assignment_version IS NULL OR routing_assignment_version >= 1),
+  CONSTRAINT ck_roadmap_step_read_model__sequence CHECK (sequence >= 1)
+) STRICT;
+
+CREATE UNIQUE INDEX ux_roadmap_step_read_model__roadmap_version_id__step_index
+  ON roadmap_step_read_model (roadmap_version_id, step_index);
+
+CREATE INDEX ix_roadmap_step_read_model__state
+  ON roadmap_step_read_model (roadmap_version_id, state, step_index);
+
+-- One row per dependency, versioned (planning §4). A cycle of more than one step is
+-- not a CHECK — SQL does not express reachability — and is refused at the write
+-- point; a step depending on itself is.
+CREATE TABLE roadmap_step_dependency (
+  roadmap_version_id TEXT    NOT NULL,
+  step_id            TEXT    NOT NULL,
+  depends_on_step_id TEXT    NOT NULL,
+  sequence           INTEGER NOT NULL,
+  CONSTRAINT pk_roadmap_step_dependency PRIMARY KEY (roadmap_version_id, step_id, depends_on_step_id),
+  CONSTRAINT fk_roadmap_step_dependency__roadmap_step_read_model
+    FOREIGN KEY (roadmap_version_id, step_id) REFERENCES roadmap_step_read_model (roadmap_version_id, step_id),
+  CONSTRAINT fk_roadmap_step_dependency__roadmap_step_read_model__depends_on
+    FOREIGN KEY (roadmap_version_id, depends_on_step_id) REFERENCES roadmap_step_read_model (roadmap_version_id, step_id),
+  CONSTRAINT ck_roadmap_step_dependency__no_self CHECK (step_id <> depends_on_step_id),
+  CONSTRAINT ck_roadmap_step_dependency__sequence CHECK (sequence >= 1)
+) STRICT;
+
+CREATE INDEX ix_roadmap_step_dependency__depends_on
+  ON roadmap_step_dependency (roadmap_version_id, depends_on_step_id, step_id);
+
+-- Both watermarks born at the initiative head, migration 11's pattern. No history
+-- holds a step event, so the empty fold is level with it. The instant is the head
+-- event's own, as a live append stamps it, so a watermark this migration seeds and
+-- one the door wrote cannot be told apart; the epoch only for an empty stream.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  name,
+  'initiative_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'initiative_head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'initiative_event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'initiative_head_event_sha256'),
+  COALESCE(
+    (SELECT recorded_at FROM initiative_events
+      WHERE sequence = CAST((SELECT value FROM ledger_meta WHERE key = 'initiative_head_sequence') AS INTEGER)),
+    '1970-01-01T00:00:00.000Z'
+  )
+FROM (SELECT 'roadmap_step_read_model' AS name UNION ALL SELECT 'roadmap_step_dependency');
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -3104,6 +3262,10 @@ export const DERIVED_TABLES: readonly string[] = [
   "worker_read_model",
   "execution_route_read_model",
   "initiative_read_model",
+  // P-26 cut B, children first: a dependency names two steps and a step names its
+  // version, by immediate foreign keys, so a wrong order aborts the DELETE.
+  "roadmap_step_dependency",
+  "roadmap_step_read_model",
   "roadmap_version_read_model",
   "routing_assignment_fallback",
   "routing_assignment_read_model",
@@ -3153,6 +3315,9 @@ export const PROJECTION_NAMES: readonly string[] = [
 export const INITIATIVE_PROJECTION_NAMES: readonly string[] = [
   "initiative_read_model",
   "roadmap_version_read_model",
+  // P-26 cut B, named `ROADMAP_STEP_PROJECTION` and `ROADMAP_STEP_DEPENDENCY_PROJECTION`.
+  "roadmap_step_read_model",
+  "roadmap_step_dependency",
 ];
 
 /**
@@ -3390,6 +3555,21 @@ export const DISPATCH_CATALOG_PIN_MIGRATION = 23;
 export const ROADMAP_VERSION_UNIQUENESS_MIGRATION = 24;
 
 /**
+ * The migration that gives a roadmap version its steps (P-26 cut B, ADR 0111).
+ *
+ * Named for `EFFECT_RESULT_REFERENCE_MIGRATION`'s reasons: the suite and the rewind
+ * fixtures hold the number against where the SQL sits, and the ledger hangs the
+ * backfill of every recorded version's contract version off this exact version.
+ */
+export const ROADMAP_STEPS_MIGRATION = 25;
+
+/** The projection that holds one row per declared step (P-26 cut B). */
+export const ROADMAP_STEP_PROJECTION = "roadmap_step_read_model";
+
+/** The projection that holds one row per dependency of a declared step (P-26 cut B). */
+export const ROADMAP_STEP_DEPENDENCY_PROJECTION = "roadmap_step_dependency";
+
+/**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
  * Named rather than written as a literal at the two sites that need it, because
@@ -3472,6 +3652,8 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: USAGE_SETTLEMENT_OBSERVATION_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: "roadmap_version_read_model", sourceStream: INITIATIVE_STREAM },
+  { projectionName: ROADMAP_STEP_PROJECTION, sourceStream: INITIATIVE_STREAM },
+  { projectionName: ROADMAP_STEP_DEPENDENCY_PROJECTION, sourceStream: INITIATIVE_STREAM },
   { projectionName: ARTIFACT_BLOB_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ARTIFACT_REFERENCE_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ARTIFACT_PIN_PROJECTION, sourceStream: REGISTRY_STREAM },
@@ -3723,6 +3905,17 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   // index here is: dropping it leaves `schema_migrations` intact while the read
   // model quietly admits two versions with one number.
   { type: "index", name: "ux_roadmap_version_read_model__initiative_id__version" },
+  // P-26 cut B. Two tables, their three indexes and the version's two cohort
+  // triggers: dropping any leaves `schema_migrations` intact while the read model
+  // quietly admits a version out of its cohort, two steps at one index, or loses a
+  // lookup a predecessor query needs.
+  { type: "trigger", name: "tr_roadmap_version_read_model__validate_steps_on_insert" },
+  { type: "trigger", name: "tr_roadmap_version_read_model__validate_steps_on_update" },
+  { type: "table", name: "roadmap_step_read_model" },
+  { type: "index", name: "ux_roadmap_step_read_model__roadmap_version_id__step_index" },
+  { type: "index", name: "ix_roadmap_step_read_model__state" },
+  { type: "table", name: "roadmap_step_dependency" },
+  { type: "index", name: "ix_roadmap_step_dependency__depends_on" },
 ];
 
 export interface MigrationConformance {

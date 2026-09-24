@@ -37,17 +37,20 @@ import {
   LedgerOpenError,
   LedgerQueryError,
   LedgerReadOnlyError,
+  LedgerInitiativeBatchConflictError,
   LedgerRoadmapVersionRefusedError,
   LedgerSequenceError,
   LedgerValidationError,
   type LedgerValidationIssue,
 } from "../errors/index.js";
 import { decideRoadmapVersion } from "../roadmap-version/index.js";
+import { readRoadmapStepManifest } from "../roadmap-steps/index.js";
 import {
   ACCOUNT_INTEGRITY_MIGRATION,
   DISPATCH_CATALOG_PIN_MIGRATION,
   EFFECT_RESULT_REFERENCE_MIGRATION,
   ROADMAP_VERSION_UNIQUENESS_MIGRATION,
+  ROADMAP_STEPS_MIGRATION,
   MODEL_VERSION_PROJECTION,
   PRICE_INTERVAL_PROJECTION,
   INITIATIVE_REGISTRATION_MIGRATION,
@@ -154,6 +157,10 @@ import {
   nextInitiativeProjection,
   nextRoadmapVersionProjection,
   assertRoadmapVersionUnfolded,
+  assertRoadmapStepsComplete,
+  createRoadmapStepFold,
+  foldRoadmapStep,
+  roadmapStepKey,
   nextRoutingAssignmentProjection,
   nextTaskProjection,
   nextWorkerProjection,
@@ -217,6 +224,7 @@ import {
   type ExecutionRouteReadModel,
   type ExecutionRouteSegmentReadModel,
   type InitiativeAppendResult,
+  type InitiativeBatchResult,
   type InitiativeEventPage,
   type InitiativeEventQuery,
   type InitiativeEventRecord,
@@ -255,6 +263,8 @@ import {
   type RegistryEventRecord,
   type StreamIntegrityCoverage,
   type RegistryProjectionSnapshot,
+  type RoadmapStepDependencyReadModel,
+  type RoadmapStepReadModel,
   type RoadmapVersionReadModel,
   type RoutingAssignmentFallbackRow,
   type RoutingAssignmentProjection,
@@ -1263,6 +1273,56 @@ interface RoadmapVersionRow {
   readonly recorded_by: string;
   readonly recorded_at: string;
   readonly sequence: number;
+  readonly recording_contract_version: string | null;
+  readonly step_count: number | null;
+  readonly step_manifest_artifact_reference_id: string | null;
+  readonly step_manifest_sha256: string | null;
+}
+
+interface RoadmapStepRow {
+  readonly roadmap_version_id: string;
+  readonly step_id: string;
+  readonly step_index: number;
+  readonly title: string;
+  readonly objective_sha256: string;
+  readonly acceptance_sha256: string;
+  readonly expected_write_set_sha256: string;
+  readonly dependency_rank: number;
+  readonly state: string;
+  readonly routing_assignment_version: number | null;
+  readonly sequence: number;
+}
+
+interface RoadmapStepDependencyRow {
+  readonly roadmap_version_id: string;
+  readonly step_id: string;
+  readonly depends_on_step_id: string;
+  readonly sequence: number;
+}
+
+function roadmapStepRowToModel(row: RoadmapStepRow): RoadmapStepReadModel {
+  return {
+    roadmapVersionId: row.roadmap_version_id,
+    stepId: row.step_id,
+    stepIndex: row.step_index,
+    title: row.title,
+    objectiveSha256: row.objective_sha256,
+    acceptanceSha256: row.acceptance_sha256,
+    expectedWriteSetSha256: row.expected_write_set_sha256,
+    dependencyRank: row.dependency_rank,
+    state: row.state as RoadmapStepReadModel["state"],
+    routingAssignmentVersion: row.routing_assignment_version,
+    sequence: row.sequence,
+  };
+}
+
+function roadmapStepDependencyRowToModel(row: RoadmapStepDependencyRow): RoadmapStepDependencyReadModel {
+  return {
+    roadmapVersionId: row.roadmap_version_id,
+    stepId: row.step_id,
+    dependsOnStepId: row.depends_on_step_id,
+    sequence: row.sequence,
+  };
 }
 
 interface ExecutionRouteRow {
@@ -1768,6 +1828,12 @@ function roadmapVersionRowToModel(row: RoadmapVersionRow): RoadmapVersionReadMod
     recordedBy: row.recorded_by,
     recordedAt: row.recorded_at,
     sequence: row.sequence,
+    // Written for every row by migration 25's backfill and by every insert after it,
+    // so a NULL here is a row the cohort trigger would have refused.
+    recordingContractVersion: row.recording_contract_version ?? "",
+    stepCount: row.step_count,
+    stepManifestArtifactReferenceId: row.step_manifest_artifact_reference_id,
+    stepManifestSha256: row.step_manifest_sha256,
   };
 }
 
@@ -2172,6 +2238,100 @@ function unsupportedContractVersion(decoded: unknown): string | null {
 /** The supported set, phrased for a refusal. */
 function supportedVersionList(): string {
   return SUPPORTED_CONTRACT_VERSIONS.join(", ");
+}
+
+/**
+ * Refuse new work on the initiative stream stamped with a version this build reads
+ * but no longer emits (P-26 cut B, act 1; the task door's words, ADR 0072's debt).
+ */
+function assertInitiativeVersionInForce(event: InitiativeEvent): void {
+  if (event.contractVersion !== CONTRACT_VERSION) {
+    throw new LedgerValidationError([
+      {
+        path: "contractVersion",
+        message:
+          "a new event is recorded under the contract version in force, which is " +
+          CONTRACT_VERSION +
+          "; this event carries " +
+          event.contractVersion +
+          ", which this build reads (the supported set is " +
+          supportedVersionList() +
+          ") but no longer emits",
+      },
+    ]);
+  }
+}
+
+/**
+ * The one shape an initiative batch has (P-26 cut B): a `ROADMAP_VERSION_RECORDED`,
+ * then its `ROADMAP_STEP_DECLARED`s in `stepIndex` order, one initiative, and a
+ * version that counts exactly those steps. Null when the batch has it.
+ */
+function initiativeBatchShapeProblem(events: readonly InitiativeEvent[]): LedgerValidationIssue | null {
+  const [version, ...steps] = events;
+  if (version?.type !== "ROADMAP_VERSION_RECORDED") {
+    return { path: "[0].type", message: "an initiative batch opens with one ROADMAP_VERSION_RECORDED" };
+  }
+  if (steps.length === 0) {
+    return { path: "<root>", message: "an initiative batch carries its version's steps; a version with none goes through appendInitiativeEvent" };
+  }
+  for (const [index, step] of steps.entries()) {
+    const at = "[" + String(index + 1) + "]";
+    if (step.type !== "ROADMAP_STEP_DECLARED") {
+      return { path: at + ".type", message: "every event after the version is a ROADMAP_STEP_DECLARED" };
+    }
+    if (step.initiativeId !== version.initiativeId) {
+      return { path: at + ".initiativeId", message: "an initiative batch is one initiative's" };
+    }
+    if ((step.payload as { readonly stepIndex?: unknown }).stepIndex !== index) {
+      return { path: at + ".payload.stepIndex", message: "the steps follow their version in stepIndex order" };
+    }
+  }
+  if ((version.payload as { readonly stepCount?: unknown }).stepCount !== steps.length) {
+    return { path: "[0].payload.stepCount", message: "the version counts exactly the steps its batch declares" };
+  }
+  return null;
+}
+
+/**
+ * Write each recorded roadmap version's cohort, once, as migration 25 lands (P-26
+ * cut B; `foldDispatchCohortAtMigration`'s mould).
+ *
+ * The migration adds `recording_contract_version` and the three step columns as
+ * NULL on every row, and each row is the fold of a `ROADMAP_VERSION_RECORDED` whose
+ * payload carries its version, which the door holds equal to the event's. So each
+ * row's columns are read from its own event, by sequence, through the fold's own
+ * function, in this transaction: a version of the cohort before writes its version
+ * and no step field, and one of a later version — a ledger rewound past this
+ * migration — writes the step fields its payload carries.
+ */
+function foldRoadmapVersionCohortAtMigration(db: Database.Database): void {
+  const rows = db
+    .prepare(
+      "SELECT v.roadmap_version_id AS roadmap_version_id, e.sequence AS sequence, e.event_json AS event_json " +
+        "FROM roadmap_version_read_model v JOIN initiative_events e ON e.sequence = v.sequence",
+    )
+    .all() as { readonly roadmap_version_id: string; readonly sequence: number; readonly event_json: string }[];
+  const update = db.prepare(
+    "UPDATE roadmap_version_read_model SET recording_contract_version = ?, step_count = ?, " +
+      "step_manifest_artifact_reference_id = ?, step_manifest_sha256 = ? WHERE roadmap_version_id = ?",
+  );
+  for (const row of rows) {
+    const parsed = InitiativeEvent.safeParse(JSON.parse(row.event_json));
+    const version = parsed.success ? nextRoadmapVersionProjection(parsed.data, row.sequence) : null;
+    if (version === null || version.roadmapVersionId !== row.roadmap_version_id) {
+      throw new LedgerMigrationError([
+        "roadmap version " + row.roadmap_version_id + " is folded from an event that does not record it",
+      ]);
+    }
+    update.run(
+      version.recordingContractVersion,
+      version.stepCount,
+      version.stepManifestArtifactReferenceId,
+      version.stepManifestSha256,
+      row.roadmap_version_id,
+    );
+  }
 }
 
 function assertNoDuplicateAccountVersions(db: Database.Database): void {
@@ -3193,6 +3353,11 @@ export class Ledger {
               // exist; this writes it from each delivery's own intention.
               if (migration.version === DISPATCH_CATALOG_PIN_MIGRATION) {
                 foldDispatchCohortAtMigration(db);
+              }
+              // Migration 25 added the recording version to rows that already
+              // exist; this writes it from each version's own event.
+              if (migration.version === ROADMAP_STEPS_MIGRATION) {
+                foldRoadmapVersionCohortAtMigration(db);
               }
             },
           });
@@ -6815,6 +6980,32 @@ export class Ledger {
       );
     }
 
+    // The version in force, for a new insertion only, after the exact replay has
+    // returned (P-26 cut B, act 1; the task door's rule, ADR 0072's debt): B is the
+    // escalón that owns this stream's producer, so the pin the P-18/C record left to
+    // it lands here.
+    assertInitiativeVersionInForce(event);
+
+    // L-P26B-1: a step is declared only in its version's batch, and a version that
+    // counts steps is recorded only with them. This refusal is what makes the batch
+    // door's whole-batch replay rule true: no door can write part of a batch.
+    if (event.type === "ROADMAP_STEP_DECLARED") {
+      throw new LedgerValidationError([
+        { path: "type", message: "a roadmap step is declared only in its version's batch, through appendInitiativeBatch" },
+      ]);
+    }
+    if (event.type === "ROADMAP_VERSION_RECORDED") {
+      const stepCount = (event.payload as { readonly stepCount?: unknown }).stepCount;
+      if (typeof stepCount === "number" && stepCount > 0) {
+        throw new LedgerValidationError([
+          {
+            path: "payload.stepCount",
+            message: "a roadmap version that declares steps is recorded with them, through appendInitiativeBatch",
+          },
+        ]);
+      }
+    }
+
     // The contiguity guard, mirroring the task stream's: the claimed prior
     // status must be the one the projection actually holds. The DDL allows a
     // null from_status because the first event of an initiative has none; that
@@ -6850,6 +7041,36 @@ export class Ledger {
 
     this.#assertCausationResolves(causation);
 
+    const written = this.#insertInitiativeRow(event, canonicalJson, causation);
+
+    this.#faults.beforeProjection?.();
+
+    this.#projectInitiativeEvent(event, written.record.sequence);
+    // The same discipline as the task door, on this stream's own watermarks:
+    // an append that moves a head moves the watermark of every projection fed
+    // by that head, in the same transaction, and of no other.
+    this.#writeWatermarks(INITIATIVE_WATERMARKS, {
+      sequence: written.record.sequence,
+      count: written.count,
+      sha256: written.record.eventSha256,
+      updatedAt: event.recordedAt,
+    });
+
+    this.#faults.beforeAppendCommit?.();
+
+    return { inserted: true, record: written.record };
+  }
+
+  /**
+   * Chain and insert one initiative row at this stream's head + 1, and move the
+   * head. The single door and the batch door share it, so the two cannot disagree
+   * about what a row of this stream is.
+   */
+  #insertInitiativeRow(
+    event: InitiativeEvent,
+    canonicalJson: string,
+    causation: CausationRef | null,
+  ): { readonly record: InitiativeEventRecord; readonly count: number } {
     const head = this.#readInitiativeHead();
     const previousSha256 = head.sha256;
     const eventSha256 = chainDigest(previousSha256, canonicalJson);
@@ -6889,25 +7110,9 @@ export class Ledger {
     if (sequence !== expectedSequence) {
       throw new LedgerSequenceError(expectedSequence, sequence);
     }
-
-    this.#faults.beforeProjection?.();
-
-    this.#projectInitiativeEvent(event, sequence);
     this.#writeInitiativeHead(sequence, eventSha256, head.count + 1);
-    // The same discipline as the task door, on this stream's own watermarks:
-    // an append that moves a head moves the watermark of every projection fed
-    // by that head, in the same transaction, and of no other.
-    this.#writeWatermarks(INITIATIVE_WATERMARKS, {
-      sequence,
-      count: head.count + 1,
-      sha256: eventSha256,
-      updatedAt: event.recordedAt,
-    });
-
-    this.#faults.beforeAppendCommit?.();
 
     return {
-      inserted: true,
       record: {
         sequence,
         eventId: event.eventId,
@@ -6918,7 +7123,231 @@ export class Ledger {
         eventSha256,
         causation,
       },
+      count: head.count + 1,
     };
+  }
+
+  /**
+   * Append one roadmap version and its declared steps, all or none (P-26 cut B,
+   * ADR 0111).
+   *
+   * The task stream's `appendBatch` mould: every candidate parsed and canonicalized
+   * before the lock, one `BEGIN IMMEDIATE` for the rows, the projections, the head
+   * and the watermarks. The shape is exactly one `ROADMAP_VERSION_RECORDED` followed
+   * by its `ROADMAP_STEP_DECLARED`s in `stepIndex` order, for one initiative, and the
+   * version counts exactly those steps; anything else is `LedgerValidationError`.
+   *
+   * **Replay is judged for the whole batch**, and this departs from `appendBatch` on
+   * purpose. There an exact replay is a no-op per event and the rest append; here,
+   * when every key is recorded, every stored body equals its candidate, the stored
+   * rows are contiguous in the batch's own order and the stored version counts the
+   * batch's steps, the stored records are the answer; when some keys are recorded,
+   * or any body differs, it is `LedgerInitiativeBatchConflictError`. That rule is
+   * sound only because L-P26B-1 makes a partial batch unwritable by any door: "some
+   * keys exist" can then only mean another writer or a torn history.
+   *
+   * **The door re-derives.** It reads the version's manifest back by reference,
+   * outside the transaction — the blob is content-addressed and immutable, and the
+   * read verifies the bytes against the reference's digest — and inside it asserts
+   * the reference row: a `PLAN_DOCUMENT` scoped to this initiative whose digest is
+   * the version's `stepManifestSha256`. Whatever bytes were read hash to that
+   * digest, so nothing between the read and the assert can change what the events
+   * name. Then the one decision, over the fold and the manifest, judges the version
+   * and every step. Not checked, declared: retention, tombstone and blob lifecycle —
+   * nothing in this build tombstones a reference or reclaims a blob.
+   */
+  appendInitiativeBatch(candidates: readonly unknown[]): InitiativeBatchResult {
+    this.#assertOpen("appendInitiativeBatch");
+    this.#assertWritable("appendInitiativeBatch");
+
+    const prepared = candidates.map((candidate) => {
+      const parsed = InitiativeEvent.safeParse(candidate);
+      if (!parsed.success) {
+        throw new LedgerValidationError(toValidationIssues(parsed.error.issues));
+      }
+      return { event: parsed.data, canonicalJson: canonicalJsonStringify(parsed.data) };
+    });
+    const shapeProblem = initiativeBatchShapeProblem(prepared.map((entry) => entry.event));
+    if (shapeProblem !== null) throw new LedgerValidationError([shapeProblem]);
+
+    const versionEvent = prepared[0]?.event;
+    if (versionEvent === undefined) throw new LedgerValidationError([{ path: "<root>", message: "an empty batch" }]);
+    const referenceId = (versionEvent.payload as { readonly stepManifestArtifactReferenceId?: unknown })
+      .stepManifestArtifactReferenceId;
+    // The one read of the private plane, before the lock (ND-B3).
+    const manifest =
+      typeof referenceId === "string"
+        ? readRoadmapStepManifest(this, { artifactReferenceId: referenceId, initiativeId: versionEvent.initiativeId })
+        : null;
+
+    const run = this.#db.transaction((): InitiativeBatchResult => {
+      const stored = prepared.map(
+        ({ event }) =>
+          this.#stmt(
+            "SELECT " + INITIATIVE_EVENT_COLUMNS + " FROM initiative_events WHERE idempotency_key = ?",
+          ).get(event.idempotencyKey) as InitiativeEventRow | undefined,
+      );
+      const recorded = stored.filter((row) => row !== undefined).length;
+      if (recorded > 0) {
+        const rows = stored.filter((row): row is InitiativeEventRow => row !== undefined);
+        const whole =
+          recorded === prepared.length &&
+          rows.every((row, index) => row.event_json === prepared[index]?.canonicalJson) &&
+          rows.every((row, index) => index === 0 || row.sequence === (rows[index - 1]?.sequence ?? 0) + 1) &&
+          rows.every((row) => causationFromRow(row, row.sequence) === null);
+        if (!whole) {
+          throw new LedgerInitiativeBatchConflictError(
+            versionEvent.initiativeId,
+            recorded,
+            prepared.length,
+            recorded === prepared.length
+              ? "the stored events differ from the batch or are not contiguous in its order"
+              : "the rest is not recorded",
+          );
+        }
+        return { insertedCount: 0, records: rows.map((row) => this.#initiativeRowToRecord(row)) };
+      }
+
+      for (const { event } of prepared) {
+        const existingById = this.#stmt(
+          "SELECT idempotency_key FROM initiative_events WHERE event_id = ?",
+        ).get(event.eventId) as { readonly idempotency_key: string } | undefined;
+        if (existingById !== undefined) {
+          throw new LedgerEventIdConflictError(event.eventId, existingById.idempotency_key, event.idempotencyKey);
+        }
+        assertInitiativeVersionInForce(event);
+      }
+
+      // The contiguity guard, once: every event of the batch is a passthrough of
+      // the status the initiative holds.
+      const initiative = this.#stmt(
+        "SELECT current_status FROM initiative_read_model WHERE initiative_id = ?",
+      ).get(versionEvent.initiativeId) as { readonly current_status: string } | undefined;
+      for (const { event } of prepared) {
+        if (initiative === undefined || event.fromStatus !== initiative.current_status) {
+          throw new LedgerLifecycleConflictError(
+            event.initiativeId,
+            event.fromStatus,
+            initiative === undefined ? null : initiative.current_status,
+          );
+        }
+      }
+
+      if (!manifest?.ok) {
+        throw new LedgerValidationError([
+          {
+            path: "payload.stepManifestArtifactReferenceId",
+            message:
+              "a roadmap version names a step manifest the private plane does not give back" +
+              (manifest === null ? "" : " (" + manifest.refusal + ")") +
+              "; a manifest is published before it is referenced",
+          },
+        ]);
+      }
+      this.#assertStepManifestReference(versionEvent, referenceId as string);
+      this.#assertRoadmapVersionGranted(versionEvent, {
+        declarations: prepared.slice(1).map(({ event }) => event.payload),
+        manifest: manifest.manifest,
+      });
+
+      const records: InitiativeEventRecord[] = [];
+      let last: { readonly record: InitiativeEventRecord; readonly count: number } | null = null;
+      for (const { event, canonicalJson } of prepared) {
+        last = this.#insertInitiativeRow(event, canonicalJson, null);
+        records.push(last.record);
+      }
+      if (last === null) throw new LedgerValidationError([{ path: "<root>", message: "an empty batch" }]);
+
+      this.#faults.beforeProjection?.();
+
+      // The version through the single door's step, and its steps through a fold of
+      // their own: the rebuild's function, over this batch alone.
+      for (const record of records) {
+        this.#projectInitiativeEvent(record.event, record.sequence);
+      }
+      const steps = createRoadmapStepFold();
+      const version = this.#roadmapVersionRow(versionEvent.initiativeId, records[0]?.event);
+      for (const record of records.slice(1)) {
+        foldRoadmapStep(steps, (id) => (id === version?.roadmapVersionId ? version : undefined), record.event, record.sequence);
+      }
+      assertRoadmapStepsComplete(steps, version === undefined ? [] : [version]);
+      for (const step of steps.roadmapSteps.values()) this.#insertRoadmapStep(step);
+      for (const dependency of steps.roadmapStepDependencies.values()) this.#insertRoadmapStepDependency(dependency);
+
+      this.#writeWatermarks(INITIATIVE_WATERMARKS, {
+        sequence: last.record.sequence,
+        count: last.count,
+        sha256: last.record.eventSha256,
+        updatedAt: last.record.event.recordedAt,
+      });
+
+      this.#faults.beforeAppendCommit?.();
+      return { insertedCount: records.length, records };
+    });
+    return run.immediate();
+  }
+
+  /** The version row the batch just projected, read back for its step fold. */
+  #roadmapVersionRow(initiativeId: string, event: InitiativeEvent | undefined): RoadmapVersionReadModel | undefined {
+    const id = (event?.payload as { readonly roadmapVersionId?: unknown } | undefined)?.roadmapVersionId;
+    if (typeof id !== "string") return undefined;
+    const row = this.#stmt("SELECT * FROM roadmap_version_read_model WHERE roadmap_version_id = ?").get(id) as
+      | RoadmapVersionRow
+      | undefined;
+    if (row?.initiative_id !== initiativeId) return undefined;
+    return roadmapVersionRowToModel(row);
+  }
+
+  /**
+   * Refuse a step manifest reference the registry does not hold as this
+   * initiative's published `PLAN_DOCUMENT` of the version's digest (P-26 cut B;
+   * `#assertResultReference`'s mould). Published before referenced; the digest is
+   * conserved, never recomputed here. Not checked, declared: retention, tombstone
+   * and blob lifecycle — nothing in this build tombstones a reference or reclaims a
+   * blob.
+   */
+  #assertStepManifestReference(event: InitiativeEvent, referenceId: string): void {
+    const at = "payload.stepManifestArtifactReferenceId";
+    const reference = this.#stmt(
+      "SELECT artifact_class, content_sha256, scope_kind, scope_id FROM artifact_reference_read_model " +
+        "WHERE artifact_reference_id = ?",
+    ).get(referenceId) as
+      | {
+          readonly artifact_class: string;
+          readonly content_sha256: string;
+          readonly scope_kind: string;
+          readonly scope_id: string | null;
+        }
+      | undefined;
+    const initiative = "initiative " + event.initiativeId;
+    if (reference === undefined) {
+      throw new LedgerValidationError([
+        { path: at, message: initiative + " names a step manifest by a reference the registry does not hold" },
+      ]);
+    }
+    if (reference.artifact_class !== "PLAN_DOCUMENT") {
+      throw new LedgerValidationError([
+        {
+          path: at,
+          message:
+            initiative + " names a step manifest by a reference of class " + reference.artifact_class + "; a manifest is a PLAN_DOCUMENT",
+        },
+      ]);
+    }
+    if (reference.scope_kind !== "INITIATIVE" || reference.scope_id !== event.initiativeId) {
+      throw new LedgerValidationError([
+        { path: at, message: initiative + " names a step manifest scoped elsewhere; a manifest belongs to its initiative" },
+      ]);
+    }
+    const declared = (event.payload as { readonly stepManifestSha256?: unknown }).stepManifestSha256;
+    if (reference.content_sha256 !== declared) {
+      throw new LedgerValidationError([
+        {
+          path: "payload.stepManifestSha256",
+          message: initiative + " names a manifest digest other than the bytes its reference holds",
+        },
+      ]);
+    }
   }
 
   /**
@@ -6930,18 +7359,28 @@ export class Ledger {
    * the event it rides on is refused here even on a first version, where the
    * decision has no head to compare it against.
    */
-  #assertRoadmapVersionGranted(event: InitiativeEvent): void {
+  #assertRoadmapVersionGranted(
+    event: InitiativeEvent,
+    steps?: { readonly declarations: readonly unknown[]; readonly manifest: unknown },
+  ): void {
     // Only a string that names another initiative is refused here; a missing or
     // mistyped one is the decision's to name, by its own parse path.
-    const payload = event.payload as { readonly initiativeId?: unknown };
+    const payload = event.payload as { readonly initiativeId?: unknown; readonly contractVersion?: unknown };
     if (typeof payload.initiativeId === "string" && payload.initiativeId !== event.initiativeId) {
       throw new LedgerRoadmapVersionRefusedError("REQUEST_INVALID", "candidate.initiativeId");
+    }
+    // The payload's version is the event's (P-26 cut B, act 2): the cohort keys on
+    // it, so a new 2.10.0 event carrying a payload stamped with an earlier version
+    // and no step fields would otherwise pass as the old shape.
+    if (payload.contractVersion !== event.contractVersion) {
+      throw new LedgerRoadmapVersionRefusedError("REQUEST_INVALID", "candidate.contractVersion");
     }
     const knownVersions = this.listRoadmapVersions(event.initiativeId);
     const decision = decideRoadmapVersion({
       candidate: event.payload,
       head: knownVersions.at(-1) ?? null,
       knownVersions,
+      ...(steps === undefined ? {} : { steps }),
     });
     if (!decision.ok) throw new LedgerRoadmapVersionRefusedError(decision.reason, decision.at);
   }
@@ -7022,8 +7461,9 @@ export class Ledger {
     this.#stmt(
       "INSERT INTO roadmap_version_read_model (" +
         "roadmap_version_id, initiative_id, version, content_digest, parent_version_id, " +
-        "kind, restores_version_id, recorded_by, recorded_at, sequence" +
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "kind, restores_version_id, recorded_by, recorded_at, sequence, " +
+        "recording_contract_version, step_count, step_manifest_artifact_reference_id, step_manifest_sha256" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       version.roadmapVersionId,
       version.initiativeId,
@@ -7035,7 +7475,41 @@ export class Ledger {
       version.recordedBy,
       version.recordedAt,
       version.sequence,
+      version.recordingContractVersion,
+      version.stepCount,
+      version.stepManifestArtifactReferenceId,
+      version.stepManifestSha256,
     );
+  }
+
+  /** Write one declared step. Insert-only, for its version's reason (P-26 cut B). */
+  #insertRoadmapStep(step: RoadmapStepReadModel): void {
+    this.#stmt(
+      "INSERT INTO roadmap_step_read_model (" +
+        "roadmap_version_id, step_id, step_index, title, objective_sha256, acceptance_sha256, " +
+        "expected_write_set_sha256, dependency_rank, state, routing_assignment_version, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      step.roadmapVersionId,
+      step.stepId,
+      step.stepIndex,
+      step.title,
+      step.objectiveSha256,
+      step.acceptanceSha256,
+      step.expectedWriteSetSha256,
+      step.dependencyRank,
+      step.state,
+      step.routingAssignmentVersion,
+      step.sequence,
+    );
+  }
+
+  /** Write one dependency of a declared step. Insert-only. */
+  #insertRoadmapStepDependency(dependency: RoadmapStepDependencyReadModel): void {
+    this.#stmt(
+      "INSERT INTO roadmap_step_dependency (roadmap_version_id, step_id, depends_on_step_id, sequence) " +
+        "VALUES (?, ?, ?, ?)",
+    ).run(dependency.roadmapVersionId, dependency.stepId, dependency.dependsOnStepId, dependency.sequence);
   }
 
   #initiativeRowToRecord(row: InitiativeEventRow): InitiativeEventRecord {
@@ -8833,6 +9307,9 @@ export class Ledger {
         applyInitiativeEventToSnapshot(initiativeSnapshot, event, row.sequence);
         lastInitiativeRecordedAt = event.recordedAt;
       });
+      // A version whose steps stop short is refused by name once the stream is folded
+      // (P-26 cut B): only then is "short" a fact.
+      assertRoadmapStepsComplete(initiativeSnapshot, initiativeSnapshot.roadmapVersions.values());
 
       // And the third, on the same terms. A rebuild is a function of the whole
       // VECTOR of heads: all three chains are replayed before anything is
@@ -9025,6 +9502,14 @@ export class Ledger {
       }
       for (const version of initiativeSnapshot.roadmapVersions.values()) {
         this.#insertRoadmapVersion(version);
+      }
+      // Parents before children, for the immediate foreign keys: every version, then
+      // every step, then every dependency (P-26 cut B).
+      for (const step of initiativeSnapshot.roadmapSteps.values()) {
+        this.#insertRoadmapStep(step);
+      }
+      for (const dependency of initiativeSnapshot.roadmapStepDependencies.values()) {
+        this.#insertRoadmapStepDependency(dependency);
       }
 
       // One table, two partitions, written from the two snapshots that folded
@@ -9234,6 +9719,16 @@ export class Ledger {
       }
     });
     problems.push(...initiativeReplay.problems, ...roadmapRefusals);
+    try {
+      assertRoadmapStepsComplete(initiativeSnapshot, initiativeSnapshot.roadmapVersions.values());
+    } catch (error: unknown) {
+      if (!(error instanceof LedgerRoadmapVersionRefusedError)) throw error;
+      problems.push({
+        kind: "PROJECTION",
+        detail: "the initiative stream folds a roadmap version the fold refuses: " + error.reason + " at " + error.at,
+        sequence: null,
+      });
+    }
 
     const registrySnapshot = createRegistryProjectionSnapshot();
     const artifactSnapshot = createArtifactProjectionSnapshot();
@@ -9794,7 +10289,85 @@ export class Ledger {
       }
     }
 
+    // The steps and their dependencies (P-26 cut B), by the same three questions.
+    const steps: readonly {
+      readonly table: string;
+      readonly expected: ReadonlyMap<string, unknown>;
+      readonly stored: ReadonlyMap<string, unknown>;
+    }[] = [
+      {
+        table: "roadmap_step_read_model",
+        expected: snapshot.roadmapSteps,
+        stored: new Map(
+          this.#listAllRoadmapSteps().map((step) => [roadmapStepKey(step.roadmapVersionId, step.stepId), step]),
+        ),
+      },
+      {
+        table: "roadmap_step_dependency",
+        expected: snapshot.roadmapStepDependencies,
+        stored: new Map(
+          this.#listAllRoadmapStepDependencies().map((dependency) => [
+            roadmapStepKey(dependency.roadmapVersionId, dependency.stepId, dependency.dependsOnStepId),
+            dependency,
+          ]),
+        ),
+      },
+    ];
+    for (const { table, expected, stored } of steps) {
+      for (const [key, row] of expected) {
+        const held = stored.get(key);
+        if (held === undefined) {
+          problems.push({ kind: "PROJECTION", detail: table + " is missing a row a replay folds", sequence: null });
+        } else if (canonicalJsonStringify(held) !== canonicalJsonStringify(row)) {
+          problems.push({ kind: "PROJECTION", detail: table + " holds a row that disagrees with a replay", sequence: null });
+        }
+      }
+      for (const key of stored.keys()) {
+        if (!expected.has(key)) {
+          problems.push({ kind: "PROJECTION", detail: table + " holds a row no event accounts for", sequence: null });
+        }
+      }
+    }
+
     return problems;
+  }
+
+  /**
+   * Every declared step, in version then index order (P-26 cut B). Unpaged, like
+   * `listRoadmapVersions`: a roadmap's steps are a bounded, declared set.
+   */
+  listRoadmapSteps(roadmapVersionId: string): readonly RoadmapStepReadModel[] {
+    this.#assertOpen("listRoadmapSteps");
+    return (
+      this.#stmt(
+        "SELECT * FROM roadmap_step_read_model WHERE roadmap_version_id = ? ORDER BY step_index ASC",
+      ).all(roadmapVersionId) as RoadmapStepRow[]
+    ).map(roadmapStepRowToModel);
+  }
+
+  /** Every declared step of every version, for the integrity replay's comparison. */
+  #listAllRoadmapSteps(): readonly RoadmapStepReadModel[] {
+    return (
+      this.#stmt("SELECT * FROM roadmap_step_read_model ORDER BY roadmap_version_id ASC, step_index ASC").all() as RoadmapStepRow[]
+    ).map(roadmapStepRowToModel);
+  }
+
+  /** The dependencies of one version's steps, in key order. */
+  listRoadmapStepDependencies(roadmapVersionId: string): readonly RoadmapStepDependencyReadModel[] {
+    this.#assertOpen("listRoadmapStepDependencies");
+    return (
+      this.#stmt(
+        "SELECT * FROM roadmap_step_dependency WHERE roadmap_version_id = ? ORDER BY step_id ASC, depends_on_step_id ASC",
+      ).all(roadmapVersionId) as RoadmapStepDependencyRow[]
+    ).map(roadmapStepDependencyRowToModel);
+  }
+
+  #listAllRoadmapStepDependencies(): readonly RoadmapStepDependencyReadModel[] {
+    return (
+      this.#stmt(
+        "SELECT * FROM roadmap_step_dependency ORDER BY roadmap_version_id ASC, step_id ASC, depends_on_step_id ASC",
+      ).all() as RoadmapStepDependencyRow[]
+    ).map(roadmapStepDependencyRowToModel);
   }
 
   /**

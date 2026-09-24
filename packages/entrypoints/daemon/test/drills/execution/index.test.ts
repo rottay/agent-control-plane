@@ -6105,8 +6105,16 @@ describe("P-15/D4: a recorded task, from its door to its result (parallelism :14
  * and not the walk's. The literal was lifted by running this same test over the
  * pre-D3 source: `git archive be3b06f` into the session scratchpad, read-only on the
  * repository, with this file copied in and run there (ADR 0105, D4).
+ *
+ * P-26 cut B moved `CONTRACT_VERSION` to 2.10.0 (ADR 0111). Every event of the trail
+ * carries it, and the digests derived from the envelope move with it, so the literal
+ * was restamped by the same method on the same source: `git archive be3b06f` into the
+ * scratchpad with this test as c1bb414 wrote it, run once as it stood — reproducing
+ * the D4 literal `f61ca58b…ed93`, the control — and once with only the contract's
+ * version literal (and the supported set) moved to 2.10.0, which gave the value below.
+ * The current tree gives the same value, so D3's invariance holds at 2.10.0 too.
  */
-const D4_V1_TRAIL_SHA256 = "f61ca58bf709f90d8c25066d45dc234c4eced0275fab37bc4f5d02f52de8ed93";
+const D4_V1_TRAIL_SHA256 = "b11912eaf21310fa5b3781040373da9eb30720a989fa74dd82acb0659205a346";
 
 describe("P-15/D4 PC-D3: the inline V1 walk is byte-identical to the one before D3", () => {
   it("hashes the same trail, lease rows aside, as the pre-D3 source", async () => {

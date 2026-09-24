@@ -78,6 +78,15 @@ than trusting this table.
 
   A reader asking "what can mutate?" gets one short answer; a reader asking
   "is this route a read?" gets the unchanged one.
+- **A roadmap version declares its steps.** P-26 cut B moved `API_CONTRACT_VERSION`
+  to `0.20.0`: `RoadmapVersionWriteRequest` gains an optional `steps` — the
+  contract's private step manifest, parsed whole on the way in — and
+  `RoadmapVersionDto` gains `stepCount` (null for a version recorded before steps
+  existed) and `stepManifestSha256`, never the manifest's reference and never a
+  step's text. The timeline's type enum widens by derivation to
+  `ROADMAP_STEP_DECLARED`, and the write route's transport limit grows by
+  `ROADMAP_STEP_MANIFEST_MAX_BYTES`, re-exported beside `ROADMAP_CONTENT_MAX_BYTES`.
+  No route, method or error word moves.
 - **Every read is free but one, and that one is named.** P-15/F added two reads
   and moved `API_CONTRACT_VERSION` to `0.19.0`: `taskEffects`, a plain read of a
   task's effect ids, coordinates and outcome words, and `taskEffectResult`, one

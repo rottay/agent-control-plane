@@ -32,6 +32,8 @@ function versionItem(overrides: Partial<RoadmapVersionDto> = {}): RoadmapVersion
     recordedAt: "2026-08-31T12:00:00.000Z",
     sequence: 1,
     head: true,
+    stepCount: 0,
+    stepManifestSha256: null,
     ...overrides,
   };
 }

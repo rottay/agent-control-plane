@@ -7,6 +7,7 @@ import { forAll, intBetween, makeRandom } from "../canonical-json/helpers/index.
 import {
   ROADMAP_VERSION_REFUSALS,
   decideRoadmapVersion,
+  roadmapStepDigests,
   type RoadmapVersionReadModel,
 } from "../../src/index.js";
 
@@ -48,6 +49,9 @@ function candidate(overrides: Record<string, unknown> = {}): Record<string, unkn
     restoresVersionId: null,
     recordedBy: RECORDER,
     recordedAt: AT,
+    stepCount: 0,
+    stepManifestArtifactReferenceId: null,
+    stepManifestSha256: null,
     ...overrides,
   };
 }
@@ -65,6 +69,10 @@ function folded(overrides: Partial<RoadmapVersionReadModel> = {}): RoadmapVersio
     recordedBy: RECORDER,
     recordedAt: AT,
     sequence: 1,
+    recordingContractVersion: CONTRACT_VERSION,
+    stepCount: 0,
+    stepManifestArtifactReferenceId: null,
+    stepManifestSha256: null,
     ...overrides,
   };
 }
@@ -91,6 +99,11 @@ describe("the refusal vocabulary", () => {
       "REQUEST_INVALID",
       "RESTORES_UNKNOWN_VERSION",
       "ROLLBACK_DIGEST_MISMATCH",
+      "ROLLBACK_STEPS_MISMATCH",
+      "STEP_COUNT_MISMATCH",
+      "STEP_DECLARATION_INVALID",
+      "STEP_DEPENDENCY_CYCLE",
+      "STEP_DIGEST_MISMATCH",
       "VERSION_ID_REUSED",
       "VERSION_NOT_MONOTONIC",
     ]);
@@ -494,7 +507,117 @@ describe("the roadmap-version decision is total and ordered (G9)", () => {
       const outcome = decideRoadmapVersion(generate(makeRandom(0x9d0c_0002 + i)).request);
       reached.add(outcome.ok ? "GRANT" : outcome.reason);
     }
-    // All seven refusals plus the grant.
-    expect([...reached].sort()).toEqual([...ROADMAP_VERSION_REFUSALS, "GRANT"].sort());
+    // The seven version refusals plus the grant. The generator draws no steps: the
+    // five step words are the step laws' own, reached by name below (P-26 cut B).
+    expect([...reached].sort()).toEqual(
+      [...ROADMAP_VERSION_REFUSALS.filter((word) => !word.startsWith("STEP_") && word !== "ROLLBACK_STEPS_MISMATCH"), "GRANT"].sort(),
+    );
+  });
+});
+
+/**
+ * The step laws (P-26 cut B, ADR 0111), one example per word and the order they run
+ * in. The declarations are derived from the manifest by `roadmapStepDigests`, the one
+ * home, so a lawful batch is built the way the producer builds it.
+ */
+describe("the decision's step laws, by name (P-26 cut B)", () => {
+  const MANIFEST_SHA = "d".repeat(64);
+  const manifest = {
+    manifestContractVersion: 1,
+    steps: [
+      { stepId: "a", title: "A", objective: "do a", acceptance: "a done", expectedWriteSet: ["x.ts"], dependsOn: [] },
+      { stepId: "b", title: "B", objective: "do b", acceptance: "b done", expectedWriteSet: ["y.ts", "x.ts"], dependsOn: ["a"] },
+      { stepId: "c", title: "C", objective: "do c", acceptance: "c done", expectedWriteSet: [], dependsOn: ["a"] },
+    ],
+  };
+
+  function declarations(from: typeof manifest = manifest, versionId = V1): Record<string, unknown>[] {
+    const derived = roadmapStepDigests(from as never);
+    if (!derived.ok) throw new Error("expected an acyclic fixture");
+    return derived.steps.map((step) => ({ roadmapVersionId: versionId, ...step }));
+  }
+
+  function withSteps(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return candidate({ stepCount: 3, stepManifestArtifactReferenceId: "ref-manifest", stepManifestSha256: MANIFEST_SHA, ...overrides });
+  }
+
+  function decide(value: Record<string, unknown>, steps: readonly unknown[], document: unknown = manifest, known: readonly RoadmapVersionReadModel[] = []) {
+    return decideRoadmapVersion({ candidate: value, head: known.at(-1) ?? null, knownVersions: known, steps: { declarations: steps, manifest: document } });
+  }
+
+  it("grants a version whose batch declares exactly the manifest's steps, ranks included", () => {
+    const outcome = decide(withSteps(), declarations());
+    expect(outcome.ok).toBe(true);
+    const ranks = declarations().map((step) => step["dependencyRank"]);
+    expect(ranks).toEqual([0, 1, 1]);
+  });
+
+  it("STEP_COUNT_MISMATCH: the batch declares other than the version counts", () => {
+    expect(decide(withSteps(), declarations().slice(0, 2))).toEqual({ ok: false, reason: "STEP_COUNT_MISMATCH", at: "candidate.stepCount" });
+    expect(decide(candidate(), declarations())).toEqual({ ok: false, reason: "STEP_COUNT_MISMATCH", at: "candidate.stepCount" });
+  });
+
+  it("STEP_DECLARATION_INVALID: parse before compare, index order, one id, dependencies of the batch", () => {
+    const steps = declarations();
+    expect(decide(withSteps(), [{ ...steps[0], objectiveSha256: "NOT-HEX" }, steps[1], steps[2]])).toMatchObject({ reason: "STEP_DECLARATION_INVALID", at: "steps[0].objectiveSha256" });
+    expect(decide(withSteps(), [steps[1], steps[0], steps[2]])).toMatchObject({ reason: "STEP_DECLARATION_INVALID", at: "steps[0].stepIndex" });
+    expect(decide(withSteps(), [steps[0], steps[1], { ...steps[2], stepId: "a", dependsOn: [] }])).toMatchObject({ reason: "STEP_DECLARATION_INVALID", at: "steps[2].stepId" });
+    expect(decide(withSteps(), [steps[0], { ...steps[1], dependsOn: ["z"] }, steps[2]])).toMatchObject({ reason: "STEP_DECLARATION_INVALID", at: "steps[1].dependsOn" });
+    expect(decide(withSteps(), [{ ...steps[0], roadmapVersionId: V2 }, steps[1], steps[2]])).toMatchObject({ reason: "STEP_DECLARATION_INVALID", at: "steps[0].roadmapVersionId" });
+    expect(decide(withSteps(), steps, { manifestContractVersion: 1, steps: "not a list" })).toMatchObject({ reason: "STEP_DECLARATION_INVALID", at: "manifest" });
+  });
+
+  it("STEP_DEPENDENCY_CYCLE: named at the first step on the cycle, never content", () => {
+    const cyclic = {
+      manifestContractVersion: 1,
+      steps: [
+        { stepId: "a", title: "A", objective: "o", acceptance: "c", expectedWriteSet: [], dependsOn: [] },
+        { stepId: "b", title: "B", objective: "o", acceptance: "c", expectedWriteSet: [], dependsOn: ["c"] },
+        { stepId: "c", title: "C", objective: "o", acceptance: "c", expectedWriteSet: [], dependsOn: ["b"] },
+      ],
+    };
+    expect(roadmapStepDigests(cyclic as never)).toEqual({ ok: false, reason: "STEP_DEPENDENCY_CYCLE", at: "b" });
+    const steps = declarations().map((step, index) => ({ ...step, dependsOn: [[], ["c"], ["b"]][index] ?? [] }));
+    expect(decide(withSteps(), steps, cyclic)).toEqual({ ok: false, reason: "STEP_DEPENDENCY_CYCLE", at: "b" });
+  });
+
+  it("STEP_DIGEST_MISMATCH: every derived field, the rank and the dependencies", () => {
+    const steps = declarations();
+    for (const field of ["title", "objectiveSha256", "acceptanceSha256", "expectedWriteSetSha256", "dependencyRank"] as const) {
+      const value = field === "dependencyRank" ? 7 : field === "title" ? "Z" : "e".repeat(64);
+      const tampered = steps.map((step, index) => (index === 1 ? { ...step, [field]: value } : step));
+      expect(decide(withSteps(), tampered), field).toEqual({ ok: false, reason: "STEP_DIGEST_MISMATCH", at: "steps[1]." + field });
+    }
+    // Order is not identity for a write set: the digest sorts the paths.
+    const reordered = { ...manifest, steps: manifest.steps.map((step) => ({ ...step, expectedWriteSet: [...step.expectedWriteSet].reverse() })) };
+    expect(decide(withSteps(), steps, reordered).ok).toBe(true);
+  });
+
+  it("ROLLBACK_STEPS_MISMATCH: a rollback restores the steps with the bytes, or no steps on both sides", () => {
+    const stepless = folded({ stepCount: 0 });
+    const withManifest = folded({ stepCount: 3, stepManifestArtifactReferenceId: "ref-manifest", stepManifestSha256: MANIFEST_SHA });
+    const rollback = (overrides: Record<string, unknown>) =>
+      successor({ kind: "ROLLBACK", restoresVersionId: V1, contentDigest: DIGEST_ONE, ...overrides });
+    // To a stepless version, carrying steps.
+    expect(
+      decide(rollback({ stepCount: 3, stepManifestArtifactReferenceId: "ref-manifest", stepManifestSha256: MANIFEST_SHA }), declarations(manifest, V2), manifest, [stepless]),
+    ).toEqual({ ok: false, reason: "ROLLBACK_STEPS_MISMATCH", at: "candidate.stepManifestSha256" });
+    // To a version with steps, carrying none.
+    expect(decide(rollback({}), [], null, [withManifest])).toEqual({ ok: false, reason: "ROLLBACK_STEPS_MISMATCH", at: "candidate.stepManifestSha256" });
+    // The lawful pairs.
+    expect(decide(rollback({}), [], null, [stepless]).ok).toBe(true);
+    expect(
+      decide(rollback({ stepCount: 3, stepManifestArtifactReferenceId: "ref-manifest-2", stepManifestSha256: MANIFEST_SHA }), declarations(manifest, V2), manifest, [withManifest]).ok,
+    ).toBe(true);
+  });
+
+  it("runs after every law about the head: a stale head with bad steps is HEAD_MISMATCH", () => {
+    const outcome = decideRoadmapVersion({
+      candidate: successor({ expectedHeadDigest: DIGEST_THREE, stepCount: 3, stepManifestArtifactReferenceId: "r", stepManifestSha256: MANIFEST_SHA }),
+      head: folded(),
+      knownVersions: [folded()],
+      steps: { declarations: [], manifest },
+    });
+    expect(!outcome.ok && outcome.reason).toBe("HEAD_MISMATCH");
   });
 });

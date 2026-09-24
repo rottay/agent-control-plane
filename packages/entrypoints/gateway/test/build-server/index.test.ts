@@ -784,6 +784,20 @@ describe("integrity", () => {
         "DROP INDEX ux_account_events__account_id__version;" +
         "DROP TABLE account_event_integrity;",
     );
+    // P-26 cut B: migration 25's objects go first — the cohort triggers, the step
+    // columns in CHECK order, the two step tables and their watermarks — or the
+    // re-applied 25 aborts on them.
+    rewind.exec(
+      "DROP TRIGGER tr_roadmap_version_read_model__validate_steps_on_update;" +
+        "DROP TRIGGER tr_roadmap_version_read_model__validate_steps_on_insert;" +
+        "ALTER TABLE roadmap_version_read_model DROP COLUMN step_manifest_sha256;" +
+        "ALTER TABLE roadmap_version_read_model DROP COLUMN step_manifest_artifact_reference_id;" +
+        "ALTER TABLE roadmap_version_read_model DROP COLUMN step_count;" +
+        "ALTER TABLE roadmap_version_read_model DROP COLUMN recording_contract_version;" +
+        "DROP TABLE roadmap_step_dependency;" +
+        "DROP TABLE roadmap_step_read_model;" +
+        "DELETE FROM projection_watermark WHERE projection_name IN ('roadmap_step_read_model', 'roadmap_step_dependency');",
+    );
     // P-26/A: migration 24's unique index goes too, or the re-applied 24 aborts on it.
     rewind.exec("DROP INDEX ux_roadmap_version_read_model__initiative_id__version;");
     rewind.exec(
@@ -846,7 +860,13 @@ describe("integrity", () => {
     ).toHaveLength(1);
     expect(
       (reapplied.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v,
-    ).toBe(24);
+    ).toBe(25);
+    // P-26 cut B: and it re-applied 25 without aborting — the step tables are back.
+    expect(
+      reapplied
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?) ORDER BY name")
+        .all("roadmap_step_dependency", "roadmap_step_read_model"),
+    ).toHaveLength(2);
     // P-26/A: and it re-applied 24 without aborting — the unique index is back.
     expect(
       reapplied

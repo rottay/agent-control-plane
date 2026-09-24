@@ -1,25 +1,28 @@
-import { LEDGER_CONTRACT_VERSION } from "@acp/protocol";
 import type { RoadmapVersionWriteRequest } from "@acp/protocol";
 import {
   LedgerError,
+  LedgerInitiativeBatchConflictError,
   LedgerRoadmapVersionRefusedError,
-  artifactRootFor,
+  artifactBlobLeaseStorePath,
+  openArtifactBlobLeaseStore,
+  openArtifactPlane,
   openLedger,
-  publishArtifact,
+  recordRoadmapRevision,
 } from "@acp/ledger";
-import type { Ledger, RoadmapVersionReadModel } from "@acp/ledger";
-import { ROADMAP_VERSION_REFUSALS, decideRoadmapVersion } from "@acp/ledger";
+import type { Ledger, RoadmapRevisionOutcome, RoadmapRevisionStepIdentities } from "@acp/ledger";
+import { ROADMAP_VERSION_REFUSALS } from "@acp/ledger";
 import type { RoadmapVersionRefusal } from "@acp/ledger";
 
 /**
  * The roadmap-version write seam — the plane's only write.
  *
- * This module gathers what the decision needs, hands it over, and appends
- * exactly what a grant produced. It **decides nothing**: every law about when a
- * version may be recorded already lives in `decideRoadmapVersion`, which owns
- * the seven-name refusal vocabulary and reasons over a folded head it is handed
+ * This module opens what a revision needs, hands it to the ledger's one producer,
+ * `recordRoadmapRevision` (P-26 cut B, ADR 0111), and maps what comes back. It
+ * **decides nothing**: every law about when a version may be recorded already lives
+ * in `decideRoadmapVersion`, which owns the twelve-name refusal vocabulary and
+ * reasons over a folded head it is handed
  * rather than a ledger it reads. Re-checking any of that here would be a second
- * opinion about the same question, and two opinions drift. This module's call is
+ * opinion about the same question, and two opinions drift. The producer's call is
  * the fast path; the law is the ledger door's call of the same function, inside
  * the append (P-26/A, ADR 0110).
  *
@@ -30,11 +33,11 @@ import type { RoadmapVersionRefusal } from "@acp/ledger";
  * writable ledger between requests, and the read path cannot append even by
  * mistake — it has no handle that could.
  *
- * **The envelope is this module's to construct**, under the house determinism
- * laws: the instant and the identifiers are **injected** rather than read from
- * a clock or a random source, so the same request with the same coordinates
- * builds the same event on every run. That is what makes the append idempotent
- * at the ledger's own key rather than merely usually-once.
+ * **The instant and the identifiers are injected** rather than read from a clock
+ * or a random source, under the house determinism laws, and the producer builds
+ * the envelope from them, so the same request with the same coordinates builds
+ * the same events on every run. That is what makes the append idempotent at the
+ * ledger's own key rather than merely usually-once.
  *
  * **Content goes to the store, the digest goes to the ledger.** The Checkpoint
  * law keeps content out of events, and the artifact store is content-addressed,
@@ -66,6 +69,17 @@ export interface RoadmapWriteInput {
   /** Injected: the version's identity and the event's. No randomness here. */
   readonly roadmapVersionId: string;
   readonly eventId: string;
+  /**
+   * Injected, for a request that carries `steps` (P-26 cut B): the identities of
+   * the manifest's publication and of each step event, the pid its holding records,
+   * and the lease store's incarnation — the registration route's set, minted by the
+   * route. Null for a request without steps.
+   */
+  readonly steps: {
+    readonly identities: RoadmapRevisionStepIdentities;
+    readonly holderPid: number;
+    readonly leaseStoreIncarnationId: string;
+  } | null;
 }
 
 /**
@@ -87,6 +101,9 @@ export interface RecordedRoadmapVersion {
   readonly restoresVersionId: string | null;
   readonly recordedBy: string;
   readonly recordedAt: string;
+  /** Null for a version recorded before steps existed; never here, where every version is 2.10.0. */
+  readonly stepCount: number | null;
+  readonly stepManifestSha256: string | null;
 }
 
 export interface RoadmapWriteGranted {
@@ -130,119 +147,104 @@ const RACE_LOST_CODES: readonly string[] = Object.freeze([
 ]);
 
 /**
- * Record one roadmap version.
+ * Record one roadmap version, with its steps or without.
  *
- * The order is the design: publish the bytes, fold the head, decide, then
- * append. Publishing first means a refused decision leaves a stored artifact
- * nothing references — which is correct and cheap, because the store is
- * content-addressed and a later successful attempt with the same bytes finds
- * them already there. Appending first and publishing second would be the
- * unrecoverable order: an event naming a digest the store does not hold.
+ * The composition — publish, fold, decide, publish the manifest, append — is the
+ * ledger's `recordRoadmapRevision`, the one producer both paths share (P-26 cut B).
+ * This function opens its handles, calls it, and maps its answer; a ledger error it
+ * throws is mapped here by name and nowhere else.
  */
 export function recordRoadmapVersion(input: RoadmapWriteInput): RoadmapWriteOutcome {
   const { ledger, initiativeId, request, recordedAt, roadmapVersionId, eventId } = input;
 
-  const published = publishArtifact(artifactRootFor(ledger.path), request.content);
-  if (!published.ok) {
-    return Object.freeze({ ok: false as const, reason: "CONTENT_REJECTED" as const, at: published.reason });
-  }
-
-  const knownVersions: readonly RoadmapVersionReadModel[] = ledger.listRoadmapVersions(initiativeId);
-  const head = knownVersions.at(-1) ?? null;
-
-  // The candidate is assembled, never accepted: `decideRoadmapVersion` parses
-  // it through the contract itself and refuses what it does not like.
-  const candidate = {
-    contractVersion: LEDGER_CONTRACT_VERSION,
-    roadmapVersionId,
-    initiativeId,
-    version: head === null ? 1 : head.version + 1,
-    // The digest the store computed, never one this module derived. There is
-    // one arithmetic on the content and the store owns it.
-    contentDigest: published.digest,
-    parentVersionId: head === null ? null : head.roadmapVersionId,
-    expectedHeadDigest: request.expectedHeadDigest,
-    kind: request.kind,
-    restoresVersionId: request.restoresVersionId,
-    recordedBy: request.recordedBy,
-    recordedAt,
-  };
-
-  const decision = decideRoadmapVersion({ candidate, head, knownVersions });
-  if (!decision.ok) {
-    return Object.freeze({ ok: false as const, reason: decision.reason, at: decision.at });
-  }
-
-  const transitionId = "roadmap.v" + String(decision.version.version);
-  const event = {
-    contractVersion: LEDGER_CONTRACT_VERSION,
-    eventId,
-    initiativeId,
-    transitionId,
-    idempotencyKey: initiativeId + "/1/" + transitionId,
-    type: "ROADMAP_VERSION_RECORDED",
-    fromStatus: "ACTIVE",
-    toStatus: "ACTIVE",
-    emittedBy: request.recordedBy,
-    occurredAt: recordedAt,
-    recordedAt,
-    payload: decision.version,
-  };
-
-  // The short-lived writable handle: opened here, closed in `finally`, never
-  // held between requests and never reachable from the read path.
+  // The short-lived writable handle, and for a revision with steps the blob lease
+  // store and the plane: opened here, closed in `finally`, never held between
+  // requests and never reachable from the read path.
   const writable = openLedger(ledger.path);
   try {
-    let appended;
+    const leaseStore =
+      input.steps === null
+        ? null
+        : openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(ledger.path), {
+            incarnationId: input.steps.leaseStoreIncarnationId,
+            createdAt: recordedAt,
+          });
     try {
-      appended = writable.appendInitiativeEvent(event);
-    } catch (error: unknown) {
-      // The race loser hears the truth (R1). Two writers folded the same head
-      // and assembled the same version number; the ledger's uniqueness let
-      // exactly one through. The loser is not broken and its request was not
-      // malformed — it is late, and "late" is a 409 it can act on. A retry
-      // re-folds a head that has moved and gets a clean `HEAD_MISMATCH`.
-      //
-      // Narrow by name: anything else is re-thrown untouched and still
-      // classifies as `INTERNAL`.
-      if (error instanceof LedgerError && RACE_LOST_CODES.includes(error.code)) {
-        return Object.freeze({
-          ok: false as const,
-          reason: "WRITE_CONFLICT" as const,
-          at: "roadmapVersion",
+      const plane =
+        leaseStore === null ? null : openArtifactPlane({ ledger: writable, leaseStore, ledgerPath: ledger.path });
+      let outcome: RoadmapRevisionOutcome;
+      try {
+        outcome = recordRoadmapRevision({
+          reader: ledger,
+          writable,
+          plane,
+          initiativeId,
+          request: {
+            content: request.content,
+            expectedHeadDigest: request.expectedHeadDigest,
+            kind: request.kind,
+            restoresVersionId: request.restoresVersionId,
+            recordedBy: request.recordedBy,
+            ...(request.steps === undefined ? {} : { steps: request.steps }),
+          },
+          recordedAt,
+          roadmapVersionId,
+          eventId,
+          holderPid: input.steps === null ? null : input.steps.holderPid,
+          stepIdentities: input.steps === null ? null : input.steps.identities,
         });
+      } catch (error: unknown) {
+        // The race loser hears the truth (R1). Two writers folded the same head
+        // and assembled the same version number; the ledger's uniqueness let
+        // exactly one through. The loser is not broken and its request was not
+        // malformed — it is late, and "late" is a 409 it can act on. A retry
+        // re-folds a head that has moved and gets a clean `HEAD_MISMATCH`.
+        //
+        // The door refused a version this seam's producer granted (P-26/A), or a
+        // batch met a stream holding part of it (P-26 cut B): the producer and the
+        // door ran the same decision over the same history, so by construction the
+        // fold moved between the read and the append — another producer got there
+        // first. One branch for both: a lost race, and no new word reaches a caller.
+        //
+        // Narrow by name: anything else is re-thrown untouched and still
+        // classifies as `INTERNAL`.
+        if (
+          (error instanceof LedgerError && RACE_LOST_CODES.includes(error.code)) ||
+          error instanceof LedgerRoadmapVersionRefusedError ||
+          error instanceof LedgerInitiativeBatchConflictError
+        ) {
+          return Object.freeze({
+            ok: false as const,
+            reason: "WRITE_CONFLICT" as const,
+            at: "roadmapVersion",
+          });
+        }
+        throw error;
       }
-      // The door refused a version this seam's decision granted (P-26/A). The
-      // two ran the same function over the same fold, so by construction the
-      // fold moved between this seam's read and its append — another producer
-      // got there first under another key. That is a lost race, answered like
-      // the two above; the door's word stays inside the plane, and no new word
-      // reaches a caller.
-      if (error instanceof LedgerRoadmapVersionRefusedError) {
-        return Object.freeze({
-          ok: false as const,
-          reason: "WRITE_CONFLICT" as const,
-          at: "roadmapVersion",
-        });
+      if (!outcome.ok) {
+        return Object.freeze({ ok: false as const, reason: outcome.reason, at: outcome.at });
       }
-      throw error;
+      const recorded = outcome.version;
+      return Object.freeze({
+        ok: true as const,
+        version: Object.freeze({
+          roadmapVersionId: recorded.roadmapVersionId,
+          initiativeId: recorded.initiativeId,
+          version: recorded.version,
+          contentDigest: recorded.contentDigest,
+          parentVersionId: recorded.parentVersionId,
+          kind: recorded.kind,
+          restoresVersionId: recorded.restoresVersionId,
+          recordedBy: recorded.recordedBy,
+          recordedAt: recorded.recordedAt,
+          stepCount: recorded.stepCount ?? null,
+          stepManifestSha256: recorded.stepManifestSha256 ?? null,
+        }),
+        sequence: outcome.sequence,
+      });
+    } finally {
+      leaseStore?.close();
     }
-    const recorded = decision.version;
-    return Object.freeze({
-      ok: true as const,
-      version: Object.freeze({
-        roadmapVersionId: recorded.roadmapVersionId,
-        initiativeId: recorded.initiativeId,
-        version: recorded.version,
-        contentDigest: recorded.contentDigest,
-        parentVersionId: recorded.parentVersionId,
-        kind: recorded.kind,
-        restoresVersionId: recorded.restoresVersionId,
-        recordedBy: recorded.recordedBy,
-        recordedAt: recorded.recordedAt,
-      }),
-      sequence: appended.record.sequence,
-    });
   } finally {
     writable.close();
   }

@@ -108,8 +108,15 @@ function fixtureContent(text: string): Record<string, unknown> {
  * cohort of migration 23, and the three vectors moved with it once more, for no
  * other reason: the pin is a key of a dispatch's payload, never a field of the
  * envelope. Recomputed twice, the same two ways, and the two agree on all three.
+ *
+ * P-26 cut B moved the version to `"2.10.0"` (ADR 0111), for the roadmap step cohort
+ * of migration 25 and the step digests the door re-derives, and the three vectors
+ * moved with it once more, for no other reason: steps are events of the initiative
+ * stream, never fields of the envelope. Recomputed twice, by `envelopeSha256` and by
+ * `node:crypto` over the preimage, from a copy of this fixture outside the suite, and
+ * the two agree on all three.
  */
-const CONTRACT = "2.9.0";
+const CONTRACT = "2.10.0";
 const ISSUER = "kimi/k3/coordinator/01";
 const AT = "2026-09-11T09:00:00.000Z";
 const TASK_ID = "6f1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d";
@@ -487,10 +494,10 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
     // encoding changes while staying internally consistent — every other test
     // here would compute the new bytes the new way and agree with itself.
     const vectors: readonly (readonly [Record<string, unknown>, string])[] = [
-      [envelope(), "9bdea2fa8afdfac1c99b39af66e63683f2f5aca7f291504a4f287810ad19f4a9"],
+      [envelope(), "08e07650cb1eb901bf57f0e7bc2991ba78302f5fca9a1622215b72be3fd1b7c0"],
       [
         withObjective("Delete the production ledger."),
-        "9d28fabc134b6a72970db111b95777308c7b3fb15f0dc2c8ef3ecdcd7b8455d2",
+        "0fac75bb6c8eaa41b7e54015dce92d147c901c05e03059ec3ed7a241b2e19169",
       ],
       [
         envelope({
@@ -500,7 +507,7 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
           visualEvidenceRequired: true,
           eligibility: { roles: ["reviewer"], providers: ["anthropic"], requiredCapabilities: [] },
         }),
-        "e56d454e206a7a59e4b6ceefd14e3fd70b21733a29c13ab3764027d02f9e05f3",
+        "0ca58d1288c13129c902b0c8b4b1fbabd02baf3e41faa9d5436bc4dffa20be45",
       ],
     ];
 

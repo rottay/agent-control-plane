@@ -2,6 +2,7 @@ import {
   ARTIFACT_EVENT_KINDS,
   RESULT_STATUSES,
   ResolvedRoute,
+  RoadmapStepDeclaration,
   RoadmapVersion,
   TERMINAL_STATES,
   TRANSPORT_KINDS,
@@ -89,6 +90,8 @@ import type {
   RegistryDocument,
   RegistryProjectionSnapshot,
   ResponseOccurrenceReadModel,
+  RoadmapStepDependencyReadModel,
+  RoadmapStepReadModel,
   RoadmapVersionReadModel,
   RoutingAssignmentFallbackRow,
   RoutingAssignmentProjection,
@@ -5096,7 +5099,166 @@ export function nextRoadmapVersionProjection(
     recordedBy: parsed.data.recordedBy,
     recordedAt: parsed.data.recordedAt,
     sequence,
+    // The cohort's key is the payload's version, which the door holds equal to the
+    // event's (P-26 cut B, act 2); an earlier version carries no step field.
+    recordingContractVersion: parsed.data.contractVersion,
+    stepCount: parsed.data.stepCount ?? null,
+    stepManifestArtifactReferenceId: parsed.data.stepManifestArtifactReferenceId ?? null,
+    stepManifestSha256: parsed.data.stepManifestSha256 ?? null,
   };
+}
+
+/**
+ * The step a `ROADMAP_STEP_DECLARED` event declares, and its dependencies (P-26 cut
+ * B, ADR 0111). From the payload only: a rebuild never reopens the manifest.
+ *
+ * A payload the contract does not admit is refused by the door's own word,
+ * `STEP_DECLARATION_INVALID`, for the reason `nextRoadmapVersionProjection` refuses:
+ * the door refuses it first, so the fold meets one only in a history no producer at
+ * this build could write. `state` is `DECLARED` and `routingAssignmentVersion` null
+ * always: nothing in this build writes another.
+ */
+export function nextRoadmapStepProjection(
+  event: InitiativeEvent,
+  sequence: number,
+): { readonly step: RoadmapStepReadModel; readonly dependencies: readonly RoadmapStepDependencyReadModel[] } | null {
+  if (event.type !== "ROADMAP_STEP_DECLARED") return null;
+  const parsed = RoadmapStepDeclaration.safeParse(event.payload);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new LedgerRoadmapVersionRefusedError(
+      "STEP_DECLARATION_INVALID",
+      "candidate." + (issue?.path ?? []).map(String).join("."),
+    );
+  }
+  const declaration = parsed.data;
+  return {
+    step: {
+      roadmapVersionId: declaration.roadmapVersionId,
+      stepId: declaration.stepId,
+      stepIndex: declaration.stepIndex,
+      title: declaration.title,
+      objectiveSha256: declaration.objectiveSha256,
+      acceptanceSha256: declaration.acceptanceSha256,
+      expectedWriteSetSha256: declaration.expectedWriteSetSha256,
+      dependencyRank: declaration.dependencyRank,
+      state: "DECLARED",
+      routingAssignmentVersion: null,
+      sequence,
+    },
+    dependencies: declaration.dependsOn.map((dependsOnStepId) => ({
+      roadmapVersionId: declaration.roadmapVersionId,
+      stepId: declaration.stepId,
+      dependsOnStepId,
+      sequence,
+    })),
+  };
+}
+
+/**
+ * The steps a fold holds, and the dependencies it has not written yet.
+ *
+ * A step may depend on a step of a later index — the manifest's order is not a
+ * topological order, which is why a cycle is possible at all — so a dependency row
+ * is written once every step of its version is folded, and never before: its two
+ * foreign keys name step rows. The rebuild's snapshot carries these maps; the live
+ * batch door folds its own batch through a fresh one.
+ */
+export interface RoadmapStepFold {
+  readonly roadmapSteps: Map<string, RoadmapStepReadModel>;
+  readonly roadmapStepDependencies: Map<string, RoadmapStepDependencyReadModel>;
+  readonly pendingStepDependencies: Map<string, RoadmapStepDependencyReadModel[]>;
+}
+
+export function createRoadmapStepFold(): RoadmapStepFold {
+  return {
+    roadmapSteps: new Map<string, RoadmapStepReadModel>(),
+    roadmapStepDependencies: new Map<string, RoadmapStepDependencyReadModel>(),
+    pendingStepDependencies: new Map<string, RoadmapStepDependencyReadModel[]>(),
+  };
+}
+
+/** The key of a step or a dependency row: its primary key's columns, joined. */
+export function roadmapStepKey(...columns: readonly string[]): string {
+  return columns.join("\u0000");
+}
+
+/**
+ * Fold one declared step, refusing by name what the door refuses (P-26 cut B).
+ *
+ * The version must be folded already and must count this step: an unknown version
+ * is `STEP_DECLARATION_INVALID` at `roadmapVersionId`, and a step past its version's
+ * count is `STEP_COUNT_MISMATCH`. The step must sit at its version's next index, so
+ * a duplicate or out-of-order index is refused, and its id must be new within the
+ * version. When the version's last step is folded, every dependency of the version
+ * must name one of its steps, and the rows are released.
+ */
+export function foldRoadmapStep(
+  fold: RoadmapStepFold,
+  versionOf: (roadmapVersionId: string) => RoadmapVersionReadModel | undefined,
+  event: InitiativeEvent,
+  sequence: number,
+): void {
+  const projected = nextRoadmapStepProjection(event, sequence);
+  if (projected === null) return;
+  const { step, dependencies } = projected;
+
+  const version = versionOf(step.roadmapVersionId);
+  if (version === undefined || version.initiativeId !== event.initiativeId) {
+    throw new LedgerRoadmapVersionRefusedError("STEP_DECLARATION_INVALID", "candidate.roadmapVersionId");
+  }
+  const folded = [...fold.roadmapSteps.values()].filter((known) => known.roadmapVersionId === step.roadmapVersionId);
+  const count = version.stepCount ?? 0;
+  if (folded.length >= count) {
+    throw new LedgerRoadmapVersionRefusedError("STEP_COUNT_MISMATCH", "candidate.stepIndex");
+  }
+  if (step.stepIndex !== folded.length) {
+    throw new LedgerRoadmapVersionRefusedError("STEP_DECLARATION_INVALID", "candidate.stepIndex");
+  }
+  if (folded.some((known) => known.stepId === step.stepId)) {
+    throw new LedgerRoadmapVersionRefusedError("STEP_DECLARATION_INVALID", "candidate.stepId");
+  }
+  fold.roadmapSteps.set(roadmapStepKey(step.roadmapVersionId, step.stepId), step);
+
+  const pending = fold.pendingStepDependencies.get(step.roadmapVersionId) ?? [];
+  pending.push(...dependencies);
+  fold.pendingStepDependencies.set(step.roadmapVersionId, pending);
+
+  if (folded.length + 1 === count) {
+    const ids = new Set([...folded.map((known) => known.stepId), step.stepId]);
+    for (const dependency of pending) {
+      if (!ids.has(dependency.dependsOnStepId)) {
+        throw new LedgerRoadmapVersionRefusedError("STEP_DECLARATION_INVALID", "candidate.dependsOn");
+      }
+      fold.roadmapStepDependencies.set(
+        roadmapStepKey(dependency.roadmapVersionId, dependency.stepId, dependency.dependsOnStepId),
+        dependency,
+      );
+    }
+    fold.pendingStepDependencies.delete(step.roadmapVersionId);
+  }
+}
+
+/**
+ * Refuse a fold that ends with a version short of the steps it counts (P-26 cut B).
+ *
+ * The batch door writes a version and its steps all or none, and the single door
+ * refuses a step and a version that counts any (L-P26B-1), so a history in which a
+ * version's steps stop short is one no producer at this build could write. Asked at
+ * the end of a fold, because only then is "short" a fact.
+ */
+export function assertRoadmapStepsComplete(
+  fold: RoadmapStepFold,
+  versions: Iterable<RoadmapVersionReadModel>,
+): void {
+  for (const version of versions) {
+    const declared = [...fold.roadmapSteps.values()].filter(
+      (step) => step.roadmapVersionId === version.roadmapVersionId,
+    ).length;
+    if (declared !== (version.stepCount ?? 0)) {
+      throw new LedgerRoadmapVersionRefusedError("STEP_COUNT_MISMATCH", "candidate.stepCount");
+    }
+  }
 }
 
 /**
@@ -5145,7 +5307,7 @@ export function assertRoadmapVersionUnfolded(
  * rather than *forgotten*: the fold below runs over every initiative event and
  * returns no row for every type the contract defines.
  */
-export interface InitiativeProjectionSnapshot extends RegistryProjectionSnapshot {
+export interface InitiativeProjectionSnapshot extends RegistryProjectionSnapshot, RoadmapStepFold {
   readonly initiatives: Map<string, InitiativeReadModel>;
   readonly roadmapVersions: Map<string, RoadmapVersionReadModel>;
 }
@@ -5154,6 +5316,7 @@ export function createInitiativeProjectionSnapshot(): InitiativeProjectionSnapsh
   return {
     initiatives: new Map<string, InitiativeReadModel>(),
     roadmapVersions: new Map<string, RoadmapVersionReadModel>(),
+    ...createRoadmapStepFold(),
     routingAssignments: new Map<string, RoutingAssignmentReadModel>(),
     routingFallbacks: new Map<string, RoutingAssignmentFallbackRow>(),
   };
@@ -5182,6 +5345,8 @@ export function applyInitiativeEventToSnapshot(
     });
     versions.set(version.roadmapVersionId, version);
   }
+
+  foldRoadmapStep(snapshot, (roadmapVersionId) => snapshot.roadmapVersions.get(roadmapVersionId), event, sequence);
 
   const assignment = nextRoutingAssignmentFromInitiative(event, sequence);
   if (assignment !== null) applyRoutingAssignment(snapshot, assignment);

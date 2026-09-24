@@ -88,7 +88,7 @@ the mechanism and its anchors.
 
 | Route | Request body | Records |
 | --- | --- | --- |
-| `initiativeRoadmap` | `RoadmapVersionWriteRequest` | a roadmap version, content-addressed; the event carries the digest and the bytes live in the artifact store |
+| `initiativeRoadmap` | `RoadmapVersionWriteRequest` | a roadmap version, content-addressed; the event carries the digest and the bytes live in the artifact store. From `0.20.0` it may carry `steps`, a step manifest published to the private artifact plane: the version and one `ROADMAP_STEP_DECLARED` per step are recorded all or none, the events carry each step's title and digests, and the response names the step count and the manifest's digest, never its text |
 | `accountActions` | `AccountActionRequest` | an account action, with the refusal vocabulary the accounts domain defines |
 | `taskToolCalls` | `ToolCallExecuteRequest` | one explicit tool call, and whatever it did: this is the only route that starts a child process, and a refused call is a `200` with a recorded row rather than an error |
 | `taskLifecycle` | `TaskLifecycleRequest` | one lifecycle verb — `CANCEL` or `ATTACH` — against an attempt already running; the rows it appends are the ones the cancellation settlement already produced, and `ATTACH` appends none |
@@ -97,6 +97,15 @@ the mechanism and its anchors.
 
 A write that is refused answers with a classified refusal rather than a bare
 failure: `AccountActionRefusalDto` names which rule refused it.
+
+The roadmap write's transport limit is derived, never a second number:
+`ROADMAP_CONTENT_MAX_BYTES + ROADMAP_STEP_MANIFEST_MAX_BYTES +
+ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES` — 1 MiB + 1 MiB + 64 KiB since `0.20.0`, so a
+document at its ceiling and a manifest at its own fit together. A body past that is
+the transport's refusal, answered as every framework error is: `400` `BAD_REQUEST`
+with `FST_ERR_CTP_BODY_TOO_LARGE` in `detail`. A document or a manifest past its own
+ceiling is refused by the schema, `400` at the field. A manifest the schema admits but whose dependencies form a cycle is
+a decision refusal, `409` `WRITE_REFUSED` naming `STEP_DEPENDENCY_CYCLE`.
 
 **Every write route answers its read as well as its write, and the two halves
 are guarded differently.** The `POST` passes the bearer; the `GET` does not,

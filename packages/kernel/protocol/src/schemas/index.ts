@@ -23,6 +23,7 @@ import {
   WorkerRole,
   CanonicalInstant,
   ResultContractSchema,
+  RoadmapStepManifest,
   Sha256Hex,
   Timestamp,
   findCredentialViolations,
@@ -1808,6 +1809,16 @@ export const RoadmapVersionDto = z
     sequence: z.number().int().positive(),
     /** True for exactly one version per initiative: the newest recorded. */
     head: z.boolean(),
+    /**
+     * How many steps the version declares (P-26 cut B, 0.20.0); null for a version
+     * recorded before steps existed, which declares none and says nothing.
+     */
+    stepCount: z.number().int().min(0).nullable(),
+    /**
+     * The digest of the version's private step manifest, or null when it declares
+     * no steps. Never the manifest's reference and never a step's text.
+     */
+    stepManifestSha256: Sha256Hex.nullable(),
   })
   .superRefine(attachGuards);
 export type RoadmapVersionDto = z.infer<typeof RoadmapVersionDto>;
@@ -1900,6 +1911,13 @@ export type InitiativeRoadmapResponse = z.infer<typeof InitiativeRoadmapResponse
 export { ROADMAP_CONTENT_MAX_BYTES } from "@acp/contracts";
 
 /**
+ * The largest step manifest a roadmap write may carry, re-exported (P-26 cut B,
+ * ADR 0111): `ROADMAP_CONTENT_MAX_BYTES`' reason, in its unit. The transport limit
+ * derives from it too.
+ */
+export { ROADMAP_STEP_MANIFEST_MAX_BYTES } from "@acp/contracts";
+
+/**
  * What the JSON envelope around a roadmap document is allowed to weigh
  * (P8-8G A2).
  *
@@ -1912,8 +1930,12 @@ export { ROADMAP_CONTENT_MAX_BYTES } from "@acp/contracts";
  *
  * **The law: the transport limit derives from the one authority, never a
  * second number.** `buildServer` computes
- * `ROADMAP_CONTENT_MAX_BYTES + ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES`, so a
- * change to the ceiling moves the transport with it and the two cannot drift.
+ * `ROADMAP_CONTENT_MAX_BYTES + ROADMAP_STEP_MANIFEST_MAX_BYTES +
+ * ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES`, so a change to either ceiling moves the
+ * transport with it and they cannot drift. The manifest term arrived with P-26 cut
+ * B (0.20.0): a document at its ceiling and a manifest beside it would otherwise
+ * overflow the envelope allowance, and the plane would again advertise a pair of
+ * ceilings it could not accept together.
  *
  * The allowance covers the envelope and nothing else. A document one byte over
  * the ceiling is still refused — by the schema, which weighs the content
@@ -1968,6 +1990,13 @@ export const RoadmapVersionWriteRequest = z
     /** Set exactly when the kind is ROLLBACK; the contract re-checks it. */
     restoresVersionId: z.uuid().nullable(),
     recordedBy: WorkerIdentityString,
+    /**
+     * The version's steps, optional (P-26 cut B, 0.20.0): the contract's private
+     * manifest, parsed whole here — guards, bounds and bytes. Absent records a
+     * version with no steps. Its texts go to the private plane and never come back
+     * on a response.
+     */
+    steps: RoadmapStepManifest.optional(),
   })
   .superRefine(attachGuards);
 export type RoadmapVersionWriteRequest = z.infer<typeof RoadmapVersionWriteRequest>;

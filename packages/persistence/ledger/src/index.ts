@@ -38,6 +38,7 @@ export {
   LedgerQueryError,
   LedgerArtifactEncryptionConflictError,
   LedgerRoadmapVersionRefusedError,
+  LedgerInitiativeBatchConflictError,
 } from "./errors/index.js";
 
 // P8-8D-pre: the content-addressed artifact store. The Checkpoint law's twin —
@@ -302,6 +303,19 @@ export type {
   RoadmapVersionRequest,
 } from "./roadmap-version/index.js";
 
+// P-26 cut B (ADR 0111): the one producer of a roadmap revision, steps optional,
+// and the one derivation of a step's digests and rank (L-P26B-2).
+export { recordRoadmapRevision, roadmapStepDigests } from "./roadmap-steps/index.js";
+
+export type {
+  RoadmapRevisionInput,
+  RoadmapRevisionOutcome,
+  RoadmapRevisionRequest,
+  RoadmapRevisionStepIdentities,
+  RoadmapStepDigest,
+  RoadmapStepDigestOutcome,
+} from "./roadmap-steps/index.js";
+
 /**
  * P-32/captura escalón A: the usage settlement fold and the stream identity.
  *
@@ -440,6 +454,9 @@ export type {
   ExecutionRouteReadModel,
   ExecutionRouteSegmentReadModel,
   InitiativeAppendResult,
+  InitiativeBatchResult,
+  RoadmapStepDependencyReadModel,
+  RoadmapStepReadModel,
   InitiativeEventPage,
   InitiativeEventQuery,
   InitiativeEventRecord,

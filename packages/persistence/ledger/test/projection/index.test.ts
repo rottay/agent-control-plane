@@ -4239,6 +4239,9 @@ describe("the roadmap-version fold refuses a second claim and a malformed payloa
       restoresVersionId: null,
       recordedBy: "kimi/k3/coordinator/01",
       recordedAt: "2026-09-24T12:00:00.000Z",
+      stepCount: 0,
+      stepManifestArtifactReferenceId: null,
+      stepManifestSha256: null,
       ...overrides,
     };
   }

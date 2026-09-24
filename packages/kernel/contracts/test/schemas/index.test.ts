@@ -86,6 +86,12 @@ import {
   Timestamp,
   isCanonicalInstant,
   Sha256Hex,
+  ROADMAP_STEPS_MAX,
+  ROADMAP_STEP_DEPENDS_ON_MAX,
+  ROADMAP_STEP_MANIFEST_MAX_BYTES,
+  ROADMAP_WRITE_SET_PREIMAGE_PREFIX_V1,
+  RoadmapStepDeclaration,
+  RoadmapStepManifest,
 } from "../../src/index.js";
 import * as contractsBarrel from "../../src/index.js";
 import * as schemasBarrel from "../../src/schemas/index.js";
@@ -624,8 +630,9 @@ describe("the V2 idempotency key", () => {
     // here after F and moved above when P-36/local D put it in force (ADR 0084).
     // `"2.6.0"` stood here after D and moved above when P-32/captura B put it in
     // force (ADR 0089). `"2.8.0"` stood here until P-07 escalón B put it in force
-    // (ADR 0098), and `"2.9.0"` until P-15 escalón C did (ADR 0103).
-    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "2.10.0" })).success).toBe(false);
+    // (ADR 0098), `"2.9.0"` until P-15 escalón C did (ADR 0103), and `"2.10.0"`
+    // until P-26 cut B did (ADR 0111).
+    expect(ControlPlaneEvent.safeParse(event({ contractVersion: "2.11.0" })).success).toBe(false);
     expect(ControlPlaneEvent.safeParse(event({ contractVersion: "1.0.0" })).success).toBe(false);
   });
 
@@ -1400,6 +1407,9 @@ function roadmapVersion(overrides: Record<string, unknown> = {}): unknown {
     restoresVersionId: null,
     recordedBy: AUTHORITY,
     recordedAt: AT,
+    stepCount: 0,
+    stepManifestArtifactReferenceId: null,
+    stepManifestSha256: null,
     ...overrides,
   };
 }
@@ -1519,11 +1529,12 @@ describe("InitiativeEvent", () => {
     expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
   });
 
-  it("closes its vocabulary at the three initiative facts", () => {
+  it("closes its vocabulary at the four initiative facts", () => {
     expect([...INITIATIVE_EVENT_TYPES]).toEqual([
       "INITIATIVE_REGISTERED",
       "INITIATIVE_STATE_CHANGED",
       "ROADMAP_VERSION_RECORDED",
+      "ROADMAP_STEP_DECLARED",
     ]);
     expect(InitiativeEvent.safeParse(initiativeEvent({ type: "TASK_DISCOVERED" })).success).toBe(
       false,
@@ -2932,8 +2943,8 @@ describe("only the version in force is emitted (ADR 0072's debt, ADR 0076)", () 
     // nobody can predict.
     // F moved the literal again (ADR 0078), P-36/local D once more (ADR 0084)
     // and P-32/captura B once more (ADR 0089); the pair's shape did not move.
-    expect(CONTRACT_VERSION).toBe("2.9.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0"]);
+    expect(CONTRACT_VERSION).toBe("2.10.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "2.10.0"]);
     expect(SUPPORTED_CONTRACT_VERSIONS).toContain(CONTRACT_VERSION);
 
     expect(AdmittedContractVersion.safeParse(CONTRACT_VERSION).success).toBe(true);
@@ -2945,8 +2956,9 @@ describe("only the version in force is emitted (ADR 0072's debt, ADR 0076)", () 
     expect(AdmittedContractVersion.safeParse("2.5.0").success).toBe(false);
     // And a version nobody put in force yet. `"2.6.0"` stood here until
     // P-32/captura B put it in force (ADR 0089), `"2.8.0"` until P-07
-    // escalón B did (ADR 0098), and `"2.9.0"` until P-15 escalón C did (ADR 0103).
-    expect(AdmittedContractVersion.safeParse("2.10.0").success).toBe(false);
+    // escalón B did (ADR 0098), `"2.9.0"` until P-15 escalón C did (ADR 0103), and
+    // `"2.10.0"` until P-26 cut B did (ADR 0111).
+    expect(AdmittedContractVersion.safeParse("2.11.0").success).toBe(false);
   });
 
   it("holds the three admission shapes to the version in force, and not the event", () => {
@@ -3148,8 +3160,8 @@ describe("three outbox types, a command id grammar and a bump (P-18/protocolo F,
     // `outboxContractVersion`. That is C's class, not D's. P-36/local D moved
     // the literal on to 2.5.0 (ADR 0084), and 2.4.0 joined the readable set;
     // P-32/captura B moved it on to 2.6.0 (ADR 0089), and 2.5.0 joined it.
-    expect(CONTRACT_VERSION).toBe("2.9.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0"]);
+    expect(CONTRACT_VERSION).toBe("2.10.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "2.10.0"]);
     for (const version of ["2.2.0", "2.3.0", "2.4.0"]) {
       expect(ControlPlaneEvent.safeParse(event({ contractVersion: version })).success, version).toBe(true);
       expect(AdmittedContractVersion.safeParse(version).success, version).toBe(false);
@@ -3183,8 +3195,8 @@ describe("the artifact record lands without a bump (P-36/local A, ADR 0081)", ()
     // (ADR 0084): the event vocabulary did not move with it. And again in
     // P-32/captura B, for an identity, with two usage types (ADR 0089).
     expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(35);
-    expect(CONTRACT_VERSION).toBe("2.9.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0"]);
+    expect(CONTRACT_VERSION).toBe("2.10.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "2.10.0"]);
   });
 });
 
@@ -3198,7 +3210,7 @@ describe("the version moves for a cohort, not an identity (P-36/local D, ADR 008
     // a payload key the ledger's fold reads by name. P-32/captura B moved the
     // literal on to 2.6.0 (ADR 0089): 2.5.0 is now read and no longer issued, as
     // the three before it are.
-    expect(CONTRACT_VERSION).toBe("2.9.0");
+    expect(CONTRACT_VERSION).toBe("2.10.0");
     expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(35);
     for (const version of ["2.2.0", "2.3.0", "2.4.0", "2.5.0"]) {
       expect(ControlPlaneEvent.safeParse(event({ contractVersion: version })).success, version).toBe(true);
@@ -3232,8 +3244,8 @@ describe("usage is a declared stream and a measured observation, and the version
     // ADR 0076's criterion, read for B: the door recomputes `measurement_stream_id`
     // from a versioned preimage of the stream's coordinate, and every declaration
     // carries `normalizationPolicySha256`, the adapter's own version. C's class.
-    expect(CONTRACT_VERSION).toBe("2.9.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0"]);
+    expect(CONTRACT_VERSION).toBe("2.10.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "2.10.0"]);
     for (const version of ["2.2.0", "2.3.0", "2.4.0", "2.5.0"]) {
       expect(ControlPlaneEvent.safeParse(event({ contractVersion: version })).success, version).toBe(true);
       expect(AdmittedContractVersion.safeParse(version).success, version).toBe(false);
@@ -3271,8 +3283,8 @@ describe("the version moves for the result cohort (P-07 escalón B, ADR 0098)", 
     // result reference on a closed list of the versions no earlier build could stamp
     // with a result, so the literal has to move for the cohort to exist. No event
     // type and no preimage moves with it.
-    expect(CONTRACT_VERSION).toBe("2.9.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0"]);
+    expect(CONTRACT_VERSION).toBe("2.10.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "2.10.0"]);
     expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(35);
     for (const version of ["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0"]) {
       expect(ControlPlaneEvent.safeParse(event({ contractVersion: version })).success, version).toBe(true);
@@ -3290,14 +3302,14 @@ describe("the version moves for the dispatch pin cohort (P-15 escalón C, ADR 01
     // ADR 0084's reason once more: a cohort, not an identity. Migration 23 keys the
     // dispatch's price pin on a closed list of the seven versions no earlier build
     // could stamp with one. No event type and no preimage moves with it.
-    expect(CONTRACT_VERSION).toBe("2.9.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0"]);
+    expect(CONTRACT_VERSION).toBe("2.10.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "2.10.0"]);
     expect(CONTROL_PLANE_EVENT_TYPES).toHaveLength(35);
-    for (const version of ["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0"]) {
+    for (const version of ["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0"]) {
       expect(ControlPlaneEvent.safeParse(event({ contractVersion: version })).success, version).toBe(true);
       expect(AdmittedContractVersion.safeParse(version).success, version).toBe(false);
     }
-    expect(AdmittedContractVersion.safeParse("2.9.0").success).toBe(true);
+    expect(AdmittedContractVersion.safeParse("2.10.0").success).toBe(true);
     expect(TaskEnvelope.safeParse(envelope({ contractVersion: "2.8.0" })).success).toBe(false);
   });
 });
@@ -3411,5 +3423,141 @@ describe("Sha256Hex is on both barrels, the protocol's one sha-256 grammar (P-37
 
   it("reproduces the verdicts, codes and messages captured from the protocol's copy before the fold", () => {
     expect(sha256Verdicts(Sha256Hex)).toEqual(SHA256_HEX_EXPECTED);
+  });
+});
+
+/**
+ * A roadmap's steps in the contract (P-26 cut B, ADR 0111): the private manifest,
+ * the payload that declares one step, the step cohort of `RoadmapVersion`, and the
+ * fourth initiative type. NULL per field, the cohort both ways, and the bounds.
+ */
+/** A copy of a record without one key. */
+function without(value: Record<string, unknown>, key: string): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).filter(([name]) => name !== key));
+}
+
+describe("a roadmap's steps, in the contract (P-26 cut B)", () => {
+  const step = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    stepId: "a",
+    title: "Step A",
+    objective: "Do the first thing.",
+    acceptance: "The first thing is done.",
+    expectedWriteSet: ["packages/a.ts"],
+    dependsOn: [],
+    ...overrides,
+  });
+  const manifest = (steps: readonly Record<string, unknown>[] = [step(), step({ stepId: "b", dependsOn: ["a"] })]) => ({
+    manifestContractVersion: 1,
+    steps,
+  });
+  const declaration = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    roadmapVersionId: OTHER_ID,
+    stepId: "b",
+    stepIndex: 1,
+    title: "Step B",
+    objectiveSha256: SHA256,
+    acceptanceSha256: SHA256,
+    expectedWriteSetSha256: SHA256,
+    dependsOn: ["a"],
+    dependencyRank: 1,
+    ...overrides,
+  });
+
+  it("names its bounds and the preimage prefix, frozen at v1", () => {
+    expect([ROADMAP_STEPS_MAX, ROADMAP_STEP_DEPENDS_ON_MAX, ROADMAP_STEP_MANIFEST_MAX_BYTES]).toEqual([200, 32, 1024 * 1024]);
+    expect(ROADMAP_WRITE_SET_PREIMAGE_PREFIX_V1).toBe("acp/roadmap-write-set/v1\n");
+  });
+
+  it("admits a manifest, and refuses each required field as null and as absent", () => {
+    expect(RoadmapStepManifest.safeParse(manifest()).success).toBe(true);
+    for (const field of ["manifestContractVersion", "steps"]) {
+      expect(RoadmapStepManifest.safeParse({ ...manifest(), [field]: null }).success, field).toBe(false);
+      expect(RoadmapStepManifest.safeParse(without(manifest(), field)).success, field).toBe(false);
+    }
+    for (const field of Object.keys(step())) {
+      expect(RoadmapStepManifest.safeParse(manifest([{ ...step(), [field]: null }])).success, field).toBe(false);
+      expect(RoadmapStepManifest.safeParse(manifest([without(step(), field)])).success, field).toBe(false);
+    }
+  });
+
+  it("refuses what one manifest can prove about itself: ids, self, unknown, repeats, empty, bounds", () => {
+    const refused = (value: unknown): boolean => !RoadmapStepManifest.safeParse(value).success;
+    expect(refused(manifest([step(), step()]))).toBe(true);
+    expect(refused(manifest([step({ dependsOn: ["a"] })]))).toBe(true);
+    expect(refused(manifest([step({ dependsOn: ["z"] })]))).toBe(true);
+    expect(refused(manifest([step({ expectedWriteSet: ["x.ts", "x.ts"] })]))).toBe(true);
+    expect(refused(manifest([step(), step({ stepId: "b", dependsOn: ["a", "a"] })]))).toBe(true);
+    expect(refused(manifest([]))).toBe(true);
+    expect(refused(manifest([step({ expectedWriteSet: ["/abs.ts"] })]))).toBe(true);
+    expect(refused(manifest([step({ stepId: "bad id" })]))).toBe(true);
+    expect(refused({ ...manifest(), manifestContractVersion: 2 })).toBe(true);
+    expect(refused({ ...manifest(), extra: 1 })).toBe(true);
+    // A cycle is not one step's to see: the contract admits it and the ledger refuses it.
+    expect(refused(manifest([step({ dependsOn: ["b"] }), step({ stepId: "b", dependsOn: ["a"] })]))).toBe(false);
+    // The count bound, and the byte bound, which binds long before the counts.
+    const many = Array.from({ length: ROADMAP_STEPS_MAX + 1 }, (_, index) => step({ stepId: "s" + String(index) }));
+    expect(refused(manifest(many))).toBe(true);
+    // 140 steps of two 4 000-character texts: under the count bound, over the bytes.
+    const heavy = Array.from({ length: 140 }, (_, index) =>
+      step({ stepId: "h" + String(index), objective: "o".repeat(4_000), acceptance: "a".repeat(4_000) }),
+    );
+    expect(refused(manifest(heavy))).toBe(true);
+    // The credential guards run over the texts.
+    expect(refused(manifest([step({ objective: "apiKey: sk-ant-api03-" + "A".repeat(24) })]))).toBe(true);
+  });
+
+  it("admits a declaration, and refuses each field as null and as absent, a self-dependency and repeats", () => {
+    expect(RoadmapStepDeclaration.safeParse(declaration()).success).toBe(true);
+    for (const field of Object.keys(declaration())) {
+      expect(RoadmapStepDeclaration.safeParse({ ...declaration(), [field]: null }).success, field).toBe(false);
+      expect(RoadmapStepDeclaration.safeParse(without(declaration(), field)).success, field).toBe(false);
+    }
+    expect(RoadmapStepDeclaration.safeParse(declaration({ dependsOn: ["b"] })).success).toBe(false);
+    expect(RoadmapStepDeclaration.safeParse(declaration({ dependsOn: ["a", "a"] })).success).toBe(false);
+    expect(RoadmapStepDeclaration.safeParse(declaration({ stepIndex: ROADMAP_STEPS_MAX })).success).toBe(false);
+    expect(RoadmapStepDeclaration.safeParse(declaration({ objective: "text" })).success).toBe(false);
+  });
+
+  it("holds the step cohort of RoadmapVersion by the closed list, both ways", () => {
+    // 2.10.0: all three required, the pair together, a manifest exactly with steps.
+    expect(RoadmapVersion.safeParse(roadmapVersion()).success).toBe(true);
+    for (const field of ["stepCount", "stepManifestArtifactReferenceId", "stepManifestSha256"]) {
+      expect(RoadmapVersion.safeParse(without(roadmapVersion() as Record<string, unknown>, field)).success, field).toBe(false);
+    }
+    expect(RoadmapVersion.safeParse(roadmapVersion({ stepCount: null })).success).toBe(false);
+    expect(RoadmapVersion.safeParse(roadmapVersion({ stepCount: 2, stepManifestArtifactReferenceId: "r", stepManifestSha256: SHA256 })).success).toBe(true);
+    expect(RoadmapVersion.safeParse(roadmapVersion({ stepCount: 2 })).success).toBe(false);
+    expect(RoadmapVersion.safeParse(roadmapVersion({ stepManifestArtifactReferenceId: "r", stepManifestSha256: SHA256 })).success).toBe(false);
+    expect(RoadmapVersion.safeParse(roadmapVersion({ stepCount: 2, stepManifestArtifactReferenceId: "r" })).success).toBe(false);
+    expect(RoadmapVersion.safeParse(roadmapVersion({ stepCount: ROADMAP_STEPS_MAX + 1 })).success).toBe(false);
+    // The cohort before: none of the three, on each of the eight earlier versions.
+    for (const version of ["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0"]) {
+      const bare = { ...(roadmapVersion({ contractVersion: version }) as Record<string, unknown>) };
+      delete bare["stepCount"];
+      delete bare["stepManifestArtifactReferenceId"];
+      delete bare["stepManifestSha256"];
+      expect(RoadmapVersion.safeParse(bare).success, version).toBe(true);
+      expect(RoadmapVersion.safeParse({ ...bare, stepCount: 0 }).success, version).toBe(false);
+      expect(RoadmapVersion.safeParse({ ...bare, stepManifestSha256: null }).success, version).toBe(false);
+    }
+  });
+
+  it("admits ROADMAP_STEP_DECLARED only as a passthrough of the initiative's status", () => {
+    const stepEvent = (overrides: Record<string, unknown> = {}) =>
+      initiativeEvent({
+        transitionId: "roadmap.v1.step.0",
+        type: "ROADMAP_STEP_DECLARED",
+        fromStatus: "ACTIVE",
+        toStatus: "ACTIVE",
+        payload: declaration({ stepIndex: 0, stepId: "a", dependsOn: [], dependencyRank: 0 }),
+        ...overrides,
+      });
+    expect(InitiativeEvent.safeParse(stepEvent()).success).toBe(true);
+    const moved = InitiativeEvent.safeParse(stepEvent({ toStatus: "PAUSED" }));
+    expect(moved.success).toBe(false);
+    expect(moved.error?.issues.map((issue) => issue.message)).toContain(
+      "declaring a roadmap step does not move the initiative's status",
+    );
+    expect(InitiativeEvent.safeParse(stepEvent({ fromStatus: null })).success).toBe(false);
   });
 });

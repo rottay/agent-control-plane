@@ -7,6 +7,7 @@ import { registerRoutes } from "../routes/index.js";
 import { createStreamRegistry } from "../stream/index.js";
 import {
   ROADMAP_CONTENT_MAX_BYTES,
+  ROADMAP_STEP_MANIFEST_MAX_BYTES,
   ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES,
 } from "@acp/protocol";
 
@@ -146,8 +147,9 @@ export function buildServer(options: BuildServerOptions): FastifyInstance {
     // ever saw it, and the plane advertised a limit it could not accept. The
     // allowance covers the JSON envelope around the document and nothing else:
     // a document one byte over the ceiling is still refused, by the schema,
-    // which weighs the content itself.
-    bodyLimit: ROADMAP_CONTENT_MAX_BYTES + ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES,
+    // which weighs the content itself. P-26 cut B adds the step manifest's own
+    // ceiling, so a document and a manifest at theirs fit together (0.20.0).
+    bodyLimit: ROADMAP_CONTENT_MAX_BYTES + ROADMAP_STEP_MANIFEST_MAX_BYTES + ROADMAP_WRITE_ENVELOPE_ALLOWANCE_BYTES,
     frameworkErrors: (error, _request, reply) => {
       reply.header("cache-control", "no-store");
       const classified = classifyFastifyError(error);

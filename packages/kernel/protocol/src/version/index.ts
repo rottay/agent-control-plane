@@ -217,8 +217,18 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * reading of `TaskDetail` stays untouched. `CONTRACT_VERSION` and
  * `LEDGER_CONTRACT_VERSION` do not move: a read adds no recorded shape. ADR 0107
  * carries the reasoning.
+ *
+ * `0.19.0` → `0.20.0` at P-26 cut B: a roadmap version declares its steps. The
+ * contract's `INITIATIVE_EVENT_TYPES` gains `ROADMAP_STEP_DECLARED`, so the timeline
+ * DTO's type enum widens by derivation; `RoadmapVersionWriteRequest` gains an
+ * optional `steps` manifest; `RoadmapVersionDto` gains `stepCount` and
+ * `stepManifestSha256`, never a reference or a step's text; and the write route's
+ * transport limit grows by `ROADMAP_STEP_MANIFEST_MAX_BYTES`. Minor: the route
+ * surface is unchanged and no existing field changes meaning. `CONTRACT_VERSION`
+ * moves too, 2.9.0 → 2.10.0, so `LEDGER_CONTRACT_VERSION` follows by derivation.
+ * ADR 0111 carries the reasoning.
  */
-export const API_CONTRACT_VERSION = "0.19.0" as const;
+export const API_CONTRACT_VERSION = "0.20.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

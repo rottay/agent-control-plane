@@ -11820,6 +11820,84 @@ const P37S_WRITE_SET = [
   "docs/audit/implementation/packets/index.md",
 ];
 
+/**
+ * P-26, cut B: a roadmap version declares its steps, all or none (ADR 0111; decisions
+ * 172-177; Fable pre-audit C1-C7, adopted; DT admission ND-B1).
+ *
+ * The contract gains the private step manifest, the step declaration, their bounds,
+ * the write set's preimage prefix and the version's step cohort, and moves to 2.10.0
+ * with the bump's three acts at both initiative doors; the ledger gains the batch door
+ * (whole-batch replay, `LedgerInitiativeBatchConflictError`), the one derivation of a
+ * step's digests and rank, five decision words, one producer, migration 25 and the
+ * step fold; the gateway seam becomes the producer's caller; the API moves to 0.20.0.
+ * L-P26B-1 and L-P26B-2 keep it so; L-P26A-1 and L-P15F-1 are amended in their own
+ * rows.
+ *
+ * **Pins that move.** `CONTRACT_VERSION` 2.9.0 -> **2.10.0**; `API_CONTRACT_VERSION`
+ * 0.19.0 -> **0.20.0**; `MIGRATIONS` 24 -> **25**; `CONTRACTS_SCHEMA_EXPORTS` 172 ->
+ * **178**; `ROADMAP_VERSION_REFUSALS` 7 -> **12**; `PATH_SCOPED_LAWS` 163 -> **165**;
+ * the ledger barrel +3; `tr_` 13 -> 15.
+ *
+ * Outside the map's named set, each reported to the DT and admitted: the gateway's
+ * roadmap route (the two DTO fields, and the identities it mints for a request with
+ * steps), the protocol barrel's one re-export, and as restamp drag the runtime intake
+ * suite's roadmap fixture, four typed roadmap-version fixtures in three console suites,
+ * and the daemon drill's PC-D3 trail pin (recomputed by its own recorded method).
+ */
+const P26B_WRITE_SET = [
+  "docs/api-reference.md",
+  "docs/architecture/0111-a-roadmap-version-declares-its-steps-all-or-none.md",
+  "docs/architecture/index.md",
+  "docs/audit/architecture/database/planning/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/domains/runtime/test/intake/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/console/test/components/edit-roadmap-dialog/index.test.tsx",
+  "packages/entrypoints/console/test/views/roadmap-document-view/index.test.tsx",
+  "packages/entrypoints/console/test/views/workspace-view/index.test.tsx",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/gateway/src/build-server/index.ts",
+  "packages/entrypoints/gateway/src/mappers/index.ts",
+  "packages/entrypoints/gateway/src/roadmap-write/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/initiatives/index.test.ts",
+  "packages/entrypoints/gateway/test/roadmap-write/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/schemas/initiatives/index.ts",
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/protocol/README.md",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/src/errors/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/roadmap-steps/index.ts",
+  "packages/persistence/ledger/src/roadmap-steps/types/index.ts",
+  "packages/persistence/ledger/src/roadmap-version/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/test/envelope-identity/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/roadmap-steps/index.test.ts",
+  "packages/persistence/ledger/test/roadmap-version/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12065,6 +12143,7 @@ const WRITE_SET = [
   ...P24A_WRITE_SET,
   ...P26A_WRITE_SET,
   ...P37S_WRITE_SET,
+  ...P26B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13583,6 +13662,17 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the protocol declares no sha-256 grammar of its own",
     scope: "packages/kernel/protocol/src/**",
+  },
+  // P-26 cut B. Two new path-shaped surfaces, so two new rows: the register and the
+  // `requireScope` call sites both move 163 -> 165 for L-P26B-1 and L-P26B-2.
+  // L-P26A-1 and L-P15F-1 are amended in their own rows and add none.
+  {
+    law: "the single initiative door writes no step and no version that counts steps",
+    scope: "packages/persistence/ledger/src/ledger/index.ts",
+  },
+  {
+    law: "a roadmap step's digests and rank have one home",
+    scope: "packages/*/*/src/**",
   },
 ];
 
@@ -21628,6 +21718,16 @@ if (accountsIndex === null) {
   // P-37, the sha-256 seam (the debt ADR 0107 named): `Sha256Hex`, on the barrel so
   // the protocol reads the contract's grammar instead of a private copy. 171 -> 172.
   "Sha256Hex",
+  // P-26 cut B (ADR 0111): a roadmap's steps -- the private manifest and the event
+  // payload that declares one step, their three bounds, and the preimage prefix of
+  // the expected write set's digest (the `OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1`
+  // precedent, ADR 0078). 172 -> 178.
+  "ROADMAP_STEPS_MAX",
+  "ROADMAP_STEP_DEPENDS_ON_MAX",
+  "ROADMAP_STEP_MANIFEST_MAX_BYTES",
+  "ROADMAP_WRITE_SET_PREIMAGE_PREFIX_V1",
+  "RoadmapStepManifest",
+  "RoadmapStepDeclaration",
 ];
 
   const schemasBarrel = readIfPresent("packages/kernel/contracts/src/schemas/index.ts");
@@ -25974,7 +26074,8 @@ if (tracked.status === 0) {
 // Over `packages/persistence/ledger/src/ledger/index.ts`, comments stripped: the file
 // imports `decideRoadmapVersion` from `../roadmap-version/index.js`; the initiative
 // door `#appendInitiativeInTransaction` calls `#assertRoadmapVersionGranted(event)`
-// after its contiguity guard and before its `INSERT INTO initiative_events`; that
+// after its contiguity guard and before it writes the row (`#insertInitiativeRow(`
+// since P-26 cut B); that
 // method's body calls `decideRoadmapVersion({`; and every statement that writes
 // `roadmap_version_read_model` (an `INSERT INTO` or `UPDATE` naming it, up to its
 // `.run(`) carries no `ON CONFLICT`, with at least one insert present. It checks the
@@ -25986,8 +26087,10 @@ if (tracked.status === 0) {
 // in from another string is not seen; the ledger suite's insert-only row and the
 // raw-insert teeth of migration 24 are the behaviour. Only `INSERT INTO` and `UPDATE`
 // are matched: an `INSERT OR REPLACE`, `REPLACE INTO` or `INSERT OR IGNORE` on
-// `roadmap_version_read_model` is not (verifier note 1); the fold's pre-insert
-// `assertRoadmapVersionUnfolded` still guards the second claim any of them would hide.
+// `roadmap_version_read_model`, `roadmap_step_read_model` or `roadmap_step_dependency`
+// is not (verifier note 1, extended by P-26 cut B); the fold's pre-insert checks
+// (`assertRoadmapVersionUnfolded`, `foldRoadmapStep`) still guard the second claim any
+// of them would hide.
 {
   const DOOR_SITE = "packages/persistence/ledger/src/ledger/index.ts";
   let scanned = 0;
@@ -26006,7 +26109,10 @@ if (tracked.status === 0) {
     const door = body(code, "  #appendInitiativeInTransaction(");
     const call = door.indexOf("this.#assertRoadmapVersionGranted(event)");
     const guard = door.indexOf("LedgerLifecycleConflictError");
-    const insert = door.indexOf("INSERT INTO initiative_events");
+    // Amended by P-26 cut B: the row is written by `#insertInitiativeRow`, which the
+    // single door and the batch door share, so the INSERT this law orders against is
+    // that call in the door's body.
+    const insert = door.indexOf("this.#insertInitiativeRow(");
     if (call === -1) {
       fail(DOOR_SITE + " #appendInitiativeInTransaction no longer calls #assertRoadmapVersionGranted; the roadmap law runs inside the append (L-P26A-1)");
     } else if (guard === -1 || insert === -1 || !(guard < call && call < insert)) {
@@ -26016,19 +26122,139 @@ if (tracked.status === 0) {
       fail(DOOR_SITE + " #assertRoadmapVersionGranted no longer calls decideRoadmapVersion (L-P26A-1)");
     }
     let inserts = 0;
-    for (const match of code.matchAll(/(INSERT INTO|UPDATE) roadmap_version_read_model\b/g)) {
+    // Extended by P-26 cut B (ADR 0111) to the step rows: a declared step and its
+    // dependencies are immutable too.
+    for (const match of code.matchAll(/(INSERT INTO|UPDATE) (roadmap_version_read_model|roadmap_step_read_model|roadmap_step_dependency)\b/g)) {
       const from = match.index ?? 0;
       const to = code.indexOf(".run(", from);
       const statement = code.slice(from, to === -1 ? code.length : to);
-      if (match[1] === "INSERT INTO") inserts += 1;
+      if (match[1] === "INSERT INTO" && match[2] === "roadmap_version_read_model") inserts += 1;
       if (/ON CONFLICT/.test(statement)) {
-        fail(DOOR_SITE + " writes roadmap_version_read_model with ON CONFLICT; a recorded version is insert-only (L-P26A-1)");
+        fail(DOOR_SITE + " writes " + String(match[2]) + " with ON CONFLICT; a recorded version and its steps are insert-only (L-P26A-1)");
       }
     }
     if (inserts === 0) fail(DOOR_SITE + " no longer inserts into roadmap_version_read_model where the law can see it (L-P26A-1)");
   }
   requireScope("the roadmap-version law runs inside the append, and a version is written insert-only", scanned);
   notes.push("the roadmap-version law runs inside the append, and a version is written insert-only");
+}
+
+// L-P26B-1 -- the single initiative door writes no step and no version that counts
+// steps (P-26 cut B, ADR 0111; decision 174).
+//
+// The batch door's whole-batch replay rule -- every key recorded and equal is a
+// replay, some keys recorded is a conflict -- is sound only because no door can
+// write part of a batch. So over `ledger/src/ledger/index.ts`, comments stripped:
+// `#appendInitiativeInTransaction` refuses a `"ROADMAP_STEP_DECLARED"` and a
+// `ROADMAP_VERSION_RECORDED` whose `stepCount` is above 0, both before its
+// `#insertInitiativeRow(`; `appendInitiativeBatch(` exists and reaches
+// `#insertInitiativeRow(` only after `#assertRoadmapVersionGranted(`; and the stream's
+// one `INSERT INTO initiative_events` is inside `#insertInitiativeRow` (Fable C-B5), so
+// a second door writing rows by its own SQL is a checked fact, not a stated limit.
+//
+// Stated limit: a text-level matcher over one file. A refusal reached through a helper
+// under another name, or a refusal whose condition is neutralized while its text stays
+// (`... && false`, bitten on a disposable copy and still passing) is not seen; the
+// ledger drills that feed the single door a step and a counting version are the
+// behaviour.
+{
+  const DOOR_SITE = "packages/persistence/ledger/src/ledger/index.ts";
+  let scanned = 0;
+  const body = (code, head) => {
+    const start = code.indexOf(head);
+    const end = start === -1 ? -1 : code.indexOf("\n  }\n", start);
+    return start === -1 || end === -1 ? "" : code.slice(start, end);
+  };
+  const source = readIfPresent(DOOR_SITE);
+  if (source !== null) {
+    scanned += 1;
+    const code = stripComments(source);
+    const door = body(code, "  #appendInitiativeInTransaction(");
+    const insert = door.indexOf("this.#insertInitiativeRow(");
+    const step = door.indexOf('event.type === "ROADMAP_STEP_DECLARED"');
+    const counting = door.search(/stepCount\s*>\s*0/);
+    if (insert === -1) fail(DOOR_SITE + " #appendInitiativeInTransaction no longer inserts through #insertInitiativeRow (L-P26B-1)");
+    if (step === -1 || step > insert) {
+      fail(DOOR_SITE + " #appendInitiativeInTransaction no longer refuses a ROADMAP_STEP_DECLARED before it inserts (L-P26B-1)");
+    }
+    if (counting === -1 || counting > insert) {
+      fail(DOOR_SITE + " #appendInitiativeInTransaction no longer refuses a version that counts steps before it inserts (L-P26B-1)");
+    }
+    const batchStart = code.indexOf("  appendInitiativeBatch(");
+    const batchEnd = batchStart === -1 ? -1 : code.indexOf("\n  }\n", code.indexOf("return run.immediate();", batchStart));
+    const batch = batchStart === -1 || batchEnd === -1 ? "" : code.slice(batchStart, batchEnd);
+    const decided = batch.indexOf("this.#assertRoadmapVersionGranted(");
+    const inserted = batch.indexOf("this.#insertInitiativeRow(");
+    if (decided === -1 || inserted === -1 || decided > inserted) {
+      fail(DOOR_SITE + " appendInitiativeBatch no longer decides the batch before it inserts a row (L-P26B-1)");
+    }
+    // The one row writer (Fable C-B5): exactly one INSERT into the stream, inside it.
+    const writes = code.split("INSERT INTO initiative_events").length - 1;
+    const writer = body(code, "  #insertInitiativeRow(");
+    if (writes !== 1 || !writer.includes("INSERT INTO initiative_events")) {
+      fail(DOOR_SITE + " writes initiative_events " + String(writes) + " times or outside #insertInitiativeRow; the stream has one row writer (L-P26B-1)");
+    }
+  }
+  requireScope("the single initiative door writes no step and no version that counts steps", scanned);
+  notes.push("the single initiative door writes no step and no version that counts steps, and the batch door decides first");
+}
+
+// L-P26B-2 -- a roadmap step's digests and rank have one home (P-26 cut B, ADR 0111;
+// decision 176).
+//
+// Over every tracked `packages/*/*/src/` `.ts` file, comments stripped:
+// `roadmapStepDigests` is declared only in `ledger/src/roadmap-steps/index.ts`, which
+// imports `ROADMAP_WRITE_SET_PREIMAGE_PREFIX_V1` from `@acp/contracts`; the prefix's
+// literal (`acp/roadmap-write-set/`) appears only in the contract's initiatives
+// module; and no other file names `ROADMAP_WRITE_SET_PREIMAGE_PREFIX_V1` outside the
+// contract's barrels. The producer and the door's decision both call the one
+// function; the decision module imports it from the concept.
+//
+// Stated limit: a text-level matcher. A second derivation under another name that
+// hashes the same fields, or the prefix assembled from pieces, is not seen; the
+// door drills that tamper one digest or one rank are the behaviour.
+{
+  const HOME = "packages/persistence/ledger/src/roadmap-steps/index.ts";
+  const PREFIX_HOME = "packages/kernel/contracts/src/schemas/initiatives/index.ts";
+  const PREFIX_READERS = new Set([
+    HOME,
+    PREFIX_HOME,
+    "packages/kernel/contracts/src/schemas/index.ts",
+    "packages/kernel/contracts/src/index.ts",
+  ]);
+  let scanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    const sources = new Set(present);
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const source = readIfPresent(relativePath);
+      if (source === null) continue;
+      scanned += 1;
+      const code = stripComments(source);
+      if (relativePath !== HOME && /\b(?:function|const|let|var)\s+roadmapStepDigests\b/.test(code)) {
+        fail(relativePath + " declares roadmapStepDigests; a step's digests have one home, " + HOME + " (L-P26B-2)");
+      }
+      if (relativePath !== PREFIX_HOME && code.includes("acp/roadmap-write-set/")) {
+        fail(relativePath + " spells the write-set preimage prefix; it is the contract's (L-P26B-2)");
+      }
+      if (!PREFIX_READERS.has(relativePath) && /\bROADMAP_WRITE_SET_PREIMAGE_PREFIX_V1\b/.test(code)) {
+        fail(relativePath + " names the write-set preimage prefix; only the one derivation reads it (L-P26B-2)");
+      }
+    }
+    const home = stripComments(readIfPresent(HOME) ?? "");
+    if (!/export function roadmapStepDigests\(/.test(home)) fail(HOME + " no longer declares roadmapStepDigests (L-P26B-2)");
+    if (!/ROADMAP_WRITE_SET_PREIMAGE_PREFIX_V1[\s\S]*?\} from "@acp\/contracts";/.test(home)) {
+      fail(HOME + " no longer imports ROADMAP_WRITE_SET_PREIMAGE_PREFIX_V1 from @acp/contracts (L-P26B-2)");
+    }
+    const decision = stripComments(readIfPresent("packages/persistence/ledger/src/roadmap-version/index.ts") ?? "");
+    if (!/import \{ roadmapStepDigests \} from "\.\.\/roadmap-steps\/index\.js";/.test(decision)) {
+      fail("packages/persistence/ledger/src/roadmap-version/index.ts no longer derives steps through roadmapStepDigests (L-P26B-2)");
+    }
+  }
+  requireScope("a roadmap step's digests and rank have one home", scanned);
+  notes.push("a roadmap step's digests and rank have one home, and the prefix is the contract's");
 }
 
 // --- 21c. V2-B5/R11: the telemetry export edge ------------------------------
@@ -30183,8 +30409,9 @@ const CANONICAL_INSTANT_HOME = "packages/kernel/contracts/src/schemas/primitives
 //   and its types, and types; the runtime's events and execution chain; and the
 //   result concept with its type leaf. No entrypoint names it: a door derives
 //   `hasResult` from the pair's presence;
-// - (ii) `readByReference(` is called only by the objective reader and the result
-//   reader -- the ledger's one reader by reference and its two callers;
+// - (ii) `readByReference(` is called only by the objective reader, the result reader
+//   and the step manifest reader (P-26 cut B) -- the ledger's one reader by reference
+//   and its three callers;
 // - (iii) `readEffectResult(` is called only inside two function bodies, once each:
 //   `effectResult` in the gateway's effect-result module and `buildEffectResult` in
 //   the CLI's observation module (function-level since v4, verifier v3 §2: a second
@@ -30231,6 +30458,10 @@ const REFERENCE_READ_HOME = "packages/persistence/ledger/src/artifact-plane/inde
 const REFERENCE_READ_CALLERS = [
   "packages/persistence/ledger/src/initiative-registration/index.ts",
   "packages/domains/runtime/src/operation-result/index.ts",
+  // P-26 cut B (ADR 0111): the initiative batch door's one read of a version's step
+  // manifest, a re-derivation and not a sink -- nothing it reads reaches an event, a
+  // response or a log.
+  "packages/persistence/ledger/src/roadmap-steps/index.ts",
 ];
 const EFFECT_RESULT_HOME = "packages/domains/runtime/src/operation-result/index.ts";
 const EFFECT_RESULT_CALLERS = {
@@ -30266,7 +30497,7 @@ const RESULT_READ_RECORDING_NAMES =
         if (!REFERENCE_READ_CALLERS.includes(relativePath)) {
           fail(
             relativePath +
-              " reads the private plane by reference; the objective reader and the result reader are its two callers",
+              " reads the private plane by reference; the objective reader, the result reader and the step manifest reader are its three callers",
           );
         }
       }

@@ -512,6 +512,8 @@ describe("EditRoadmapDialog — armed (P8-8G packet 3, blueprint v2 §3)", () =>
             recordedAt: "2026-09-01T00:00:00.000Z",
             sequence: 12,
             head: true,
+            stepCount: 0,
+            stepManifestSha256: null,
           },
           sequence: 12,
         }),
@@ -679,6 +681,8 @@ describe("GrantedReceipt — the granted state shows the receipt (blueprint v2 �
           recordedAt: "2026-08-30T23:58:00.000Z",
           sequence: 12,
           head: true,
+          stepCount: 0,
+          stepManifestSha256: null,
         }}
         sequence={12}
         onClose={noop}

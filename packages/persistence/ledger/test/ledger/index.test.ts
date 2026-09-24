@@ -77,7 +77,7 @@ import {
   PRICE_INTERVAL_CATALOG_MIGRATION,
   DISPATCH_CATALOG_PIN_MIGRATION,
   EFFECT_RESULT_REFERENCE_MIGRATION,
-  ROADMAP_VERSION_UNIQUENESS_MIGRATION,
+  ROADMAP_STEPS_MIGRATION,
   MIGRATIONS,
   MODEL_VERSION_REGISTRY_MIGRATION,
   TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
@@ -350,7 +350,7 @@ describe("open", () => {
     // coordinate, P-08's sidecar and the registry stream, typed causal triple and
     // watermark table of P-09.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1411,7 +1411,34 @@ function dropEffectResultReference(raw: Database.Database): void {
  * stream and creates it again.
  */
 function dropRoadmapVersionUniqueness(raw: Database.Database): void {
+  // Twenty-five first (P-26 cut B): rewinding past 24 means rewinding past 25.
+  dropRoadmapSteps(raw);
   raw.exec("DROP INDEX ux_roadmap_version_read_model__initiative_id__version;");
+}
+
+/**
+ * Migration 25 undone: a roadmap version's steps (P-26 cut B, ADR 0111).
+ *
+ * `dropEffectResultReference`'s order: both cohort triggers first, because a column a
+ * trigger names cannot be dropped; then the columns in CHECK-dependency order —
+ * `step_manifest_sha256`, whose CHECKs name the other two, then the reference, then
+ * the count, then the recording version; then the dependency table before the step
+ * table it names; then the two watermark rows (migration 21's mould). No initiative
+ * event moves: the re-applied 25 writes each version's recording version back from
+ * its event.
+ */
+function dropRoadmapSteps(raw: Database.Database): void {
+  raw.exec(
+    "DROP TRIGGER tr_roadmap_version_read_model__validate_steps_on_update; " +
+      "DROP TRIGGER tr_roadmap_version_read_model__validate_steps_on_insert; " +
+      "ALTER TABLE roadmap_version_read_model DROP COLUMN step_manifest_sha256; " +
+      "ALTER TABLE roadmap_version_read_model DROP COLUMN step_manifest_artifact_reference_id; " +
+      "ALTER TABLE roadmap_version_read_model DROP COLUMN step_count; " +
+      "ALTER TABLE roadmap_version_read_model DROP COLUMN recording_contract_version; " +
+      "DROP TABLE roadmap_step_dependency; " +
+      "DROP TABLE roadmap_step_read_model; " +
+      "DELETE FROM projection_watermark WHERE projection_name IN ('roadmap_step_read_model', 'roadmap_step_dependency');",
+  );
 }
 
 /**
@@ -2159,14 +2186,14 @@ describe("projection watermark verification", () => {
     // the registry stream, and the two-source routing fold. Twenty-six heads,
     // because the last one has two — every one of them at zero on a ledger that
     // has never been appended to.
-    expect(ledger.status().projections).toHaveLength(25);
+    expect(ledger.status().projections).toHaveLength(27);
     expect(
       ledger
         .status()
         .projections.flatMap((projection) =>
           projection.watermarks.map((watermark) => watermark.appliedThroughSequence),
         ),
-    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it("keeps every projection level with the head of its own stream", () => {
@@ -2462,6 +2489,10 @@ function roadmapVersionValue(overrides: Record<string, unknown> = {}): Record<st
     restoresVersionId: null,
     recordedBy: "kimi/k3/coordinator/01",
     recordedAt: "2026-08-30T12:00:00.000Z",
+    // The 2.10.0 cohort (P-26 cut B): a version with no steps says so.
+    stepCount: 0,
+    stepManifestArtifactReferenceId: null,
+    stepManifestSha256: null,
     ...overrides,
   };
 }
@@ -2860,7 +2891,11 @@ describe("the roadmap-version law runs inside the append (P-26/A, ADR 0110)", ()
       expect(ledger.listRoadmapVersions(INITIATIVE_A), name).toEqual(versions);
       ledger.close();
     }
-    expect([...reached].sort()).toEqual([...ROADMAP_VERSION_REFUSALS].sort());
+    // The single door's words: the version laws. The five step words are the batch
+    // door's, and its own drill reaches them (P-26 cut B).
+    expect([...reached].sort()).toEqual(
+      [...ROADMAP_VERSION_REFUSALS].filter((word) => !word.startsWith("STEP_") && word !== "ROLLBACK_STEPS_MISMATCH").sort(),
+    );
   });
 
   it("grants the lawful successor and a lawful rollback through the same door", () => {
@@ -2939,10 +2974,16 @@ describe("the roadmap-version law runs inside the append (P-26/A, ADR 0110)", ()
       restoresVersionId: VERSION_ONE_ID,
     };
     const fields = Object.keys(base).sort();
-    expect(fields).toHaveLength(11);
+    // Eleven, and the three of the 2.10.0 cohort (P-26 cut B).
+    expect(fields).toHaveLength(14);
+    // A version with no steps names no manifest: for the manifest's reference and
+    // digest, null is the lawful value the base already holds, so only "absent"
+    // is a case for them (the control below grants the null).
+    const nullIsLawful = new Set(["stepManifestArtifactReferenceId", "stepManifestSha256"]);
     let cases = 0;
     for (const field of fields) {
       for (const shape of ["null", "absent"] as const) {
+        if (shape === "null" && nullIsLawful.has(field)) continue;
         const ledger = ledgerAtVersionOne();
         const payload =
           shape === "null"
@@ -2957,7 +2998,7 @@ describe("the roadmap-version law runs inside the append (P-26/A, ADR 0110)", ()
         cases += 1;
       }
     }
-    expect(cases).toBe(22);
+    expect(cases).toBe(26);
     // The control: the base itself is granted.
     const control = ledgerAtVersionOne();
     expect(control.appendInitiativeEvent(roadmapEvent("roadmap.v2", {}, { payload: base })).inserted).toBe(true);
@@ -2992,8 +3033,9 @@ describe("the roadmap-version law runs inside the append (P-26/A, ADR 0110)", ()
         raw
           .prepare(
             "INSERT INTO roadmap_version_read_model (roadmap_version_id, initiative_id, version, content_digest, " +
-              "parent_version_id, kind, restores_version_id, recorded_by, recorded_at, sequence) " +
-              "VALUES (?, ?, 9, ?, NULL, 'EDIT', NULL, 'kimi/k3/coordinator/01', '2026-08-30T12:00:00.000Z', 9)",
+              "parent_version_id, kind, restores_version_id, recorded_by, recorded_at, sequence, " +
+              "recording_contract_version, step_count) " +
+              "VALUES (?, ?, 9, ?, NULL, 'EDIT', NULL, 'kimi/k3/coordinator/01', '2026-08-30T12:00:00.000Z', 9, '2.10.0', 0)",
           )
           .run(VERSION_ONE_ID, INITIATIVE_A, DIGEST_TWO);
       expect(String(caught(insert))).toContain("UNIQUE constraint failed: roadmap_version_read_model.roadmap_version_id");
@@ -3055,6 +3097,176 @@ describe("a rebuild refuses a duplicate or malformed roadmap history by name (P-
     expect(once).toEqual(before);
     expect(ledger.listRoadmapVersions(INITIATIVE_A)).toEqual(before);
     expect(ledger.verifyIntegrity().ok).toBe(true);
+  });
+});
+
+/**
+ * Restamp an initiative history as a previous build would have written it (P-26 cut
+ * B): every event's version, every roadmap payload's version, and no step field on a
+ * version — chain, head and watermarks recomputed. The append-only triggers are
+ * taken out and put back verbatim, as `restampHistory` does for the task stream.
+ */
+function restampInitiativeHistory(path: string, version: string): void {
+  withRawDatabase(path, (raw) => {
+    const triggers = raw
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name IN (?, ?)")
+      .all("initiative_events_deny_update", "initiative_events_deny_delete") as { readonly sql: string }[];
+    expect(triggers).toHaveLength(2);
+    raw.exec("DROP TRIGGER initiative_events_deny_update; DROP TRIGGER initiative_events_deny_delete;");
+    const rows = raw
+      .prepare("SELECT sequence, event_json FROM initiative_events ORDER BY sequence")
+      .all() as { readonly sequence: number; readonly event_json: string }[];
+    const rewrite = raw.prepare(
+      "UPDATE initiative_events SET event_json = ?, contract_version = ?, previous_sha256 = ?, event_sha256 = ? WHERE sequence = ?",
+    );
+    let previous = GENESIS_SHA256;
+    for (const row of rows) {
+      const decoded = JSON.parse(row.event_json) as Record<string, unknown>;
+      decoded["contractVersion"] = version;
+      if (decoded["type"] === "ROADMAP_VERSION_RECORDED") {
+        const payload = { ...(decoded["payload"] as Record<string, unknown>) };
+        payload["contractVersion"] = version;
+        delete payload["stepCount"];
+        delete payload["stepManifestArtifactReferenceId"];
+        delete payload["stepManifestSha256"];
+        decoded["payload"] = payload;
+      }
+      const rewritten = canonicalJsonStringify(decoded);
+      const digest = chainDigest(previous, rewritten);
+      rewrite.run(rewritten, version, previous, digest, row.sequence);
+      previous = digest;
+    }
+    raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = 'initiative_head_event_sha256'").run(previous);
+    raw.prepare("UPDATE projection_watermark SET source_head_sha256 = ? WHERE source_stream = ?").run(previous, "initiative_events");
+    for (const trigger of triggers) raw.exec(trigger.sql);
+  });
+}
+
+describe("the bump's three acts on the initiative stream (P-26 cut B, ADR 0111)", () => {
+  it("act 1: new initiative work stamped 2.9.0 is refused naming both versions; an exact replay of a stored 2.9.0 event is returned", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const registration = makeInitiativeEvent();
+    ledger.appendInitiativeEvent(registration);
+    ledger.close();
+    restampInitiativeHistory(path, "2.9.0");
+
+    const reopened = open(path);
+    const stored = reopened.listInitiativeEvents({ initiativeId: INITIATIVE_A }).events[0];
+    if (stored === undefined) throw new Error("expected the registration");
+    const replay = reopened.appendInitiativeEvent({ ...stored.event });
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.eventSha256).toBe(stored.eventSha256);
+
+    const stale = caught(() =>
+      reopened.appendInitiativeEvent({
+        ...makeInitiativeEvent({ transitionId: "initiative.paused", type: "INITIATIVE_STATE_CHANGED", fromStatus: "ACTIVE", toStatus: "PAUSED" }),
+        contractVersion: "2.9.0",
+      }),
+    );
+    expect(stale).toBeInstanceOf(LedgerValidationError);
+    expect(String(stale)).toContain(CONTRACT_VERSION);
+    expect(String(stale)).toContain("2.9.0");
+    expect(reopened.status().initiativeEventCount).toBe(1);
+  });
+
+  it("act 2: a 2.10.0 event whose payload says 2.9.0 and carries no step field is refused", () => {
+    const ledger = open(temporaryDatabase());
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    const oldShape = { ...roadmapVersionValue({ contractVersion: "2.9.0" }) };
+    delete oldShape["stepCount"];
+    delete oldShape["stepManifestArtifactReferenceId"];
+    delete oldShape["stepManifestSha256"];
+    expect(roadmapRefusal(() => ledger.appendInitiativeEvent(roadmapEvent("roadmap.v1", {}, { payload: oldShape })))).toEqual({
+      reason: "REQUEST_INVALID",
+      at: "candidate.contractVersion",
+    });
+    expect(ledger.listRoadmapVersions(INITIATIVE_A)).toEqual([]);
+  });
+
+  it("act 3 (P-P18-2): a 2.9.0 history rewound to 24 opens, migrates, reads, verifies and rebuilds under 2.10.0, and takes new work", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    ledger.appendInitiativeEvent(makeInitiativeEvent());
+    ledger.appendInitiativeEvent(roadmapEvent("roadmap.v1"));
+    ledger.appendInitiativeEvent(roadmapEvent("roadmap.v2", VERSION_TWO));
+    ledger.close();
+    restampInitiativeHistory(path, "2.9.0");
+    withRawDatabase(path, (raw) => {
+      dropRoadmapSteps(raw);
+      raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(ROADMAP_STEPS_MIGRATION);
+    });
+
+    const migrated = open(path);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
+    const versions = migrated.listRoadmapVersions(INITIATIVE_A);
+    expect(versions.map((version) => [version.version, version.recordingContractVersion, version.stepCount, version.stepManifestSha256])).toEqual([
+      [1, "2.9.0", null, null],
+      [2, "2.9.0", null, null],
+    ]);
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+    migrated.rebuildReadModel();
+    expect(migrated.listRoadmapVersions(INITIATIVE_A)).toEqual(versions);
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+
+    // New work under the version in force, on top of the old history.
+    const third = migrated.appendInitiativeEvent(
+      roadmapEvent("roadmap.v3", {
+        roadmapVersionId: randomUUID(),
+        version: 3,
+        contentDigest: DIGEST_ONE,
+        parentVersionId: VERSION_TWO_ID,
+        expectedHeadDigest: DIGEST_TWO,
+      }),
+    );
+    expect(third.inserted).toBe(true);
+    expect(migrated.listRoadmapVersions(INITIATIVE_A).at(-1)).toMatchObject({ version: 3, recordingContractVersion: CONTRACT_VERSION, stepCount: 0 });
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+  });
+
+  it("refuses by name a rebuild over an orphan step, and over a version whose steps stop short", () => {
+    const orphan = open(temporaryDatabase());
+    orphan.appendInitiativeEvent(makeInitiativeEvent());
+    const orphanPath = orphan.path;
+    orphan.close();
+    plantInitiativeEvent(
+      orphanPath,
+      makeInitiativeEvent({
+        transitionId: "roadmap.v1.step.0",
+        type: "ROADMAP_STEP_DECLARED",
+        fromStatus: "ACTIVE",
+        toStatus: "ACTIVE",
+        payload: {
+          roadmapVersionId: VERSION_ONE_ID,
+          stepId: "a",
+          stepIndex: 0,
+          title: "A",
+          objectiveSha256: DIGEST_ONE,
+          acceptanceSha256: DIGEST_ONE,
+          expectedWriteSetSha256: DIGEST_ONE,
+          dependsOn: [],
+          dependencyRank: 0,
+        },
+      }),
+    );
+    expect(roadmapRefusal(() => open(orphanPath).rebuildReadModel())).toEqual({
+      reason: "STEP_DECLARATION_INVALID",
+      at: "candidate.roadmapVersionId",
+    });
+
+    const short = open(temporaryDatabase());
+    short.appendInitiativeEvent(makeInitiativeEvent());
+    const shortPath = short.path;
+    short.close();
+    plantInitiativeEvent(
+      shortPath,
+      roadmapEvent("roadmap.v1", { stepCount: 2, stepManifestArtifactReferenceId: "ref-manifest", stepManifestSha256: DIGEST_TWO }),
+    );
+    const reopened = open(shortPath);
+    expect(roadmapRefusal(() => reopened.rebuildReadModel())).toEqual({ reason: "STEP_COUNT_MISMATCH", at: "candidate.stepCount" });
+    const report = reopened.verifyIntegrity();
+    expect(report.ok).toBe(false);
+    expect(detailsOf(report.problems)).toContain("STEP_COUNT_MISMATCH at candidate.stepCount");
   });
 });
 
@@ -3485,7 +3697,7 @@ describe("the recorded execution route", () => {
     // The upgrade: the pending tail applies on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3697,7 +3909,7 @@ describe("appendBatch lands a whole batch or none of it", () => {
     expect(ledger.getTask(taskId)).toBeNull();
     expect(ledger.listWorkers().workers).toHaveLength(0);
     expect([...appliedByName(ledger).values()]).toEqual([
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ]);
     expect(ledger.verifyIntegrity().ok).toBe(true);
 
@@ -3722,7 +3934,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const rows = readWatermarks(ledger.path);
-    expect(rows).toHaveLength(26);
+    expect(rows).toHaveLength(28);
     const taskRows = rows.filter((row) => row.source_stream === "control_plane_events");
     expect(taskRows.map((row) => row.projection_name)).toEqual([
       "dispatch_attempt_read_model",
@@ -3759,10 +3971,12 @@ describe("the watermark advances with every door that moves a head", () => {
     const initiativeRows = rows.filter((row) => row.source_stream === "initiative_events");
     expect(initiativeRows.map((row) => row.projection_name)).toEqual([
       "initiative_read_model",
+      "roadmap_step_dependency",
+      "roadmap_step_read_model",
       "roadmap_version_read_model",
       "routing_assignment_read_model",
     ]);
-    expect(initiativeRows.map((row) => row.applied_sequence)).toEqual([0, 0, 0]);
+    expect(initiativeRows.map((row) => row.applied_sequence)).toEqual([0, 0, 0, 0, 0]);
   });
 
   it("carries the initiative stream's own head on appendInitiativeEvent", () => {
@@ -3806,7 +4020,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const before = readWatermarks(path);
-    expect(before).toHaveLength(26);
+    expect(before).toHaveLength(28);
 
     tamper(path, (raw) => {
       raw
@@ -3921,7 +4135,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3970,7 +4184,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     open(path).close();
 
     const rows = readWatermarks(path);
-    expect(rows).toHaveLength(26);
+    expect(rows).toHaveLength(28);
     expect(rows.every((row) => row.applied_sequence === 0)).toBe(true);
     expect(rows.every((row) => row.event_count === 0)).toBe(true);
     expect(rows.every((row) => row.source_head_sha256 === GENESIS_SHA256)).toBe(true);
@@ -4631,6 +4845,8 @@ const SINGLE_SOURCE_PAIRS = [
   "execution_route_read_model@control_plane_events",
   "initiative_read_model@initiative_events",
   "roadmap_version_read_model@initiative_events",
+  "roadmap_step_read_model@initiative_events",
+  "roadmap_step_dependency@initiative_events",
 ] as const;
 
 function singleSourceApplied(path: string): number[] {
@@ -4978,8 +5194,8 @@ describe("two heads under one projection name advance independently (negative 2)
     // shares with a stream it never touched, and leaves that stream's row alone.
     expect(after.get("routing_assignment_read_model@initiative_events")).toBe(1);
     expect(after.get("routing_assignment_read_model@registry_events")).toBe(registryBefore);
-    expect(singleSourceApplied(path)).toEqual([5, 5, 5, 1, 1]);
-    expect(before).toEqual([5, 5, 5, 0, 0]);
+    expect(singleSourceApplied(path)).toEqual([5, 5, 5, 1, 1, 1, 1]);
+    expect(before).toEqual([5, 5, 5, 0, 0, 0, 0]);
     expect(open(path).verifyIntegrity().ok).toBe(true);
   });
 
@@ -4998,7 +5214,7 @@ describe("two heads under one projection name advance independently (negative 2)
     const status = ledger.status();
     // Twenty-five projections, not twenty-six entries: the vector lives INSIDE
     // the projection, so a projection with two heads is still one projection.
-    expect(status.projections).toHaveLength(25);
+    expect(status.projections).toHaveLength(27);
     expect(status.projections.map((projection) => projection.name)).toEqual([
       "artifact_blob_read_model",
       "artifact_pin_read_model",
@@ -5013,6 +5229,8 @@ describe("two heads under one projection name advance independently (negative 2)
       "price_interval_read_model",
       "prompt_occurrence_read_model",
       "response_occurrence_read_model",
+      "roadmap_step_dependency",
+      "roadmap_step_read_model",
       "roadmap_version_read_model",
       "routing_assignment_read_model",
       "task_attempt_read_model",
@@ -5048,12 +5266,12 @@ describe("two heads under one projection name advance independently (negative 2)
     }
     ledger.close();
 
-    // Twenty-six rows in the table, twenty-six entries across twenty-five
+    // Twenty-eight rows in the table, twenty-eight entries across twenty-seven
     // projections. Nothing in the table is omitted from the DTO any more.
-    expect(readWatermarks(path)).toHaveLength(26);
+    expect(readWatermarks(path)).toHaveLength(28);
     expect(
       status.projections.flatMap((projection) => projection.watermarks),
-    ).toHaveLength(26);
+    ).toHaveLength(28);
   });
 
   it("publishes the latest instant of a projection's rows as its updatedAt", () => {
@@ -5247,7 +5465,7 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
       modelVersions: readModelVersionTables(path),
       watermarks: readWatermarks(path),
     };
-    expect(live.watermarks).toHaveLength(26);
+    expect(live.watermarks).toHaveLength(28);
     expect(live.routing).toHaveLength(3);
 
     const first = open(path);
@@ -6132,7 +6350,7 @@ describe("the account sidecar is activated once, over everything, atomically", (
     // The upgrade: migration 10 applies on open and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((m) => m.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
@@ -8020,14 +8238,14 @@ describe("a version this build does not read is refused, by name", () => {
     );
     ledger.close();
 
-    restampVersion(path, 2, "2.10.0");
+    restampVersion(path, 2, "2.11.0");
     const reopened = open(path);
 
     // 1. Reading events. The whole page fails closed rather than returning a
     //    row this build cannot vouch for.
     const listed = caught(() => reopened.listEvents());
     expect(listed).toBeInstanceOf(LedgerIntegrityError);
-    expect(String(listed)).toContain("2.10.0");
+    expect(String(listed)).toContain("2.11.0");
     expect(String(listed)).toContain(SUPPORTED_CONTRACT_VERSIONS.join(", "));
 
     // 2. Verifying. The problem is reported with its own kind, and the detail
@@ -8038,7 +8256,7 @@ describe("a version this build does not read is refused, by name", () => {
       (problem) => problem.kind === "EVENT_CONTRACT",
     );
     expect(contractProblems).toHaveLength(1);
-    expect(contractProblems[0]?.detail).toContain("2.10.0");
+    expect(contractProblems[0]?.detail).toContain("2.11.0");
     expect(contractProblems[0]?.detail).toContain(CONTRACT_VERSION);
     expect(contractProblems[0]?.sequence).toBe(2);
 
@@ -8046,7 +8264,7 @@ describe("a version this build does not read is refused, by name", () => {
     //    read model that is missing an event without saying so.
     const rebuilt = caught(() => reopened.rebuildReadModel());
     expect(rebuilt).toBeInstanceOf(LedgerIntegrityError);
-    expect(String(rebuilt)).toContain("2.10.0");
+    expect(String(rebuilt)).toContain("2.11.0");
   });
 
   it("keeps the general message for every other way a row can fail the contract", () => {
@@ -8093,10 +8311,10 @@ describe("a version this build does not read is refused, by name", () => {
     // identity: three supported-but-not-current members, four in the loop.
     // P-32/captura B moved it again (ADR 0089), for an identity: four
     // supported-but-not-current members, five in the loop. P-06/B and P-07
-    // escalón B (ADR 0098, a cohort again) moved it twice more, and P-15 escalón C
-    // (ADR 0103, a cohort) once more.
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", CONTRACT_VERSION]);
-    expect(CONTRACT_VERSION).toBe("2.9.0");
+    // escalón B (ADR 0098, a cohort again) moved it twice more, P-15 escalón C
+    // (ADR 0103, a cohort) once more, and P-26 cut B (ADR 0111, both) once more.
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", CONTRACT_VERSION]);
+    expect(CONTRACT_VERSION).toBe("2.10.0");
 
     // The history is fabricated with `restampVersion` rather than taken from a
     // fixture, and the correction matters: there is no recorded `"2.2.0"`
@@ -8168,7 +8386,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -8227,7 +8445,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -8245,7 +8463,7 @@ describe("a version this build does not read is refused, by name", () => {
     migrated.append(
       responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }),
     );
-    expect(CONTRACT_VERSION).toBe("2.9.0");
+    expect(CONTRACT_VERSION).toBe("2.10.0");
     expect(migrated.listEvents().events.at(-1)?.event.contractVersion).toBe(CONTRACT_VERSION);
     expect(migrated.getResponseOccurrenceForPrompt("po-1")?.occurrenceId).toBe("ro-1");
     expect(migrated.rebuildReadModel().replayedEvents).toBe(6);
@@ -8278,7 +8496,7 @@ describe("a version this build does not read is refused, by name", () => {
 
       const migrated = open(path);
       expect(migrated.status().migrations.map((migration) => migration.version), version).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
       ]);
       expect(
         migrated.listEvents().events.map((record) => record.event.contractVersion),
@@ -8428,7 +8646,7 @@ describe("migration 11 applies whole, over a ledger that already has a history",
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
     ]);
 
     // Reads still answer, with the same rows and the same head.
@@ -13721,7 +13939,7 @@ describe("migration 15 rebuilds the registry stream and changes no row (N-P36A-1
     const migrated = open(path);
     // Fifteen applies over the history at fourteen, and sixteen through nineteen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(ARTIFACT_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_VERSION_UNIQUENESS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
     const report = migrated.verifyIntegrity();
     expect(report.problems).toEqual([]);
     expect(report.coverage.find((entry) => entry.sourceStream === "registry_events")?.checkedThroughSequence).toBe(3);
@@ -13934,7 +14152,7 @@ describe("an artifact event is a registry row with a subject, an ordinal and a k
       expect(issue.path).toBe("subjectOrdinal");
       expect(issue.message).toContain("the next one is ordinal 2; this event proposes " + String(ordinal));
     }
-    expect(ledger.status().projections.length).toBe(25);
+    expect(ledger.status().projections.length).toBe(27);
     expect(ledger.appendArtifactEvent(publicationSucceeded({ ordinal: 2 })).inserted).toBe(true);
   });
 
@@ -14904,7 +15122,7 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
       expect(migrated.status().migrations.map((migration) => migration.version), version).toContain(
         TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
       );
-      expect(migrated.status().migrations.at(-1)?.version, version).toBe(ROADMAP_VERSION_UNIQUENESS_MIGRATION);
+      expect(migrated.status().migrations.at(-1)?.version, version).toBe(ROADMAP_STEPS_MIGRATION);
       expect(readRevisions(path).map((row) => [row.contract_version, row.envelope_artifact_reference_id]), version).toEqual([
         [version, null],
         [version, null],
@@ -14939,8 +15157,8 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
     expect(stale.message).toContain("2.4.0");
     // P-32/captura B moved the version in force on to 2.6.0 (ADR 0089); the
     // cohort's rule reads every version after the closed list the same way.
-    expect(CONTRACT_VERSION).toBe("2.9.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0"]);
+    expect(CONTRACT_VERSION).toBe("2.10.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "2.10.0"]);
     ledger.close();
   });
 });
@@ -15355,7 +15573,7 @@ describe("migration 17 lands whole over a registry that already holds model vers
     const migrated = open(path);
     // Seventeen re-applies, and eighteen and nineteen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(MODEL_VERSION_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_VERSION_UNIQUENESS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
 
@@ -15493,7 +15711,7 @@ describe("migration 18 gives the initiative projection its registration columns 
 
     const migrated = open(path);
     // Nineteen re-applied after it (P-14 C): the rewind undid both.
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_VERSION_UNIQUENESS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     expect(readInitiativeColumns(path)).toEqual(before.rows);
@@ -15738,7 +15956,7 @@ describe("a task's client key has one home, folded from its intake (P-14 C)", ()
     });
 
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_VERSION_UNIQUENESS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
     expect(readSubmissionRows(path)).toEqual(rows);
     expect(migrated.getTask(taskId)).toEqual(task);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
@@ -16637,7 +16855,7 @@ describe("usage is a declared stream and a measured observation, and the door se
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(USAGE_CAPTURE_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_VERSION_UNIQUENESS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
     expect(usageDump(path)).toBe(live);
     expect(settlementsOf(path, secondEffect)).toEqual([
       expect.objectContaining({ revision: 1, status: "UNKNOWN", sequence: dispatch.sequence, computedAt: dispatch.event.recordedAt }),
@@ -16676,7 +16894,7 @@ describe("usage is a declared stream and a measured observation, and the door se
     expect(stale.path).toBe("contractVersion");
     expect(stale.message).toContain(CONTRACT_VERSION);
     expect(stale.message).toContain("2.5.0");
-    expect(CONTRACT_VERSION).toBe("2.9.0");
+    expect(CONTRACT_VERSION).toBe("2.10.0");
     expect(settlementsOf(path, effectId)).toHaveLength(1);
     expect(reopened.verifyIntegrity().ok).toBe(true);
   });
@@ -17315,7 +17533,7 @@ describe("migration 21 lands whole over a registry that already holds price cata
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(PRICE_INTERVAL_CATALOG_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_VERSION_UNIQUENESS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
 
@@ -17400,7 +17618,7 @@ describe("migration 21 lands whole over a registry that already holds price cata
     });
 
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_VERSION_UNIQUENESS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
     expect(migrated.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 2 })).toEqual([]);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     expect(migrated.rebuildReadModel().priceIntervalRows).toBe(3);
@@ -17563,7 +17781,7 @@ describe("an effect records its result by reference, with its outcome (P-07 esca
       resultArtifactReferenceId: RESULT_REFERENCE,
       resultSha256: RESULT_DIGEST,
     });
-    expect(CONTRACT_VERSION).toBe("2.9.0");
+    expect(CONTRACT_VERSION).toBe("2.10.0");
     expect(ledger.verifyIntegrity().ok).toBe(true);
     ledger.close();
   });
@@ -17634,7 +17852,7 @@ describe("an effect records its result by reference, with its outcome (P-07 esca
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(EFFECT_RESULT_REFERENCE_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_VERSION_UNIQUENESS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
     expect(migrated.getEffect(effectId)?.outcomeContractVersion).toBe("2.7.0");
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
@@ -17866,7 +18084,7 @@ describe("an effect records its result by reference, with its outcome (P-07 esca
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(EFFECT_RESULT_REFERENCE_MIGRATION);
     });
     const reopened = open(again);
-    expect(reopened.status().migrations.at(-1)?.version).toBe(ROADMAP_VERSION_UNIQUENESS_MIGRATION);
+    expect(reopened.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
     // A 2.8.0 SUCCEEDED gets its version AND its pair back from its own event,
     // so the rows equal what the fold computes and the replay agrees.
     expect(effectRows(again).map((row) => [row["outcome_contract_version"], row["result_sha256"]])).toEqual([
@@ -17958,7 +18176,7 @@ describe("a delivery pins the catalog version it will be valued against (P-15 es
       catalogDocumentId: FIXTURE_CATALOG,
       catalogVersion: 1,
     });
-    expect(CONTRACT_VERSION).toBe("2.9.0");
+    expect(CONTRACT_VERSION).toBe("2.10.0");
     const count = ledger.status().eventCount;
     expect(ledger.append(intention).inserted).toBe(false);
     expect(ledger.status().eventCount).toBe(count);
@@ -17966,7 +18184,7 @@ describe("a delivery pins the catalog version it will be valued against (P-15 es
     const path = ledger.path;
     ledger.close();
     expect(dispatchRows(path).map((row) => [row["dispatch_contract_version"], row["catalog_document_id"], row["catalog_version"]])).toEqual([
-      ["2.9.0", FIXTURE_CATALOG, 1],
+      ["2.10.0", FIXTURE_CATALOG, 1],
     ]);
   });
 
@@ -18031,7 +18249,7 @@ describe("a delivery pins the catalog version it will be valued against (P-15 es
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(DISPATCH_CATALOG_PIN_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_VERSION_UNIQUENESS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     const upgraded = dispatchRows(path);

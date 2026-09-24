@@ -58,7 +58,11 @@ ledger.close();
 | `getInitiative(id)` | Derived initiative read model, or null. |
 | `listRoadmapVersions(id)` | An initiative's recorded roadmap versions, in version order. |
 | `listInitiativeEvents(query?)` | Sequence-ordered page of the initiative stream. |
-| `decideRoadmapVersion(request)` | Pure. The caller supplies the folded head; nothing here reads a ledger. Two callers: the initiative door, which is the law, and the gateway seam, which is the fast path. Seven words, `ROADMAP_VERSION_REFUSALS`. |
+| `decideRoadmapVersion(request)` | Pure. The caller supplies the folded head, and for a version with steps its declarations and the manifest; nothing here reads a ledger. Two callers: the initiative door, which is the law, and `recordRoadmapRevision`, which is the fast path. Twelve words, `ROADMAP_VERSION_REFUSALS`. |
+| `appendInitiativeBatch(events)` | One roadmap version and its `ROADMAP_STEP_DECLARED`s, all or none, in one transaction (P-26 cut B). The door reads the version's manifest back by reference and the one decision re-derives every step from it; a whole-batch replay returns the stored records, anything partial is `LedgerInitiativeBatchConflictError`. |
+| `listRoadmapSteps(roadmapVersionId)` / `listRoadmapStepDependencies(roadmapVersionId)` | A version's declared steps in index order, and their dependencies. Titles and digests, never a step's text. |
+| `recordRoadmapRevision(input)` | The one producer of a roadmap version, steps optional: publish the document, fold, derive and decide, publish the manifest as a `PLAN_DOCUMENT`, append through the single door or the batch door. Handles, instants, the pid and identities are injected. |
+| `roadmapStepDigests(manifest)` | Pure. The one derivation of a step's digests and rank (L-P26B-2), or the cycle that has none. |
 | `decideInitiativeRegistration(request)` | Pure. Parses a candidate through `Initiative`, guards included, and compares it with the registration the stream holds under the same id: grant, replay or `CONFLICT`. |
 | `registerInitiative(input)` | The one registration both doors call: decide, publish the objective to the private plane, append one `INITIATIVE_REGISTERED` whose closed payload carries the objective's digest and reference. Handles, instants, the pid and identifiers are injected; it opens nothing and reads no clock. |
 | `publishRegistryDocument(input)` | The one publication of a `MODEL_VERSION`, a `ROUTING_ASSIGNMENT_GLOBAL` or a `PRICE_TABLE` (P-15/R, ADR 0104): derives the digest, the key and a version 5 event id, answers an exact retry as a replay, refuses a version recorded otherwise, and carries the door's refusals by field and word. `acp registry` calls it. |
@@ -151,9 +155,9 @@ way to notice.
 Every error is typed and carries a `code`. None of them embeds event content,
 so all of them are safe to log or attach to a checkpoint.
 
-Fifteen classes are exported, and this is the complete list — the
+Sixteen classes are exported, and this is the complete list — the
 architecture fence asserts it against the barrel in both directions, so a
-sixteenth class cannot arrive without appearing here.
+seventeenth class cannot arrive without appearing here.
 
 | Class | Raised when |
 | --- | --- |
@@ -172,6 +176,7 @@ sixteenth class cannot arrive without appearing here.
 | `LedgerQueryError` | a query is malformed — a bad cursor, an out-of-range limit |
 | `LedgerArtifactEncryptionConflictError` | a publication would reuse a blob generation under another encryption status, key reference or profile; a deduplication never changes a blob's encryption |
 | `LedgerRoadmapVersionRefusedError` | the initiative door refuses a roadmap version by the decision's word, or the fold meets a second claim on a version's identity or number; carries `reason` and `at`, never the roadmap |
+| `LedgerInitiativeBatchConflictError` | an initiative batch meets a stream that holds part of it, or all of it with other content; a batch is recorded whole or replayed whole, and carries the count of keys already recorded, never a body |
 
 ## Tables
 
@@ -728,7 +733,7 @@ updates), that hold the cohort:
 | `outcome_contract_version` | result pair |
 | --- | --- |
 | `2.2.0` … `2.7.0` — a closed list frozen in the migration | must be `NULL` |
-| anything else — `2.8.0` and `2.9.0` today | required on `SUCCEEDED`; optional on `FAILED` |
+| anything else — `2.8.0`, `2.9.0` and `2.10.0` today | required on `SUCCEEDED`; optional on `FAILED` |
 
 Version-independent row law is a CHECK: the pair is both `NULL` or both present,
 the digest has the common shape, a result exists only on `SUCCEEDED` or `FAILED`,
@@ -765,7 +770,7 @@ the cohort:
 | `dispatch_contract_version` | pin |
 | --- | --- |
 | `2.2.0` … `2.8.0` — a closed list frozen in the migration | must be `NULL` |
-| anything else — `2.9.0` today | required |
+| anything else — `2.9.0` and `2.10.0` today | required |
 | `NULL` | refused, by the first statement |
 
 On upgrade, code in the migration's transaction writes each delivery's version (and
@@ -1599,6 +1604,49 @@ every pending migration: the ledger stays at 23 and does not open under this bui
 while the previous build still opens it. Nothing is deduplicated, renumbered or
 deleted; what to do with such a ledger is the owner's decision (an exception entry,
 or a quarantined ledger).
+
+## A roadmap version declares its steps
+
+P-26 cut B (ADR 0111). A version may carry a step manifest — each step's id, title,
+objective, acceptance, expected write set and dependencies — published to the
+private plane as a `PLAN_DOCUMENT` scoped to its initiative. The stream never holds
+those texts: each `ROADMAP_STEP_DECLARED` carries the step's title, the digests of
+the rest and its `dependencyRank`, the result of the cycle computation (planning §4).
+
+### The batch door, and why replay is judged whole
+
+`appendInitiativeBatch` records a version and its steps in one transaction, all or
+none, in `stepIndex` order. It reads the manifest back by reference outside the
+transaction — content-addressed, so the bytes hash to the digest the reference row
+pins — asserts the row inside it (a `PLAN_DOCUMENT` of this initiative, of the
+version's digest), and runs the one decision over the fold and the manifest: five
+step words join the version's seven (`STEP_COUNT_MISMATCH`,
+`STEP_DECLARATION_INVALID`, `STEP_DEPENDENCY_CYCLE`, `STEP_DIGEST_MISMATCH`,
+`ROLLBACK_STEPS_MISMATCH`). A replay is judged for the whole batch: every key
+recorded, every body equal and contiguous in the batch's order is the stored
+records; anything else that finds a key recorded is
+`LedgerInitiativeBatchConflictError`. That departs from the task batch on purpose,
+and is sound only because the single initiative door refuses a step and a version
+that counts steps (L-P26B-1): no door writes part of a batch.
+
+### The fold, from payloads only
+
+`roadmap_step_read_model` and `roadmap_step_dependency` are folded from the events,
+never from the manifest: a rebuild does not reopen a blob. A step for an unknown
+version, at an index out of order, under a repeated id, past its version's count, or
+depending on a step its version does not declare is refused by the door's word; a
+version whose steps stop short is refused once the stream is folded. `state` is
+`DECLARED` and `routing_assignment_version` NULL always. Rows are insert-only.
+
+### Migration 25, and the version in force
+
+Migration 25 adds the version's cohort — `recording_contract_version`, written for
+every existing row from its own event, and `step_count` with the manifest's
+reference and digest — held by two triggers on the closed list of the eight prior
+versions; the two step tables with their three indexes; and two watermarks seeded at
+the initiative head. `CONTRACT_VERSION` moved to `"2.10.0"`, and both initiative
+doors now hold a new insertion to it, an exact replay exempt, and a roadmap
+payload's version to its event's.
 
 ## Integrity
 

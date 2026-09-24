@@ -48,7 +48,7 @@ this table against the barrel.
 | `commit-authorization` | the receipt a local commit requires, and what it binds |
 | `execution-boundary` | the provider-neutral execution port: routes, requests, normalized events |
 | `durability-plane` | the shapes the durability port exchanges with its drivers |
-| `initiatives` | the initiative stream: registration, status, roadmap versions |
+| `initiatives` | the initiative stream: registration, status, roadmap versions and their steps — the private step manifest, the declaration a `ROADMAP_STEP_DECLARED` carries, their bounds and the write set's preimage prefix (P-26 cut B) |
 | `account-record` | an account and its actions, with the refusal vocabulary |
 | `usage-limits` | the bounds a quota estimate is computed against |
 | `usage-measure` | the usage measurement vocabularies — source classes by precedence and report kinds — which the execution port's usage report names and the ledger re-exports |
@@ -123,11 +123,12 @@ precedent.
 - **Strict objects.** Object schemas are built with `strictObject`, so an
   unknown key is a validation failure rather than a silently carried field. A
   producer that grows a field fails at the boundary instead of leaking it.
-- **One version written, a set admitted.** `CONTRACT_VERSION` is `"2.9.0"` since
-  P-15 escalón C, which keys a dispatch's price pin on a cohort of the version that
-  recorded it (ADR 0103), as P-07 escalón B keyed an effect's result reference
-  (ADR 0098): the literal moved and `SUPPORTED_CONTRACT_VERSIONS` grew to eight
-  without losing a member, and every stored row still reads. It is the single literal a **producer** stamps.
+- **One version written, a set admitted.** `CONTRACT_VERSION` is `"2.10.0"` since
+  P-26 cut B, which keys a roadmap version's steps on a cohort of the version that
+  recorded it and gives each declared step digests and a rank the ledger's door
+  re-derives (ADR 0111), as P-15 escalón C keyed a dispatch's price pin (ADR 0103):
+  the literal moved and `SUPPORTED_CONTRACT_VERSIONS` grew to nine without losing a
+  member, and every stored row still reads. It is the single literal a **producer** stamps.
   `SUPPORTED_CONTRACT_VERSIONS` is the set a **reader** admits, and `ContractVersion` is `z.enum` of it, so a record
   written under a version outside the set cannot be parsed as if it were
   current. The two are separate because a `z.literal` answers both questions

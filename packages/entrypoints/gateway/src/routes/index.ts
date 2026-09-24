@@ -1119,6 +1119,26 @@ export function registerRoutes(
         recordedAt: new Date().toISOString(),
         roadmapVersionId: randomUUID(),
         eventId: randomUUID(),
+        // A request with steps publishes its manifest to the private plane and
+        // appends one event per step (P-26 cut B): the registration route's set of
+        // identities, the pid and the lease store's incarnation, minted here, and one
+        // event id per step. The seam and the producer read no clock, pid or random
+        // source.
+        steps:
+          parsed.data.steps === undefined
+            ? null
+            : {
+                identities: {
+                  stepEventIds: parsed.data.steps.steps.map(() => randomUUID()),
+                  commandId: randomUUID(),
+                  artifactPinId: randomUUID(),
+                  artifactReferenceId: randomUUID(),
+                  intentionEventId: randomUUID(),
+                  terminalEventId: randomUUID(),
+                },
+                holderPid: process.pid,
+                leaseStoreIncarnationId: randomUUID(),
+              },
       });
 
       // Door two: the decision. A well-formed request it refuses conflicts
@@ -1151,6 +1171,8 @@ export function registerRoutes(
           recordedAt: outcome.version.recordedAt,
           sequence: outcome.sequence,
           head: true,
+          stepCount: outcome.version.stepCount,
+          stepManifestSha256: outcome.version.stepManifestSha256,
         },
         sequence: outcome.sequence,
       });

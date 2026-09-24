@@ -27,7 +27,8 @@ export type LedgerErrorCode =
   | "LEDGER_INTEGRITY"
   | "LEDGER_QUERY"
   | "LEDGER_ARTIFACT_ENCRYPTION_CONFLICT"
-  | "LEDGER_ROADMAP_VERSION_REFUSED";
+  | "LEDGER_ROADMAP_VERSION_REFUSED"
+  | "LEDGER_INITIATIVE_BATCH_CONFLICT";
 
 /** Base class for everything this package throws deliberately. */
 export class LedgerError extends Error {
@@ -307,6 +308,43 @@ export class LedgerRoadmapVersionRefusedError extends LedgerError {
     this.name = "LedgerRoadmapVersionRefusedError";
     this.reason = reason;
     this.at = at;
+  }
+}
+
+/**
+ * An initiative batch meets a stream that holds part of it, or all of it otherwise
+ * (P-26 cut B, ADR 0111).
+ *
+ * The batch door answers a whole-batch replay — every key present, every stored
+ * body equal, contiguous in the batch's own order — with the stored records, and
+ * everything else that finds a key already recorded with this. It is not the
+ * single door's per-event conflict: a partial batch cannot be retried into being,
+ * because no door writes part of one (L-P26B-1), so "some keys exist" means another
+ * writer or a torn history. The coordinates are carried, never a body.
+ */
+export class LedgerInitiativeBatchConflictError extends LedgerError {
+  readonly initiativeId: string;
+  /** How many of the batch's keys the stream already holds. */
+  readonly recordedKeys: number;
+  readonly batchSize: number;
+
+  constructor(initiativeId: string, recordedKeys: number, batchSize: number, reason: string) {
+    super(
+      "LEDGER_INITIATIVE_BATCH_CONFLICT",
+      "initiative " +
+        initiativeId +
+        " already records " +
+        String(recordedKeys) +
+        " of this batch's " +
+        String(batchSize) +
+        " keys, and " +
+        reason +
+        "; a batch is recorded whole or replayed whole",
+    );
+    this.name = "LedgerInitiativeBatchConflictError";
+    this.initiativeId = initiativeId;
+    this.recordedKeys = recordedKeys;
+    this.batchSize = batchSize;
   }
 }
 

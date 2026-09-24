@@ -12,8 +12,10 @@ import { z } from "zod";
 import { AccountStatus } from "../account-record/index.js";
 import { EVENT_PAYLOAD_MAX_BYTES } from "../control-plane-event/index.js";
 import { attachGuards, serializedByteLength } from "../credential-guards/index.js";
+import { BoundedIdentifier } from "../bounded-identifier/index.js";
 import {
   ContractVersion,
+  RepoRelativePath,
   Sha256Hex,
   Timestamp,
   Uuid,
@@ -75,6 +77,166 @@ export const Initiative = z
   });
 export type Initiative = z.infer<typeof Initiative>;
 
+/**
+ * The bounds of a roadmap's steps (P-26 cut B, ADR 0111; ND-B6, Fable C4).
+ *
+ * `ROADMAP_STEPS_MAX` bounds a manifest's steps and so a version's `stepCount`;
+ * `ROADMAP_STEP_DEPENDS_ON_MAX` bounds one step's dependencies, which keeps one
+ * `ROADMAP_STEP_DECLARED` payload well under `EVENT_PAYLOAD_MAX_BYTES`. The counts
+ * shape the manifest; `ROADMAP_STEP_MANIFEST_MAX_BYTES` stops it. It is the binding
+ * bound, in serialized UTF-8 bytes — `ROADMAP_CONTENT_MAX_BYTES`' unit — because
+ * the counts alone admit a manifest of tens of megabytes, past the private plane's
+ * own ceiling.
+ */
+export const ROADMAP_STEPS_MAX = 200;
+export const ROADMAP_STEP_DEPENDS_ON_MAX = 32;
+export const ROADMAP_STEP_MANIFEST_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The version prefix of an expected write set's digest preimage (P-26 cut B,
+ * ADR 0111; Fable C6).
+ *
+ * `OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1`'s placement, for its reason: the preimage
+ * is contract-level identity, so its prefix is declared here; the computation —
+ * `sha256(prefix + canonicalJson(sorted paths))` — is the ledger's, because this
+ * package reaches no `node:` builtin. Frozen at `v1`: a change is a new prefix.
+ */
+export const ROADMAP_WRITE_SET_PREIMAGE_PREFIX_V1 = "acp/roadmap-write-set/v1\n";
+
+/** One step of a manifest, before any digest is taken. */
+const RoadmapStepEntry = z.strictObject({
+  /** Stable across versions: cut C diffs by it. */
+  stepId: BoundedIdentifier,
+  title: z.string().min(1).max(200),
+  objective: z.string().min(1).max(4_000),
+  acceptance: z.string().min(1).max(4_000),
+  expectedWriteSet: z.array(RepoRelativePath).max(500),
+  dependsOn: z.array(BoundedIdentifier).max(ROADMAP_STEP_DEPENDS_ON_MAX),
+});
+
+/** Each entry of a list once, reported at the second occurrence. */
+function refuseRepeats(
+  values: readonly string[],
+  ctx: z.RefinementCtx,
+  path: readonly (string | number)[],
+  what: string,
+): void {
+  const seen = new Set<string>();
+  for (const [index, value] of values.entries()) {
+    if (seen.has(value)) {
+      ctx.addIssue({ code: "custom", message: what + " must not repeat", path: [...path, index] });
+    }
+    seen.add(value);
+  }
+}
+
+/**
+ * A roadmap version's steps, as one private document (P-26 cut B, ADR 0111).
+ *
+ * The texts — objective, acceptance, the expected write set — live here and only
+ * here: published to the private plane as a `PLAN_DOCUMENT` scoped to the
+ * initiative, read back by reference at the door to re-derive the digests, and
+ * never carried by an event, a response or a log. What an event carries is
+ * `RoadmapStepDeclaration`: the step's title and the digests of the rest.
+ *
+ * What one value can prove about itself is proved here: step ids unique, a step
+ * that does not depend on itself, dependencies that name steps of this manifest,
+ * no repeated path or dependency, and the serialized size. A cycle cannot be seen
+ * one step at a time and is the ledger's to refuse, where the rank is computed.
+ */
+export const RoadmapStepManifest = z
+  .strictObject({
+    manifestContractVersion: z.literal(1),
+    steps: z.array(RoadmapStepEntry).min(1).max(ROADMAP_STEPS_MAX),
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx, { transcript: false });
+
+    refuseRepeats(value.steps.map((step) => step.stepId), ctx, ["steps"], "a stepId");
+    const known = new Set(value.steps.map((step) => step.stepId));
+    for (const [index, step] of value.steps.entries()) {
+      refuseRepeats(step.expectedWriteSet, ctx, ["steps", index, "expectedWriteSet"], "an expected path");
+      refuseRepeats(step.dependsOn, ctx, ["steps", index, "dependsOn"], "a dependency");
+      for (const [position, dependency] of step.dependsOn.entries()) {
+        if (dependency === step.stepId) {
+          ctx.addIssue({ code: "custom", message: "a step does not depend on itself", path: ["steps", index, "dependsOn", position] });
+        } else if (!known.has(dependency)) {
+          ctx.addIssue({
+            code: "custom",
+            message: "a dependency names a step of this manifest",
+            path: ["steps", index, "dependsOn", position],
+          });
+        }
+      }
+    }
+
+    const size = serializedByteLength(value);
+    if (size > ROADMAP_STEP_MANIFEST_MAX_BYTES) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "the step manifest is " +
+          String(size) +
+          " bytes which exceeds the " +
+          String(ROADMAP_STEP_MANIFEST_MAX_BYTES) +
+          " byte bound",
+        path: [],
+      });
+    }
+  });
+export type RoadmapStepManifest = z.infer<typeof RoadmapStepManifest>;
+
+/**
+ * One step, as a `ROADMAP_STEP_DECLARED` payload records it (P-26 cut B, ADR 0111).
+ *
+ * The title is the one text it carries, the class of `initiative_read_model.title`
+ * (decision 76); the rest is digests the door re-derives from the manifest and never
+ * believes. `dependencyRank` is the cycle computation's result, recorded on the event
+ * that declares the step's dependencies (planning §4; ND-B1, DT admission): the
+ * longest path from a step with none, so an acyclic graph is exactly one where every
+ * rank exists. The declaration rides its event's contract version; it carries none.
+ */
+export const RoadmapStepDeclaration = z
+  .strictObject({
+    roadmapVersionId: Uuid,
+    stepId: BoundedIdentifier,
+    stepIndex: z.number().int().min(0).max(ROADMAP_STEPS_MAX - 1),
+    title: z.string().min(1).max(200),
+    objectiveSha256: Sha256Hex,
+    acceptanceSha256: Sha256Hex,
+    expectedWriteSetSha256: Sha256Hex,
+    dependsOn: z.array(BoundedIdentifier).max(ROADMAP_STEP_DEPENDS_ON_MAX),
+    dependencyRank: z.number().int().min(0).max(ROADMAP_STEPS_MAX - 1),
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx, { transcript: false });
+    refuseRepeats(value.dependsOn, ctx, ["dependsOn"], "a dependency");
+    for (const [position, dependency] of value.dependsOn.entries()) {
+      if (dependency === value.stepId) {
+        ctx.addIssue({ code: "custom", message: "a step does not depend on itself", path: ["dependsOn", position] });
+      }
+    }
+  });
+export type RoadmapStepDeclaration = z.infer<typeof RoadmapStepDeclaration>;
+
+/**
+ * The versions no build before P-26 cut B could stamp with steps (ADR 0111).
+ *
+ * A closed list frozen here, never a comparison of version strings: a
+ * `RoadmapVersion` of one of these carries no step fields at all, and one of any
+ * later version carries all three. Migration 25's triggers spell the same eight.
+ */
+const PRE_ROADMAP_STEP_CONTRACT_VERSIONS: readonly string[] = [
+  "2.2.0",
+  "2.3.0",
+  "2.4.0",
+  "2.5.0",
+  "2.6.0",
+  "2.7.0",
+  "2.8.0",
+  "2.9.0",
+];
+
 export const ROADMAP_VERSION_KINDS = ["EDIT", "ROLLBACK"] as const;
 
 export const RoadmapVersionKind = z.enum(ROADMAP_VERSION_KINDS);
@@ -116,8 +278,62 @@ export const RoadmapVersion = z
     restoresVersionId: Uuid.nullable(),
     recordedBy: WorkerIdentityString,
     recordedAt: Timestamp,
+    /**
+     * From 2.10.0 (P-26 cut B, ADR 0111): how many steps the version declares, and
+     * the private manifest that holds their texts — its reference and its digest,
+     * both null exactly when the count is 0. Absent on every earlier version.
+     */
+    stepCount: z.number().int().min(0).max(ROADMAP_STEPS_MAX).optional(),
+    stepManifestArtifactReferenceId: z.string().min(1).max(512).nullable().optional(),
+    stepManifestSha256: Sha256Hex.nullable().optional(),
   })
   .superRefine((value, ctx) => {
+    // The step cohort, by the closed list, both ways.
+    const fields = ["stepCount", "stepManifestArtifactReferenceId", "stepManifestSha256"] as const;
+    if (PRE_ROADMAP_STEP_CONTRACT_VERSIONS.includes(value.contractVersion)) {
+      for (const field of fields) {
+        if (value[field] !== undefined) {
+          ctx.addIssue({
+            code: "custom",
+            message: field + " must be absent on a version of contract version " + value.contractVersion,
+            path: [field],
+          });
+        }
+      }
+    } else {
+      for (const field of fields) {
+        if (value[field] === undefined) {
+          ctx.addIssue({
+            code: "custom",
+            message: field + " is required from contract version 2.10.0",
+            path: [field],
+          });
+        }
+      }
+      if (
+        value.stepManifestArtifactReferenceId !== undefined &&
+        value.stepManifestSha256 !== undefined &&
+        (value.stepManifestArtifactReferenceId === null) !== (value.stepManifestSha256 === null)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          message: "stepManifestArtifactReferenceId and stepManifestSha256 are both null or both set",
+          path: ["stepManifestSha256"],
+        });
+      }
+      if (
+        value.stepCount !== undefined &&
+        value.stepManifestSha256 !== undefined &&
+        (value.stepManifestSha256 === null) !== (value.stepCount === 0)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          message: "a version names a step manifest exactly when it declares steps",
+          path: ["stepManifestSha256"],
+        });
+      }
+    }
+
     // The bootstrap exception is a biconditional in both directions. Version 1
     // has no predecessor, so a parent or a head claim there is a lie; every
     // later version has one, and a null claim there is unconditional-overwrite
@@ -149,16 +365,18 @@ export const RoadmapVersion = z
 export type RoadmapVersion = z.infer<typeof RoadmapVersion>;
 
 /**
- * The initiative stream's vocabulary, closed at three names.
+ * The initiative stream's vocabulary, closed at four names.
  *
  * `ROADMAP_VERSION_RECORDED` **is** the receipt for a recorded version, the
  * way `COMMIT_RECORDED` is the receipt for a commit. A separate receipt type
- * would record the same fact twice.
+ * would record the same fact twice. `ROADMAP_STEP_DECLARED` (P-26 cut B, ADR 0111)
+ * declares one step of a version, in the same all-or-none batch as the version.
  */
 export const INITIATIVE_EVENT_TYPES = [
   "INITIATIVE_REGISTERED",
   "INITIATIVE_STATE_CHANGED",
   "ROADMAP_VERSION_RECORDED",
+  "ROADMAP_STEP_DECLARED",
 ] as const;
 
 export const InitiativeEventType = z.enum(INITIATIVE_EVENT_TYPES);
@@ -363,10 +581,19 @@ export const InitiativeEvent = z
       });
     }
 
-    if (value.type === "ROADMAP_VERSION_RECORDED" && value.fromStatus !== value.toStatus) {
+    // Every type but the registration and the change is a passthrough: recording
+    // a roadmap version or declaring a step does not move the initiative's status.
+    if (
+      value.type !== "INITIATIVE_REGISTERED" &&
+      value.type !== "INITIATIVE_STATE_CHANGED" &&
+      value.fromStatus !== value.toStatus
+    ) {
       ctx.addIssue({
         code: "custom",
-        message: "recording a roadmap version does not move the initiative's status",
+        message:
+          value.type === "ROADMAP_VERSION_RECORDED"
+            ? "recording a roadmap version does not move the initiative's status"
+            : "declaring a roadmap step does not move the initiative's status",
         path: ["toStatus"],
       });
     }

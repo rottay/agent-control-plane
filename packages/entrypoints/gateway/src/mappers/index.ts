@@ -154,6 +154,10 @@ export function roadmapVersion(version: RoadmapVersionReadModel, head: boolean):
     recordedAt: version.recordedAt,
     sequence: version.sequence,
     head,
+    // The count and the manifest's digest, never its reference and never a step's
+    // text (P-26 cut B, 0.20.0).
+    stepCount: version.stepCount,
+    stepManifestSha256: version.stepManifestSha256,
   };
 }
 
