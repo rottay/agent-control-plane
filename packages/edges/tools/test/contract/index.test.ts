@@ -44,7 +44,7 @@ describe("the tool vocabulary is closed and honest", () => {
   it("keeps the refusals sorted, distinct and non-empty", () => {
     expect([...TOOL_REFUSALS]).toEqual([...TOOL_REFUSALS].slice().sort());
     expect(new Set(TOOL_REFUSALS).size).toBe(TOOL_REFUSALS.length);
-    expect(TOOL_REFUSALS.length).toBe(11);
+    expect(TOOL_REFUSALS.length).toBe(12);
   });
 
   it("pins the refusal vocabulary exactly, in order (P-11)", () => {
@@ -58,6 +58,8 @@ describe("the tool vocabulary is closed and honest", () => {
       "IDENTITY_FORBIDS_WRITE",
       "PROTOCOL_VIOLATION",
       "RESULT_IS_ERROR",
+      // P-24/B(b) (ADR 0117): sorts between RESULT_IS_ERROR and RESULT_UNBOUNDED.
+      "RESULT_NOT_CARRIED",
       "RESULT_UNBOUNDED",
       "RESULT_UNSAFE",
       // P-24 (ADR 0109): sorts between RESULT_UNSAFE and SERVER_NOT_ADMITTED.
@@ -227,7 +229,8 @@ describe("P-24 (ADR 0109): the record names the pin, the listing and what is not
     expect(MCP_PROTOCOL_RECORD.TOOL_SCHEMA).toContain("SCHEMA_MISMATCH");
     expect(MCP_PROTOCOL_RECORD.TOOL_SCHEMA).toContain("arguments never validated");
     expect(MCP_PROTOCOL_RECORD.LIST_CHANGED).toContain("not seen");
-    expect(MCP_PROTOCOL_RECORD.OUTPUT_SCHEMA).toBe("NOT_READ");
+    // P-24/B(b) (ADR 0117): the output schema is read and pinned now.
+    expect(MCP_PROTOCOL_RECORD.OUTPUT_SCHEMA).not.toBe("NOT_READ");
   });
 
   it("orders the listing's bounds the way they nest", () => {
@@ -251,9 +254,37 @@ describe("P-24 (ADR 0109): the record names the pin, the listing and what is not
       "server.tools.nextCursor",
       "descriptor.tools[" + String(TOOL_LIST_TOOLS_MAX) + "].inputSchema",
       "servers[" + String(TOOL_LIST_TOOLS_MAX) + "].tools[" + String(TOOL_LIST_TOOLS_MAX) + "].inputSchema",
+      // P-24/B(b) (ADR 0117).
+      "server.tools.outputSchema",
+      "server.result.structuredContent",
+      "servers[" + String(TOOL_LIST_TOOLS_MAX) + "].tools[" + String(TOOL_LIST_TOOLS_MAX) + "].outputSchema",
     ];
     for (const path of paths) expect({ path, fits: path.length <= 120 }).toEqual({ path, fits: true });
     // What the named form would have cost: a name at the grammar's bound.
     expect(("server.tools." + "x".repeat(120) + ".inputSchema").length).toBeGreaterThan(120);
+  });
+});
+
+describe("P-24/B(b) (ADR 0117): the record names the output pin and the structured result", () => {
+  it("records the output schema as pinned and never validated against", () => {
+    expect(MCP_PROTOCOL_RECORD.OUTPUT_SCHEMA).toContain("pinned per tool by value");
+    expect(MCP_PROTOCOL_RECORD.OUTPUT_SCHEMA).toContain("SCHEMA_MISMATCH");
+    expect(MCP_PROTOCOL_RECORD.OUTPUT_SCHEMA).toContain("never validated");
+  });
+
+  it("records structured content as carried only by its text, and names the word", () => {
+    expect(MCP_PROTOCOL_RECORD.STRUCTURED_CONTENT).toContain("RESULT_NOT_CARRIED");
+    expect(MCP_PROTOCOL_RECORD.STRUCTURED_CONTENT).toContain("required under a pinned output schema");
+    expect(MCP_PROTOCOL_RECORD.STRUCTURED_CONTENT).toContain("never a field of its own");
+  });
+
+  it("holds twenty keys: STRUCTURED_CONTENT joined, none left", () => {
+    expect(Object.keys(MCP_PROTOCOL_RECORD)).toHaveLength(20);
+    expect(Object.keys(MCP_PROTOCOL_RECORD)).toContain("STRUCTURED_CONTENT");
+  });
+
+  it("measures the two new at paths", () => {
+    expect("server.tools.outputSchema".length).toBe(25);
+    expect("server.result.structuredContent".length).toBe(31);
   });
 });

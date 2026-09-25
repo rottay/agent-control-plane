@@ -86,3 +86,22 @@ describe("jsonDepthWithin bounds a value's nesting", () => {
     expect(jsonDepthWithin(cycle, TOOL_SCHEMA_DEPTH_MAX)).toBe(false);
   });
 });
+
+describe("the same equality serves the output pin and the structured mirror (P-24/B(b), ADR 0117)", () => {
+  it("equals null only to null, which the none-versus-some pins rest on", () => {
+    expect(jsonEqual(null, null)).toBe(true);
+    expect(jsonEqual(null, {})).toBe(false);
+    expect(jsonEqual({}, null)).toBe(false);
+    expect(jsonEqual(null, { type: "object" })).toBe(false);
+  });
+
+  it("finds a structured value equal to its serialization parsed back with the keys permuted", () => {
+    const value = { hits: 2, items: [{ id: "a", score: 1 }, { id: "b", score: 0.5 }], meta: { total: 2, done: true } };
+    const permuted = JSON.parse('{"meta":{"done":true,"total":2},"items":[{"score":1,"id":"a"},{"score":0.5,"id":"b"}],"hits":2.0}') as unknown;
+    expect(jsonEqual(JSON.parse(JSON.stringify(value)), value)).toBe(true);
+    expect(jsonEqual(permuted, value)).toBe(true);
+    // Arrays stay ordered: a mirror that reorders an array carries another value.
+    const reordered = JSON.parse('{"hits":2,"items":[{"id":"b","score":0.5},{"id":"a","score":1}],"meta":{"total":2,"done":true}}') as unknown;
+    expect(jsonEqual(reordered, value)).toBe(false);
+  });
+});

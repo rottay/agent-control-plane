@@ -45,6 +45,13 @@ export type FakeToolAnswer =
    * result itself reports the tool's failure. The twin of `ERROR`.
    */
   | { readonly kind: "ERROR_RESULT"; readonly blocks?: readonly string[] }
+  /**
+   * A result carrying `structuredContent` beside the given text blocks
+   * (P-24/B(b), ADR 0117). Whether a block mirrors it is the suite's to write:
+   * `JSON.stringify(structured)` for the plain mirror, anything else for none.
+   * `structured` is sent as given, so a non-object value can be staged too.
+   */
+  | { readonly kind: "STRUCTURED"; readonly structured: unknown; readonly blocks: readonly string[] }
   /** A line that is not JSON at all. */
   | { readonly kind: "MALFORMED" }
   /** A well-formed response correlated to a request nobody sent. */
@@ -73,6 +80,11 @@ export interface FakeToolServerScript {
    * advertised as `{ type: "object" }`, the smallest conformant schema.
    */
   readonly schemas?: Readonly<Record<string, unknown>>;
+  /**
+   * P-24/B(b). The `outputSchema` a tool is advertised with, by name; a tool not
+   * named here advertises none, which is what every fixture before this cut saw.
+   */
+  readonly outputSchemas?: Readonly<Record<string, unknown>>;
   /** Tools per `tools/list` page; the listing is one page when absent. */
   readonly pageSize?: number;
   /** Every page after the first points back at the first cursor: a cycle. */
@@ -139,6 +151,7 @@ export function writeFakeToolServer(
     "const CALL_LOG = " + JSON.stringify(script.callLog ?? null) + ";",
     "const PID_LOG = " + JSON.stringify(script.pidLog ?? null) + ";",
     "const SCHEMAS = " + JSON.stringify(script.schemas ?? {}) + ";",
+    "const OUTPUT_SCHEMAS = " + JSON.stringify(script.outputSchemas ?? {}) + ";",
     "const PAGE_SIZE = " + JSON.stringify(script.pageSize ?? null) + ";",
     "const CURSOR_CYCLE = " + JSON.stringify(script.cursorCycle === true) + ";",
     "const EMPTY_CURSOR = " + JSON.stringify(script.emptyCursor === true) + ";",
@@ -182,7 +195,8 @@ export function writeFakeToolServer(
     "    const cursor = params && typeof params.cursor === 'string' ? params.cursor : null;",
     "    if (LIST_LOG !== null) fs.appendFileSync(LIST_LOG, 'list ' + String(cursor) + '\\n');",
     "    const all = ADVERTISES.map((name) => ({ name, description: name,",
-    "      inputSchema: Object.hasOwn(SCHEMAS, name) ? SCHEMAS[name] : { type: 'object' } }));",
+    "      inputSchema: Object.hasOwn(SCHEMAS, name) ? SCHEMAS[name] : { type: 'object' },",
+    "      ...(Object.hasOwn(OUTPUT_SCHEMAS, name) ? { outputSchema: OUTPUT_SCHEMAS[name] } : {}) }));",
     "    const size = PAGE_SIZE === null ? all.length : PAGE_SIZE;",
     "    const start = cursor === null ? 0 : Number(cursor.slice(1));",
     "    const page = all.slice(start, start + size);",
@@ -215,6 +229,7 @@ export function writeFakeToolServer(
     "        reply(id, { content: texts.map((text) => ({ type: 'text', text })), isError: true });",
     "        return;",
     "      }",
+    "      case 'STRUCTURED': reply(id, { content: answer.blocks.map((text) => ({ type: 'text', text })), structuredContent: answer.structured }); return;",
     "      case 'IMAGE': reply(id, { content: [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }] }); return;",
     "      case 'ENV': reply(id, { content: [{ type: 'text', text: Object.keys(process.env).sort().join(',') }] }); return;",
     "      case 'OVERSIZED_FRAME': process.stdout.write('x'.repeat(answer.bytes) + '\\n'); return;",

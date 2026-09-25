@@ -473,3 +473,72 @@ describe("the loopback leg lists every page and calls only under the pin (P-24)"
     }
   });
 });
+
+describe("the loopback leg reads the output pin and the structured result alike (P-24/B(b))", () => {
+  const OUTPUT = { type: "object", properties: { hits: { type: "number" } } };
+  const STRUCTURED = { hits: 2 };
+
+  /** A one-page peer advertising `docs.search` with `outputSchema`, answering its call with `result`. */
+  function structuredPeer(outputSchema: unknown, result: unknown): { readonly methods: () => readonly string[] } {
+    const methods: string[] = [];
+    scripted = scriptFetch((body: string) => {
+      const parsed = JSON.parse(body) as { method?: string; id?: number };
+      methods.push(parsed.method ?? "");
+      const id = parsed.id ?? 0;
+      if (parsed.method === "initialize") return { status: 200, headers: JSON_HEADERS, body: initializeBody(id) };
+      if (parsed.method === "notifications/initialized") return { status: 202 };
+      if (parsed.method === "tools/list") {
+        const advertised = { name: "docs.search", inputSchema: { type: "object" }, ...(outputSchema === undefined ? {} : { outputSchema }) };
+        return { status: 200, headers: SSE_HEADERS, body: "data: " + jsonRpcBody(id, { tools: [advertised] }) + "\n\n" };
+      }
+      return { status: 200, headers: JSON_HEADERS, body: jsonRpcBody(id, result) };
+    });
+    return { methods: () => methods };
+  }
+
+  const loopbackPort = (outputSchema: unknown): ToolProtocolPort => {
+    const admitted = admitToolServer({
+      serverId: "docs",
+      transport: "HTTP_LOOPBACK",
+      url: URL_TEXT,
+      tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" }, outputSchema } as never],
+    });
+    if (!admitted.ok) throw new Error("fixture endpoint was not admitted: " + admitted.at);
+    return createToolProtocolPort({ servers: [admitted.server], liveness: { isLive: () => true } });
+  };
+  const callOn = (target: ToolProtocolPort) =>
+    target.callTool({ sessionId: "s", serverId: "docs", toolName: "docs.search", identity: IMPLEMENTER, arguments: {} });
+
+  it("completes a mirrored structured result under an equal output pin", async () => {
+    const mirror = JSON.stringify(STRUCTURED);
+    structuredPeer(OUTPUT, { content: [{ type: "text", text: mirror }], structuredContent: STRUCTURED });
+    const target = loopbackPort(OUTPUT);
+    try {
+      expect(await callOn(target)).toMatchObject({ ok: true, content: [mirror] });
+    } finally {
+      await target.closeAll();
+    }
+  });
+
+  it("refuses a different output schema as SCHEMA_MISMATCH, posting no tools/call", async () => {
+    const peer = structuredPeer({ type: "object" }, { content: [] });
+    const target = loopbackPort(OUTPUT);
+    try {
+      expect(await callOn(target)).toMatchObject({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.outputSchema" });
+      expect(peer.methods()).not.toContain("tools/call");
+    } finally {
+      await target.closeAll();
+    }
+  });
+
+  it("declines unmirrored structured content with the client's word, as stdio does", async () => {
+    const peer = structuredPeer(undefined, { content: [{ type: "text", text: "two hits" }], structuredContent: STRUCTURED });
+    const target = loopbackPort(null);
+    try {
+      expect(await callOn(target)).toMatchObject({ ok: false, refusal: "RESULT_NOT_CARRIED", at: "server.result.structuredContent" });
+      expect(peer.methods()).toContain("tools/call");
+    } finally {
+      await target.closeAll();
+    }
+  });
+});

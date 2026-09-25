@@ -35,6 +35,7 @@ import {
   toolJsonRpcNotification,
   toolJsonRpcRequest,
 } from "../jsonrpc/index.js";
+import { jsonEqual } from "../schema-equality/index.js";
 
 /**
  * What the client needs of a transport, and nothing more.
@@ -72,12 +73,25 @@ export interface ToolCallResult {
   readonly resultBytes: number;
   /** The raw result, for the caller's privacy guard. Never returned to a consumer. */
   readonly value: unknown;
+  /**
+   * Whether the result held structured content, which one of `content`'s blocks
+   * carries by JSON value (P-24/B(b), ADR 0117). The client stays pin-free: the
+   * port, which holds the entry, decides what its absence means.
+   */
+  readonly structured: boolean;
 }
 
-/** One tool a server advertised, as far as this client reads it (P-24). */
+/**
+ * One tool a server advertised, as far as this client reads it (P-24).
+ *
+ * `outputSchema` is present exactly when the tool advertised one (P-24/B(b), ADR
+ * 0117); the port reads its absence as none. Absent rather than `null`, so a
+ * listing of tools that advertise no output schema reads as it did before.
+ */
 export interface AdvertisedTool {
   readonly name: string;
   readonly inputSchema: Readonly<Record<string, unknown>>;
+  readonly outputSchema?: Readonly<Record<string, unknown>>;
 }
 
 export interface ToolClient {
@@ -106,6 +120,13 @@ const AT_RESPONSE = "server.response";
 const AT_RESULT = "server.result";
 const AT_TOOLS = "server.tools";
 const AT_CURSOR = "server.tools.nextCursor";
+
+/**
+ * Where a structured result is refused (P-24/B(b), ADR 0117). Exported for the
+ * port's presence rule, so the path is spelled once; the field itself is read
+ * only in `callTool` below.
+ */
+export const AT_STRUCTURED_RESULT = "server.result.structuredContent";
 
 /** The notification that invalidates a listing (MCP 2025-06-18, tools). */
 const LIST_CHANGED = "notifications/tools/list_changed";
@@ -302,10 +323,30 @@ export function createToolClient(connection: ToolTransportConnection): ToolClien
         if (typeof inputSchema !== "object" || inputSchema === null || Array.isArray(inputSchema)) {
           return refused("PROTOCOL_VIOLATION", AT_TOOLS);
         }
+        // P-24/B(b): an output schema is optional and, when present, an object.
+        // Present and `null`, an array or a scalar is a violation — optional is not
+        // nullable, the reading `nextCursor` already has. Its `type` is not judged
+        // here: a non-object type never equals an admitted pin, so the port's
+        // comparison refuses it.
+        const outputSchema = (tool as Record<string, unknown>)["outputSchema"];
+        const advertisesOutput = Object.hasOwn(tool, "outputSchema");
+        if (
+          advertisesOutput &&
+          (typeof outputSchema !== "object" || outputSchema === null || Array.isArray(outputSchema))
+        ) {
+          return refused("PROTOCOL_VIOLATION", AT_TOOLS);
+        }
         if (names.has(name)) return refused("PROTOCOL_VIOLATION", AT_TOOLS);
         names.add(name);
         if (tools.length === TOOL_LIST_TOOLS_MAX) return refused("RESULT_UNBOUNDED", AT_TOOLS);
-        tools.push(Object.freeze({ name, inputSchema: inputSchema as Readonly<Record<string, unknown>> }));
+        const input = inputSchema as Readonly<Record<string, unknown>>;
+        tools.push(
+          Object.freeze(
+            advertisesOutput
+              ? { name, inputSchema: input, outputSchema: outputSchema as Readonly<Record<string, unknown>> }
+              : { name, inputSchema: input },
+          ),
+        );
       }
       if (!Object.hasOwn(shape, "nextCursor")) return { ok: true, value: Object.freeze(tools) };
       const next = shape["nextCursor"];
@@ -429,9 +470,40 @@ export function createToolClient(connection: ToolTransportConnection): ToolClien
         content.push(text);
       }
 
+      // P-24/B(b), ADR 0117: structured content, judged last, after every block.
+      // The client carries text and only text, so a structured value is carried
+      // only when a text block already holds it: some block that parses to a
+      // JSON value equal to it, by the one value equality. Any block may be the
+      // mirror, since the revision names no position. A block that is not JSON
+      // is simply not a mirror. An unmirrored value is declined whole, never
+      // dropped: the peer omitted a SHOULD and is still speaking the protocol, so
+      // the word is RESULT_NOT_CARRIED and the connection is kept. A value that
+      // is not a JSON object breaks a MUST and is a violation. Nothing here
+      // validates the value against any schema.
+      if (!Object.hasOwn(result, "structuredContent")) {
+        return {
+          ok: true,
+          value: { content: Object.freeze(content), resultBytes, value: result, structured: false },
+        };
+      }
+      const structuredContent: unknown = (result as Record<string, unknown>)["structuredContent"];
+      if (typeof structuredContent !== "object" || structuredContent === null || Array.isArray(structuredContent)) {
+        return refused("PROTOCOL_VIOLATION", AT_STRUCTURED_RESULT, received);
+      }
+      const mirrored = content.some((text) => {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          return false;
+        }
+        return jsonEqual(parsed, structuredContent);
+      });
+      if (!mirrored) return refused("RESULT_NOT_CARRIED", AT_STRUCTURED_RESULT, received);
+
       return {
         ok: true,
-        value: { content: Object.freeze(content), resultBytes, value: result },
+        value: { content: Object.freeze(content), resultBytes, value: result, structured: true },
       };
     },
 

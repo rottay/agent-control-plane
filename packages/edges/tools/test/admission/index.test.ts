@@ -43,7 +43,7 @@ describe("a stdio descriptor is admitted, and its environment is built not inher
     // stdio arm, and the loopback arm deliberately has none.
     if (outcome.server.kind !== "STDIO") return;
     expect(outcome.server.command).toBe(command);
-    expect(outcome.server.allowlist).toEqual([{ name: "docs.search", writes: false, inputSchema: { type: "object" } }]);
+    expect(outcome.server.allowlist).toEqual([{ name: "docs.search", writes: false, inputSchema: { type: "object" }, outputSchema: null }]);
   });
 
   it("gives the child exactly the allowlisted variables and nothing ambient", () => {
@@ -238,7 +238,7 @@ describe("a name outside the bounded grammar never reaches a spawn (V2-B4b stage
       expect(outcome.ok).toBe(true);
       if (!outcome.ok) continue;
       expect(outcome.server.serverId).toBe(serverId);
-      expect(outcome.server.allowlist).toEqual([{ name: "docs.search", writes: false, inputSchema: { type: "object" } }]);
+      expect(outcome.server.allowlist).toEqual([{ name: "docs.search", writes: false, inputSchema: { type: "object" }, outputSchema: null }]);
     }
   });
 });
@@ -481,5 +481,113 @@ describe("the allowlist loop names the entry and the field it refused (P-24, C7)
         },
       ]),
     ).toEqual({ ok: false, refusal: "SERVER_NOT_ADMITTED", at: "servers[0].tools[0].inputSchema" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-24/B(b) (ADR 0117): the output pin, on the input pin's rung
+// ---------------------------------------------------------------------------
+
+describe("an allowlist entry pins its output interface too, and absence is none (P-24/B(b))", () => {
+  const withOutput = (outputSchema: unknown, extra: Record<string, unknown> = {}): ToolServerDescriptor =>
+    stdio({
+      tools: [
+        { name: "docs.search", writes: false, inputSchema: { type: "object" }, outputSchema, ...extra } as unknown as ToolServerDescriptor["tools"][number],
+      ],
+    });
+  const deepOutput = (levels: number): Record<string, unknown> => {
+    let value: unknown = "leaf";
+    for (let level = 1; level < levels; level += 1) value = { child: value };
+    return { type: "object", nested: value };
+  };
+  const admittedOutput = (descriptor: ToolServerDescriptor): unknown => {
+    const outcome = admitToolServer(descriptor);
+    if (!outcome.ok) throw new Error("expected an admission, got " + outcome.at);
+    return outcome.server.allowlist[0]?.outputSchema;
+  };
+
+  it("materializes an absent key and an explicit null as null", () => {
+    expect(admittedOutput(stdio())).toBeNull();
+    // Materialized, not merely read as absent: the admitted entry carries the key.
+    const outcome = admitToolServer(stdio());
+    if (!outcome.ok) throw new Error("expected an admission");
+    expect(Object.hasOwn(outcome.server.allowlist[0] ?? {}, "outputSchema")).toBe(true);
+    expect(admittedOutput(withOutput(null))).toBeNull();
+  });
+
+  it("keeps a frozen copy of an object pin", () => {
+    const pin: Record<string, unknown> = { type: "object", properties: { hits: { type: "number" } } };
+    const admitted = admittedOutput(withOutput(pin));
+    pin["type"] = "array";
+    expect(admitted).toEqual({ type: "object", properties: { hits: { type: "number" } } });
+    expect(Object.isFrozen(admitted)).toBe(true);
+    expect(Object.isFrozen((admitted as { properties: object }).properties)).toBe(true);
+  });
+
+  it("refuses a malformed output pin at the entry's own field", () => {
+    const sized = (bytes: number): Record<string, unknown> => {
+      const empty = JSON.stringify({ type: "object", description: "" }).length;
+      return { type: "object", description: "d".repeat(bytes - empty) };
+    };
+    const malformed: readonly unknown[] = [
+      [],
+      "object",
+      1,
+      true,
+      {},
+      { type: "string" },
+      deepOutput(TOOL_SCHEMA_DEPTH_MAX + 1),
+      sized(TOOL_SCHEMA_BYTES_MAX + 1),
+    ];
+    for (const pin of malformed) {
+      expect({ pin: JSON.stringify(pin).slice(0, 40), outcome: admitToolServer(withOutput(pin)) }).toEqual({
+        pin: JSON.stringify(pin).slice(0, 40),
+        outcome: { ok: false, refusal: "SERVER_NOT_ADMITTED", at: "descriptor.tools[0].outputSchema" },
+      });
+    }
+  });
+
+  it("admits an output pin at its depth and byte bounds", () => {
+    const sized = (bytes: number): Record<string, unknown> => {
+      const empty = JSON.stringify({ type: "object", description: "" }).length;
+      return { type: "object", description: "d".repeat(bytes - empty) };
+    };
+    expect(JSON.stringify(sized(TOOL_SCHEMA_BYTES_MAX)).length).toBe(TOOL_SCHEMA_BYTES_MAX);
+    expect(admitToolServer(withOutput(sized(TOOL_SCHEMA_BYTES_MAX))).ok).toBe(true);
+    expect(admitToolServer(withOutput(deepOutput(TOOL_SCHEMA_DEPTH_MAX))).ok).toBe(true);
+  });
+
+  it("judges the input pin first, and the output pin before a duplicate name", () => {
+    expect(admitToolServer(withOutput("x", { inputSchema: "x" }))).toEqual({
+      ok: false,
+      refusal: "SERVER_NOT_ADMITTED",
+      at: "descriptor.tools[0].inputSchema",
+    });
+    const duplicate = stdio({
+      tools: [
+        { name: "docs.search", writes: false, inputSchema: { type: "object" } },
+        { name: "docs.search", writes: false, inputSchema: { type: "object" }, outputSchema: [] } as unknown as ToolServerDescriptor["tools"][number],
+      ],
+    });
+    expect(admitToolServer(duplicate)).toEqual({ ok: false, refusal: "SERVER_NOT_ADMITTED", at: "descriptor.tools[1].outputSchema" });
+  });
+
+  it("carries both indices through the document as servers[k].tools[i].outputSchema", () => {
+    const valid = { name: "docs.search", writes: false, inputSchema: { type: "object" } };
+    const document = [
+      { serverId: "docs", transport: "STDIO", command, args, tools: [valid] },
+      {
+        serverId: "docs-2",
+        transport: "STDIO",
+        command,
+        args,
+        tools: [
+          valid,
+          { ...valid, name: "docs.read" },
+          { ...valid, name: "docs.write", outputSchema: { type: "string" } },
+        ],
+      },
+    ];
+    expect(admitToolServers(document)).toEqual({ ok: false, refusal: "SERVER_NOT_ADMITTED", at: "servers[1].tools[2].outputSchema" });
   });
 });

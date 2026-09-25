@@ -2045,6 +2045,10 @@ interface P24Script {
   readonly pageSize?: number;
   readonly cursorCycle?: boolean;
   readonly listChangedBeforeCall?: boolean;
+  /** P-24/B(b): the `outputSchema` a tool is advertised with, by name; none otherwise. */
+  readonly outputSchemas?: Readonly<Record<string, unknown>>;
+  /** P-24/B(b): the result every `tools/call` is answered with, verbatim; one text block otherwise. */
+  readonly callResult?: unknown;
 }
 
 /**
@@ -2065,6 +2069,8 @@ function writeP24Server(dir: string, pidLog: string, methodLog: string, script: 
       "const PAGE = " + JSON.stringify(script.pageSize ?? null) + ";",
       "const CYCLE = " + JSON.stringify(script.cursorCycle === true) + ";",
       "const CHANGED = " + JSON.stringify(script.listChangedBeforeCall === true) + ";",
+      "const OUTPUT_SCHEMAS = " + JSON.stringify(script.outputSchemas ?? {}) + ";",
+      "const CALL_RESULT = " + JSON.stringify(script.callResult ?? null) + ";",
       "let announced = false;",
       "let buffer = '';",
       "process.stdin.setEncoding('utf8');",
@@ -2090,7 +2096,8 @@ function writeP24Server(dir: string, pidLog: string, methodLog: string, script: 
       "  if (method === 'tools/list') {",
       "    const cursor = params && typeof params.cursor === 'string' ? params.cursor : null;",
       "    appendFileSync(LOG, 'list ' + String(cursor) + '\\n');",
-      "    const all = ADVERTISES.map((name) => ({ name, inputSchema: Object.hasOwn(SCHEMAS, name) ? SCHEMAS[name] : { type: 'object' } }));",
+      "    const all = ADVERTISES.map((name) => ({ name, inputSchema: Object.hasOwn(SCHEMAS, name) ? SCHEMAS[name] : { type: 'object' },",
+      "      ...(Object.hasOwn(OUTPUT_SCHEMAS, name) ? { outputSchema: OUTPUT_SCHEMAS[name] } : {}) }));",
       "    const size = PAGE === null ? all.length : PAGE;",
       "    const start = cursor === null ? 0 : Number(cursor.slice(1));",
       "    const result = { tools: all.slice(start, start + size) };",
@@ -2105,7 +2112,8 @@ function writeP24Server(dir: string, pidLog: string, methodLog: string, script: 
       "  }",
       "  if (method === 'tools/call') {",
       "    appendFileSync(LOG, 'call ' + String(params && params.name) + '\\n');",
-      "    process.stdout.write(frame({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'the answer' }] } }));",
+      "    const result = CALL_RESULT === null ? { content: [{ type: 'text', text: 'the answer' }] } : CALL_RESULT;",
+      "    process.stdout.write(frame({ jsonrpc: '2.0', id, result }));",
       "  }",
       "}",
     ].join("\n"),
@@ -2173,8 +2181,11 @@ const P24_ROWS: readonly {
   },
 ];
 
-/** The operator document for a P-24 row: `docs.search` pinned (or not, for E6), `docs.write` pinned to the smallest schema. */
-function p24Document(dir: string, fake: { command: string; args: string[] }, pinned = true): string {
+/**
+ * The operator document for a P-24 row: `docs.search` pinned (or not, for E6), `docs.write` pinned to the smallest schema.
+ * P-24/B(b): `outputPin`, when given, is `docs.search`'s output pin; absent, the entry carries no key at all.
+ */
+function p24Document(dir: string, fake: { command: string; args: string[] }, pinned = true, outputPin?: unknown): string {
   const path = join(dir, "tool-servers-p24.json");
   writeFileSync(
     path,
@@ -2185,7 +2196,9 @@ function p24Document(dir: string, fake: { command: string; args: string[] }, pin
         command: fake.command,
         args: fake.args,
         tools: [
-          pinned ? { name: "docs.search", writes: false, inputSchema: P24_PIN } : { name: "docs.search", writes: false },
+          pinned
+            ? { name: "docs.search", writes: false, inputSchema: P24_PIN, ...(outputPin === undefined ? {} : { outputSchema: outputPin }) }
+            : { name: "docs.search", writes: false },
           { name: "docs.write", writes: true, inputSchema: { type: "object" } },
         ],
       },
@@ -2195,6 +2208,69 @@ function p24Document(dir: string, fake: { command: string; args: string[] }, pin
   chmodSync(path, 0o600);
   return path;
 }
+
+// P-24/B(b) (ADR 0117): the output pin and the structured result, F1-F5.
+const P24B_OUTPUT = { type: "object", properties: { hits: { type: "number" } } };
+const P24B_STRUCTURED = { hits: 2 };
+const P24B_MIRRORED = { content: [{ type: "text", text: JSON.stringify(P24B_STRUCTURED) }], structuredContent: P24B_STRUCTURED };
+const P24B_UNMIRRORED = { content: [{ type: "text", text: "Found two hits." }], structuredContent: P24B_STRUCTURED };
+const P24B_PLAIN = { content: [{ type: "text", text: "two hits" }, { type: "text", text: "done" }] };
+
+/** The counts a result that arrived carries: its serialized bytes and its block count. */
+function p24bCounts(result: { readonly content: readonly unknown[] }): { readonly resultBytes: number; readonly contentBlocks: number } {
+  return { resultBytes: Buffer.byteLength(JSON.stringify(result), "utf8"), contentBlocks: result.content.length };
+}
+
+/** The F rows, shared in shape with the other door's suite and asserted at both doors by the parity suite. */
+const P24B_ROWS: readonly {
+  readonly row: string;
+  readonly script: P24Script;
+  readonly outputPin?: unknown;
+  readonly expect: { readonly outcome: string; readonly refusal: string | null; readonly at: string | null };
+  readonly counts: { readonly resultBytes: number; readonly contentBlocks: number };
+  readonly content: readonly string[];
+  readonly log: readonly string[];
+}[] = [
+  {
+    row: "F1: output pin equal to the advertisement, the structured result mirrored",
+    script: { schemas: { "docs.search": P24_PIN }, outputSchemas: { "docs.search": P24B_OUTPUT }, callResult: P24B_MIRRORED },
+    outputPin: P24B_OUTPUT,
+    expect: { outcome: "COMPLETED", refusal: null, at: null },
+    counts: p24bCounts(P24B_MIRRORED),
+    content: [JSON.stringify(P24B_STRUCTURED)],
+    log: ["list null", "call docs.search"],
+  },
+  {
+    row: "F2: the advertised output schema differs by one nested key",
+    script: {
+      schemas: { "docs.search": P24_PIN },
+      outputSchemas: { "docs.search": { type: "object", properties: { hits: { type: "string" } } } },
+      callResult: P24B_MIRRORED,
+    },
+    outputPin: P24B_OUTPUT,
+    expect: { outcome: "REFUSED", refusal: "SCHEMA_MISMATCH", at: "server.tools.outputSchema" },
+    counts: { resultBytes: 0, contentBlocks: 0 },
+    content: [],
+    log: ["list null"],
+  },
+  {
+    row: "F3: pinned none, the result carries structured content no text block mirrors",
+    script: { schemas: { "docs.search": P24_PIN }, callResult: P24B_UNMIRRORED },
+    expect: { outcome: "REFUSED", refusal: "RESULT_NOT_CARRIED", at: "server.result.structuredContent" },
+    counts: p24bCounts(P24B_UNMIRRORED),
+    content: [],
+    log: ["list null", "call docs.search"],
+  },
+  {
+    row: "F4: an output pin, and a result with no structured content",
+    script: { schemas: { "docs.search": P24_PIN }, outputSchemas: { "docs.search": P24B_OUTPUT }, callResult: P24B_PLAIN },
+    outputPin: P24B_OUTPUT,
+    expect: { outcome: "REFUSED", refusal: "PROTOCOL_VIOLATION", at: "server.result.structuredContent" },
+    counts: p24bCounts(P24B_PLAIN),
+    content: [],
+    log: ["list null", "call docs.search"],
+  },
+];
 
 function methodLines(path: string): readonly string[] {
   try {
@@ -2226,6 +2302,32 @@ describe("P-24: the two doors agree on every discovery row (E1-E8)", () => {
       expect(cli).toEqual(api);
       expect({ outcome: api["outcome"], refusal: api["refusal"], at: api["at"] }).toEqual(row.expect);
       // Each door drove the fake through the same sequence.
+      expect(methodLines(fixture.methodLog)).toEqual([...row.log, ...row.log]);
+    });
+  }
+});
+
+describe("P-24/B(b): the two doors agree on every output-pin and structured-result row (F1-F4)", () => {
+  function p24bDoorFixture(script: P24Script, outputPin: unknown): DoorFixture & { readonly methodLog: string } {
+    const dir = temporaryDirectory();
+    const pidLog = join(dir, "pids.log");
+    const methodLog = join(dir, "methods.log");
+    writeFileSync(pidLog, "", "utf8");
+    const bearerPath = join(dir, "write.token");
+    writeFileSync(bearerPath, TOOL_BEARER + "\n", "utf8");
+    chmodSync(bearerPath, 0o600);
+    const toolServersPath = p24Document(dir, writeP24Server(dir, pidLog, methodLog, script), true, outputPin);
+    return { dir, pidLog, bearerPath, toolServersPath, methodLog };
+  }
+
+  for (const row of P24B_ROWS) {
+    it(row.row + ": the same document at both doors", async () => {
+      const fixture = p24bDoorFixture(row.script, row.outputPin);
+      const api = await apiDoor(seedForExecution(), fixture, toolRequest());
+      const cli = await cliDoor(seedForExecution(), fixture, toolRequest());
+      expect(cli).toEqual(api);
+      expect({ outcome: api["outcome"], refusal: api["refusal"], at: api["at"] }).toEqual(row.expect);
+      expect({ resultBytes: api["resultBytes"], contentBlocks: api["contentBlocks"] }).toEqual(row.counts);
       expect(methodLines(fixture.methodLog)).toEqual([...row.log, ...row.log]);
     });
   }

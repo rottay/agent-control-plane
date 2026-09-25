@@ -872,6 +872,10 @@ interface P24Script {
   readonly pageSize?: number;
   readonly cursorCycle?: boolean;
   readonly listChangedBeforeCall?: boolean;
+  /** P-24/B(b): the `outputSchema` a tool is advertised with, by name; none otherwise. */
+  readonly outputSchemas?: Readonly<Record<string, unknown>>;
+  /** P-24/B(b): the result every `tools/call` is answered with, verbatim; one text block otherwise. */
+  readonly callResult?: unknown;
 }
 
 /**
@@ -892,6 +896,8 @@ function writeP24Server(dir: string, pidLog: string, methodLog: string, script: 
       "const PAGE = " + JSON.stringify(script.pageSize ?? null) + ";",
       "const CYCLE = " + JSON.stringify(script.cursorCycle === true) + ";",
       "const CHANGED = " + JSON.stringify(script.listChangedBeforeCall === true) + ";",
+      "const OUTPUT_SCHEMAS = " + JSON.stringify(script.outputSchemas ?? {}) + ";",
+      "const CALL_RESULT = " + JSON.stringify(script.callResult ?? null) + ";",
       "let announced = false;",
       "let buffer = '';",
       "process.stdin.setEncoding('utf8');",
@@ -917,7 +923,8 @@ function writeP24Server(dir: string, pidLog: string, methodLog: string, script: 
       "  if (method === 'tools/list') {",
       "    const cursor = params && typeof params.cursor === 'string' ? params.cursor : null;",
       "    appendFileSync(LOG, 'list ' + String(cursor) + '\\n');",
-      "    const all = ADVERTISES.map((name) => ({ name, inputSchema: Object.hasOwn(SCHEMAS, name) ? SCHEMAS[name] : { type: 'object' } }));",
+      "    const all = ADVERTISES.map((name) => ({ name, inputSchema: Object.hasOwn(SCHEMAS, name) ? SCHEMAS[name] : { type: 'object' },",
+      "      ...(Object.hasOwn(OUTPUT_SCHEMAS, name) ? { outputSchema: OUTPUT_SCHEMAS[name] } : {}) }));",
       "    const size = PAGE === null ? all.length : PAGE;",
       "    const start = cursor === null ? 0 : Number(cursor.slice(1));",
       "    const result = { tools: all.slice(start, start + size) };",
@@ -932,7 +939,8 @@ function writeP24Server(dir: string, pidLog: string, methodLog: string, script: 
       "  }",
       "  if (method === 'tools/call') {",
       "    appendFileSync(LOG, 'call ' + String(params && params.name) + '\\n');",
-      "    process.stdout.write(frame({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'the answer' }] } }));",
+      "    const result = CALL_RESULT === null ? { content: [{ type: 'text', text: 'the answer' }] } : CALL_RESULT;",
+      "    process.stdout.write(frame({ jsonrpc: '2.0', id, result }));",
       "  }",
       "}",
     ].join("\n"),
@@ -1000,8 +1008,11 @@ const P24_ROWS: readonly {
   },
 ];
 
-/** The operator document for a P-24 row: `docs.search` pinned (or not, for E6), `docs.write` pinned to the smallest schema. */
-function p24Document(dir: string, fake: { command: string; args: string[] }, pinned = true): string {
+/**
+ * The operator document for a P-24 row: `docs.search` pinned (or not, for E6), `docs.write` pinned to the smallest schema.
+ * P-24/B(b): `outputPin`, when given, is `docs.search`'s output pin; absent, the entry carries no key at all.
+ */
+function p24Document(dir: string, fake: { command: string; args: string[] }, pinned = true, outputPin?: unknown): string {
   const path = join(dir, "tool-servers-p24.json");
   writeFileSync(
     path,
@@ -1012,7 +1023,9 @@ function p24Document(dir: string, fake: { command: string; args: string[] }, pin
         command: fake.command,
         args: fake.args,
         tools: [
-          pinned ? { name: "docs.search", writes: false, inputSchema: P24_PIN } : { name: "docs.search", writes: false },
+          pinned
+            ? { name: "docs.search", writes: false, inputSchema: P24_PIN, ...(outputPin === undefined ? {} : { outputSchema: outputPin }) }
+            : { name: "docs.search", writes: false },
           { name: "docs.write", writes: true, inputSchema: { type: "object" } },
         ],
       },
@@ -1022,6 +1035,69 @@ function p24Document(dir: string, fake: { command: string; args: string[] }, pin
   chmodSync(path, 0o600);
   return path;
 }
+
+// P-24/B(b) (ADR 0117): the output pin and the structured result, F1-F5.
+const P24B_OUTPUT = { type: "object", properties: { hits: { type: "number" } } };
+const P24B_STRUCTURED = { hits: 2 };
+const P24B_MIRRORED = { content: [{ type: "text", text: JSON.stringify(P24B_STRUCTURED) }], structuredContent: P24B_STRUCTURED };
+const P24B_UNMIRRORED = { content: [{ type: "text", text: "Found two hits." }], structuredContent: P24B_STRUCTURED };
+const P24B_PLAIN = { content: [{ type: "text", text: "two hits" }, { type: "text", text: "done" }] };
+
+/** The counts a result that arrived carries: its serialized bytes and its block count. */
+function p24bCounts(result: { readonly content: readonly unknown[] }): { readonly resultBytes: number; readonly contentBlocks: number } {
+  return { resultBytes: Buffer.byteLength(JSON.stringify(result), "utf8"), contentBlocks: result.content.length };
+}
+
+/** The F rows, shared in shape with the other door's suite and asserted at both doors by the parity suite. */
+const P24B_ROWS: readonly {
+  readonly row: string;
+  readonly script: P24Script;
+  readonly outputPin?: unknown;
+  readonly expect: { readonly outcome: string; readonly refusal: string | null; readonly at: string | null };
+  readonly counts: { readonly resultBytes: number; readonly contentBlocks: number };
+  readonly content: readonly string[];
+  readonly log: readonly string[];
+}[] = [
+  {
+    row: "F1: output pin equal to the advertisement, the structured result mirrored",
+    script: { schemas: { "docs.search": P24_PIN }, outputSchemas: { "docs.search": P24B_OUTPUT }, callResult: P24B_MIRRORED },
+    outputPin: P24B_OUTPUT,
+    expect: { outcome: "COMPLETED", refusal: null, at: null },
+    counts: p24bCounts(P24B_MIRRORED),
+    content: [JSON.stringify(P24B_STRUCTURED)],
+    log: ["list null", "call docs.search"],
+  },
+  {
+    row: "F2: the advertised output schema differs by one nested key",
+    script: {
+      schemas: { "docs.search": P24_PIN },
+      outputSchemas: { "docs.search": { type: "object", properties: { hits: { type: "string" } } } },
+      callResult: P24B_MIRRORED,
+    },
+    outputPin: P24B_OUTPUT,
+    expect: { outcome: "REFUSED", refusal: "SCHEMA_MISMATCH", at: "server.tools.outputSchema" },
+    counts: { resultBytes: 0, contentBlocks: 0 },
+    content: [],
+    log: ["list null"],
+  },
+  {
+    row: "F3: pinned none, the result carries structured content no text block mirrors",
+    script: { schemas: { "docs.search": P24_PIN }, callResult: P24B_UNMIRRORED },
+    expect: { outcome: "REFUSED", refusal: "RESULT_NOT_CARRIED", at: "server.result.structuredContent" },
+    counts: p24bCounts(P24B_UNMIRRORED),
+    content: [],
+    log: ["list null", "call docs.search"],
+  },
+  {
+    row: "F4: an output pin, and a result with no structured content",
+    script: { schemas: { "docs.search": P24_PIN }, outputSchemas: { "docs.search": P24B_OUTPUT }, callResult: P24B_PLAIN },
+    outputPin: P24B_OUTPUT,
+    expect: { outcome: "REFUSED", refusal: "PROTOCOL_VIOLATION", at: "server.result.structuredContent" },
+    counts: p24bCounts(P24B_PLAIN),
+    content: [],
+    log: ["list null", "call docs.search"],
+  },
+];
 
 function methodLines(path: string): readonly string[] {
   try {
@@ -1099,6 +1175,81 @@ describe("P-24: the API door lists before it calls, and calls only under the pin
       expect(response.statusCode).toBe(503);
       expect(ApiError.parse(response.json()).error.code).toBe("TOOL_SERVERS_UNCONFIGURED");
       expect(response.body).not.toContain("inputSchema");
+    } finally {
+      await app.close();
+    }
+    expect(readFileSync(pidLog, "utf8")).toBe("");
+  });
+});
+
+describe("P-24/B(b): the API door calls only under the output pin, and carries structure only as text (F1-F5)", () => {
+  /** A seeded ledger, a bearer and the F row's fake and document; the API door posted once. */
+  async function runRow(script: P24Script, outputPin: unknown): Promise<{
+    readonly statusCode: number;
+    readonly payload: unknown;
+    readonly pidLog: string;
+    readonly methodLog: string;
+    readonly ledgerPath: string;
+  }> {
+    const dir = root();
+    mkdirSync(join(dir, "ledger"), { recursive: true });
+    const ledgerPath = join(dir, "ledger", "acp.sqlite3");
+    const pidLog = join(dir, "pids.log");
+    const methodLog = join(dir, "methods.log");
+    writeFileSync(pidLog, "", "utf8");
+    const taskId = randomUUID();
+    const ledger = openLedger(ledgerPath);
+    ledger.append(makeEvent(taskId));
+    ledger.close();
+    const fake = writeP24Server(dir, pidLog, methodLog, script);
+    const app = buildServer({ ledgerPath, writeBearerPath: tokenFile(dir), toolServersPath: p24Document(dir, fake, true, outputPin) });
+    try {
+      const response = await app.inject({ method: "POST", url: url(taskId), headers: AUTH, payload: body({ taskId }) });
+      return { statusCode: response.statusCode, payload: response.json(), pidLog, methodLog, ledgerPath };
+    } finally {
+      await app.close();
+    }
+  }
+
+  for (const row of P24B_ROWS) {
+    it(row.row, async () => {
+      const ran = await runRow(row.script, row.outputPin);
+      expect(ran.statusCode).toBe(200);
+      // The unchanged response schema parses the new word and the new paths: they cross by grammar.
+      const payload = ToolCallExecuteResponse.parse(ran.payload);
+      expect({ outcome: payload.outcome, refusal: payload.refusal, at: payload.at }).toEqual(row.expect);
+      expect({ resultBytes: payload.resultBytes, contentBlocks: payload.contentBlocks }).toEqual(row.counts);
+      expect(payload.content).toEqual(row.content);
+      expect(methodLines(ran.methodLog)).toEqual(row.log);
+      const ledger = openLedger(ran.ledgerPath, { readOnly: true });
+      const recorded = ledger.listEvents({ limit: 100 }).events.map((entry) => entry.event).filter((event) => event.type === "TOOL_CALL_RECORDED");
+      ledger.close();
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]?.payload).toMatchObject({ refusal: row.expect.refusal, ...row.counts });
+      const started = readFileSync(ran.pidLog, "utf8").split("\n").filter((line) => line.trim() !== "").map(Number);
+      expect(started.length).toBeGreaterThan(0);
+      for (const pid of started) expect(() => process.kill(pid, 0)).toThrow();
+    });
+  }
+
+  it("F5: refuses a document whose output pin is malformed as DOCUMENT_NOT_ADMITTED, forwards no path, and starts no child", async () => {
+    const dir = root();
+    mkdirSync(join(dir, "ledger"), { recursive: true });
+    const ledgerPath = join(dir, "ledger", "acp.sqlite3");
+    const pidLog = join(dir, "pids.log");
+    writeFileSync(pidLog, "", "utf8");
+    const taskId = randomUUID();
+    const ledger = openLedger(ledgerPath);
+    ledger.append(makeEvent(taskId));
+    ledger.close();
+    const document = p24Document(dir, writeP24Server(dir, pidLog, join(dir, "methods.log"), {}), true, "x");
+    expect(loadToolServers(document)).toEqual({ ok: false, reason: "DOCUMENT_NOT_ADMITTED" });
+    const app = buildServer({ ledgerPath, writeBearerPath: tokenFile(dir), toolServersPath: document });
+    try {
+      const response = await app.inject({ method: "POST", url: url(taskId), headers: AUTH, payload: body({ taskId }) });
+      expect(response.statusCode).toBe(503);
+      expect(ApiError.parse(response.json()).error.code).toBe("TOOL_SERVERS_UNCONFIGURED");
+      expect(response.body).not.toContain("outputSchema");
     } finally {
       await app.close();
     }

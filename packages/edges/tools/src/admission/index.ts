@@ -196,7 +196,8 @@ function buildToolServerEnv(): Readonly<Record<string, string>> {
 }
 
 /**
- * Admit an operator's schema pin (P-24, ADR 0109), or `null`.
+ * Admit an operator's schema pin (P-24, ADR 0109), or `null`. The input pin and,
+ * since P-24/B(b) (ADR 0117), a present output pin take this one rung.
  *
  * Required and never defaulted: a JSON object whose `type` is `"object"` (the
  * revision requires it of every tool, so a pin that cannot match a conformant
@@ -345,9 +346,17 @@ export function admitToolServer(descriptor: ToolServerDescriptor): ToolAdmission
     if (typeof writes !== "boolean") return refuse("SERVER_NOT_ADMITTED", at + ".writes");
     const inputSchema = admitPin(entry["inputSchema"]);
     if (inputSchema === null) return refuse("SERVER_NOT_ADMITTED", at + ".inputSchema");
+    // P-24/B(b), ADR 0117: the output pin, on the same rung as the input one, and
+    // always materialized. Absent and `null` are one reviewed answer — "this tool
+    // declares no output schema" — and anything else must be an admissible pin.
+    const rawOutput = entry["outputSchema"];
+    const outputSchema = rawOutput === undefined || rawOutput === null ? null : admitPin(rawOutput);
+    if (outputSchema === null && rawOutput !== undefined && rawOutput !== null) {
+      return refuse("SERVER_NOT_ADMITTED", at + ".outputSchema");
+    }
     if (names.has(name)) return refuse("SERVER_NOT_ADMITTED", at + ".name");
     names.add(name);
-    allowlist.push(Object.freeze({ name, writes, inputSchema }));
+    allowlist.push(Object.freeze({ name, writes, inputSchema, outputSchema }));
   }
 
   if (isLoopback) {

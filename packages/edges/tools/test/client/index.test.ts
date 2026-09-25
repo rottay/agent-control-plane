@@ -12,6 +12,7 @@ import {
   TOOL_MCP_CLIENT_NAME,
   TOOL_MCP_PROTOCOL_VERSION,
   TOOL_RESULT_BYTES_MAX,
+  TOOL_SCHEMA_DEPTH_MAX,
 } from "../../src/contract/index.js";
 import { toolFrameBytes } from "../../src/jsonrpc/index.js";
 import {
@@ -636,5 +637,196 @@ describe("a list_changed notification invalidates a listing (P-24, C5)", () => {
     await flush();
     expect(client.takeListChanged()).toBe(true);
     expect(client.takeListChanged()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-24/B(b) (ADR 0117): the output schema is read, and structured content is
+// carried only as the text block that holds it
+// ---------------------------------------------------------------------------
+
+describe("the listing reads a tool's outputSchema, optional and never null (P-24/B(b))", () => {
+  const OUTPUT = { type: "object", properties: { hits: { type: "number" } } };
+
+  it("leaves the key absent when none is advertised, and carries an object as parsed", async () => {
+    const { connection, client } = connected();
+    const listing = client.listTools();
+    await answerHandshake(connection);
+    await answerPages(connection, [{ tools: [tool("a"), { ...tool("b"), outputSchema: OUTPUT }] }]);
+    const outcome = await listing;
+    expect(outcome).toEqual({ ok: true, value: [tool("a"), { ...tool("b"), outputSchema: OUTPUT }] });
+    if (!outcome.ok) return;
+    expect(Object.hasOwn(outcome.value[0] ?? {}, "outputSchema")).toBe(false);
+  });
+
+  const malformed: readonly (readonly [string, unknown])[] = [
+    ["null", null],
+    ["an array", []],
+    ["a string", "x"],
+    ["a number", 1],
+  ];
+  for (const [label, outputSchema] of malformed) {
+    it("refuses an advertised outputSchema that is " + label + " as a violation at server.tools", async () => {
+      const { connection, client } = connected();
+      const listing = client.listTools();
+      await answerHandshake(connection);
+      await answerPages(connection, [{ tools: [{ ...tool("a"), outputSchema }] }]);
+      await expect(listing).resolves.toEqual({ ok: false, refusal: "PROTOCOL_VIOLATION", at: "server.tools" });
+    });
+  }
+
+  it("reads an outputSchema advertised on page 3 of 3", async () => {
+    const { connection, client } = connected();
+    const listing = client.listTools();
+    await answerHandshake(connection);
+    await answerPages(connection, [
+      { tools: [tool("a")], nextCursor: "c1" },
+      { tools: [tool("b")], nextCursor: "c2" },
+      { tools: [{ ...tool("c"), outputSchema: OUTPUT }] },
+    ]);
+    await expect(listing).resolves.toEqual({ ok: true, value: [tool("a"), tool("b"), { ...tool("c"), outputSchema: OUTPUT }] });
+  });
+});
+
+describe("structured content is carried only as the text block that holds it (P-24/B(b))", () => {
+  const STRUCTURED = { hits: 2, items: [{ id: "a" }, { id: "b" }] };
+  const text = (value: string): Record<string, unknown> => ({ type: "text", text: value });
+
+  /** Drive one call to a result and return the client's outcome. */
+  async function callWith(result: unknown): Promise<{
+    readonly outcome: Awaited<ReturnType<ToolClient["callTool"]>>;
+    readonly connection: ScriptedToolConnection;
+    readonly client: ToolClient;
+  }> {
+    const { connection, client } = connected();
+    const call = client.callTool("docs.search", {});
+    await answerHandshake(connection);
+    connection.emit(resultFrame(requestIdOf(lastFrame(connection)), result));
+    return { outcome: await call, connection, client };
+  }
+
+  const receivedOf = (result: { content?: unknown }): { resultBytes: number; contentBlocks: number } => ({
+    resultBytes: toolFrameBytes(JSON.stringify(result)),
+    contentBlocks: Array.isArray(result.content) ? result.content.length : 0,
+  });
+
+  /** A value `levels` containers deep: nested objects around a scalar. */
+  const nestedValue = (levels: number): Record<string, unknown> => {
+    let value: unknown = "leaf";
+    for (let level = 1; level < levels; level += 1) value = { child: value };
+    return { child: value };
+  };
+
+  it("completes a result with no structured content as before, and says so", async () => {
+    const { outcome } = await callWith({ content: [text("plain")] });
+    expect(outcome).toMatchObject({ ok: true, value: { content: ["plain"], structured: false } });
+  });
+
+  it("carries structured content its one text block serializes", async () => {
+    const mirror = JSON.stringify(STRUCTURED);
+    const { outcome } = await callWith({ content: [text(mirror)], structuredContent: STRUCTURED });
+    expect(outcome).toMatchObject({ ok: true, value: { content: [mirror], structured: true } });
+  });
+
+  it("compares the mirror by value: reordered keys and 1.0 for 1 still carry it", async () => {
+    const mirror = '{"items":[{"id":"a"},{"id":"b"}],"hits":2.0}';
+    const { outcome } = await callWith({ content: [text(mirror)], structuredContent: STRUCTURED });
+    expect(outcome).toMatchObject({ ok: true, value: { content: [mirror], structured: true } });
+  });
+
+  it("accepts the mirror in any text block, and a block that is not JSON beside it is no refusal", async () => {
+    const mirror = JSON.stringify(STRUCTURED);
+    const second = await callWith({ content: [text("Found two hits:"), text(mirror)], structuredContent: STRUCTURED });
+    expect(second.outcome).toMatchObject({ ok: true, value: { content: ["Found two hits:", mirror], structured: true } });
+    const notJson = await callWith({ content: [text("{ not json"), text(mirror)], structuredContent: STRUCTURED });
+    expect(notJson.outcome).toMatchObject({ ok: true, value: { structured: true } });
+  });
+
+  it("declines structured content no text block carries, with the counts that arrived, and keeps the connection", async () => {
+    const result = { content: [text("Found two hits."), text('{"hits":3}')], structuredContent: STRUCTURED };
+    const { outcome, connection, client } = await callWith(result);
+    expect(outcome).toEqual({
+      ok: false,
+      refusal: "RESULT_NOT_CARRIED",
+      at: "server.result.structuredContent",
+      result: receivedOf(result),
+    });
+    expect(receivedOf(result).contentBlocks).toBe(2);
+    // A conformant peer that omitted a SHOULD has violated nothing: the next
+    // request is written, not refused on a broken stream.
+    const before = connection.written().length;
+    void client.callTool("docs.search", {});
+    await flush();
+    expect(connection.written().length).toBe(before + 1);
+    expect(requestMethodOf(lastFrame(connection))).toBe("tools/call");
+  });
+
+  it("declines structured content that arrives with no content blocks at all", async () => {
+    const result = { content: [], structuredContent: STRUCTURED };
+    const { outcome } = await callWith(result);
+    expect(outcome).toEqual({ ok: false, refusal: "RESULT_NOT_CARRIED", at: "server.result.structuredContent", result: receivedOf(result) });
+    expect(receivedOf(result)).toMatchObject({ contentBlocks: 0 });
+    expect(receivedOf(result).resultBytes).toBeGreaterThan(0);
+  });
+
+  const notObjects: readonly (readonly [string, unknown])[] = [
+    ["an array", []],
+    ["null", null],
+    ["a string", "x"],
+    ["a number", 2],
+  ];
+  for (const [label, structuredContent] of notObjects) {
+    it("refuses structured content that is " + label + " as a violation, with its counts", async () => {
+      const result = { content: [text(JSON.stringify(structuredContent))], structuredContent };
+      const { outcome } = await callWith(result);
+      expect(outcome).toEqual({ ok: false, refusal: "PROTOCOL_VIOLATION", at: "server.result.structuredContent", result: receivedOf(result) });
+    });
+  }
+
+  it("carries a value at the depth bound and declines one past it", async () => {
+    const atBound = nestedValue(TOOL_SCHEMA_DEPTH_MAX);
+    const carried = await callWith({ content: [text(JSON.stringify(atBound))], structuredContent: atBound });
+    expect(carried.outcome).toMatchObject({ ok: true, value: { structured: true } });
+    const past = nestedValue(TOOL_SCHEMA_DEPTH_MAX + 1);
+    const result = { content: [text(JSON.stringify(past))], structuredContent: past };
+    const declined = await callWith(result);
+    expect(declined.outcome).toEqual({ ok: false, refusal: "RESULT_NOT_CARRIED", at: "server.result.structuredContent", result: receivedOf(result) });
+  });
+
+  it("carries a mirror of exactly the block bound, and refuses one byte more at the block bound first", async () => {
+    const padded = (bytes: number): Record<string, unknown> => ({ pad: "x".repeat(bytes - JSON.stringify({ pad: "" }).length) });
+    const atBound = padded(TOOL_CONTENT_STRING_MAX);
+    expect(JSON.stringify(atBound).length).toBe(TOOL_CONTENT_STRING_MAX);
+    const carried = await callWith({ content: [text(JSON.stringify(atBound))], structuredContent: atBound });
+    expect(carried.outcome).toMatchObject({ ok: true, value: { structured: true } });
+    const over = padded(TOOL_CONTENT_STRING_MAX + 1);
+    const result = { content: [text(JSON.stringify(over))], structuredContent: over };
+    const refused = await callWith(result);
+    expect(refused.outcome).toEqual({ ok: false, refusal: "RESULT_UNBOUNDED", at: "server.result", result: receivedOf(result) });
+  });
+
+  it("judges isError, the blocks and the result ceiling before the structured value", async () => {
+    const mirror = JSON.stringify(STRUCTURED);
+    const errorResult = { content: [text(mirror)], structuredContent: STRUCTURED, isError: true };
+    expect((await callWith(errorResult)).outcome).toEqual({
+      ok: false,
+      refusal: "RESULT_IS_ERROR",
+      at: "server.result",
+      result: receivedOf(errorResult),
+    });
+    const imageResult = { content: [text(mirror), { type: "image", data: "AAAA", mimeType: "image/png" }], structuredContent: STRUCTURED };
+    expect((await callWith(imageResult)).outcome).toEqual({
+      ok: false,
+      refusal: "PROTOCOL_VIOLATION",
+      at: "server.result",
+      result: receivedOf(imageResult),
+    });
+    const hugeResult = { content: [text(mirror)], structuredContent: { ...STRUCTURED, pad: "x".repeat(TOOL_RESULT_BYTES_MAX) } };
+    expect((await callWith(hugeResult)).outcome).toEqual({
+      ok: false,
+      refusal: "RESULT_UNBOUNDED",
+      at: "server.result",
+      result: receivedOf(hugeResult),
+    });
   });
 });

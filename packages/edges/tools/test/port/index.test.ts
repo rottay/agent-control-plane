@@ -10,6 +10,7 @@ import {
   TOOL_LIST_PAGES_MAX,
   TOOL_TRANSPORT_UNRESOLVED,
 } from "../../src/contract/index.js";
+import { openToolOperation } from "../../src/operation/index.js";
 import { createToolProtocolPort } from "../../src/port/index.js";
 import type { ToolProtocolPort } from "../../src/port/index.js";
 import {
@@ -943,7 +944,7 @@ describe("the port lists before it calls, and calls only under the pinned schema
 
   it("lists only allowlist entries advertised under their pin, and refuses the listing on a mismatch", async () => {
     const equal = await portWith({ advertises: ["docs.search"] }).listTools(SESSION, "docs");
-    expect(equal).toEqual({ ok: true, tools: [ALLOWLIST[0]] });
+    expect(equal).toEqual({ ok: true, tools: [{ ...ALLOWLIST[0], outputSchema: null }] });
     const differing = await portWith({ schemas: { "docs.write": { type: "object", required: ["x"] } } }).listTools(SESSION, "docs");
     expect(differing).toEqual({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.inputSchema" });
   });
@@ -1032,6 +1033,182 @@ describe("the two windows over the loopback leg (P-24, C5)", () => {
       expect(methods.filter((method) => method === "tools/list")).toHaveLength(2);
     } finally {
       await target.closeAll();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-24/B(b) (ADR 0117): the output pin, and structured content only as text
+// ---------------------------------------------------------------------------
+
+describe("the port calls only under the pinned output schema, and carries structure only as text (P-24/B(b))", () => {
+  const OUTPUT = { type: "object", properties: { hits: { type: "number" } }, required: ["hits"] };
+  const REORDERED = { required: ["hits"], properties: { hits: { type: "number" } }, type: "object" };
+  const STRUCTURED = { hits: 2 };
+  let ports: ToolProtocolPort[] = [];
+  let listLog = "";
+
+  afterEach(async () => {
+    for (const extra of ports) await extra.closeAll();
+    ports = [];
+  });
+
+  /** A port over a fresh fake: `docs.search` pinned as told, answered as told. */
+  function outputPort(
+    options: Parameters<typeof writeFakeToolServer>[1],
+    outputSchema: unknown,
+    answer: Parameters<typeof writeFakeToolServer>[1]["answers"] = {},
+  ): ToolProtocolPort {
+    listLog = dir + "/p24b-lists.log";
+    const fake = writeFakeToolServer(dir + "/p24b-" + String(ports.length), {
+      callLog,
+      pidLog,
+      listLog,
+      advertises: ["docs.search"],
+      answers: { "docs.search": { kind: "STRUCTURED", structured: STRUCTURED, blocks: [JSON.stringify(STRUCTURED)] }, ...answer },
+      ...options,
+    });
+    const pinned = { name: "docs.search", writes: false, inputSchema: { type: "object" }, ...(outputSchema === undefined ? {} : { outputSchema }) };
+    const admitted = admitToolServer({
+      serverId: "docs",
+      transport: "STDIO",
+      command: fake.command,
+      args: fake.args,
+      tools: [pinned as unknown as (typeof ALLOWLIST)[number]],
+    });
+    if (!admitted.ok) throw new Error("fixture server was not admitted: " + admitted.at);
+    const created = createToolProtocolPort({ servers: [admitted.server], liveness: { isLive: (sessionId) => live.has(sessionId) } });
+    ports.push(created);
+    return created;
+  }
+
+  const callOn = (target: ToolProtocolPort) =>
+    target.callTool({ sessionId: SESSION, serverId: "docs", toolName: "docs.search", identity: IMPLEMENTER, arguments: { q: "acp" } });
+
+  it("completes under an output pin equal to the advertisement in another key order, carrying the mirror as text", async () => {
+    const outcome = await callOn(outputPort({ outputSchemas: { "docs.search": REORDERED } }, OUTPUT));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.content).toEqual([JSON.stringify(STRUCTURED)]);
+    expect(outcome.receipt).toMatchObject({ outcome: "COMPLETED", refusal: null, contentBlocks: 1 });
+    expect(readToolCallLog(listLog)).toEqual(["list null"]);
+    expect(readToolCallLog(callLog)).toEqual(["docs.search"]);
+  });
+
+  const mismatches: readonly (readonly [string, Parameters<typeof writeFakeToolServer>[1], unknown])[] = [
+    ["pinned none, advertised some", { outputSchemas: { "docs.search": OUTPUT } }, null],
+    ["pinned none by absence, advertised some", { outputSchemas: { "docs.search": OUTPUT } }, undefined],
+    ["pinned some, advertised none", {}, OUTPUT],
+    ["one nested key differs", { outputSchemas: { "docs.search": { ...OUTPUT, properties: { hits: { type: "string" } } } } }, OUTPUT],
+  ];
+  for (const [label, options, pin] of mismatches) {
+    it("refuses " + label + " as SCHEMA_MISMATCH at server.tools.outputSchema, sends no call, and keeps the connection", async () => {
+      const target = outputPort(options, pin);
+      const outcome = await callOn(target);
+      expect(outcome).toMatchObject({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.outputSchema" });
+      expect(Object.hasOwn(outcome, "content")).toBe(false);
+      expect(outcome.receipt).toMatchObject({ outcome: "REFUSED", refusal: "SCHEMA_MISMATCH", resultBytes: 0, contentBlocks: 0 });
+      // The same child answers the second call: the connection was kept.
+      expect(await callOn(target)).toMatchObject({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.outputSchema" });
+      expect(readToolCallLog(callLog)).toEqual([]);
+      expect(childPids()).toHaveLength(1);
+      expect(childPids().every(pidAlive)).toBe(true);
+    });
+  }
+
+  it("refuses an advertised outputSchema of null as a violation at server.tools, sends no call, and reaps the child", async () => {
+    const target = outputPort({ outputSchemas: { "docs.search": null } }, OUTPUT);
+    const outcome = await callOn(target);
+    expect(outcome).toMatchObject({ ok: false, refusal: "PROTOCOL_VIOLATION", at: "server.tools" });
+    expect(outcome.receipt).toMatchObject({ outcome: "REFUSED", resultBytes: 0, contentBlocks: 0 });
+    expect(readToolCallLog(callLog)).toEqual([]);
+    const pids = childPids();
+    expect(pids).toHaveLength(1);
+    await vi.waitFor(() => {
+      expect(pids.some(pidAlive)).toBe(false);
+    });
+    // The next call is answered by a new child, not by the connection that broke.
+    expect(await callOn(target)).toMatchObject({ refusal: "PROTOCOL_VIOLATION", at: "server.tools" });
+    expect(childPids()).toHaveLength(2);
+    expect(readToolCallLog(callLog)).toEqual([]);
+  });
+
+  it("reports a tool whose input and output schemas both differ at inputSchema, one answer", async () => {
+    const outcome = await callOn(
+      outputPort({ schemas: { "docs.search": { type: "object", required: ["q"] } }, outputSchemas: { "docs.search": { type: "object" } } }, OUTPUT),
+    );
+    expect(outcome).toMatchObject({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.inputSchema" });
+  });
+
+  it("refuses a result with no structured content under an output pin as a violation, with its counts, and reaps the child", async () => {
+    const outcome = await callOn(
+      outputPort({ outputSchemas: { "docs.search": OUTPUT } }, OUTPUT, { "docs.search": { kind: "TEXT", blocks: ["two hits", "done"] } }),
+    );
+    const sent = { content: [{ type: "text", text: "two hits" }, { type: "text", text: "done" }] };
+    expect(outcome).toMatchObject({ ok: false, refusal: "PROTOCOL_VIOLATION", at: "server.result.structuredContent" });
+    expect(Object.hasOwn(outcome, "content")).toBe(false);
+    expect(outcome.receipt).toMatchObject({ outcome: "REFUSED", resultBytes: JSON.stringify(sent).length, contentBlocks: 2 });
+    const pids = childPids();
+    expect(pids).toHaveLength(1);
+    await vi.waitFor(() => {
+      expect(pids.some(pidAlive)).toBe(false);
+    });
+  });
+
+  it("declines unmirrored structured content as RESULT_NOT_CARRIED with its counts, and keeps the connection", async () => {
+    const target = outputPort({}, null, { "docs.search": { kind: "STRUCTURED", structured: STRUCTURED, blocks: ["Found two hits."] } });
+    const outcome = await callOn(target);
+    const sent = { content: [{ type: "text", text: "Found two hits." }], structuredContent: STRUCTURED };
+    expect(outcome).toMatchObject({ ok: false, refusal: "RESULT_NOT_CARRIED", at: "server.result.structuredContent" });
+    expect(Object.hasOwn(outcome, "content")).toBe(false);
+    expect(outcome.receipt).toMatchObject({ outcome: "REFUSED", refusal: "RESULT_NOT_CARRIED", resultBytes: JSON.stringify(sent).length, contentBlocks: 1 });
+    expect(await callOn(target)).toMatchObject({ refusal: "RESULT_NOT_CARRIED" });
+    expect(readToolCallLog(callLog)).toEqual(["docs.search", "docs.search"]);
+    expect(childPids()).toHaveLength(1);
+    expect(childPids().every(pidAlive)).toBe(true);
+  });
+
+  it("still sees a credential shape inside mirrored structured content: RESULT_UNSAFE, no content", async () => {
+    const leaking = { hits: 1, token: LEAKED };
+    const outcome = await callOn(
+      outputPort({ outputSchemas: { "docs.search": OUTPUT } }, OUTPUT, {
+        "docs.search": { kind: "STRUCTURED", structured: leaking, blocks: [JSON.stringify(leaking)] },
+      }),
+    );
+    expect(outcome).toMatchObject({ ok: false, refusal: "RESULT_UNSAFE", at: "server.result" });
+    expect(Object.hasOwn(outcome, "content")).toBe(false);
+    expect(JSON.stringify(outcome)).not.toContain(LEAKED);
+  });
+
+  it("lists an entry under an equal output pin, and refuses the listing on a different one", async () => {
+    const equal = await outputPort({ outputSchemas: { "docs.search": REORDERED } }, OUTPUT).listTools(SESSION, "docs");
+    expect(equal).toMatchObject({ ok: true, tools: [{ name: "docs.search", outputSchema: OUTPUT }] });
+    const differing = await outputPort({ outputSchemas: { "docs.search": OUTPUT } }, null).listTools(SESSION, "docs");
+    expect(differing).toEqual({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.outputSchema" });
+  });
+
+  it("hands a declined result on through the operation scope as a coherent refusal with no content", async () => {
+    const fake = writeFakeToolServer(dir + "/p24b-scope", {
+      advertises: ["docs.search"],
+      answers: { "docs.search": { kind: "STRUCTURED", structured: STRUCTURED, blocks: ["no mirror"] } },
+    });
+    const admitted = admitToolServer({
+      serverId: "docs",
+      transport: "STDIO",
+      command: fake.command,
+      args: fake.args,
+      tools: [{ name: "docs.search", writes: false, inputSchema: { type: "object" } }],
+    });
+    if (!admitted.ok) throw new Error("fixture server was not admitted: " + admitted.at);
+    const scopeId = "tool/7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a02/1/0";
+    const scope = openToolOperation({ scopeId, servers: [admitted.server] });
+    try {
+      const outcome = await scope.callTool({ sessionId: scopeId, serverId: "docs", toolName: "docs.search", identity: IMPLEMENTER, arguments: {} });
+      expect(outcome).toMatchObject({ ok: false, refusal: "RESULT_NOT_CARRIED", at: "server.result.structuredContent" });
+      expect(outcome.receipt).toMatchObject({ outcome: "REFUSED", refusal: "RESULT_NOT_CARRIED" });
+      expect(Object.hasOwn(outcome, "content")).toBe(false);
+    } finally {
+      await scope.close();
     }
   });
 });

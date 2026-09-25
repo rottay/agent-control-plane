@@ -182,10 +182,47 @@ connection is one call, so the second window collapses into the first; the daemo
 composition, with long-lived connections, owns the choice between re-listing per
 call and trusting the notification.
 
-**What is not read.** A tool's `outputSchema` and `structuredContent` are not read,
-and neither are its `title` or `annotations`: hints a server offers are not
-authority, and `writes` stays the operator's. The discovery listing reaches no
-door as a verb of its own.
+**What is not read.** A tool's `title` and `annotations` are not read: hints a
+server offers are not authority, and `writes` stays the operator's. The discovery
+listing reaches no door as a verb of its own.
+
+## A tool's output is pinned, and structure is carried only as text (P-24/B(b), ADR 0117)
+
+**The output pin.** An allowlist entry may also pin the tool's `outputSchema`: an
+object schema the operator reviewed, admitted on the input pin's rung and refused
+field-exactly (`descriptor.tools[i].outputSchema`), or `null` for "reviewed: this
+tool declares none". The key is optional, and admission always materializes it,
+so absence is read as none. That is the strictest reading, not a hole: a server
+that advertises any output schema for a tool pinned to none is a mismatch. The
+listing reads an advertised `outputSchema` as optional and never null (present
+and `null`, an array or a scalar is `PROTOCOL_VIOLATION`), and the port compares
+it with the pin by the same value equality before any `tools/call` is sent; a
+difference is `SCHEMA_MISMATCH` at `server.tools.outputSchema`, judged after the
+input schema, with the connection kept.
+
+**Structured content.** A result's `structuredContent` is never carried as a
+field of its own: the caller still receives text blocks and nothing else. It is
+admitted only when some text block of the same result parses to a JSON value
+equal to it — the mirror the revision asks servers to send — and then the text
+block is the carriage and nothing is lost. A result whose `structuredContent`
+no text block carries is refused as `RESULT_NOT_CARRIED`, with the counts it
+arrived with and the connection kept, because a peer that omits a SHOULD has
+violated nothing and dropping the value silently would hand the caller a
+shortened answer it could not recognize as shortened. A `structuredContent` that
+is not a JSON object, or its absence under a pinned output schema (a MUST the
+revision puts on the server), is `PROTOCOL_VIOLATION` at
+`server.result.structuredContent`. Two consequences of carrying it only as text:
+structured content that serializes past the 4 KiB block ceiling can never be
+carried, and one nested deeper than `TOOL_SCHEMA_DEPTH_MAX` never compares
+equal, so both are refused rather than truncated. An image, audio or resource
+block is the same class as the unmirrored case and is still refused as
+`PROTOCOL_VIOLATION`; moving it to the new word is a later cut.
+
+**What is not done.** The plane **never validates `structuredContent` against
+`outputSchema`**: there is no JSON-Schema validator in this package, as there is
+none for arguments. That is a declared deviation from the revision, which says a
+client SHOULD validate; the pin binds the allow decision to the output interface
+the operator reviewed, and the mirror guarantees nothing is dropped.
 
 `TOOL_MCP_PROTOCOL_VERSION` records the revision the client speaks and now also
 compares: `initialize` refuses a server that agrees a different revision, or
@@ -279,7 +316,7 @@ join and the receipt live.
 | `TOOL_WRITE_ROLES` | the closed set of roles that may drive a writing tool |
 | `ToolWriteRole` | its member type |
 | `holdsToolWriteAuthority` | the membership test the port decides by |
-| `ToolAllowlistEntry` | one permitted tool, whether it writes, and its pinned `inputSchema` |
+| `ToolAllowlistEntry` | one permitted tool, whether it writes, its pinned `inputSchema` and its optional `outputSchema` pin |
 | `ToolServerDescriptor` | untrusted, config-shaped server input |
 | `ToolCallRequest` | one call, as the plane's caller states it |
 | `TOOL_ARGUMENTS_BYTES_MAX` | the argument ceiling |

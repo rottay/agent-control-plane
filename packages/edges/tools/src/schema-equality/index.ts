@@ -2,7 +2,12 @@
  * JSON value equality for a tool's pinned schema — `@acp/tools` (P-24, ADR 0109).
  *
  * The one comparison of an advertised `inputSchema` with the operator's pin, and
- * the one depth bound over a JSON value. A value pin, not schema equivalence:
+ * the one depth bound over a JSON value. Since P-24/B(b) (ADR 0117) it is also the
+ * one comparison of an advertised `outputSchema` with its pin (`null` equals only
+ * `null`, by the scalar branch), and of a result's structured content with the
+ * text block that mirrors it: the same value equality, so a mirror whose keys are
+ * reordered or whose `1` is spelled `1.0` still carries it, and a structured value
+ * past the depth bound is never carried. A value pin, not schema equivalence:
  *
  * - objects are equal when their own keys are the same set and each value is
  *   equal, whatever the key order;

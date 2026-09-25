@@ -673,9 +673,11 @@ lleva siete campos, y **ninguna clase decide el reintento por sí sola**:
 | Herramienta: identidad sin permiso de escritura, servidor no admitido, herramienta no permitida, resultado inseguro | `AUTHORITY_REFUSED` | `NONE` | ni se admite ni se difunde |
 | Herramienta: resultado sin acotar | `RESOURCE_EXHAUSTED` | `NONE` | no hay éxito parcial fingido |
 | Herramienta: sesión no viva | `PRECONDITION_FAILED` | `NONE` | no se resucita |
-| Herramienta: violación de protocolo | `TRANSPORT_UNAVAILABLE` | `RECONCILE` | error remoto, no petición del usuario |
+| Herramienta: violación de protocolo | `TRANSPORT_UNAVAILABLE` | `RECONCILE` | error remoto, no petición del usuario; incluye un `structuredContent` que no es objeto y su ausencia bajo un `outputSchema` fijado (ADR 0117) |
 | Herramienta: transporte rechazado | por subrazón | `NONE` | descriptor inválido → `REQUEST_INVALID`; transporte no soportado → `CAPABILITY_UNSUPPORTED`; destino prohibido → `AUTHORITY_REFUSED` |
 | Herramienta: resultado marcado como error | `PRECONDITION_FAILED` | `NONE` | ejecución fallida, **aunque el transporte respondiera bien** |
+| Herramienta: schema anunciado distinto del fijado, o herramienta no anunciada (`SCHEMA_MISMATCH`) | `PRECONDITION_FAILED` | `NONE` | la interfaz no es la revisada; la petición es válida y lo que corresponde es un re-pin del operador (ADR 0109, 0117) |
+| Herramienta: resultado conforme que este cliente no lleva entero, `structuredContent` sin bloque de texto que lo refleje (`RESULT_NOT_CARRIED`) | `CAPABILITY_UNSUPPORTED` | `NONE` | se nombra la capacidad: llevar contenido estructurado sin su espejo de texto; nunca se recorta (ADR 0117) |
 | Presión: autenticación requerida | `AUTHORITY_REFUSED` | `NONE` | **no es cuota** |
 | Presión: cuota agotada | `RESOURCE_EXHAUSTED` | `WAIT_CONDITION` | reset observado, o handoff autorizado |
 | Presión: advertencia de cuota | `RESOURCE_EXHAUSTED` **sólo si** rechaza la admisión | `WAIT_CONDITION` | una advertencia es una señal, **no** un fallo |

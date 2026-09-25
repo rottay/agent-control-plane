@@ -62,10 +62,10 @@ export type ToolTransportUnresolved = typeof TOOL_TRANSPORT_UNRESOLVED;
  *
  * Producer per member, in order: the argument ceiling; an identity outside
  * `TOOL_WRITE_ROLES` against a writing tool; a malformed, oversized, unmatched
- * or absent JSON-RPC frame; a result the server marked as an error; the result
- * ceiling; the privacy guard over a result; a `serverId` outside the admitted
- * set; the liveness join; the per-server tool allowlist; the descriptor
- * admission.
+ * or absent JSON-RPC frame; a result the server marked as an error; structured
+ * content no text block carries; the result ceiling; the privacy guard over a
+ * result; the listing's pins; a `serverId` outside the admitted set; the
+ * liveness join; the per-server tool allowlist; the descriptor admission.
  *
  * `RESULT_IS_ERROR` (P-11) is the refusal for a fact the other nine cannot
  * name: the transport answered, the frame was well-formed, and the result
@@ -79,14 +79,29 @@ export type ToolTransportUnresolved = typeof TOOL_TRANSPORT_UNRESOLVED;
  * `SCHEMA_MISMATCH` (P-24, ADR 0109) is the port's refusal when the listing this
  * connection last saw does not advertise the tool (`at: "server.tools"`), or
  * advertises it with an `inputSchema` that is not JSON-equal to the one the
- * operator pinned (`at: "server.tools.inputSchema"`). It is decided before any
- * `tools/call` is sent.
+ * operator pinned (`at: "server.tools.inputSchema"`), or with an `outputSchema`
+ * that is not JSON-equal to the output pin (`at: "server.tools.outputSchema"`,
+ * P-24/B(b), ADR 0117). It is decided before any `tools/call` is sent.
+ *
+ * `RESULT_NOT_CARRIED` (P-24/B(b), ADR 0117) is the client's refusal for a
+ * result that is conformant and that this plane cannot carry whole: it holds
+ * structured content that no text block of the same result carries by JSON
+ * value (`at: "server.result.structuredContent"`). The revision asks a server to
+ * mirror structured content in a text block, but as a SHOULD, so a peer that
+ * omits the mirror has violated nothing: the result is declined rather than
+ * dropped, its counts are kept, and the connection survives. A structured
+ * value that is not a JSON object, or its absence under a pinned output schema,
+ * breaks a MUST and stays `PROTOCOL_VIOLATION`. An image, audio or resource
+ * block is the same class as the unmirrored case and still refuses as
+ * `PROTOCOL_VIOLATION` at `server.result`; moving it to this word is a later
+ * cut, named on the P-24 row.
  */
 export const TOOL_REFUSALS = [
   "ARGUMENTS_UNBOUNDED",
   "IDENTITY_FORBIDS_WRITE",
   "PROTOCOL_VIOLATION",
   "RESULT_IS_ERROR",
+  "RESULT_NOT_CARRIED",
   "RESULT_UNBOUNDED",
   "RESULT_UNSAFE",
   "SCHEMA_MISMATCH",
@@ -132,11 +147,21 @@ export function holdsToolWriteAuthority(role: WorkerRole): boolean {
  * version in the MCP revision this client speaks, so the pin is the version and a
  * changed schema is a re-pin — a reviewed change to the operator's document, never
  * something the plane rewrites from what a server advertises.
+ *
+ * `outputSchema` (P-24/B(b), ADR 0117) pins the tool's **output** interface the
+ * same way: an object schema the operator reviewed, or `null` for "reviewed: this
+ * tool declares no output schema". The key is optional in a document and the
+ * admission **always materializes it**, absence as `null`. That is not the default
+ * ADR 0109 forbade for `inputSchema`: there no value was safe, here absence takes
+ * the strictest value there is, so a server that advertises any output schema for
+ * a tool pinned to none is a mismatch. Like the input pin it is compared, never
+ * used to validate: the plane checks no structured result against it.
  */
 export interface ToolAllowlistEntry {
   readonly name: string;
   readonly writes: boolean;
   readonly inputSchema: Readonly<Record<string, unknown>>;
+  readonly outputSchema?: Readonly<Record<string, unknown>> | null;
 }
 
 /**
@@ -307,7 +332,10 @@ export const MCP_PROTOCOL_RECORD = Object.freeze({
   TOOL_SCHEMA: "pinned per tool by value; JSON-equal or SCHEMA_MISMATCH before any tools/call; arguments never validated",
   LIST_CHANGED:
     "invalidates the cached listing; a change during a listing restarts it once; a guard re-checks before send; a change after the last listing this connection saw is not seen",
-  OUTPUT_SCHEMA: "NOT_READ",
+  OUTPUT_SCHEMA:
+    "pinned per tool by value, absent read as none; SCHEMA_MISMATCH before any tools/call; never validated against",
+  STRUCTURED_CONTENT:
+    "carried only as the text block that holds it JSON-equal, else RESULT_NOT_CARRIED; required under a pinned output schema; never a field of its own",
   IS_ERROR_RESULT: "refused as RESULT_IS_ERROR; error content discarded whole",
   CONTENT_BLOCKS: "text only; every other kind refused",
 } as const);

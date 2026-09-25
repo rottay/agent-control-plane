@@ -12276,6 +12276,65 @@ const P27C_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-24, cut B(b): a tool's output interface is pinned, and structured content is
+ * carried only as the text that holds it (ADR 0117; decisions 204-207; brief v1 with
+ * the Kimi K3 pre-audit, ND-2 taken as (b) and the three non-blocking corrections,
+ * adopted as the DT's rulings; Fable's audit of this cut is pending its quota).
+ *
+ * Fixtures only. The tools edge's allowlist entry gains an optional `outputSchema`
+ * pin, admitted on the input pin's rung and always materialized (absent -> `null`,
+ * "reviewed: none"); the listing reads an advertised `outputSchema` as optional and
+ * never null; the port compares it by `jsonEqual` after the input schema and refuses a
+ * difference as `SCHEMA_MISMATCH` at `server.tools.outputSchema` before any
+ * `tools/call`. The client admits a result's `structuredContent` only when a text
+ * block of the same result parses to a JSON value equal to it, declines an unmirrored
+ * one with the new word `RESULT_NOT_CARRIED` (connection kept, counts kept), and
+ * refuses a non-object one as `PROTOCOL_VIOLATION`; the port refuses a result with no
+ * structured content under a pinned output schema as `PROTOCOL_VIOLATION`, dropping
+ * the connection. Nothing new is carried: `content` stays the caller's only field, and
+ * nothing validates the value against the schema. No door source moves; F1-F5 run
+ * through both doors and F1-F4 with parity. L-P24B-1 is new and L-P24-2 widens in
+ * place.
+ *
+ * **Pins that move.** `TOOL_REFUSALS` 11 -> **12**; `MCP_PROTOCOL_RECORD` 19 -> **20**
+ * keys (`OUTPUT_SCHEMA` rewritten, `STRUCTURED_CONTENT` added) and L-B4B-17's table
+ * 19 -> **20** rows; `PATH_SCOPED_LAWS` 170 -> **171**; the ADR corpus 116 -> **117**.
+ * Two computed counts move, pinned by no doc: this constant is one more epoch-frozen
+ * record (242 -> 243), whose 22 paths hold 16 more package-path literals
+ * (3323 -> 3339); the live law literals 487 -> 489.
+ * **Pins that do not.** `CONTRACT_VERSION` (2.10.0), `API_CONTRACT_VERSION` (0.23.0),
+ * `MIGRATIONS` (27), `CONTRACTS_SCHEMA_EXPORTS` (184), `RUNTIME_PUBLIC_EXPORTS` (307),
+ * `TOOLS_PUBLIC_EXPORTS` and the receipt's ten members: the new word crosses runtime,
+ * ledger and protocol by grammar, and no export is added.
+ *
+ * **Twenty-two paths; one is new.**
+ */
+const P24B_WRITE_SET = [
+  "packages/edges/tools/src/contract/index.ts",
+  "packages/edges/tools/src/admission/index.ts",
+  "packages/edges/tools/src/client/index.ts",
+  "packages/edges/tools/src/port/index.ts",
+  "packages/edges/tools/src/schema-equality/index.ts",
+  "packages/edges/tools/README.md",
+  "packages/edges/tools/test/testing/index.ts",
+  "packages/edges/tools/test/admission/index.test.ts",
+  "packages/edges/tools/test/client/index.test.ts",
+  "packages/edges/tools/test/port/index.test.ts",
+  "packages/edges/tools/test/contract/index.test.ts",
+  "packages/edges/tools/test/schema-equality/index.test.ts",
+  "packages/edges/tools/test/http-loopback/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0117-a-tool-output-is-pinned-and-carried-only-as-text.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "docs/audit/architecture/contracts/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12529,6 +12588,7 @@ const WRITE_SET = [
   ...P27A_WRITE_SET,
   ...P27B_WRITE_SET,
   ...P27C_WRITE_SET,
+  ...P24B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -14095,6 +14155,13 @@ const PATH_SCOPED_LAWS = [
   {
     law: "a task's step link has one decision, one door, and insert-only rows",
     scope: "packages/persistence/ledger/src/ledger/index.ts, packages/persistence/ledger/src/task-step-link/index.ts, packages/*/*/src/**",
+  },
+  // P-24 cut B(b). One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 170 -> 171 for L-P24B-1. L-P24-2 widens in its
+  // own row and L-B4B-17's table gains a row in its own law; neither adds one.
+  {
+    law: "structured content is read in one place, compared by value, and carried nowhere",
+    scope: "packages/*/*/src/**",
   },
 ];
 
@@ -26273,6 +26340,8 @@ if (tracked.status === 0) {
         ["TOOL_SCHEMA", "pinned per tool by value"],
         ["LIST_CHANGED", "list_changed"],
         ["OUTPUT_SCHEMA", "outputSchema"],
+        // P-24/B(b) (ADR 0117): the structured result.
+        ["STRUCTURED_CONTENT", "structuredContent"],
       ];
       const declaredKeys = new Set(
         [...record.matchAll(/^\s{2}([A-Z][A-Z0-9_]*):/gm)].map((match) => match[1]),
@@ -26395,14 +26464,15 @@ if (tracked.status === 0) {
 //
 // Over every tracked `packages/edges/tools/src/` file, comments stripped:
 // `jsonEqual` is declared once, in `schema-equality/index.ts`, and nowhere else;
-// the port compares through it; and no file compares an `inputSchema` any other
-// way — no `===`/`!==` on a line naming two schemas, no `isDeepStrictEqual`, no
-// `JSON.stringify(` of one beside a comparison. A shape check of one schema
-// (`=== null`, `typeof`) is not a comparison and is left alone.
+// the port compares through it; and no file compares an `inputSchema` or, since
+// P-24/B(b) (ADR 0117), an `outputSchema` any other way — no `===`/`!==` on a line
+// naming two schemas, no `isDeepStrictEqual`, no `JSON.stringify(` of one beside a
+// comparison. A shape check of one schema (`=== null`, `typeof`) is not a
+// comparison and is left alone.
 //
 // Stated limit: a text-level matcher. A comparison spread over two lines, a
 // one-line comparison through an alias of an `inputSchema` value
-// (`const s = x.inputSchema; s === y`), loose `==` over serialized schemas, or a
+// (`const s = x.outputSchema; s === y`), loose `==` over serialized schemas, or a
 // helper under another name that walks two schemas is not seen (verifier note 2);
 // the schema suite's rows are the behaviour.
 {
@@ -26432,11 +26502,11 @@ if (tracked.status === 0) {
           // one schema is not a comparison of two.
           const compares = /[!=]==/.test(line);
           if (
-            /inputSchema\s*[!=]==\s*[\w$.[\]"']*inputSchema/.test(line) ||
-            (/inputSchema/.test(line) && /isDeepStrictEqual|deepStrictEqual/.test(line)) ||
-            (compares && /JSON\.stringify\([^)]*inputSchema/.test(line))
+            /(?:input|output)Schema\s*[!=]==\s*[\w$.[\]"']*(?:input|output)Schema/.test(line) ||
+            (/(?:input|output)Schema/.test(line) && /isDeepStrictEqual|deepStrictEqual/.test(line)) ||
+            (compares && /JSON\.stringify\([^)]*(?:input|output)Schema/.test(line))
           ) {
-            fail(relativePath + " compares an inputSchema outside jsonEqual: " + line.trim().slice(0, 120) + " (L-P24-2)");
+            fail(relativePath + " compares a pinned schema outside jsonEqual: " + line.trim().slice(0, 120) + " (L-P24-2)");
           }
         }
       }
@@ -26448,6 +26518,73 @@ if (tracked.status === 0) {
   }
   requireScope("a pinned schema is compared in one place, by value", scanned);
   notes.push("a pinned schema is compared in one place, by value, and the port compares through it");
+}
+
+// L-P24B-1 -- structured content is read in one place, compared by value, and
+// carried nowhere (P-24/B(b), ADR 0117; decision 206).
+//
+// Over every tracked `packages/*/*/src/` `.ts`/`.tsx` file, plus the write-set
+// entries under that same path filter (so a test or fixture naming the field is out
+// of scope: the suites must stage it), comments stripped: the identifier
+// `structuredContent` appears only in `packages/edges/tools/src/client/index.ts`;
+// there only inside the `callTool` body (from `async callTool(` to the next
+// `async close(`), which names it at least once and calls `jsonEqual(`. The `at`
+// path that names the field as its last segment, `server.result.structuredContent`,
+// is a path and not a read, so the one spelling `server.result.` before it is not
+// counted. What it pins: no other file reads the field, no runtime, protocol,
+// gateway or CLI source carries it, and the mirror is compared by value rather than
+// by text.
+//
+// Stated limit: a text-level matcher. The property reached through a computed key
+// built from pieces (`r["structured" + "Content"]`), through a destructuring alias
+// whose line does not name it, or through `Object.values`/`JSON.stringify` of the
+// whole result is not seen; a `jsonEqual(` call present in the body but not applied
+// to the field passes. The exempt path spelling is itself such a channel: a key
+// derived from the string "server.result.structuredContent" (its `.slice(14)`) is
+// preceded by `server.result.` and is not counted, in any source. The client
+// suite's rows are the behaviour.
+{
+  const STRUCTURED_SITE = "packages/edges/tools/src/client/index.ts";
+  const LAW = "structured content is read in one place, compared by value, and carried nowhere";
+  const FIELD = /(?<!server\.result\.)\bstructuredContent\b/g;
+  let scanned = 0;
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      const code = stripComments(file);
+      const named = (code.match(FIELD) ?? []).length;
+      if (relativePath !== STRUCTURED_SITE) {
+        if (named > 0) {
+          fail(relativePath + " names structuredContent; only " + STRUCTURED_SITE + "'s callTool reads it, and nothing carries it (L-P24B-1)");
+        }
+        continue;
+      }
+      const start = code.indexOf("async callTool(");
+      const end = start === -1 ? -1 : code.indexOf("\n    async close(", start);
+      if (start === -1 || end === -1) {
+        fail(STRUCTURED_SITE + " no longer declares callTool where L-P24B-1 can read it (L-P24B-1)");
+        continue;
+      }
+      const body = code.slice(start, end);
+      const inside = (body.match(FIELD) ?? []).length;
+      if (inside === 0) {
+        fail(STRUCTURED_SITE + " callTool no longer reads structuredContent; the structured result is judged there (L-P24B-1)");
+      }
+      if (named !== inside) {
+        fail(STRUCTURED_SITE + " names structuredContent outside callTool; the field is read in one place (L-P24B-1)");
+      }
+      if (!/\bjsonEqual\(/.test(body)) {
+        fail(STRUCTURED_SITE + " callTool no longer compares through jsonEqual; the mirror is equal by value, not by text (L-P24B-1)");
+      }
+    }
+  }
+  requireScope(LAW, scanned);
+  notes.push("structured content is read only in the tool client's callTool, compared by value, and carried by no other source");
 }
 
 // L-P37S-1 -- the protocol declares no sha-256 grammar of its own (P-37, the sha-256

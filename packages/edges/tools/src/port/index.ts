@@ -24,7 +24,7 @@ import { parseWorkerIdentity } from "@acp/contracts";
 
 import type { AdmittedToolServer } from "../admission/index.js";
 import type { AdvertisedTool, ToolClient, ToolClientOutcome, ToolTransportConnection } from "../client/index.js";
-import { createToolClient } from "../client/index.js";
+import { AT_STRUCTURED_RESULT, createToolClient } from "../client/index.js";
 import type { ToolAllowlistEntry, ToolCallRequest, ToolRefusal } from "../contract/index.js";
 import {
   TOOL_ARGUMENTS_BYTES_MAX,
@@ -200,12 +200,17 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
    * The paths carry no tool name: the request already names the tool, and a
    * bounded name (up to 120 characters) spliced into `server.tools.<name>.inputSchema`
    * would overflow the protocol's 120-character `at`. `server.tools` says the tool
-   * was not advertised; `server.tools.inputSchema` says it was, under another schema.
+   * was not advertised; `server.tools.inputSchema` says it was, under another schema;
+   * `server.tools.outputSchema` (P-24/B(b), ADR 0117) says its input matched and its
+   * output interface did not. Input is judged before output, so a tool whose two
+   * schemas both differ has one answer. A tool that advertises no output schema, and
+   * an entry with no output pin, are each read as none: `null` equals only `null`.
    */
   const mismatchOf = (listing: readonly AdvertisedTool[], entry: ToolAllowlistEntry): string | null => {
     const advertised = listing.find((tool) => tool.name === entry.name);
     if (advertised === undefined) return "server.tools";
-    return jsonEqual(advertised.inputSchema, entry.inputSchema) ? null : "server.tools.inputSchema";
+    if (!jsonEqual(advertised.inputSchema, entry.inputSchema)) return "server.tools.inputSchema";
+    return jsonEqual(advertised.outputSchema ?? null, entry.outputSchema ?? null) ? null : "server.tools.outputSchema";
   };
 
   return {
@@ -238,14 +243,15 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
       // allowlist names but the server does not serve is not listed as
       // available. Reporting the allowlist alone would promise tools that are
       // not there; reporting the advertisement alone would abandon the bound.
-      // P-24: an allowlisted tool advertised under another schema is not
-      // silently dropped; the first one refuses the whole listing.
+      // P-24: an allowlisted tool advertised under another schema, input or
+      // output, is not silently dropped; the first one refuses the whole listing.
+      // A tool not advertised at all is simply not listed.
       const available: ToolAllowlistEntry[] = [];
       for (const entry of server.allowlist) {
         const at = mismatchOf(listed.value, entry);
         if (at === null) {
           available.push(entry);
-        } else if (at.endsWith(".inputSchema")) {
+        } else if (at !== "server.tools") {
           return { ok: false, refusal: "SCHEMA_MISMATCH", at };
         }
       }
@@ -383,9 +389,22 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
         return refuse(called.refusal, called.at, called.result);
       }
 
+      // P-24/B(b), ADR 0117: under a pinned output schema the server MUST return
+      // structured content, so its absence is a violation, and every violation
+      // drops the connection. Decided here because the port holds the entry; the
+      // client, which stays pin-free, has already refused an unmirrored value.
+      if ((entry.outputSchema ?? null) !== null && !called.value.structured) {
+        await drop(connectionKey(request.sessionId, request.serverId));
+        return refuse("PROTOCOL_VIOLATION", AT_STRUCTURED_RESULT, {
+          resultBytes: called.value.resultBytes,
+          contentBlocks: called.value.content.length,
+        });
+      }
+
       // 8/9. The result ceiling was applied by the client; the privacy guard is
-      //      applied here, where the contracts guards live. No content is
-      //      returned on a violation — not filtered content, none.
+      //      applied here, where the contracts guards live, over the whole raw
+      //      result, structured content included. No content is returned on a
+      //      violation — not filtered content, none.
       if (toolResultIsUnsafe(called.value.value)) {
         return refuse("RESULT_UNSAFE", "server.result", {
           resultBytes: called.value.resultBytes,
