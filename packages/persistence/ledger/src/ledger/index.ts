@@ -40,11 +40,13 @@ import {
   LedgerInitiativeBatchConflictError,
   LedgerRoadmapVersionRefusedError,
   LedgerSequenceError,
+  LedgerTaskGraphRefusedError,
   LedgerValidationError,
   type LedgerValidationIssue,
 } from "../errors/index.js";
 import { decideRoadmapVersion } from "../roadmap-version/index.js";
 import { readRoadmapStepManifest } from "../roadmap-steps/index.js";
+import { decideTaskGraph, taskGraphLinkOf } from "../task-graph/index.js";
 import {
   ACCOUNT_INTEGRITY_MIGRATION,
   DISPATCH_CATALOG_PIN_MIGRATION,
@@ -161,6 +163,10 @@ import {
   createRoadmapStepFold,
   foldRoadmapStep,
   roadmapStepKey,
+  assertTaskGraphsComplete,
+  createTaskGraphFold,
+  foldTaskGraph,
+  taskGraphKey,
   nextRoutingAssignmentProjection,
   nextTaskProjection,
   nextWorkerProjection,
@@ -272,6 +278,9 @@ import {
   type TaskPage,
   type TaskQuery,
   type TaskAttemptReadModel,
+  type TaskDependencyReadModel,
+  type TaskGraphNodeReadModel,
+  type TaskGraphRevisionReadModel,
   type TaskReadModel,
   type TaskRevisionReadModel,
   type TaskSubmissionReadModel,
@@ -1300,6 +1309,66 @@ interface RoadmapStepDependencyRow {
   readonly sequence: number;
 }
 
+interface TaskGraphRevisionRow {
+  readonly graph_revision_id: string;
+  readonly roadmap_version_id: string;
+  readonly step_id: string;
+  readonly declared_at: string;
+  readonly superseded_by: string | null;
+  readonly sequence: number;
+}
+
+interface TaskGraphNodeRow {
+  readonly graph_revision_id: string;
+  readonly task_id: string;
+  readonly task_revision_number: number;
+  readonly sequence: number;
+}
+
+interface TaskDependencyRow {
+  readonly graph_revision_id: string;
+  readonly task_id: string;
+  readonly task_revision_number: number;
+  readonly depends_on_task_id: string;
+  readonly depends_on_task_revision_number: number;
+  readonly fail_policy: string;
+  readonly step_id: string;
+  readonly sequence: number;
+}
+
+function taskGraphRevisionRowToModel(row: TaskGraphRevisionRow): TaskGraphRevisionReadModel {
+  return {
+    graphRevisionId: row.graph_revision_id,
+    roadmapVersionId: row.roadmap_version_id,
+    stepId: row.step_id,
+    declaredAt: row.declared_at,
+    supersededBy: row.superseded_by,
+    sequence: row.sequence,
+  };
+}
+
+function taskGraphNodeRowToModel(row: TaskGraphNodeRow): TaskGraphNodeReadModel {
+  return {
+    graphRevisionId: row.graph_revision_id,
+    taskId: row.task_id,
+    taskRevisionNumber: row.task_revision_number,
+    sequence: row.sequence,
+  };
+}
+
+function taskDependencyRowToModel(row: TaskDependencyRow): TaskDependencyReadModel {
+  return {
+    graphRevisionId: row.graph_revision_id,
+    taskId: row.task_id,
+    taskRevisionNumber: row.task_revision_number,
+    dependsOnTaskId: row.depends_on_task_id,
+    dependsOnTaskRevisionNumber: row.depends_on_task_revision_number,
+    failPolicy: row.fail_policy as TaskDependencyReadModel["failPolicy"],
+    stepId: row.step_id,
+    sequence: row.sequence,
+  };
+}
+
 function roadmapStepRowToModel(row: RoadmapStepRow): RoadmapStepReadModel {
   return {
     roadmapVersionId: row.roadmap_version_id,
@@ -2263,14 +2332,21 @@ function assertInitiativeVersionInForce(event: InitiativeEvent): void {
 }
 
 /**
- * The one shape an initiative batch has (P-26 cut B): a `ROADMAP_VERSION_RECORDED`,
- * then its `ROADMAP_STEP_DECLARED`s in `stepIndex` order, one initiative, and a
- * version that counts exactly those steps. Null when the batch has it.
+ * The two shapes an initiative batch has. A `ROADMAP_VERSION_RECORDED`, then its
+ * `ROADMAP_STEP_DECLARED`s in `stepIndex` order, one initiative, and a version that
+ * counts exactly those steps (P-26 cut B); or a `TASK_GRAPH_DECLARED`, then its
+ * `TASK_GRAPH_NODE_DECLARED`s in `nodeIndex` order, one initiative, and a header that
+ * counts exactly those nodes (P-27 cut A). The first event's type says which. Null
+ * when the batch has one of them.
  */
 function initiativeBatchShapeProblem(events: readonly InitiativeEvent[]): LedgerValidationIssue | null {
   const [version, ...steps] = events;
+  if (version?.type === "TASK_GRAPH_DECLARED") return taskGraphBatchShapeProblem(version, steps);
   if (version?.type !== "ROADMAP_VERSION_RECORDED") {
-    return { path: "[0].type", message: "an initiative batch opens with one ROADMAP_VERSION_RECORDED" };
+    return {
+      path: "[0].type",
+      message: "an initiative batch opens with one ROADMAP_VERSION_RECORDED or one TASK_GRAPH_DECLARED",
+    };
   }
   if (steps.length === 0) {
     return { path: "<root>", message: "an initiative batch carries its version's steps; a version with none goes through appendInitiativeEvent" };
@@ -2289,6 +2365,32 @@ function initiativeBatchShapeProblem(events: readonly InitiativeEvent[]): Ledger
   }
   if ((version.payload as { readonly stepCount?: unknown }).stepCount !== steps.length) {
     return { path: "[0].payload.stepCount", message: "the version counts exactly the steps its batch declares" };
+  }
+  return null;
+}
+
+/** The task graph shape of an initiative batch (P-27 cut A), after its header. */
+function taskGraphBatchShapeProblem(
+  header: InitiativeEvent,
+  nodes: readonly InitiativeEvent[],
+): LedgerValidationIssue | null {
+  if (nodes.length === 0) {
+    return { path: "<root>", message: "a task graph batch carries its revision's nodes" };
+  }
+  for (const [index, node] of nodes.entries()) {
+    const at = "[" + String(index + 1) + "]";
+    if (node.type !== "TASK_GRAPH_NODE_DECLARED") {
+      return { path: at + ".type", message: "every event after the header is a TASK_GRAPH_NODE_DECLARED" };
+    }
+    if (node.initiativeId !== header.initiativeId) {
+      return { path: at + ".initiativeId", message: "an initiative batch is one initiative's" };
+    }
+    if ((node.payload as { readonly nodeIndex?: unknown }).nodeIndex !== index) {
+      return { path: at + ".payload.nodeIndex", message: "the nodes follow their header in nodeIndex order" };
+    }
+  }
+  if ((header.payload as { readonly nodeCount?: unknown }).nodeCount !== nodes.length) {
+    return { path: "[0].payload.nodeCount", message: "the header counts exactly the nodes its batch declares" };
   }
   return null;
 }
@@ -6994,6 +7096,13 @@ export class Ledger {
         { path: "type", message: "a roadmap step is declared only in its version's batch, through appendInitiativeBatch" },
       ]);
     }
+    // L-P26B-1, widened by P-27 cut A: a task graph is declared only as one batch, its
+    // header with its nodes.
+    if (event.type === "TASK_GRAPH_DECLARED" || event.type === "TASK_GRAPH_NODE_DECLARED") {
+      throw new LedgerValidationError([
+        { path: "type", message: "a task graph is declared only as one batch, its header with its nodes, through appendInitiativeBatch" },
+      ]);
+    }
     if (event.type === "ROADMAP_VERSION_RECORDED") {
       const stepCount = (event.payload as { readonly stepCount?: unknown }).stepCount;
       if (typeof stepCount === "number" && stepCount > 0) {
@@ -7172,11 +7281,15 @@ export class Ledger {
 
     const versionEvent = prepared[0]?.event;
     if (versionEvent === undefined) throw new LedgerValidationError([{ path: "<root>", message: "an empty batch" }]);
+    // The batch's shape, by its first event (P-27 cut A): a task graph revision and its
+    // nodes, or a roadmap version and its steps.
+    const graph = versionEvent.type === "TASK_GRAPH_DECLARED";
     const referenceId = (versionEvent.payload as { readonly stepManifestArtifactReferenceId?: unknown })
       .stepManifestArtifactReferenceId;
-    // The one read of the private plane, before the lock (ND-B3).
+    // The one read of the private plane, before the lock (ND-B3). A task graph carries
+    // no manifest.
     const manifest =
-      typeof referenceId === "string"
+      !graph && typeof referenceId === "string"
         ? readRoadmapStepManifest(this, { artifactReferenceId: referenceId, initiativeId: versionEvent.initiativeId })
         : null;
 
@@ -7233,22 +7346,28 @@ export class Ledger {
         }
       }
 
-      if (!manifest?.ok) {
-        throw new LedgerValidationError([
-          {
-            path: "payload.stepManifestArtifactReferenceId",
-            message:
-              "a roadmap version names a step manifest the private plane does not give back" +
-              (manifest === null ? "" : " (" + manifest.refusal + ")") +
-              "; a manifest is published before it is referenced",
-          },
-        ]);
+      if (graph) {
+        // The task graph law, inside this transaction (P-27 cut A): the one decision,
+        // over the read model and the task stream this transaction keeps level.
+        this.#assertTaskGraphGranted(prepared.map(({ event }) => event));
+      } else {
+        if (!manifest?.ok) {
+          throw new LedgerValidationError([
+            {
+              path: "payload.stepManifestArtifactReferenceId",
+              message:
+                "a roadmap version names a step manifest the private plane does not give back" +
+                (manifest === null ? "" : " (" + manifest.refusal + ")") +
+                "; a manifest is published before it is referenced",
+            },
+          ]);
+        }
+        this.#assertStepManifestReference(versionEvent, referenceId as string);
+        this.#assertRoadmapVersionGranted(versionEvent, {
+          declarations: prepared.slice(1).map(({ event }) => event.payload),
+          manifest: manifest.manifest,
+        });
       }
-      this.#assertStepManifestReference(versionEvent, referenceId as string);
-      this.#assertRoadmapVersionGranted(versionEvent, {
-        declarations: prepared.slice(1).map(({ event }) => event.payload),
-        manifest: manifest.manifest,
-      });
 
       const records: InitiativeEventRecord[] = [];
       let last: { readonly record: InitiativeEventRecord; readonly count: number } | null = null;
@@ -7265,14 +7384,18 @@ export class Ledger {
       for (const record of records) {
         this.#projectInitiativeEvent(record.event, record.sequence);
       }
-      const steps = createRoadmapStepFold();
-      const version = this.#roadmapVersionRow(versionEvent.initiativeId, records[0]?.event);
-      for (const record of records.slice(1)) {
-        foldRoadmapStep(steps, (id) => (id === version?.roadmapVersionId ? version : undefined), record.event, record.sequence);
+      if (graph) {
+        this.#projectTaskGraphBatch(records);
+      } else {
+        const steps = createRoadmapStepFold();
+        const version = this.#roadmapVersionRow(versionEvent.initiativeId, records[0]?.event);
+        for (const record of records.slice(1)) {
+          foldRoadmapStep(steps, (id) => (id === version?.roadmapVersionId ? version : undefined), record.event, record.sequence);
+        }
+        assertRoadmapStepsComplete(steps, version === undefined ? [] : [version]);
+        for (const step of steps.roadmapSteps.values()) this.#insertRoadmapStep(step);
+        for (const dependency of steps.roadmapStepDependencies.values()) this.#insertRoadmapStepDependency(dependency);
       }
-      assertRoadmapStepsComplete(steps, version === undefined ? [] : [version]);
-      for (const step of steps.roadmapSteps.values()) this.#insertRoadmapStep(step);
-      for (const dependency of steps.roadmapStepDependencies.values()) this.#insertRoadmapStepDependency(dependency);
 
       this.#writeWatermarks(INITIATIVE_WATERMARKS, {
         sequence: last.record.sequence,
@@ -7285,6 +7408,95 @@ export class Ledger {
       return { insertedCount: records.length, records };
     });
     return run.immediate();
+  }
+
+  /**
+   * Fold a task graph batch through the rebuild's function, over this batch alone,
+   * and write it (P-27 cut A). The history outside the batch is the read model, in
+   * this transaction. Rows are inserted; the one update is the predecessor's
+   * `superseded_by`, written by `#supersedeTaskGraphRevision` and nowhere else.
+   */
+  #projectTaskGraphBatch(records: readonly InitiativeEventRecord[]): void {
+    const fold = createTaskGraphFold();
+    for (const record of records) {
+      foldTaskGraph(
+        fold,
+        {
+          stepDeclared: (initiativeId, roadmapVersionId, stepId) =>
+            this.#stmt(
+              "SELECT 1 FROM roadmap_step_read_model s JOIN roadmap_version_read_model v " +
+                "ON v.roadmap_version_id = s.roadmap_version_id " +
+                "WHERE s.roadmap_version_id = ? AND s.step_id = ? AND v.initiative_id = ?",
+            ).get(roadmapVersionId, stepId, initiativeId) !== undefined,
+          currentRevision: (roadmapVersionId, stepId) => this.#currentTaskGraphRevision(roadmapVersionId, stepId) ?? undefined,
+          revisionHeld: (graphRevisionId) => this.#taskGraphRevisionRow(graphRevisionId) !== null,
+        },
+        record.event,
+        record.sequence,
+      );
+    }
+    assertTaskGraphsComplete(fold);
+    for (const revision of fold.taskGraphRevisions.values()) this.#insertTaskGraphRevision(revision);
+    for (const [graphRevisionId, supersededBy] of fold.supersessions) {
+      this.#supersedeTaskGraphRevision(graphRevisionId, supersededBy);
+    }
+    for (const node of fold.taskGraphNodes.values()) this.#insertTaskGraphNode(node);
+    for (const dependency of fold.taskDependencies.values()) this.#insertTaskDependency(dependency);
+  }
+
+  /**
+   * Run the task graph decision at the batch door, or throw its refusal by name (P-27
+   * cut A). Every question it asks is answered from the read model inside this
+   * transaction: the step under this initiative, its current revision, whether the id
+   * is held, each task revision, and the step each task entered on — the task
+   * stream's, read here from revision 1's recorded intake, never a foreign key. The
+   * fold asks neither task-stream question: they are the door's, and the rebuild never
+   * reopens the task stream to ask them again.
+   */
+  #assertTaskGraphGranted(events: readonly InitiativeEvent[]): void {
+    const [header, ...nodes] = events;
+    if (header === undefined) throw new LedgerValidationError([{ path: "<root>", message: "an empty batch" }]);
+    const decision = decideTaskGraph({
+      initiativeId: header.initiativeId,
+      header: header.payload,
+      nodes: nodes.map((event) => event.payload),
+      graphRevisionKnown: (graphRevisionId) => this.#taskGraphRevisionRow(graphRevisionId) !== null,
+      stepDeclared: (roadmapVersionId, stepId) =>
+        this.#stmt(
+          "SELECT 1 FROM roadmap_step_read_model s JOIN roadmap_version_read_model v " +
+            "ON v.roadmap_version_id = s.roadmap_version_id " +
+            "WHERE s.roadmap_version_id = ? AND s.step_id = ? AND v.initiative_id = ?",
+        ).get(roadmapVersionId, stepId, header.initiativeId) !== undefined,
+      currentGraphRevisionId: (roadmapVersionId, stepId) =>
+        this.#currentTaskGraphRevision(roadmapVersionId, stepId)?.graphRevisionId ?? null,
+      taskRevisionKnown: (taskId, taskRevisionNumber) =>
+        this.#stmt("SELECT 1 FROM task_revision_read_model WHERE task_id = ? AND revision_number = ?").get(
+          taskId,
+          taskRevisionNumber,
+        ) !== undefined,
+      taskLink: (taskId) => {
+        const opening = this.#stmt(
+          "SELECT sequence FROM task_revision_read_model WHERE task_id = ? AND revision_number = 1",
+        ).get(taskId) as { readonly sequence: number } | undefined;
+        const record = opening === undefined ? null : this.getEventBySequence(opening.sequence);
+        return record === null ? null : taskGraphLinkOf(record.event);
+      },
+    });
+    if (!decision.ok) throw new LedgerTaskGraphRefusedError(decision.reason, decision.at);
+  }
+
+  #taskGraphRevisionRow(graphRevisionId: string): TaskGraphRevisionReadModel | null {
+    const row = this.#stmt("SELECT * FROM task_graph_revision_read_model WHERE graph_revision_id = ?").get(
+      graphRevisionId,
+    ) as TaskGraphRevisionRow | undefined;
+    return row === undefined ? null : taskGraphRevisionRowToModel(row);
+  }
+
+  #currentTaskGraphRevision(roadmapVersionId: string, stepId: string): TaskGraphRevisionReadModel | null {
+    const row = this.#stmt(
+      "SELECT * FROM task_graph_revision_read_model WHERE roadmap_version_id = ? AND step_id = ? AND superseded_by IS NULL",
+    ).get(roadmapVersionId, stepId) as TaskGraphRevisionRow | undefined;
+    return row === undefined ? null : taskGraphRevisionRowToModel(row);
   }
 
   /** The version row the batch just projected, read back for its step fold. */
@@ -7510,6 +7722,61 @@ export class Ledger {
       "INSERT INTO roadmap_step_dependency (roadmap_version_id, step_id, depends_on_step_id, sequence) " +
         "VALUES (?, ?, ?, ?)",
     ).run(dependency.roadmapVersionId, dependency.stepId, dependency.dependsOnStepId, dependency.sequence);
+  }
+
+  /** Write one task graph revision. Insert-only, as a version is (P-27 cut A). */
+  #insertTaskGraphRevision(revision: TaskGraphRevisionReadModel): void {
+    this.#stmt(
+      "INSERT INTO task_graph_revision_read_model (" +
+        "graph_revision_id, roadmap_version_id, step_id, declared_at, superseded_by, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(
+      revision.graphRevisionId,
+      revision.roadmapVersionId,
+      revision.stepId,
+      revision.declaredAt,
+      revision.supersededBy,
+      revision.sequence,
+    );
+  }
+
+  /**
+   * The one update of a task graph revision (P-27 cut A; L-P27-2): the predecessor's
+   * `superseded_by`, set once, in the transaction that declares its successor. The
+   * migration's trigger refuses a second one and any other column.
+   */
+  #supersedeTaskGraphRevision(graphRevisionId: string, supersededBy: string): void {
+    this.#stmt("UPDATE task_graph_revision_read_model SET superseded_by = ? WHERE graph_revision_id = ?").run(
+      supersededBy,
+      graphRevisionId,
+    );
+  }
+
+  /** Write one node of a task graph revision. Insert-only. */
+  #insertTaskGraphNode(node: TaskGraphNodeReadModel): void {
+    this.#stmt(
+      "INSERT INTO task_graph_node_read_model (graph_revision_id, task_id, task_revision_number, sequence) " +
+        "VALUES (?, ?, ?, ?)",
+    ).run(node.graphRevisionId, node.taskId, node.taskRevisionNumber, node.sequence);
+  }
+
+  /** Write one edge of a task graph revision. Insert-only. */
+  #insertTaskDependency(dependency: TaskDependencyReadModel): void {
+    this.#stmt(
+      "INSERT INTO task_dependency_read_model (" +
+        "graph_revision_id, task_id, task_revision_number, depends_on_task_id, " +
+        "depends_on_task_revision_number, fail_policy, step_id, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      dependency.graphRevisionId,
+      dependency.taskId,
+      dependency.taskRevisionNumber,
+      dependency.dependsOnTaskId,
+      dependency.dependsOnTaskRevisionNumber,
+      dependency.failPolicy,
+      dependency.stepId,
+      dependency.sequence,
+    );
   }
 
   #initiativeRowToRecord(row: InitiativeEventRow): InitiativeEventRecord {
@@ -9308,8 +9575,10 @@ export class Ledger {
         lastInitiativeRecordedAt = event.recordedAt;
       });
       // A version whose steps stop short is refused by name once the stream is folded
-      // (P-26 cut B): only then is "short" a fact.
+      // (P-26 cut B): only then is "short" a fact. A task graph revision the same
+      // (P-27 cut A).
       assertRoadmapStepsComplete(initiativeSnapshot, initiativeSnapshot.roadmapVersions.values());
+      assertTaskGraphsComplete(initiativeSnapshot);
 
       // And the third, on the same terms. A rebuild is a function of the whole
       // VECTOR of heads: all three chains are replayed before anything is
@@ -9511,6 +9780,18 @@ export class Ledger {
       for (const dependency of initiativeSnapshot.roadmapStepDependencies.values()) {
         this.#insertRoadmapStepDependency(dependency);
       }
+      // The task graphs after the steps they name, parents first (P-27 cut A): each
+      // revision with the `superseded_by` the fold left it with, so the rebuild writes
+      // no update; then the nodes, then the edges.
+      for (const revision of initiativeSnapshot.taskGraphRevisions.values()) {
+        this.#insertTaskGraphRevision(revision);
+      }
+      for (const node of initiativeSnapshot.taskGraphNodes.values()) {
+        this.#insertTaskGraphNode(node);
+      }
+      for (const dependency of initiativeSnapshot.taskDependencies.values()) {
+        this.#insertTaskDependency(dependency);
+      }
 
       // One table, two partitions, written from the two snapshots that folded
       // them. The partitions are disjoint by
@@ -9704,13 +9985,17 @@ export class Ledger {
       try {
         applyInitiativeEventToSnapshot(initiativeSnapshot, event, row.sequence);
       } catch (error: unknown) {
-        if (!(error instanceof LedgerRoadmapVersionRefusedError)) throw error;
+        if (!(error instanceof LedgerRoadmapVersionRefusedError) && !(error instanceof LedgerTaskGraphRefusedError)) {
+          throw error;
+        }
         roadmapRefusals.push({
           kind: "PROJECTION",
           detail:
             "initiative sequence " +
             String(row.sequence) +
-            " records a roadmap version the fold refuses: " +
+            (error instanceof LedgerTaskGraphRefusedError
+              ? " records a task graph the fold refuses: "
+              : " records a roadmap version the fold refuses: ") +
             error.reason +
             " at " +
             error.at,
@@ -9726,6 +10011,16 @@ export class Ledger {
       problems.push({
         kind: "PROJECTION",
         detail: "the initiative stream folds a roadmap version the fold refuses: " + error.reason + " at " + error.at,
+        sequence: null,
+      });
+    }
+    try {
+      assertTaskGraphsComplete(initiativeSnapshot);
+    } catch (error: unknown) {
+      if (!(error instanceof LedgerTaskGraphRefusedError)) throw error;
+      problems.push({
+        kind: "PROJECTION",
+        detail: "the initiative stream folds a task graph the fold refuses: " + error.reason + " at " + error.at,
         sequence: null,
       });
     }
@@ -10312,6 +10607,43 @@ export class Ledger {
           ]),
         ),
       },
+      // The task graphs (P-27 cut A), by the same three questions.
+      {
+        table: "task_graph_revision_read_model",
+        expected: snapshot.taskGraphRevisions,
+        stored: new Map(
+          (
+            this.#stmt("SELECT * FROM task_graph_revision_read_model ORDER BY sequence ASC").all() as TaskGraphRevisionRow[]
+          ).map((row) => [row.graph_revision_id, taskGraphRevisionRowToModel(row)]),
+        ),
+      },
+      {
+        table: "task_graph_node_read_model",
+        expected: snapshot.taskGraphNodes,
+        stored: new Map(
+          (this.#stmt("SELECT * FROM task_graph_node_read_model ORDER BY sequence ASC").all() as TaskGraphNodeRow[]).map(
+            (row) => [taskGraphKey(row.graph_revision_id, row.task_id, String(row.task_revision_number)), taskGraphNodeRowToModel(row)],
+          ),
+        ),
+      },
+      {
+        table: "task_dependency_read_model",
+        expected: snapshot.taskDependencies,
+        stored: new Map(
+          (this.#stmt("SELECT * FROM task_dependency_read_model ORDER BY sequence ASC").all() as TaskDependencyRow[]).map(
+            (row) => [
+              taskGraphKey(
+                row.graph_revision_id,
+                row.task_id,
+                String(row.task_revision_number),
+                row.depends_on_task_id,
+                String(row.depends_on_task_revision_number),
+              ),
+              taskDependencyRowToModel(row),
+            ],
+          ),
+        ),
+      },
     ];
     for (const { table, expected, stored } of steps) {
       for (const [key, row] of expected) {
@@ -10368,6 +10700,47 @@ export class Ledger {
         "SELECT * FROM roadmap_step_dependency ORDER BY roadmap_version_id ASC, step_id ASC, depends_on_step_id ASC",
       ).all() as RoadmapStepDependencyRow[]
     ).map(roadmapStepDependencyRowToModel);
+  }
+
+  /** One task graph revision by its id, or null (P-27 cut A). */
+  getTaskGraphRevision(graphRevisionId: string): TaskGraphRevisionReadModel | null {
+    this.#assertOpen("getTaskGraphRevision");
+    return this.#taskGraphRevisionRow(graphRevisionId);
+  }
+
+  /**
+   * Every revision of one step's task graph, in declaration order (P-27 cut A). The
+   * current one is the one whose `supersededBy` is null. Unpaged: a step's revisions
+   * are a declared history.
+   */
+  listTaskGraphRevisions(roadmapVersionId: string, stepId: string): readonly TaskGraphRevisionReadModel[] {
+    this.#assertOpen("listTaskGraphRevisions");
+    return (
+      this.#stmt(
+        "SELECT * FROM task_graph_revision_read_model WHERE roadmap_version_id = ? AND step_id = ? ORDER BY sequence ASC",
+      ).all(roadmapVersionId, stepId) as TaskGraphRevisionRow[]
+    ).map(taskGraphRevisionRowToModel);
+  }
+
+  /** The nodes of one revision, in declaration order, which is `nodeIndex` order. */
+  listTaskGraphNodes(graphRevisionId: string): readonly TaskGraphNodeReadModel[] {
+    this.#assertOpen("listTaskGraphNodes");
+    return (
+      this.#stmt("SELECT * FROM task_graph_node_read_model WHERE graph_revision_id = ? ORDER BY sequence ASC").all(
+        graphRevisionId,
+      ) as TaskGraphNodeRow[]
+    ).map(taskGraphNodeRowToModel);
+  }
+
+  /** The edges of one revision, by their dependant's declaration, then their key. */
+  listTaskDependencies(graphRevisionId: string): readonly TaskDependencyReadModel[] {
+    this.#assertOpen("listTaskDependencies");
+    return (
+      this.#stmt(
+        "SELECT * FROM task_dependency_read_model WHERE graph_revision_id = ? " +
+          "ORDER BY sequence ASC, depends_on_task_id ASC, depends_on_task_revision_number ASC",
+      ).all(graphRevisionId) as TaskDependencyRow[]
+    ).map(taskDependencyRowToModel);
   }
 
   /**
@@ -11907,6 +12280,18 @@ export class Ledger {
       "SELECT * FROM roadmap_version_read_model WHERE initiative_id = ? ORDER BY version ASC",
     ).all(initiativeId) as RoadmapVersionRow[];
     return rows.map(roadmapVersionRowToModel);
+  }
+
+  /**
+   * One roadmap version by its identity, or null (P-27 cut A): what a task graph
+   * revision names, read back to its initiative.
+   */
+  getRoadmapVersion(roadmapVersionId: string): RoadmapVersionReadModel | null {
+    this.#assertOpen("getRoadmapVersion");
+    const row = this.#stmt("SELECT * FROM roadmap_version_read_model WHERE roadmap_version_id = ?").get(
+      roadmapVersionId,
+    ) as RoadmapVersionRow | undefined;
+    return row === undefined ? null : roadmapVersionRowToModel(row);
   }
 
   /**

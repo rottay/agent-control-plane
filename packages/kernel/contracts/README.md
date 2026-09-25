@@ -48,7 +48,7 @@ this table against the barrel.
 | `commit-authorization` | the receipt a local commit requires, and what it binds |
 | `execution-boundary` | the provider-neutral execution port: routes, requests, normalized events |
 | `durability-plane` | the shapes the durability port exchanges with its drivers |
-| `initiatives` | the initiative stream: registration, status, roadmap versions and their steps — the private step manifest, the declaration a `ROADMAP_STEP_DECLARED` carries, their bounds and the write set's preimage prefix (P-26 cut B) |
+| `initiatives` | the initiative stream: registration, status, roadmap versions and their steps — the private step manifest, the declaration a `ROADMAP_STEP_DECLARED` carries, their bounds and the write set's preimage prefix (P-26 cut B) — and a step's task graph: the header a `TASK_GRAPH_DECLARED` carries, the node a `TASK_GRAPH_NODE_DECLARED` carries, the three `DEPENDENCY_FAILURE_POLICIES` and two bounds (P-27 cut A) |
 | `account-record` | an account and its actions, with the refusal vocabulary |
 | `usage-limits` | the bounds a quota estimate is computed against |
 | `usage-measure` | the usage measurement vocabularies — source classes by precedence and report kinds — which the execution port's usage report names and the ledger re-exports |

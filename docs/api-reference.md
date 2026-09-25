@@ -10,13 +10,13 @@ table that this document omits fails. It also asserts that every response and
 query schema named below is exported by `@acp/protocol`.
 
 The parity suite is the behavioral authority **where it reaches**, and it does
-not reach every route. Thirteen of the thirty arms below are compared in full
+not reach every route. Thirteen of the thirty-two arms below are compared in full
 against an independently built CLI-side producer, including ordering,
 pagination, cursors and redaction; `eventStream` GET is compared in part, on one
 frame's item; `health` has no ledger content and so has no CLI build to compare
 against, and is checked as the contract's declared non-ledger exception instead.
-The remaining fifteen arms — `taskLifecycle` GET, `tasks` POST, and the thirteen
-belonging to the ten initiative and account routes — have no CLI-side parity
+The remaining seventeen arms — `taskLifecycle` GET, `tasks` POST, and the fifteen
+belonging to the eleven initiative and account routes — have no CLI-side parity
 comparison. `initiatives` POST and `tasks` POST are the two of them a command
 answers, and each pair of doors is compared by its own suites through the one
 orchestration both call, not by the parity suite. The
@@ -63,6 +63,7 @@ arm is not by itself a claim that a behavioral comparison exists for it.
 | `initiativeRoadmapContent` | GET | `/api/v1/initiatives/:initiativeId/roadmap/content` | `initiativeId` (uuid) | `RoadmapContentQuery` | `RoadmapContentResponse` | — |
 | `initiativeRoadmapSteps` | GET | `/api/v1/initiatives/:initiativeId/roadmap/steps` | `initiativeId` (uuid) | `RoadmapStepsQuery` | `RoadmapStepsResponse` | — |
 | `initiativeRoadmapDiff` | GET | `/api/v1/initiatives/:initiativeId/roadmap/diff` | `initiativeId` (uuid) | `RoadmapDiffQuery` | `RoadmapDiffResponse` | — |
+| `initiativeStepGraph` | GET, POST | `/api/v1/initiatives/:initiativeId/roadmap/steps/graph` | `initiativeId` (uuid) | `TaskGraphQuery` | `TaskGraphResponse` / `TaskGraphDeclarationResponse` | — |
 | `initiativeEvents` | GET | `/api/v1/initiatives/:initiativeId/events` | `initiativeId` (uuid) | none | `InitiativeTimelineResponse` | — |
 | `initiativeAgents` | GET | `/api/v1/initiatives/:initiativeId/agents` | `initiativeId` (uuid) | none | `InitiativeAgentsResponse` | — |
 | `accounts` | GET | `/api/v1/accounts` | — | none | `AccountsResponse` | — |
@@ -96,6 +97,7 @@ the mechanism and its anchors.
 | `taskLifecycle` | `TaskLifecycleRequest` | one lifecycle verb — `CANCEL` or `ATTACH` — against an attempt already running; the rows it appends are the ones the cancellation settlement already produced, and `ATTACH` appends none |
 | `initiatives` | `InitiativeRegistrationRequest` | one initiative, under the caller's own `initiativeId`; its objective is published to the private artifact plane and the event carries the digest and the reference, never the objective |
 | `tasks` | `TaskIntakeRequest` | one task intake, under the caller's client key and task id: the envelope published to the private artifact plane, revision 1 recorded by reference, and the role resolved from the registry with the vector it was read at; nothing executes the task |
+| `initiativeStepGraph` | `TaskGraphDeclarationRequest` | one revision of one step's task graph, under the caller's own `graphRevisionId`: a `TASK_GRAPH_DECLARED` and one `TASK_GRAPH_NODE_DECLARED` per node, all or none; nodes are task revisions and every edge carries its `failPolicy`; nothing dispatches |
 
 A write that is refused answers with a classified refusal rather than a bare
 failure: `AccountActionRefusalDto` names which rule refused it.
@@ -140,13 +142,38 @@ and `recordedBy`. The same body sent again, by this route or by
 publishing and appending nothing. The same key with another envelope, roadmap link,
 step, role, slot or transport is `409` `WRITE_REFUSED` with `CONFLICT` and the field
 as the detail; so is another key naming a task that already entered, at
-`envelope.taskId`. An initiative or roadmap version that does not exist, or a role the
+`envelope.taskId`. An initiative or roadmap version that does not exist, a step the
+linked version does not declare (`ROADMAP_STEP_UNKNOWN`, from `0.22.0`; a version recorded
+before steps existed declares none and answers `ROADMAP_STEPS_UNDECLARED`), or a role the
 envelope does not admit, is `409` with `REQUEST_INVALID`; a role the registry does not
 resolve is `409` with `AUTHORITY_REFUSED`, the resolver's code, and for a retired
 model version the proposal `MIGRATE_TO_ACTIVE_MODEL_VERSION`. A body the schema
 refuses, the envelope's own contract included, is `400` before the plane sees a byte.
 An intake takes no lease: two tasks with overlapping write-sets both enter, and the
 conflict is reported when one is acquired. No door mints a task id or a client key.
+
+**`initiativeStepGraph` selects a step by `?version=&stepId=`, on both arms.** The
+version is a number resolved inside the initiative, as the roadmap reads resolve it. The
+`POST` body names the revision — `graphRevisionId` (the caller's own), the
+`supersedesGraphRevisionId` it replaces (null for the step's first), `declaredBy` and the
+nodes in order, each with its edges and their `failPolicy`, required: the door fills in no
+default. The same body sent again answers `200` with `replayed: true` from the rows it
+wrote; the same id with another graph is `409` `WRITE_REFUSED` with
+`GRAPH_DECLARATION_INVALID`. Every refusal of the decision is a `409` carrying its word —
+`GRAPH_STEP_UNKNOWN`, `GRAPH_HEAD_MISMATCH` (the supersedes claim is not the step's current
+revision), `GRAPH_DEPENDENCY_CYCLE` (the detail names the nodes on the cycle, by task id and
+revision), `GRAPH_TASK_UNKNOWN` (a task revision the task stream does not record, at the
+node), `GRAPH_TASK_OUT_OF_SCOPE` (at the node: the task did not enter on this step — it
+entered under another initiative, on another `(version, stepId)` pair, including the same
+step id of another version, or with no roadmap link or no recorded intake at all) or
+`GRAPH_DECLARATION_INVALID`. A lost race is `409` `WRITE_REFUSED` too, carrying
+`WRITE_CONFLICT` in its message, the house mapping of a conflict at a write door. An unknown
+version is `404` on both arms. The `GET` answers the step's current revision with every
+node's READY verdict — four conditions, each `SATISFIED`, `UNSATISFIED` or `UNKNOWN` with
+its reason — computed at read time against the instant it echoes as `evaluatedAt` and never
+stored; `UNKNOWN` is never ready, and in this build every node reads
+`UNKNOWN(TASK_COHORT_LEGACY)` on R1 (ADR 0115). A step with no graph, or not declared by the
+version, is `404`.
 
 **`ATTACH` blocks until the invocation completes, and no request timeout is
 imposed.** A caller that attaches to a long run holds the HTTP connection open
@@ -352,10 +379,11 @@ it identically. ADR 0065 carries the reasoning.
 Route helpers (`taskPath`, `workerPath`, `initiativePath`,
 `initiativeRoadmapPath`, `initiativeRoadmapContentPath`,
 `initiativeRoadmapStepsPath`, `initiativeRoadmapDiffPath`,
-`initiativeEventsPath`, `initiativeAgentsPath`, `accountActionsPath`) validate
-before they encode. Do not build these paths by string concatenation. The three
-roadmap reads return the path only: the version selector (`?version=`, or
-`?from=&to=` on the diff) is the caller's query, built with `URLSearchParams`.
+`initiativeStepGraphPath`, `initiativeEventsPath`, `initiativeAgentsPath`,
+`accountActionsPath`) validate before they encode. Do not build these paths by string
+concatenation. The three roadmap reads and the task graph route return the path only: the
+selector (`?version=`, `?from=&to=` on the diff, `?version=&stepId=` on the graph) is the
+caller's query, built with `URLSearchParams`.
 
 ## What no response carries
 

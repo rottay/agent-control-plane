@@ -165,6 +165,8 @@ export const TASK_INTAKE_CODES = [
   "INITIATIVE_UNKNOWN",
   "REQUEST_FIELD_INVALID",
   "ROADMAP_LINK_INCOMPLETE",
+  "ROADMAP_STEPS_UNDECLARED",
+  "ROADMAP_STEP_UNKNOWN",
   "ROADMAP_VERSION_UNKNOWN",
   "ROLE_NOT_IN_ENVELOPE",
   "TASK_ALREADY_RECORDED",
@@ -323,8 +325,12 @@ export function assignmentRefusalClass(refusal: AssignmentRefusal): TaskIntakeRe
     : "AUTHORITY_REFUSED";
 }
 
-/** The ledger's GLOBAL reading, described in `@acp/accounts`' structural terms. */
-function assignmentReadingOf(reading: GlobalRoutingAssignmentReading): AssignmentReading {
+/**
+ * The ledger's GLOBAL reading, described in `@acp/accounts`' structural terms. Read by
+ * the READY adapter too (P-27 cut A), so the assignment a task entered under and the
+ * one it still resolves to are read through one description.
+ */
+export function assignmentReadingOf(reading: GlobalRoutingAssignmentReading): AssignmentReading {
   const { assignment, modelVersion } = reading;
   return {
     assignment:
@@ -593,11 +599,23 @@ function preconditions(ledger: Ledger, parsed: ParsedTaskIntake): TaskIntakeReso
   if (ledger.getInitiative(envelope.initiativeId) === null) {
     return refuse("REQUEST_INVALID", "INITIATIVE_UNKNOWN", "envelope.initiativeId");
   }
-  if (
-    parsed.roadmapVersionId !== null &&
-    !ledger.listRoadmapVersions(envelope.initiativeId).some((version) => version.roadmapVersionId === parsed.roadmapVersionId)
-  ) {
-    return refuse("REQUEST_INVALID", "ROADMAP_VERSION_UNKNOWN", "roadmapVersionId");
+  if (parsed.roadmapVersionId !== null) {
+    const version = ledger
+      .listRoadmapVersions(envelope.initiativeId)
+      .find((candidate) => candidate.roadmapVersionId === parsed.roadmapVersionId);
+    if (version === undefined) {
+      return refuse("REQUEST_INVALID", "ROADMAP_VERSION_UNKNOWN", "roadmapVersionId");
+    }
+    // The step exists in the version it names (P-27 cut A; decision 193, ADR 0087's
+    // debt). A version recorded before steps existed declares nothing, and says so by
+    // its own word, never as an unknown step; one that declares none refuses every
+    // stepId by the second word. Unknown is never zero.
+    if (version.stepCount === null) {
+      return refuse("REQUEST_INVALID", "ROADMAP_STEPS_UNDECLARED", "stepId");
+    }
+    if (!ledger.listRoadmapSteps(version.roadmapVersionId).some((step) => step.stepId === parsed.stepId)) {
+      return refuse("REQUEST_INVALID", "ROADMAP_STEP_UNKNOWN", "stepId");
+    }
   }
   if (!envelope.eligibility.roles.includes(parsed.role)) {
     return refuse("REQUEST_INVALID", "ROLE_NOT_IN_ENVELOPE", "role");

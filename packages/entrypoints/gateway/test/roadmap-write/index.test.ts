@@ -1082,6 +1082,16 @@ describe("P-26/B: a roadmap version declares its steps through the real route", 
     raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = 'initiative_head_event_sha256'").run(previous);
     raw.prepare("UPDATE projection_watermark SET source_head_sha256 = ? WHERE source_stream = 'initiative_events'").run(previous);
     for (const trigger of triggers) raw.exec(trigger.sql);
+    // P-27 cut A: migration 26 goes first, children first, or the step table it names
+    // cannot go and the re-applied 26 aborts on its own tables.
+    raw.exec(
+      "DROP TRIGGER tr_task_graph_revision_read_model__supersede_once;" +
+        "DROP TABLE task_dependency_read_model;" +
+        "DROP TABLE task_graph_node_read_model;" +
+        "DROP TABLE task_graph_revision_read_model;" +
+        "DELETE FROM projection_watermark WHERE projection_name IN " +
+        "('task_graph_revision_read_model', 'task_graph_node_read_model', 'task_dependency_read_model');",
+    );
     raw.exec(
       "DROP TRIGGER tr_roadmap_version_read_model__validate_steps_on_update;" +
         "DROP TRIGGER tr_roadmap_version_read_model__validate_steps_on_insert;" +
@@ -1098,7 +1108,7 @@ describe("P-26/B: a roadmap version declares its steps through the real route", 
 
     // The server's handle is read-only and may not migrate; a writable open does.
     const migrated = openLedger(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(25);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(26);
     expect(migrated.listRoadmapVersions(initiativeId).map((row) => [row.recordingContractVersion, row.stepCount])).toEqual([["2.9.0", null]]);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     const rows = migrated.listRoadmapVersions(initiativeId);

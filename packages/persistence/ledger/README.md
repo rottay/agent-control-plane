@@ -59,8 +59,13 @@ ledger.close();
 | `listRoadmapVersions(id)` | An initiative's recorded roadmap versions, in version order. |
 | `listInitiativeEvents(query?)` | Sequence-ordered page of the initiative stream. |
 | `decideRoadmapVersion(request)` | Pure. The caller supplies the folded head, and for a version with steps its declarations and the manifest; nothing here reads a ledger. Two callers: the initiative door, which is the law, and `recordRoadmapRevision`, which is the fast path. Twelve words, `ROADMAP_VERSION_REFUSALS`. |
-| `appendInitiativeBatch(events)` | One roadmap version and its `ROADMAP_STEP_DECLARED`s, all or none, in one transaction (P-26 cut B). The door reads the version's manifest back by reference and the one decision re-derives every step from it; a whole-batch replay returns the stored records, anything partial is `LedgerInitiativeBatchConflictError`. |
+| `appendInitiativeBatch(events)` | One roadmap version and its `ROADMAP_STEP_DECLARED`s (P-26 cut B), or one task graph revision and its `TASK_GRAPH_NODE_DECLARED`s (P-27 cut A), all or none, in one transaction; the first event's type says which. For a version the door reads the manifest back by reference and the one decision re-derives every step from it; for a graph `decideTaskGraph` runs over the read model and the task stream, in the same transaction. A whole-batch replay returns the stored records, anything partial is `LedgerInitiativeBatchConflictError`. |
 | `listRoadmapSteps(roadmapVersionId)` / `listRoadmapStepDependencies(roadmapVersionId)` | A version's declared steps in index order, and their dependencies. Titles and digests, never a step's text. |
+| `getRoadmapVersion(roadmapVersionId)` | One recorded version by its identity, or null (P-27 cut A): what a task graph revision names, read back to its initiative. |
+| `getTaskGraphRevision(graphRevisionId)` / `listTaskGraphRevisions(roadmapVersionId, stepId)` | One task graph revision, or every revision of one step in declaration order; the current one is the one whose `supersededBy` is null (P-27 cut A). |
+| `listTaskGraphNodes(graphRevisionId)` / `listTaskDependencies(graphRevisionId)` | A revision's nodes in `nodeIndex` order, and its edges with their `failPolicy`. Task ids and revision numbers, never a task's text. |
+| `decideTaskGraph(request)` | Pure. One task graph revision against what its caller answers about the history — whether its id is held, whether its step is declared under the initiative, the step's current revision, whether each task revision exists, and the step each task entered on — refused by one of seven words, `TASK_GRAPH_REFUSALS`; a cycle is `GRAPH_DEPENDENCY_CYCLE` at the nodes on it, by task id and revision, and a node whose task did not enter on this step is `GRAPH_TASK_OUT_OF_SCOPE` at the node. Two callers: the batch door, which is the law, and `declareTaskGraph`, the fast path. |
+| `declareTaskGraph(input)` | The one producer of a task graph revision: a revision id already recorded is answered as a replay from its rows, or refused if they differ; otherwise decide, then append the header and its nodes through the batch door. Handles, the instant and identities are injected; ledger errors are thrown untouched. |
 | `recordRoadmapRevision(input)` | The one producer of a roadmap version, steps optional: publish the document, fold, derive and decide, publish the manifest as a `PLAN_DOCUMENT`, append through the single door or the batch door. Handles, instants, the pid and identities are injected. |
 | `roadmapStepDigests(manifest)` | Pure. The one derivation of a step's digests and rank (L-P26B-2), or the cycle that has none. |
 | `diffRoadmapVersions(input)` | Pure. The semantic diff between two versions of one initiative (P-26 cut C, ADR 0113), over rows the caller read with `listRoadmapVersions`, `listRoadmapSteps` and `listRoadmapStepDependencies`: added, removed and changed steps by `stepId` (the changed fields by name, never a digest), dependency pairs added and removed, whether the content changed, the version a rollback restores, and `roles` as `STEP_ASSIGNMENTS_UNPRODUCED`, derived from the rows. Refuses only rows the caller's resolution cannot produce. |
@@ -178,6 +183,7 @@ seventeenth class cannot arrive without appearing here.
 | `LedgerArtifactEncryptionConflictError` | a publication would reuse a blob generation under another encryption status, key reference or profile; a deduplication never changes a blob's encryption |
 | `LedgerRoadmapVersionRefusedError` | the initiative door refuses a roadmap version by the decision's word, or the fold meets a second claim on a version's identity or number; carries `reason` and `at`, never the roadmap |
 | `LedgerInitiativeBatchConflictError` | an initiative batch meets a stream that holds part of it, or all of it with other content; a batch is recorded whole or replayed whole, and carries the count of keys already recorded, never a body |
+| `LedgerTaskGraphRefusedError` | the batch door refuses a task graph revision by the decision's word, or the fold meets a revision the door would have refused; carries `reason` and `at` — a field path, or the nodes on a cycle by task id and revision — never content |
 
 ## Tables
 
@@ -208,6 +214,9 @@ seventeenth class cannot arrive without appearing here.
 | `usage_settlement_observation_read_model` | derived | every observation each revision considered, winners, losers and corrected alike |
 | `initiative_read_model` | derived | current status, counts, first and last position; since migration 18, the `title` and `objective_sha256` a registration recorded in the closed payload (`NULL` otherwise), and `repository_sha256`, which nothing produces |
 | `roadmap_version_read_model` | derived | the recorded versions of an initiative's roadmap, by digest |
+| `task_graph_revision_read_model` | derived | one revision of one step's task graph, the step it belongs to and the revision that superseded it (P-27 cut A) |
+| `task_graph_node_read_model` | derived | one task revision that is a node of one graph revision |
+| `task_dependency_read_model` | derived | one edge of one graph revision: both task revisions, the failure policy, and the step denormalized |
 | `routing_assignment_read_model` | derived | which model version a role and slot is assigned, per scope — the one projection fed by **two** streams |
 | `routing_assignment_fallback` | derived | one row per fallback of one assignment, in attempt order |
 | `model_version_read_model` | derived | the one registry of model versions, one row per `MODEL_VERSION` document at the version applied last: provider, model, release, lifecycle status, context, policy version, `deprecated_at` null if and only if `ACTIVE`. `latest_performance_window` stays `NULL`: economy's |
@@ -1648,6 +1657,50 @@ versions; the two step tables with their three indexes; and two watermarks seede
 the initiative head. `CONTRACT_VERSION` moved to `"2.10.0"`, and both initiative
 doors now hold a new insertion to it, an exact replay exempt, and a roadmap
 payload's version to its event's.
+
+## A step declares its task graph
+
+P-27 cut A (ADR 0115, requirement A3). A step's task graph is declared one revision at
+a time: a `TASK_GRAPH_DECLARED` header — the revision's producer id, its step
+`(roadmapVersionId, stepId)`, the revision it supersedes and its node count — and one
+`TASK_GRAPH_NODE_DECLARED` per node, a task revision with its incoming edges, each
+naming the task revision it depends on and a `failPolicy` of
+`DEPENDENCY_FAILURE_POLICIES`. Ids, numbers and policy words only.
+
+### The batch door's second shape
+
+`appendInitiativeBatch` takes the header and its nodes in `nodeIndex` order, one
+initiative, the header counting exactly its nodes. Inside the transaction
+`decideTaskGraph` runs over the read model: the id must be new, the step declared under
+the event's initiative, the supersedes claim the step's current revision (null only when
+there is none), the nodes unique with every edge's end a node of the revision, the graph
+acyclic — a cycle refused naming its nodes — each task revision recorded in
+`task_revision_read_model`, the task stream's, read here and never held by a foreign key
+(datos §8 item 3), and each task entered on this step: its recorded intake (revision 1's
+event) names the event's initiative and exactly the header's `(roadmapVersionId,
+stepId)`, or the node is `GRAPH_TASK_OUT_OF_SCOPE` — a task of another initiative or
+step, a task with no roadmap link and a task with no recorded intake alike. So a task is
+a node of one step's graphs only. A refusal is `LedgerTaskGraphRefusedError` and appends nothing. The
+single initiative door refuses both types (L-P26B-1, widened), so no door writes part of
+a graph, and the whole-batch replay rule holds for this shape too.
+
+### The fold, and the one update
+
+The three tables are folded from the payloads only; the rebuild never reopens the task
+stream, so neither task-stream question — existence or scope — is the fold's. Rows are insert-only, and the fold's one update is the predecessor's
+`superseded_by`, written once in the transaction that declares its successor, by
+`#supersedeTaskGraphRevision` and nowhere else (L-P27-2). Migration 26's
+`tr_task_graph_revision_read_model__supersede_once` refuses a second supersede, a
+`superseded_by` set to NULL and any other column, compared with `IS NOT` so a NULL
+cannot pass. A revision short of its nodes, or a node of no open revision, is refused by
+the door's word at rebuild and reported by `verifyIntegrity()`.
+
+### Migration 26
+
+Three tables, the edge lookup `ix_task_dependency_read_model__depends_on`, the trigger,
+and three watermarks seeded at the initiative head, migration 25's text. Nothing is
+backfilled: no history before it holds a graph. `CONTRACT_VERSION` does not move: the
+revision id is the producer's, checked for existence, never derived (ND-P27-5).
 
 ## Integrity
 

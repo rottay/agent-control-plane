@@ -365,18 +365,119 @@ export const RoadmapVersion = z
 export type RoadmapVersion = z.infer<typeof RoadmapVersion>;
 
 /**
- * The initiative stream's vocabulary, closed at four names.
+ * The bounds of one task graph revision (P-27 cut A, ADR 0115).
+ *
+ * `TASK_GRAPH_NODES_MAX` bounds a revision's `nodeCount`; `TASK_GRAPH_DEPENDS_ON_MAX`
+ * bounds one node's edges, which keeps one `TASK_GRAPH_NODE_DECLARED` payload well
+ * under `EVENT_PAYLOAD_MAX_BYTES`: the roadmap step's bounds, for the same reason.
+ */
+export const TASK_GRAPH_NODES_MAX = 200;
+export const TASK_GRAPH_DEPENDS_ON_MAX = 32;
+
+/**
+ * What a dependant asks of the task it depends on (P-27 cut A, ADR 0115; datos §6.4,
+ * planning §5.3), closed and sorted.
+ *
+ * The catalogue is datos §6.4's; its meaning is ADR 0115's oracle, because planning
+ * §5.3 delegates it to a scheduler contract that does not exist. Datos names
+ * `WAIT_SUCCESS` the default; a declaration carries the word explicitly anyway, and
+ * the door fills in nothing.
+ */
+export const DEPENDENCY_FAILURE_POLICIES = ["ALLOW_FAILURE", "REQUIRE_TERMINAL", "WAIT_SUCCESS"] as const;
+
+/** A task revision named across streams: typed and checked at the door, never a foreign key. */
+const TaskGraphTaskRevision = {
+  taskId: Uuid,
+  taskRevisionNumber: z.number().int().min(1).max(1_000_000),
+};
+
+/**
+ * The header of one task graph revision, as a `TASK_GRAPH_DECLARED` payload records
+ * it (P-27 cut A, ADR 0115; planning §5.1).
+ *
+ * The revision belongs to one declared step, `(roadmapVersionId, stepId)`, and names
+ * the revision it supersedes: null for the step's first, the step's current one
+ * otherwise, which the door holds by optimistic concurrency. `graphRevisionId` is
+ * the producer's, checked for existence and never derived. Ids and counts only.
+ */
+export const TaskGraphDeclaration = z
+  .strictObject({
+    graphRevisionId: Uuid,
+    roadmapVersionId: Uuid,
+    stepId: BoundedIdentifier,
+    supersedesGraphRevisionId: Uuid.nullable(),
+    nodeCount: z.number().int().min(1).max(TASK_GRAPH_NODES_MAX),
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx, { transcript: false });
+    if (value.supersedesGraphRevisionId === value.graphRevisionId) {
+      ctx.addIssue({
+        code: "custom",
+        message: "a graph revision does not supersede itself",
+        path: ["supersedesGraphRevisionId"],
+      });
+    }
+  });
+export type TaskGraphDeclaration = z.infer<typeof TaskGraphDeclaration>;
+
+/**
+ * One node of a task graph revision and its incoming dependencies, as a
+ * `TASK_GRAPH_NODE_DECLARED` payload records it (P-27 cut A, ADR 0115; planning §5.2,
+ * §5.3).
+ *
+ * A node is a task revision; an edge names the task revision it depends on and the
+ * policy it asks. What one value can prove about itself is proved here: an edge
+ * repeated or naming its own node. Whether an edge's end is a node of the same
+ * revision, a cycle, and whether the task revision exists are the ledger's, where the
+ * whole revision and the task stream are visible.
+ */
+export const TaskGraphNodeDeclaration = z
+  .strictObject({
+    graphRevisionId: Uuid,
+    ...TaskGraphTaskRevision,
+    nodeIndex: z.number().int().min(0).max(TASK_GRAPH_NODES_MAX - 1),
+    dependsOn: z
+      .array(
+        z.strictObject({
+          ...TaskGraphTaskRevision,
+          failPolicy: z.enum(DEPENDENCY_FAILURE_POLICIES),
+        }),
+      )
+      .max(TASK_GRAPH_DEPENDS_ON_MAX),
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx, { transcript: false });
+    refuseRepeats(
+      value.dependsOn.map((edge) => edge.taskId + "@" + String(edge.taskRevisionNumber)),
+      ctx,
+      ["dependsOn"],
+      "a dependency",
+    );
+    for (const [position, edge] of value.dependsOn.entries()) {
+      if (edge.taskId === value.taskId && edge.taskRevisionNumber === value.taskRevisionNumber) {
+        ctx.addIssue({ code: "custom", message: "a node does not depend on itself", path: ["dependsOn", position] });
+      }
+    }
+  });
+export type TaskGraphNodeDeclaration = z.infer<typeof TaskGraphNodeDeclaration>;
+
+/**
+ * The initiative stream's vocabulary, closed at six names.
  *
  * `ROADMAP_VERSION_RECORDED` **is** the receipt for a recorded version, the
  * way `COMMIT_RECORDED` is the receipt for a commit. A separate receipt type
  * would record the same fact twice. `ROADMAP_STEP_DECLARED` (P-26 cut B, ADR 0111)
  * declares one step of a version, in the same all-or-none batch as the version.
+ * `TASK_GRAPH_DECLARED` and `TASK_GRAPH_NODE_DECLARED` (P-27 cut A, ADR 0115) declare
+ * one revision of a step's task graph and its nodes, in one all-or-none batch.
  */
 export const INITIATIVE_EVENT_TYPES = [
   "INITIATIVE_REGISTERED",
   "INITIATIVE_STATE_CHANGED",
   "ROADMAP_VERSION_RECORDED",
   "ROADMAP_STEP_DECLARED",
+  "TASK_GRAPH_DECLARED",
+  "TASK_GRAPH_NODE_DECLARED",
 ] as const;
 
 export const InitiativeEventType = z.enum(INITIATIVE_EVENT_TYPES);
@@ -582,7 +683,8 @@ export const InitiativeEvent = z
     }
 
     // Every type but the registration and the change is a passthrough: recording
-    // a roadmap version or declaring a step does not move the initiative's status.
+    // a roadmap version, declaring a step or declaring a task graph does not move
+    // the initiative's status.
     if (
       value.type !== "INITIATIVE_REGISTERED" &&
       value.type !== "INITIATIVE_STATE_CHANGED" &&
@@ -593,7 +695,9 @@ export const InitiativeEvent = z
         message:
           value.type === "ROADMAP_VERSION_RECORDED"
             ? "recording a roadmap version does not move the initiative's status"
-            : "declaring a roadmap step does not move the initiative's status",
+            : value.type === "ROADMAP_STEP_DECLARED"
+              ? "declaring a roadmap step does not move the initiative's status"
+              : "declaring a task graph does not move the initiative's status",
         path: ["toStatus"],
       });
     }

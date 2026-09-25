@@ -39,6 +39,7 @@ export {
   LedgerArtifactEncryptionConflictError,
   LedgerRoadmapVersionRefusedError,
   LedgerInitiativeBatchConflictError,
+  LedgerTaskGraphRefusedError,
 } from "./errors/index.js";
 
 // P8-8D-pre: the content-addressed artifact store. The Checkpoint law's twin —
@@ -316,6 +317,25 @@ export type {
   RoadmapStepDigestOutcome,
 } from "./roadmap-steps/index.js";
 
+// P-27 cut A (ADR 0115): a step's task graph -- the decision, pure over what its
+// caller answers, with its closed refusal words, and the one producer the gateway's
+// write seam calls.
+export { TASK_GRAPH_REFUSALS, decideTaskGraph, declareTaskGraph } from "./task-graph/index.js";
+
+export type {
+  TaskGraphDeclarationInput,
+  TaskGraphDeclarationOutcome,
+  TaskGraphRevisionRequest,
+  TaskGraphEdgeRequest,
+  TaskGraphGranted,
+  TaskGraphNodeRequest,
+  TaskGraphOutcome,
+  TaskGraphRefusal,
+  TaskGraphRefused,
+  TaskGraphRequest,
+  TaskGraphTaskLink,
+} from "./task-graph/index.js";
+
 // P-26 cut C (ADR 0113): the semantic diff between two roadmap versions, pure over
 // read-model rows the caller resolved; it adds no ledger read.
 export { diffRoadmapVersions } from "./roadmap-diff/index.js";
@@ -474,6 +494,10 @@ export type {
   InitiativeBatchResult,
   RoadmapStepDependencyReadModel,
   RoadmapStepReadModel,
+  DependencyFailurePolicy,
+  TaskDependencyReadModel,
+  TaskGraphNodeReadModel,
+  TaskGraphRevisionReadModel,
   InitiativeEventPage,
   InitiativeEventQuery,
   InitiativeEventRecord,

@@ -3192,6 +3192,135 @@ SELECT
 FROM (SELECT 'roadmap_step_read_model' AS name UNION ALL SELECT 'roadmap_step_dependency');
 `,
   },
+  {
+    version: 26,
+    name: "task_graph",
+    sql: `
+-- A step declares its task graph, one revision at a time (P-27 cut A, ADR 0115;
+-- planning §5.1-§5.3).
+--
+-- **Three tables, new and empty.** A revision belongs to one declared step, by an
+-- immediate foreign key on the pair: the step table is of the same initiative-stream
+-- cohort, so the key is lawful. A node is a task revision, and an edge names both of
+-- its ends as nodes of the same revision. The task revisions themselves are the task
+-- stream's: typed and checked at the door, never a foreign key (datos §8 item 3,
+-- planning's preamble).
+--
+-- **Rows are insert-only but one column.** A later revision of the same step writes
+-- its predecessor's \`superseded_by\`, once, in the declaring transaction; the trigger
+-- below refuses every other update. Every CHECK is spelled so a NULL cannot pass by
+-- accident: the NOT NULL columns refuse it first, and the policy is spelled
+-- \`IS NOT NULL AND ... IN (...)\` for the reason migration 25 spells a step's state so.
+CREATE TABLE task_graph_revision_read_model (
+  graph_revision_id  TEXT    NOT NULL,
+  roadmap_version_id TEXT    NOT NULL,
+  step_id            TEXT    NOT NULL,
+  declared_at        TEXT    NOT NULL,
+  superseded_by      TEXT,
+  sequence           INTEGER NOT NULL,
+  CONSTRAINT pk_task_graph_revision_read_model PRIMARY KEY (graph_revision_id),
+  CONSTRAINT fk_task_graph_revision_read_model__roadmap_step_read_model
+    FOREIGN KEY (roadmap_version_id, step_id) REFERENCES roadmap_step_read_model (roadmap_version_id, step_id),
+  CONSTRAINT ck_task_graph_revision_read_model__superseded_by
+    CHECK (superseded_by IS NULL OR (length(superseded_by) > 0 AND superseded_by <> graph_revision_id)),
+  CONSTRAINT ck_task_graph_revision_read_model__sequence CHECK (sequence >= 1)
+) STRICT;
+
+-- The one update a revision admits: its \`superseded_by\`, from NULL to a revision, once.
+-- Compared with \`IS NOT\`, never \`<>\`: a comparison with a NULL is NULL, and a
+-- \`WHERE\` that is NULL raises nothing.
+CREATE TRIGGER tr_task_graph_revision_read_model__supersede_once
+BEFORE UPDATE ON task_graph_revision_read_model
+BEGIN
+  SELECT RAISE(ABORT, 'task_graph_revision_read_model.superseded_by is written once')
+  WHERE OLD.superseded_by IS NOT NULL;
+
+  SELECT RAISE(ABORT, 'task_graph_revision_read_model admits an update of superseded_by and of no other column')
+  WHERE NEW.graph_revision_id IS NOT OLD.graph_revision_id
+     OR NEW.roadmap_version_id IS NOT OLD.roadmap_version_id
+     OR NEW.step_id IS NOT OLD.step_id
+     OR NEW.declared_at IS NOT OLD.declared_at
+     OR NEW.sequence IS NOT OLD.sequence;
+
+  SELECT RAISE(ABORT, 'task_graph_revision_read_model.superseded_by is set to a revision, never to NULL')
+  WHERE NEW.superseded_by IS NULL;
+END;
+
+-- One row per node (planning §5.2): a node without edges is still a member of its
+-- graph, which a join over the edges alone would lose.
+CREATE TABLE task_graph_node_read_model (
+  graph_revision_id    TEXT    NOT NULL,
+  task_id              TEXT    NOT NULL,
+  task_revision_number INTEGER NOT NULL,
+  sequence             INTEGER NOT NULL,
+  CONSTRAINT pk_task_graph_node_read_model PRIMARY KEY (graph_revision_id, task_id, task_revision_number),
+  CONSTRAINT fk_task_graph_node_read_model__task_graph_revision_read_model
+    FOREIGN KEY (graph_revision_id) REFERENCES task_graph_revision_read_model (graph_revision_id),
+  CONSTRAINT ck_task_graph_node_read_model__task_revision_number CHECK (task_revision_number >= 1),
+  CONSTRAINT ck_task_graph_node_read_model__sequence CHECK (sequence >= 1)
+) STRICT;
+
+-- One row per edge (planning §5.3): the graph revision and both task revisions, so a
+-- task retried as a new revision never reuses the old revision's edge. A cycle is not
+-- a CHECK -- SQL does not express reachability -- and is refused at the write point,
+-- naming its nodes; an edge from a node to itself is.
+CREATE TABLE task_dependency_read_model (
+  graph_revision_id               TEXT    NOT NULL,
+  task_id                         TEXT    NOT NULL,
+  task_revision_number            INTEGER NOT NULL,
+  depends_on_task_id              TEXT    NOT NULL,
+  depends_on_task_revision_number INTEGER NOT NULL,
+  fail_policy                     TEXT    NOT NULL,
+  step_id                         TEXT    NOT NULL,
+  sequence                        INTEGER NOT NULL,
+  CONSTRAINT pk_task_dependency_read_model PRIMARY KEY
+    (graph_revision_id, task_id, task_revision_number, depends_on_task_id, depends_on_task_revision_number),
+  CONSTRAINT fk_task_dependency_read_model__task_graph_revision_read_model
+    FOREIGN KEY (graph_revision_id) REFERENCES task_graph_revision_read_model (graph_revision_id),
+  CONSTRAINT fk_task_dependency_read_model__task_graph_node_read_model
+    FOREIGN KEY (graph_revision_id, task_id, task_revision_number)
+    REFERENCES task_graph_node_read_model (graph_revision_id, task_id, task_revision_number),
+  CONSTRAINT fk_task_dependency_read_model__task_graph_node_read_model__depends_on
+    FOREIGN KEY (graph_revision_id, depends_on_task_id, depends_on_task_revision_number)
+    REFERENCES task_graph_node_read_model (graph_revision_id, task_id, task_revision_number),
+  CONSTRAINT ck_task_dependency_read_model__task_revision_number CHECK (task_revision_number >= 1),
+  CONSTRAINT ck_task_dependency_read_model__depends_on_task_revision_number
+    CHECK (depends_on_task_revision_number >= 1),
+  CONSTRAINT ck_task_dependency_read_model__fail_policy
+    CHECK (fail_policy IS NOT NULL AND fail_policy IN ('WAIT_SUCCESS', 'ALLOW_FAILURE', 'REQUIRE_TERMINAL')),
+  CONSTRAINT ck_task_dependency_read_model__no_self
+    CHECK (NOT (task_id = depends_on_task_id AND task_revision_number = depends_on_task_revision_number)),
+  CONSTRAINT ck_task_dependency_read_model__sequence CHECK (sequence >= 1)
+) STRICT;
+
+CREATE INDEX ix_task_dependency_read_model__depends_on
+  ON task_dependency_read_model (graph_revision_id, depends_on_task_id, depends_on_task_revision_number);
+
+-- The three watermarks born at the initiative head, migration 25's text. No history
+-- holds a graph event, so the empty fold is level with it; the instant is the head
+-- event's own, the epoch only for an empty stream.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  name,
+  'initiative_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'initiative_head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'initiative_event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'initiative_head_event_sha256'),
+  COALESCE(
+    (SELECT recorded_at FROM initiative_events
+      WHERE sequence = CAST((SELECT value FROM ledger_meta WHERE key = 'initiative_head_sequence') AS INTEGER)),
+    '1970-01-01T00:00:00.000Z'
+  )
+FROM (
+  SELECT 'task_graph_revision_read_model' AS name
+  UNION ALL SELECT 'task_graph_node_read_model'
+  UNION ALL SELECT 'task_dependency_read_model'
+);
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -3262,6 +3391,12 @@ export const DERIVED_TABLES: readonly string[] = [
   "worker_read_model",
   "execution_route_read_model",
   "initiative_read_model",
+  // P-27 cut A, children first and before the steps: an edge names two nodes and its
+  // revision, a node names its revision, and a revision names its step, by immediate
+  // foreign keys, so a wrong order aborts the DELETE.
+  "task_dependency_read_model",
+  "task_graph_node_read_model",
+  "task_graph_revision_read_model",
   // P-26 cut B, children first: a dependency names two steps and a step names its
   // version, by immediate foreign keys, so a wrong order aborts the DELETE.
   "roadmap_step_dependency",
@@ -3318,6 +3453,11 @@ export const INITIATIVE_PROJECTION_NAMES: readonly string[] = [
   // P-26 cut B, named `ROADMAP_STEP_PROJECTION` and `ROADMAP_STEP_DEPENDENCY_PROJECTION`.
   "roadmap_step_read_model",
   "roadmap_step_dependency",
+  // P-27 cut A, named `TASK_GRAPH_REVISION_PROJECTION`, `TASK_GRAPH_NODE_PROJECTION`
+  // and `TASK_DEPENDENCY_PROJECTION`.
+  "task_graph_revision_read_model",
+  "task_graph_node_read_model",
+  "task_dependency_read_model",
 ];
 
 /**
@@ -3570,6 +3710,23 @@ export const ROADMAP_STEP_PROJECTION = "roadmap_step_read_model";
 export const ROADMAP_STEP_DEPENDENCY_PROJECTION = "roadmap_step_dependency";
 
 /**
+ * The migration that gives a step its task graph (P-27 cut A, ADR 0115).
+ *
+ * Named for `ROADMAP_STEPS_MIGRATION`'s reasons: the suite and the rewind fixtures
+ * hold the number against where the SQL sits.
+ */
+export const TASK_GRAPH_MIGRATION = 26;
+
+/** The projection that holds one row per task graph revision (P-27 cut A). */
+export const TASK_GRAPH_REVISION_PROJECTION = "task_graph_revision_read_model";
+
+/** The projection that holds one row per node of a task graph revision (P-27 cut A). */
+export const TASK_GRAPH_NODE_PROJECTION = "task_graph_node_read_model";
+
+/** The projection that holds one row per edge of a task graph revision (P-27 cut A). */
+export const TASK_DEPENDENCY_PROJECTION = "task_dependency_read_model";
+
+/**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
  * Named rather than written as a literal at the two sites that need it, because
@@ -3654,6 +3811,9 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: "roadmap_version_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: ROADMAP_STEP_PROJECTION, sourceStream: INITIATIVE_STREAM },
   { projectionName: ROADMAP_STEP_DEPENDENCY_PROJECTION, sourceStream: INITIATIVE_STREAM },
+  { projectionName: TASK_GRAPH_REVISION_PROJECTION, sourceStream: INITIATIVE_STREAM },
+  { projectionName: TASK_GRAPH_NODE_PROJECTION, sourceStream: INITIATIVE_STREAM },
+  { projectionName: TASK_DEPENDENCY_PROJECTION, sourceStream: INITIATIVE_STREAM },
   { projectionName: ARTIFACT_BLOB_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ARTIFACT_REFERENCE_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ARTIFACT_PIN_PROJECTION, sourceStream: REGISTRY_STREAM },
@@ -3916,6 +4076,14 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "index", name: "ix_roadmap_step_read_model__state" },
   { type: "table", name: "roadmap_step_dependency" },
   { type: "index", name: "ix_roadmap_step_dependency__depends_on" },
+  // P-27 cut A. Three tables, the edge lookup and the revision's supersede-once
+  // trigger: dropping the trigger leaves `schema_migrations` intact while a revision's
+  // `superseded_by` quietly becomes rewritable, and a current revision reopenable.
+  { type: "table", name: "task_graph_revision_read_model" },
+  { type: "trigger", name: "tr_task_graph_revision_read_model__supersede_once" },
+  { type: "table", name: "task_graph_node_read_model" },
+  { type: "table", name: "task_dependency_read_model" },
+  { type: "index", name: "ix_task_dependency_read_model__depends_on" },
 ];
 
 export interface MigrationConformance {

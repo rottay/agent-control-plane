@@ -148,7 +148,7 @@ un roadmap.
 | `roadmap_version_id` | TEXT | NOT NULL | `fk_task_graph_revision_read_model__roadmap_step_read_model` (junto con `step_id`). |
 | `step_id` | TEXT | NOT NULL | — |
 | `declared_at` | TEXT | NOT NULL | — |
-| `superseded_by` | TEXT | NULL | `graph_revision_id` de la revisión siguiente; `NULL` mientras es la vigente. |
+| `superseded_by` | TEXT | NULL | `graph_revision_id` de la revisión siguiente; `NULL` mientras es la vigente. **Admisión del DT (P-27 corte A, ADR 0115):** la única columna que una escritura posterior toca, una vez, en la transacción que declara la sucesora; `tr_task_graph_revision_read_model__supersede_once` rechaza un segundo reemplazo, volver a `NULL` y cualquier otra columna, comparando con `IS NOT` para que un `NULL` no pase. |
 | `sequence` | INTEGER | NOT NULL | — |
 
 ### 5.2 `task_graph_node_read_model`
@@ -178,7 +178,7 @@ mismo grafo — no referencias sueltas.
 | `task_revision_number` | INTEGER | NOT NULL | PK (compuesta). `CHECK >= 1`. |
 | `depends_on_task_id` | TEXT | NOT NULL | PK (compuesta). `fk_task_dependency_read_model__task_graph_node_read_model__depends_on` sobre `(graph_revision_id, depends_on_task_id, depends_on_task_revision_number)`. |
 | `depends_on_task_revision_number` | INTEGER | NOT NULL | PK (compuesta). `CHECK >= 1`. |
-| `fail_policy` | TEXT | NOT NULL | `CHECK IN ('WAIT_SUCCESS','ALLOW_FAILURE','REQUIRE_TERMINAL')`. Catálogo cerrado, definido por el contrato del scheduler — no una cadena libre; una política fuera de este catálogo se rechaza en la escritura, nunca se admite como referencia inexistente. |
+| `fail_policy` | TEXT | NOT NULL | `CHECK IN ('WAIT_SUCCESS','ALLOW_FAILURE','REQUIRE_TERMINAL')`. Catálogo cerrado, definido por el contrato del scheduler — no una cadena libre; una política fuera de este catálogo se rechaza en la escritura, nunca se admite como referencia inexistente. **Admisión del DT (P-27 corte A, ADR 0115; adjudicación ND-P27-1, puntos 3 y 4):** como ese contrato no existe, el oráculo de 3 políticas × 5 estados del ADR es la definición: `WAIT_SUCCESS` ⇐ `COMPLETED`; `ALLOW_FAILURE` ⇐ `COMPLETED` o `FAILED`; `REQUIRE_TERMINAL` ⇐ `COMPLETED`, `FAILED` o `CANCELLED`; `SUSPECT_WORKTREE` no satisface ninguna; un efecto en `OUTCOME_UNKNOWN` y un terminal legacy son ausencias, nunca fallo. El CHECK se escribe `fail_policy IS NOT NULL AND fail_policy IN (…)`, y la declaración lleva la palabra siempre: la puerta no rellena el `WAIT_SUCCESS` por defecto de datos §6.4. |
 | `step_id` | TEXT | NOT NULL | Denormalizado desde `task_graph_revision_read_model` para no forzar un `JOIN` en el hot path del scheduler; misma cohorte, se refolda junto. |
 | `sequence` | INTEGER | NOT NULL | — |
 
@@ -193,7 +193,7 @@ mismo grafo — no referencias sueltas.
 | `ix_task_dependency_read_model__depends_on` | `INDEX (graph_revision_id, depends_on_task_id, depends_on_task_revision_number)` |
 | Predicado `READY` | No es una columna: se computa por `JOIN` entre `task_dependency_read_model` (con su `fail_policy`) y el estado terminal de cada `depends_on_*` en [execution](../execution/index.md); no se cachea acá para no duplicar autoridad de estado de tarea. |
 | Política de dependencia fallida | La decide `fail_policy` por arista (columna, ya no una regla de lectura implícita); el cruce con el desenlace real de la tarea referenciada sigue viviendo en [execution](../execution/index.md). |
-| Rebuild | Determinista desde `initiative_events` (declaración del grafo) — las revisiones/estados de tarea referenciados se leen de `execution` contra el mismo vector de watermarks, nunca se copian. |
+| Rebuild | Determinista desde `initiative_events` (declaración del grafo) — las revisiones/estados de tarea referenciados se leen de `execution` contra el mismo vector de watermarks, nunca se copian. **Admisión del DT (P-27 corte A, ADR 0115):** la fuente son dos tipos de iniciativa en un lote todo-o-nada por la puerta de lote — `TASK_GRAPH_DECLARED` (`graphRevisionId` del productor, `(roadmapVersionId, stepId)`, la revisión que reemplaza y `nodeCount`) y un `TASK_GRAPH_NODE_DECLARED` por nodo (la revisión de tarea, su `nodeIndex` y sus aristas con `failPolicy`); la puerta rechaza con `decideTaskGraph` —también un nodo cuya tarea no entró en ese paso exacto, `GRAPH_TASK_OUT_OF_SCOPE`, leído del ingreso registrado en la misma transacción—, y el pliegue escribe las tres tablas sólo desde los payloads. |
 
 ---
 

@@ -27,6 +27,10 @@ import {
   RoadmapStepsQuery,
   RoadmapStepsResponse,
   StreamQuery,
+  TaskGraphDeclarationRequest,
+  TaskGraphDeclarationResponse,
+  TaskGraphQuery,
+  TaskGraphResponse,
   RoadmapVersionWriteRequest,
   RoadmapVersionWriteResponse,
   IntegrityResult,
@@ -85,6 +89,7 @@ import type { BearerLoadOutcome } from "../bearer/index.js";
 import { recordRoadmapVersion } from "../roadmap-write/index.js";
 import { recordInitiativeRegistration } from "../initiative-write/index.js";
 import { recordTaskIntake } from "../task-intake/index.js";
+import { recordTaskGraph, resolveStepVersion, stepGraph } from "../task-graph/index.js";
 import { effectResult, parseEffectIdParam, taskEffects } from "../effect-result/index.js";
 import {
   initiativeDetailDto,
@@ -94,6 +99,7 @@ import {
   roadmapVersion,
   roadmapVersionEcho,
   taskDetail,
+  taskGraphNodeItems,
   taskSummary,
   timelineItem,
   workerDetail,
@@ -879,6 +885,106 @@ export function registerRoutes(
       ...roadmapDiffBody(outcome.diff),
     });
   });
+
+  // One step's task graph (P-27 cut A): the seventh write. GET reads the step's current
+  // revision with each node's READY verdict, computed now against the instant seam and
+  // never stored, unguarded like every read; POST declares a revision, behind the
+  // bearer the registrar inherits. Both select the step by `?version=&stepId=`.
+  registerGetAndPost(
+    app,
+    API_ROUTES.initiativeStepGraph,
+    (request) => {
+      const query = parseQuery(TaskGraphQuery, queryOf(request));
+      const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
+      const { ledger } = requireOpen(source);
+      if (ledger.getInitiative(initiativeId) === null) {
+        throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
+      }
+      const evaluatedAt = instant();
+      const outcome = stepGraph(ledger, initiativeId, query.version, query.stepId, evaluatedAt);
+      if (!outcome.ok) {
+        throw new ApiRouteError(
+          "NOT_FOUND",
+          outcome.reason === "UNKNOWN_VERSION"
+            ? "no roadmap version with that number was found"
+            : outcome.reason === "UNKNOWN_STEP"
+              ? "no step with that id is declared by that version"
+              : "no task graph is declared for that step",
+        );
+      }
+      return TaskGraphResponse.parse({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        initiativeId,
+        version: roadmapVersionEcho(outcome.version),
+        stepId: query.stepId,
+        graph: {
+          graphRevisionId: outcome.reading.revision.graphRevisionId,
+          declaredAt: outcome.reading.revision.declaredAt,
+          sequence: outcome.reading.revision.sequence,
+        },
+        evaluatedAt,
+        nodes: taskGraphNodeItems(outcome.reading),
+      });
+    },
+    (request) => {
+      const query = parseQuery(TaskGraphQuery, queryOf(request));
+      const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
+      const { ledger } = requireOpen(source);
+      if (ledger.getInitiative(initiativeId) === null) {
+        throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
+      }
+      const resolved = resolveStepVersion(ledger, initiativeId, query.version);
+      if (!resolved.ok) {
+        throw new ApiRouteError("NOT_FOUND", "no roadmap version with that number was found");
+      }
+
+      // Door one: the schema. Malformed is the caller's typing -- 400, naming the
+      // field and never its value.
+      const parsed = TaskGraphDeclarationRequest.safeParse(request.body);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        throw new ApiRouteError(
+          "BAD_REQUEST",
+          "the task graph request did not satisfy the contract",
+          (issue?.path ?? []).map((segment) => String(segment)).join(".") || "(root)",
+        );
+      }
+
+      // The event ids are minted here and the instant read here; the revision id is
+      // the caller's. The seam and the producer read no clock and no random source.
+      const outcome = recordTaskGraph({
+        ledger,
+        initiativeId,
+        version: resolved.version,
+        stepId: query.stepId,
+        request: parsed.data,
+        recordedAt: instant(),
+        headerEventId: randomUUID(),
+        nodeEventIds: parsed.data.nodes.map(() => randomUUID()),
+      });
+
+      // Door two: the decision. A coherent request the recorded state refuses is a
+      // 409 carrying the refusal's word, and for a cycle the nodes on it.
+      if (!outcome.ok) {
+        throw new ApiRouteError("WRITE_REFUSED", "the task graph was refused: " + outcome.reason, outcome.at);
+      }
+
+      return TaskGraphDeclarationResponse.parse({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        initiativeId,
+        version: roadmapVersionEcho(resolved.version),
+        stepId: query.stepId,
+        graphRevisionId: outcome.revision.graphRevisionId,
+        supersedesGraphRevisionId: parsed.data.supersedesGraphRevisionId,
+        nodeCount: outcome.nodeCount,
+        sequence: outcome.sequence,
+        replayed: outcome.replayed,
+      });
+    },
+    bearer,
+  );
 
   // The merged timeline (C2). A read, through `registerGet`.
   registerGet(app, API_ROUTES.initiativeEvents, (request) => {

@@ -37,6 +37,7 @@ import {
   RoadmapContentResponse,
   RoadmapDiffResponse,
   RoadmapStepsResponse,
+  TaskGraphResponse,
   StreamFrame,
   ToolCallPageResponse,
   TaskLifecycleResponse,
@@ -134,6 +135,9 @@ describe("the binding table matches the schemas it claims to bind", () => {
     // rows it is measured over, not to a constant.
     initiativeRoadmapSteps: RoadmapStepsResponse,
     initiativeRoadmapDiff: RoadmapDiffResponse,
+    // P-27 cut A. The read is bound, and the declaration's answer is not, for the
+    // roadmap route's reason: no client renders a write's receipt.
+    initiativeStepGraph: TaskGraphResponse,
     initiativeEvents: InitiativeTimelineResponse,
     initiativeAgents: InitiativeAgentsResponse,
     accounts: AccountsResponse,
@@ -169,6 +173,16 @@ describe("the binding table matches the schemas it claims to bind", () => {
     const bound = PARITY_BINDINGS.initiativeRoadmap.map((binding) => binding.field).sort();
     expect(bound).toEqual(shapeKeys(InitiativeRoadmapResponse));
     expect(bound).not.toContain("sequence");
+  });
+
+  it("binds the task graph's read, its verdicts as ledger folds and its instant as the one exception (P-27 cut A)", () => {
+    const comparable = comparableFields("initiativeStepGraph");
+    expect(comparable).toContain("graph");
+    expect(comparable).toContain("nodes");
+    expect(comparable).not.toContain("evaluatedAt");
+    const excepted = declaredExceptions("initiativeStepGraph").filter((binding) => binding.source !== "CONTRACT_VERSION");
+    expect(excepted.map((binding) => [binding.field, binding.source])).toEqual([["evaluatedAt", "OBSERVED_AT"]]);
+    expect((excepted[0]?.because ?? "") !== "").toBe(true);
   });
 
   it("has a schema for every bound route, so the comparison below can be total", () => {

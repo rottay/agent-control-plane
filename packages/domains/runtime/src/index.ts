@@ -558,4 +558,8 @@ export type { EffectResultReading, EffectResultRequest } from "./operation-resul
 // closure it hands to one HTTP client factory, its closed refusal words, and its
 // answer. The port's shape is exported above with the other contracts.
 export { CREDENTIAL_REFUSALS, resolveCredential } from "./credentials/index.js";
+// P-27 cut A (ADR 0115, requirement A5): the READY predicate, pure and total over
+// four conditions with its two closed reason sets, and the production adapter that
+// feeds it from the rows that exist and names every absence. Nothing dispatches.
+export { READY_UNKNOWN_REASONS, READY_UNSATISFIED_REASONS, evaluateReady, readinessOf } from "./ready/index.js";
 export type { CredentialResolution } from "./credentials/index.js";

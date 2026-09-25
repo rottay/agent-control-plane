@@ -43,6 +43,7 @@ export {
   initiativeRoadmapDiffPath,
   initiativeRoadmapPath,
   initiativeRoadmapStepsPath,
+  initiativeStepGraphPath,
   taskPath,
   toolCallsPath,
   lifecyclePath,
@@ -195,6 +196,12 @@ export {
   RoadmapDiffResponse,
   RoadmapStepsQuery,
   RoadmapStepsResponse,
+  // P-27 cut A: one step's task graph -- the declaration and its answer, and the read
+  // of the current revision with each node's READY verdict.
+  TaskGraphDeclarationRequest,
+  TaskGraphDeclarationResponse,
+  TaskGraphQuery,
+  TaskGraphResponse,
   RoadmapVersionDto,
   RoadmapVersionKindDto,
   RoadmapVersionWriteRequest,

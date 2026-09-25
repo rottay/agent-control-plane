@@ -486,8 +486,8 @@ describe("routes", () => {
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     // P8-8D-pre: the read plane's method list did not move when the first
     // write route arrived, and it has not moved since. The exceptions live in
-    // their own frozen table, which is the one that grows -- six entries as of
-    // P-14/C, the newest being the task intake.
+    // their own frozen table, which is the one that grows -- seven entries as of
+    // P-27 cut A, the newest being a step's task graph.
     expect([...API_WRITE_ROUTES]).toEqual([
       "initiativeRoadmap",
       "accountActions",
@@ -495,6 +495,7 @@ describe("routes", () => {
       "taskLifecycle",
       "initiatives",
       "tasks",
+      "initiativeStepGraph",
     ]);
     expect([...API_WRITE_METHODS]).toEqual(["GET", "POST"]);
     expect(Object.isFrozen(API_WRITE_ROUTES)).toBe(true);
@@ -2306,7 +2307,7 @@ describe("the initiative registration's wire contract (P-14/B)", () => {
 
   it("N-P14B-14: moves the API version and the write table, and adds no error code", () => {
     // `0.16.0` when it landed; P-14/C's sixth write door moved it again.
-    expect(API_CONTRACT_VERSION).toBe("0.21.0");
+    expect(API_CONTRACT_VERSION).toBe("0.22.0");
     expect(isWriteRoute("initiatives")).toBe(true);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(16);
@@ -2463,9 +2464,10 @@ describe("the task intake's wire contract (P-14/C)", () => {
   });
 
   it("N-P14C-23: moves the API version and the write table, and adds no method and no error code", () => {
-    expect(API_CONTRACT_VERSION).toBe("0.21.0");
+    expect(API_CONTRACT_VERSION).toBe("0.22.0");
     expect(isWriteRoute("tasks")).toBe(true);
-    expect(API_WRITE_ROUTES).toHaveLength(6);
+    // Six when it landed; P-27 cut A's task graph route is the seventh.
+    expect(API_WRITE_ROUTES).toHaveLength(7);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(16);
     // Derived from `CONTRACT_VERSION`, which P-26 cut B moved to 2.10.0 (ADR 0111).
@@ -2595,9 +2597,10 @@ describe("the registry publication's request (P-15/R, ADR 0104)", () => {
     expect(
       RegistryPublicationResponse.safeParse({ ...response, document: { ...response.document, documentKind: "CAPABILITY_POLICY" } }).success,
     ).toBe(false);
-    // No route parses it: the API contract version and the write table do not move.
-    expect(API_CONTRACT_VERSION).toBe("0.21.0");
-    expect(API_WRITE_ROUTES).toHaveLength(6);
+    // No route parses it: the registry publication moved neither the API contract
+    // version nor the write table. Both literals are today's: P-27 cut A moved them.
+    expect(API_CONTRACT_VERSION).toBe("0.22.0");
+    expect(API_WRITE_ROUTES).toHaveLength(7);
   });
 });
 
@@ -3088,7 +3091,7 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.21.0");
+    expect(API_CONTRACT_VERSION).toBe("0.22.0");
   });
 
   it("names the thirteenth error code, and the version the surface now stands at", () => {
@@ -3105,7 +3108,7 @@ describe("the tool call's wire contract", () => {
     // that did not move with it is exactly the point — the version tracks the
     // whole surface, not one list. The number stays a literal so it is asserted
     // rather than echoed.
-    expect(API_CONTRACT_VERSION).toBe("0.21.0");
+    expect(API_CONTRACT_VERSION).toBe("0.22.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
@@ -3118,7 +3121,7 @@ describe("the tool call's wire contract", () => {
     expect(API_ERROR_CODES).toContain("CAPABILITY_UNSUPPORTED");
     expect(API_ERROR_CODES).toContain("SCENARIO_UNCONFIGURED");
     expect(API_ERROR_CODES).toHaveLength(16);
-    expect(API_CONTRACT_VERSION).toBe("0.21.0");
+    expect(API_CONTRACT_VERSION).toBe("0.22.0");
 
     // The distinction is the reason both exist. `SCENARIO_UNCONFIGURED` is an
     // operator problem a restart fixes, on the shape
@@ -3403,7 +3406,7 @@ describe("P-15/F: the effect reads on the wire (ADR 0107)", () => {
   it("names the private read's unconfigured server apart from the write door's", () => {
     expect(API_ERROR_CODES).toContain("PRIVATE_READ_UNCONFIGURED");
     expect(API_ERROR_CODES).toContain("WRITE_BEARER_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.21.0");
+    expect(API_CONTRACT_VERSION).toBe("0.22.0");
   });
 });
 
@@ -3632,5 +3635,149 @@ describe("the steps and diff reads' schemas (P-26 cut C)", () => {
     expect(RoadmapDiffResponse.safeParse(diffBody({ restores: { version: 1, roadmapVersionId: VERSION_ID } })).success).toBe(true);
     expect(RoadmapDiffResponse.safeParse(diffBody({ restores: { roadmapVersionId: VERSION_ID } })).success).toBe(false);
     expect(RoadmapDiffResponse.safeParse(diffBody({ restores: VERSION_ID })).success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-27 cut A: a step's task graph and its READY verdicts (ADR 0115)
+// ---------------------------------------------------------------------------
+
+describe("the task graph route's schemas (P-27 cut A)", () => {
+  const {
+    TaskGraphDeclarationRequest,
+    TaskGraphDeclarationResponse,
+    TaskGraphQuery,
+    TaskGraphResponse,
+    InitiativeEventTypeDto,
+    LEDGER_CONTRACT_VERSION,
+  } = protocolBarrel;
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+  const VERSION_ID = "11111111-1111-4111-8111-111111111111";
+  const GRAPH = "55555555-5555-4555-8555-555555555555";
+  const TASK_A = "66666666-6666-4666-8666-666666666666";
+  const TASK_B = "77777777-7777-4777-8777-777777777777";
+  const echo = { version: 1, roadmapVersionId: VERSION_ID, kind: "EDIT", stepCount: 1 };
+  const node = (taskId: string, dependsOn: readonly Record<string, unknown>[] = []) => ({
+    taskId,
+    taskRevisionNumber: 1,
+    dependsOn,
+  });
+  const request = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    graphRevisionId: GRAPH,
+    supersedesGraphRevisionId: null,
+    declaredBy: "claude/opus/coordinator/01",
+    nodes: [node(TASK_A), node(TASK_B, [{ taskId: TASK_A, taskRevisionNumber: 1, failPolicy: "WAIT_SUCCESS" }])],
+    ...overrides,
+  });
+  const unknownR1 = { verdict: "UNKNOWN", reason: "TASK_COHORT_LEGACY" };
+  const satisfied = { verdict: "SATISFIED", reason: null };
+  const readNode = (overrides: Record<string, unknown> = {}) => ({
+    taskId: TASK_A,
+    taskRevisionNumber: 1,
+    nodeIndex: 0,
+    dependsOn: [],
+    ready: false,
+    conditions: { R1: unknownR1, R2: satisfied, R3: satisfied, R4: { verdict: "UNKNOWN", reason: "APPROVAL_UNPRODUCED" } },
+    ...overrides,
+  });
+  const graphBody = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    apiContractVersion: API_CONTRACT_VERSION,
+    ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+    initiativeId: INITIATIVE,
+    version: echo,
+    stepId: "A",
+    graph: { graphRevisionId: GRAPH, declaredAt: "2026-09-25T00:00:00.000Z", sequence: 3 },
+    evaluatedAt: "2026-09-25T00:00:01.000Z",
+    nodes: [readNode()],
+    ...overrides,
+  });
+
+  it("selects a step by version number and step id, both required, strict", () => {
+    expect(TaskGraphQuery.parse({ version: "2", stepId: "A" })).toEqual({ version: 2, stepId: "A" });
+    for (const [query, field] of [
+      [{ version: "0", stepId: "A" }, "version"],
+      [{ version: "1" }, "stepId"],
+      [{ version: "1", stepId: "a b" }, "stepId"],
+    ] as const) {
+      const parsed = TaskGraphQuery.safeParse(query);
+      expect(parsed.success).toBe(false);
+      expect(parsed.error?.issues[0]?.path).toEqual([field]);
+    }
+    expect(TaskGraphQuery.safeParse({ version: "1", stepId: "A", graph: GRAPH }).success).toBe(false);
+  });
+
+  it("requires every edge's failPolicy: the door fills in no default", () => {
+    expect(TaskGraphDeclarationRequest.safeParse(request()).success).toBe(true);
+    const missing = request({ nodes: [node(TASK_A), node(TASK_B, [{ taskId: TASK_A, taskRevisionNumber: 1 }])] });
+    const parsed = TaskGraphDeclarationRequest.safeParse(missing);
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.path).toEqual(["nodes", 1, "dependsOn", 0, "failPolicy"]);
+    for (const policy of ["ALLOW_FAILURE", "REQUIRE_TERMINAL", "WAIT_SUCCESS"]) {
+      const edge = { taskId: TASK_A, taskRevisionNumber: 1, failPolicy: policy };
+      expect(TaskGraphDeclarationRequest.safeParse(request({ nodes: [node(TASK_A), node(TASK_B, [edge])] })).success).toBe(true);
+    }
+    const unknownPolicy = { taskId: TASK_A, taskRevisionNumber: 1, failPolicy: "BEST_EFFORT" };
+    expect(TaskGraphDeclarationRequest.safeParse(request({ nodes: [node(TASK_A), node(TASK_B, [unknownPolicy])] })).success).toBe(false);
+  });
+
+  it("bounds the nodes at 1..TASK_GRAPH_NODES_MAX and a node's edges at TASK_GRAPH_DEPENDS_ON_MAX", () => {
+    expect(TaskGraphDeclarationRequest.safeParse(request({ nodes: [] })).success).toBe(false);
+    const id = (index: number) => "00000000-0000-4000-8000-" + String(index).padStart(12, "0");
+    const nodes = Array.from({ length: 200 }, (_, index) => node(id(index)));
+    expect(TaskGraphDeclarationRequest.safeParse(request({ nodes })).success).toBe(true);
+    expect(TaskGraphDeclarationRequest.safeParse(request({ nodes: [...nodes, node(id(200))] })).success).toBe(false);
+    const edges = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({ taskId: id(index), taskRevisionNumber: 1, failPolicy: "WAIT_SUCCESS" }));
+    expect(TaskGraphDeclarationRequest.safeParse(request({ nodes: [node(TASK_A, edges(32))] })).success).toBe(true);
+    expect(TaskGraphDeclarationRequest.safeParse(request({ nodes: [node(TASK_A, edges(33))] })).success).toBe(false);
+    expect(TaskGraphDeclarationRequest.safeParse(request({ nodes: [{ ...node(TASK_A), taskRevisionNumber: 0 }] })).success).toBe(false);
+    expect(TaskGraphDeclarationRequest.safeParse(request({ note: "free text" })).success).toBe(false);
+  });
+
+  it("answers a declaration with its revision, its count and whether it was a replay", () => {
+    const body = {
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId: INITIATIVE,
+      version: echo,
+      stepId: "A",
+      graphRevisionId: GRAPH,
+      supersedesGraphRevisionId: null,
+      nodeCount: 2,
+      sequence: 3,
+      replayed: false,
+    };
+    expect(TaskGraphDeclarationResponse.safeParse(body).success).toBe(true);
+    expect(TaskGraphDeclarationResponse.safeParse({ ...body, nodeCount: 0 }).success).toBe(false);
+    expect(TaskGraphDeclarationResponse.safeParse({ ...body, replayed: "no" }).success).toBe(false);
+  });
+
+  it("a node is ready exactly when its four conditions are satisfied, and only a satisfied one carries no reason", () => {
+    expect(TaskGraphResponse.safeParse(graphBody()).success).toBe(true);
+    const all = { R1: satisfied, R2: satisfied, R3: satisfied, R4: satisfied };
+    expect(TaskGraphResponse.safeParse(graphBody({ nodes: [readNode({ ready: true, conditions: all })] })).success).toBe(true);
+    expect(TaskGraphResponse.safeParse(graphBody({ nodes: [readNode({ ready: true })] })).success).toBe(false);
+    expect(TaskGraphResponse.safeParse(graphBody({ nodes: [readNode({ ready: false, conditions: all })] })).success).toBe(false);
+    const reasonless = { ...all, R1: { verdict: "UNKNOWN", reason: null } };
+    expect(TaskGraphResponse.safeParse(graphBody({ nodes: [readNode({ conditions: reasonless })] })).success).toBe(false);
+    const reasoned = { ...all, R1: { verdict: "SATISFIED", reason: "TASK_COHORT_LEGACY" } };
+    expect(TaskGraphResponse.safeParse(graphBody({ nodes: [readNode({ ready: true, conditions: reasoned })] })).success).toBe(false);
+    const prose = { ...all, R1: { verdict: "UNKNOWN", reason: "the task is legacy" } };
+    expect(TaskGraphResponse.safeParse(graphBody({ nodes: [readNode({ conditions: prose })] })).success).toBe(false);
+  });
+
+  it("echoes the instant it evaluated against, and carries no text", () => {
+    expect(TaskGraphResponse.safeParse(graphBody({ evaluatedAt: "yesterday" })).success).toBe(false);
+    const withoutInstant = graphBody();
+    delete withoutInstant["evaluatedAt"];
+    expect(TaskGraphResponse.safeParse(withoutInstant).success).toBe(false);
+    expect(TaskGraphResponse.safeParse(graphBody({ nodes: [readNode({ title: "a task" })] })).success).toBe(false);
+    expect(TaskGraphResponse.safeParse(graphBody({ graph: { graphRevisionId: GRAPH, declaredAt: "2026-09-25T00:00:00.000Z", sequence: 3, supersededBy: null } })).success).toBe(false);
+  });
+
+  it("the timeline's type enum widens by derivation to the two graph types", () => {
+    expect(InitiativeEventTypeDto.safeParse("TASK_GRAPH_DECLARED").success).toBe(true);
+    expect(InitiativeEventTypeDto.safeParse("TASK_GRAPH_NODE_DECLARED").success).toBe(true);
+    expect(InitiativeEventTypeDto.options).toHaveLength(6);
   });
 });

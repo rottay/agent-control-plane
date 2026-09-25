@@ -36,8 +36,11 @@ import {
   LedgerQueryError,
   LedgerReadOnlyError,
   LedgerRoadmapVersionRefusedError,
+  LedgerInitiativeBatchConflictError,
+  LedgerTaskGraphRefusedError,
   LedgerValidationError,
   LEDGER_MIGRATIONS,
+  declareTaskGraph,
   canonicalJsonStringify,
   chainDigest,
   computeOutboxCommandId,
@@ -78,6 +81,7 @@ import {
   DISPATCH_CATALOG_PIN_MIGRATION,
   EFFECT_RESULT_REFERENCE_MIGRATION,
   ROADMAP_STEPS_MIGRATION,
+  TASK_GRAPH_MIGRATION,
   MIGRATIONS,
   MODEL_VERSION_REGISTRY_MIGRATION,
   TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
@@ -350,7 +354,7 @@ describe("open", () => {
     // coordinate, P-08's sidecar and the registry stream, typed causal triple and
     // watermark table of P-09.
     expect(status.migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     ]);
     expect(status.initiativeHeadSequence).toBe(0);
     expect(status.initiativeHeadEventSha256).toBe(GENESIS_SHA256);
@@ -1428,6 +1432,9 @@ function dropRoadmapVersionUniqueness(raw: Database.Database): void {
  * its event.
  */
 function dropRoadmapSteps(raw: Database.Database): void {
+  // Twenty-six first (P-27 cut A): rewinding past 25 means rewinding past 26, whose
+  // revision table names a step by foreign key.
+  dropTaskGraph(raw);
   raw.exec(
     "DROP TRIGGER tr_roadmap_version_read_model__validate_steps_on_update; " +
       "DROP TRIGGER tr_roadmap_version_read_model__validate_steps_on_insert; " +
@@ -1438,6 +1445,25 @@ function dropRoadmapSteps(raw: Database.Database): void {
       "DROP TABLE roadmap_step_dependency; " +
       "DROP TABLE roadmap_step_read_model; " +
       "DELETE FROM projection_watermark WHERE projection_name IN ('roadmap_step_read_model', 'roadmap_step_dependency');",
+  );
+}
+
+/**
+ * Migration 26 undone: a step's task graph (P-27 cut A, ADR 0115).
+ *
+ * The trigger first, then the tables children first — the edges name two nodes and
+ * the revision, a node names the revision — then the three watermark rows (migration
+ * 25's mould). No initiative event moves: the re-applied 26 creates the tables empty,
+ * and a history holding a graph is refolded by the rebuild.
+ */
+function dropTaskGraph(raw: Database.Database): void {
+  raw.exec(
+    "DROP TRIGGER tr_task_graph_revision_read_model__supersede_once; " +
+      "DROP TABLE task_dependency_read_model; " +
+      "DROP TABLE task_graph_node_read_model; " +
+      "DROP TABLE task_graph_revision_read_model; " +
+      "DELETE FROM projection_watermark WHERE projection_name IN " +
+      "('task_graph_revision_read_model', 'task_graph_node_read_model', 'task_dependency_read_model');",
   );
 }
 
@@ -2185,15 +2211,15 @@ describe("projection watermark verification", () => {
     // artifact folds, the model version fold and P-33/catálogo A's price fold of
     // the registry stream, and the two-source routing fold. Twenty-six heads,
     // because the last one has two — every one of them at zero on a ledger that
-    // has never been appended to.
-    expect(ledger.status().projections).toHaveLength(27);
+    // has never been appended to. P-27 cut A's three task graph folds make it thirty.
+    expect(ledger.status().projections).toHaveLength(30);
     expect(
       ledger
         .status()
         .projections.flatMap((projection) =>
           projection.watermarks.map((watermark) => watermark.appliedThroughSequence),
         ),
-    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    ).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it("keeps every projection level with the head of its own stream", () => {
@@ -3198,7 +3224,7 @@ describe("the bump's three acts on the initiative stream (P-26 cut B, ADR 0111)"
     });
 
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_GRAPH_MIGRATION);
     const versions = migrated.listRoadmapVersions(INITIATIVE_A);
     expect(versions.map((version) => [version.version, version.recordingContractVersion, version.stepCount, version.stepManifestSha256])).toEqual([
       [1, "2.9.0", null, null],
@@ -3697,7 +3723,7 @@ describe("the recorded execution route", () => {
     // The upgrade: the pending tail applies on open, and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -3909,7 +3935,7 @@ describe("appendBatch lands a whole batch or none of it", () => {
     expect(ledger.getTask(taskId)).toBeNull();
     expect(ledger.listWorkers().workers).toHaveLength(0);
     expect([...appliedByName(ledger).values()]).toEqual([
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     ]);
     expect(ledger.verifyIntegrity().ok).toBe(true);
 
@@ -3934,7 +3960,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const rows = readWatermarks(ledger.path);
-    expect(rows).toHaveLength(28);
+    expect(rows).toHaveLength(31);
     const taskRows = rows.filter((row) => row.source_stream === "control_plane_events");
     expect(taskRows.map((row) => row.projection_name)).toEqual([
       "dispatch_attempt_read_model",
@@ -3975,8 +4001,11 @@ describe("the watermark advances with every door that moves a head", () => {
       "roadmap_step_read_model",
       "roadmap_version_read_model",
       "routing_assignment_read_model",
+      "task_dependency_read_model",
+      "task_graph_node_read_model",
+      "task_graph_revision_read_model",
     ]);
-    expect(initiativeRows.map((row) => row.applied_sequence)).toEqual([0, 0, 0, 0, 0]);
+    expect(initiativeRows.map((row) => row.applied_sequence)).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
   });
 
   it("carries the initiative stream's own head on appendInitiativeEvent", () => {
@@ -4020,7 +4049,7 @@ describe("the watermark advances with every door that moves a head", () => {
     ledger.close();
 
     const before = readWatermarks(path);
-    expect(before).toHaveLength(28);
+    expect(before).toHaveLength(31);
 
     tamper(path, (raw) => {
       raw
@@ -4135,7 +4164,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     // right the first time.
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     ]);
 
     const report = migrated.verifyIntegrity();
@@ -4184,7 +4213,7 @@ describe("migration 7 seeds the watermarks from the heads it finds", () => {
     open(path).close();
 
     const rows = readWatermarks(path);
-    expect(rows).toHaveLength(28);
+    expect(rows).toHaveLength(31);
     expect(rows.every((row) => row.applied_sequence === 0)).toBe(true);
     expect(rows.every((row) => row.event_count === 0)).toBe(true);
     expect(rows.every((row) => row.source_head_sha256 === GENESIS_SHA256)).toBe(true);
@@ -5212,9 +5241,10 @@ describe("two heads under one projection name advance independently (negative 2)
     ledger.appendRegistryEvent(makeRegistryDocument());
 
     const status = ledger.status();
-    // Twenty-five projections, not twenty-six entries: the vector lives INSIDE
-    // the projection, so a projection with two heads is still one projection.
-    expect(status.projections).toHaveLength(27);
+    // One entry per projection, not per watermark row: the vector lives INSIDE the
+    // projection, so a projection with two heads is still one projection. Thirty
+    // since P-27 cut A's three task graph projections.
+    expect(status.projections).toHaveLength(30);
     expect(status.projections.map((projection) => projection.name)).toEqual([
       "artifact_blob_read_model",
       "artifact_pin_read_model",
@@ -5234,6 +5264,9 @@ describe("two heads under one projection name advance independently (negative 2)
       "roadmap_version_read_model",
       "routing_assignment_read_model",
       "task_attempt_read_model",
+      "task_dependency_read_model",
+      "task_graph_node_read_model",
+      "task_graph_revision_read_model",
       "task_read_model",
       "task_revision_read_model",
       "task_submission_read_model",
@@ -5266,12 +5299,13 @@ describe("two heads under one projection name advance independently (negative 2)
     }
     ledger.close();
 
-    // Twenty-eight rows in the table, twenty-eight entries across twenty-seven
-    // projections. Nothing in the table is omitted from the DTO any more.
-    expect(readWatermarks(path)).toHaveLength(28);
+    // Thirty-one rows in the table, thirty-one entries across thirty projections
+    // (twenty-eight across twenty-seven until P-27 cut A's three). Nothing in the
+    // table is omitted from the DTO any more.
+    expect(readWatermarks(path)).toHaveLength(31);
     expect(
       status.projections.flatMap((projection) => projection.watermarks),
-    ).toHaveLength(28);
+    ).toHaveLength(31);
   });
 
   it("publishes the latest instant of a projection's rows as its updatedAt", () => {
@@ -5465,7 +5499,7 @@ describe("a rebuild is a function of the vector of three heads (negative 8)", ()
       modelVersions: readModelVersionTables(path),
       watermarks: readWatermarks(path),
     };
-    expect(live.watermarks).toHaveLength(28);
+    expect(live.watermarks).toHaveLength(31);
     expect(live.routing).toHaveLength(3);
 
     const first = open(path);
@@ -6350,7 +6384,7 @@ describe("the account sidecar is activated once, over everything, atomically", (
     // The upgrade: migration 10 applies on open and nothing else is done.
     const migrated = open(path);
     expect(migrated.status().migrations.map((m) => m.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     ]);
     expect(migrated.verifyIntegrity().ok).toBe(true);
     migrated.close();
@@ -8386,7 +8420,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -8445,7 +8479,7 @@ describe("a version this build does not read is refused, by name", () => {
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     ]);
     expect(migrated.listEvents().events.map((record) => record.event.contractVersion)).toEqual([
       "2.2.0",
@@ -8496,7 +8530,7 @@ describe("a version this build does not read is refused, by name", () => {
 
       const migrated = open(path);
       expect(migrated.status().migrations.map((migration) => migration.version), version).toEqual([
-        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
       ]);
       expect(
         migrated.listEvents().events.map((record) => record.event.contractVersion),
@@ -8646,7 +8680,7 @@ describe("migration 11 applies whole, over a ledger that already has a history",
 
     const migrated = open(path);
     expect(migrated.status().migrations.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     ]);
 
     // Reads still answer, with the same rows and the same head.
@@ -13939,7 +13973,7 @@ describe("migration 15 rebuilds the registry stream and changes no row (N-P36A-1
     const migrated = open(path);
     // Fifteen applies over the history at fourteen, and sixteen through nineteen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(ARTIFACT_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_GRAPH_MIGRATION);
     const report = migrated.verifyIntegrity();
     expect(report.problems).toEqual([]);
     expect(report.coverage.find((entry) => entry.sourceStream === "registry_events")?.checkedThroughSequence).toBe(3);
@@ -14152,7 +14186,7 @@ describe("an artifact event is a registry row with a subject, an ordinal and a k
       expect(issue.path).toBe("subjectOrdinal");
       expect(issue.message).toContain("the next one is ordinal 2; this event proposes " + String(ordinal));
     }
-    expect(ledger.status().projections.length).toBe(27);
+    expect(ledger.status().projections.length).toBe(30);
     expect(ledger.appendArtifactEvent(publicationSucceeded({ ordinal: 2 })).inserted).toBe(true);
   });
 
@@ -15122,7 +15156,7 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
       expect(migrated.status().migrations.map((migration) => migration.version), version).toContain(
         TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION,
       );
-      expect(migrated.status().migrations.at(-1)?.version, version).toBe(ROADMAP_STEPS_MIGRATION);
+      expect(migrated.status().migrations.at(-1)?.version, version).toBe(TASK_GRAPH_MIGRATION);
       expect(readRevisions(path).map((row) => [row.contract_version, row.envelope_artifact_reference_id]), version).toEqual([
         [version, null],
         [version, null],
@@ -15573,7 +15607,7 @@ describe("migration 17 lands whole over a registry that already holds model vers
     const migrated = open(path);
     // Seventeen re-applies, and eighteen and nineteen after it.
     expect(migrated.status().migrations.map((migration) => migration.version)).toContain(MODEL_VERSION_REGISTRY_MIGRATION);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_GRAPH_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
 
@@ -15711,7 +15745,7 @@ describe("migration 18 gives the initiative projection its registration columns 
 
     const migrated = open(path);
     // Nineteen re-applied after it (P-14 C): the rewind undid both.
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_GRAPH_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     expect(readInitiativeColumns(path)).toEqual(before.rows);
@@ -15956,7 +15990,7 @@ describe("a task's client key has one home, folded from its intake (P-14 C)", ()
     });
 
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_GRAPH_MIGRATION);
     expect(readSubmissionRows(path)).toEqual(rows);
     expect(migrated.getTask(taskId)).toEqual(task);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
@@ -16855,7 +16889,7 @@ describe("usage is a declared stream and a measured observation, and the door se
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(USAGE_CAPTURE_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_GRAPH_MIGRATION);
     expect(usageDump(path)).toBe(live);
     expect(settlementsOf(path, secondEffect)).toEqual([
       expect.objectContaining({ revision: 1, status: "UNKNOWN", sequence: dispatch.sequence, computedAt: dispatch.event.recordedAt }),
@@ -17533,7 +17567,7 @@ describe("migration 21 lands whole over a registry that already holds price cata
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(PRICE_INTERVAL_CATALOG_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_GRAPH_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
 
@@ -17618,7 +17652,7 @@ describe("migration 21 lands whole over a registry that already holds price cata
     });
 
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_GRAPH_MIGRATION);
     expect(migrated.readPriceIntervals({ catalogDocumentId: CATALOG, catalogVersion: 2 })).toEqual([]);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     expect(migrated.rebuildReadModel().priceIntervalRows).toBe(3);
@@ -17852,7 +17886,7 @@ describe("an effect records its result by reference, with its outcome (P-07 esca
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(EFFECT_RESULT_REFERENCE_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_GRAPH_MIGRATION);
     expect(migrated.getEffect(effectId)?.outcomeContractVersion).toBe("2.7.0");
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
@@ -18084,7 +18118,7 @@ describe("an effect records its result by reference, with its outcome (P-07 esca
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(EFFECT_RESULT_REFERENCE_MIGRATION);
     });
     const reopened = open(again);
-    expect(reopened.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
+    expect(reopened.status().migrations.at(-1)?.version).toBe(TASK_GRAPH_MIGRATION);
     // A 2.8.0 SUCCEEDED gets its version AND its pair back from its own event,
     // so the rows equal what the fold computes and the replay agrees.
     expect(effectRows(again).map((row) => [row["outcome_contract_version"], row["result_sha256"]])).toEqual([
@@ -18249,7 +18283,7 @@ describe("a delivery pins the catalog version it will be valued against (P-15 es
       raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(DISPATCH_CATALOG_PIN_MIGRATION);
     });
     const migrated = open(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(ROADMAP_STEPS_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_GRAPH_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     const upgraded = dispatchRows(path);
@@ -19097,5 +19131,394 @@ describe("P-15/F: a task's effects are listed, and a reference is read holding n
     for (const word of REFERENCE_READ_ROOT_REFUSALS) {
       expect(ARTIFACT_PLANE_REFUSALS as readonly string[]).not.toContain(word);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-27 cut A: a step's task graph, through the batch door (ADR 0115)
+// ---------------------------------------------------------------------------
+
+describe("a task graph is declared through the batch door, all or none (P-27 cut A)", () => {
+  const STEP_DIGEST = "c".repeat(64);
+  const GRAPH_ONE = "77777777-7777-4777-8777-777777777701";
+  const GRAPH_TWO = "77777777-7777-4777-8777-777777777702";
+  const AT_GRAPH = "2026-09-25T12:00:00.000Z";
+  const DECLARER = "claude/opus/coordinator/01";
+
+  function stepEvent(stepId: string, stepIndex: number, dependsOn: readonly string[], rank: number): Record<string, unknown> {
+    return makeInitiativeEvent({
+      transitionId: "roadmap.v1.step." + String(stepIndex),
+      type: "ROADMAP_STEP_DECLARED",
+      fromStatus: "ACTIVE",
+      toStatus: "ACTIVE",
+      payload: {
+        roadmapVersionId: VERSION_ONE_ID,
+        stepId,
+        stepIndex,
+        title: "Step " + stepId,
+        objectiveSha256: STEP_DIGEST,
+        acceptanceSha256: STEP_DIGEST,
+        expectedWriteSetSha256: STEP_DIGEST,
+        dependsOn: [...dependsOn],
+        dependencyRank: rank,
+      },
+    });
+  }
+
+  /**
+   * A ledger holding `INITIATIVE_A`, version 1 declaring steps A and B (B after A),
+   * planted and refolded (the manifest's publication is P-26's suite's), and three
+   * tasks entered through the task door by a recorded intake linked to step B.
+   */
+  function graphLedger(): { readonly path: string; readonly ledger: Ledger; readonly tasks: readonly string[] } {
+    const path = temporaryDatabase();
+    const first = open(path);
+    first.appendInitiativeEvent(makeInitiativeEvent());
+    first.close();
+    plantInitiativeEvent(
+      path,
+      roadmapEvent("roadmap.v1", { stepCount: 2, stepManifestArtifactReferenceId: "ref-manifest", stepManifestSha256: DIGEST_TWO }),
+    );
+    plantInitiativeEvent(path, stepEvent("A", 0, [], 0));
+    plantInitiativeEvent(path, stepEvent("B", 1, ["A"], 1));
+    const ledger = open(path);
+    ledger.rebuildReadModel();
+    plantEnvelopeReference(ledger);
+    const tasks = [randomUUID(), randomUUID(), randomUUID()];
+    for (const taskId of tasks) intakeOn(ledger, taskId, { stepId: "B" });
+    return { path, ledger, tasks };
+  }
+
+  /** Enter one task through the task door by a recorded intake, linked as `link` says. */
+  function intakeOn(ledger: Ledger, taskId: string, link: Record<string, unknown>): string {
+    ledger.append(
+      intakeLedgerEvent(taskId, { clientRequestKey: "graph-" + taskId, roadmapVersionId: VERSION_ONE_ID, ...link }),
+    );
+    return taskId;
+  }
+
+  interface Node {
+    readonly taskId: string;
+    readonly dependsOn: readonly string[];
+  }
+
+  function declare(
+    ledger: Ledger,
+    graphRevisionId: string,
+    nodes: readonly Node[],
+    options: { readonly supersedes?: string | null; readonly stepId?: string; readonly policy?: "WAIT_SUCCESS" | "ALLOW_FAILURE" | "REQUIRE_TERMINAL" } = {},
+  ) {
+    return declareTaskGraph({
+      reader: ledger,
+      writable: ledger,
+      initiativeId: INITIATIVE_A,
+      roadmapVersionId: VERSION_ONE_ID,
+      stepId: options.stepId ?? "B",
+      request: {
+        graphRevisionId,
+        supersedesGraphRevisionId: options.supersedes ?? null,
+        declaredBy: DECLARER,
+        nodes: nodes.map((node) => ({
+          taskId: node.taskId,
+          taskRevisionNumber: 1,
+          dependsOn: node.dependsOn.map((taskId) => ({ taskId, taskRevisionNumber: 1, failPolicy: options.policy ?? "WAIT_SUCCESS" })),
+        })),
+      },
+      recordedAt: AT_GRAPH,
+      headerEventId: randomUUID(),
+      nodeEventIds: nodes.map(() => randomUUID()),
+    });
+  }
+
+  /** The batch the producer would build, for driving the door directly. */
+  function batch(
+    graphRevisionId: string,
+    nodes: readonly { readonly taskId: string; readonly taskRevisionNumber?: number; readonly dependsOn: readonly string[] }[],
+    header: Record<string, unknown> = {},
+  ): Record<string, unknown>[] {
+    return [
+      makeInitiativeEvent({
+        transitionId: "graph." + graphRevisionId,
+        type: "TASK_GRAPH_DECLARED",
+        fromStatus: "ACTIVE",
+        toStatus: "ACTIVE",
+        occurredAt: AT_GRAPH,
+        payload: {
+          graphRevisionId,
+          roadmapVersionId: VERSION_ONE_ID,
+          stepId: "B",
+          supersedesGraphRevisionId: null,
+          nodeCount: nodes.length,
+          ...header,
+        },
+      }),
+      ...nodes.map((node, nodeIndex) =>
+        makeInitiativeEvent({
+          transitionId: "graph." + graphRevisionId + ".node." + String(nodeIndex),
+          type: "TASK_GRAPH_NODE_DECLARED",
+          fromStatus: "ACTIVE",
+          toStatus: "ACTIVE",
+          occurredAt: AT_GRAPH,
+          payload: {
+            graphRevisionId,
+            taskId: node.taskId,
+            taskRevisionNumber: node.taskRevisionNumber ?? 1,
+            nodeIndex,
+            dependsOn: node.dependsOn.map((taskId) => ({ taskId, taskRevisionNumber: 1, failPolicy: "WAIT_SUCCESS" })),
+          },
+        }),
+      ),
+    ];
+  }
+
+  function graphRefusal(action: () => unknown): { readonly reason: string; readonly at: string } {
+    const error = caught(action);
+    if (!(error instanceof LedgerTaskGraphRefusedError)) throw new Error("expected LedgerTaskGraphRefusedError, got " + String(error));
+    expect(error.code).toBe("LEDGER_TASK_GRAPH_REFUSED");
+    return { reason: error.reason, at: error.at };
+  }
+
+  function tableRows(path: string, table: string): readonly Record<string, unknown>[] {
+    const raw = new Database(path, { readonly: true });
+    try {
+      return raw.prepare("SELECT * FROM " + table + " ORDER BY sequence ASC").all() as Record<string, unknown>[];
+    } finally {
+      raw.close();
+    }
+  }
+
+  it("the single door refuses both graph types before it writes, so no door writes part of a graph (L-P26B-1 widened)", () => {
+    const { ledger, tasks } = graphLedger();
+    const [header, node] = batch(GRAPH_ONE, [{ taskId: tasks[0] ?? "", dependsOn: [] }]);
+    const before = ledger.status().initiativeEventCount;
+    for (const event of [header, node]) {
+      const error = caught(() => ledger.appendInitiativeEvent(event));
+      expect(error).toBeInstanceOf(LedgerValidationError);
+      expect((error as LedgerValidationError).issues[0]?.path).toBe("type");
+    }
+    expect(ledger.status().initiativeEventCount).toBe(before);
+    expect(ledger.getTaskGraphRevision(GRAPH_ONE)).toBeNull();
+  });
+
+  it("G1 at the door: declares a three-node graph, writes the three tables from the payloads, and moves the three watermarks", () => {
+    const { path, ledger, tasks } = graphLedger();
+    const [n1, n2, n3] = tasks as [string, string, string];
+    const outcome = declare(ledger, GRAPH_ONE, [
+      { taskId: n1, dependsOn: [] },
+      { taskId: n2, dependsOn: [n1] },
+      { taskId: n3, dependsOn: [n1] },
+    ]);
+    expect(outcome.ok && !outcome.replayed && outcome.nodeCount).toBe(3);
+    const head = ledger.status();
+    expect(tableRows(path, "task_graph_revision_read_model")).toEqual([
+      {
+        graph_revision_id: GRAPH_ONE,
+        roadmap_version_id: VERSION_ONE_ID,
+        step_id: "B",
+        declared_at: AT_GRAPH,
+        superseded_by: null,
+        sequence: head.initiativeHeadSequence - 3,
+      },
+    ]);
+    expect(ledger.listTaskGraphNodes(GRAPH_ONE).map((node) => node.taskId)).toEqual([n1, n2, n3]);
+    expect(ledger.listTaskDependencies(GRAPH_ONE).map((edge) => [edge.taskId, edge.dependsOnTaskId, edge.failPolicy, edge.stepId])).toEqual([
+      [n2, n1, "WAIT_SUCCESS", "B"],
+      [n3, n1, "WAIT_SUCCESS", "B"],
+    ]);
+    const levels = head.projections
+      .filter((projection) => ["task_graph_revision_read_model", "task_graph_node_read_model", "task_dependency_read_model"].includes(projection.name))
+      .map((projection) => projection.watermarks[0]?.appliedThroughSequence);
+    expect(levels).toEqual([head.initiativeHeadSequence, head.initiativeHeadSequence, head.initiativeHeadSequence]);
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+
+    // The rebuild writes the same rows from the stream alone, twice.
+    const rows = ["task_graph_revision_read_model", "task_graph_node_read_model", "task_dependency_read_model"].map((table) => tableRows(path, table));
+    ledger.rebuildReadModel();
+    ledger.rebuildReadModel();
+    expect(["task_graph_revision_read_model", "task_graph_node_read_model", "task_dependency_read_model"].map((table) => tableRows(path, table))).toEqual(rows);
+  });
+
+  it("G4 at the door: a revision naming the current one supersedes it once, and a stale one is GRAPH_HEAD_MISMATCH with nothing appended", () => {
+    const { path, ledger, tasks } = graphLedger();
+    const [n1, n2] = tasks as [string, string, string];
+    expect(declare(ledger, GRAPH_ONE, [{ taskId: n1, dependsOn: [] }]).ok).toBe(true);
+    expect(declare(ledger, GRAPH_TWO, [{ taskId: n1, dependsOn: [] }, { taskId: n2, dependsOn: [n1] }], { supersedes: GRAPH_ONE }).ok).toBe(true);
+    expect(ledger.listTaskGraphRevisions(VERSION_ONE_ID, "B").map((revision) => [revision.graphRevisionId, revision.supersededBy])).toEqual([
+      [GRAPH_ONE, GRAPH_TWO],
+      [GRAPH_TWO, null],
+    ]);
+    const before = ledger.status().initiativeEventCount;
+    // Straight to the door, past the producer: the law is the door's call.
+    const third = "77777777-7777-4777-8777-777777777703";
+    for (const supersedes of [GRAPH_ONE, null]) {
+      expect(
+        graphRefusal(() => ledger.appendInitiativeBatch(batch(third, [{ taskId: n1, dependsOn: [] }], { supersedesGraphRevisionId: supersedes }))),
+      ).toEqual({ reason: "GRAPH_HEAD_MISMATCH", at: "header.supersedesGraphRevisionId" });
+    }
+    expect(ledger.status().initiativeEventCount).toBe(before);
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+    const rows = tableRows(path, "task_graph_revision_read_model");
+    ledger.rebuildReadModel();
+    expect(tableRows(path, "task_graph_revision_read_model")).toEqual(rows);
+  });
+
+  it("refuses each door word by name, before any row: an unknown step, an unknown task revision, a cycle naming its nodes, an edge to no node", () => {
+    const { ledger, tasks } = graphLedger();
+    const [n1, n2, n3] = tasks as [string, string, string];
+    const before = ledger.status().initiativeEventCount;
+    expect(graphRefusal(() => ledger.appendInitiativeBatch(batch(GRAPH_ONE, [{ taskId: n1, dependsOn: [] }], { stepId: "Z" })))).toEqual({
+      reason: "GRAPH_STEP_UNKNOWN",
+      at: "header.stepId",
+    });
+    const stranger = randomUUID();
+    expect(
+      graphRefusal(() => ledger.appendInitiativeBatch(batch(GRAPH_ONE, [{ taskId: n1, dependsOn: [] }, { taskId: stranger, dependsOn: [] }]))),
+    ).toEqual({ reason: "GRAPH_TASK_UNKNOWN", at: "nodes[1]" });
+    expect(graphRefusal(() => ledger.appendInitiativeBatch(batch(GRAPH_ONE, [{ taskId: n1, taskRevisionNumber: 2, dependsOn: [] }])))).toEqual({
+      reason: "GRAPH_TASK_UNKNOWN",
+      at: "nodes[0]",
+    });
+    expect(
+      graphRefusal(() =>
+        ledger.appendInitiativeBatch(
+          batch(GRAPH_ONE, [
+            { taskId: n1, dependsOn: [n3] },
+            { taskId: n2, dependsOn: [n1] },
+            { taskId: n3, dependsOn: [n2] },
+          ]),
+        ),
+      ),
+    ).toEqual({ reason: "GRAPH_DEPENDENCY_CYCLE", at: [n1, n3, n2, n1].map((id) => id + "@1").join(" -> ") });
+    expect(graphRefusal(() => ledger.appendInitiativeBatch(batch(GRAPH_ONE, [{ taskId: n1, dependsOn: [n2] }])))).toEqual({
+      reason: "GRAPH_DECLARATION_INVALID",
+      at: "nodes[0].dependsOn[0]",
+    });
+    expect(ledger.status().initiativeEventCount).toBe(before);
+    expect(ledger.getTaskGraphRevision(GRAPH_ONE)).toBeNull();
+  });
+
+  it("GRAPH_TASK_OUT_OF_SCOPE at the door: a node's task entered on another step, version or initiative, or on none, and nothing is appended", () => {
+    const { ledger, tasks } = graphLedger();
+    const [n1] = tasks as [string, string, string];
+    const onA = intakeOn(ledger, randomUUID(), { stepId: "A" });
+    const otherVersion = intakeOn(ledger, randomUUID(), { roadmapVersionId: randomUUID(), stepId: "B" });
+    const otherInitiative = intakeOn(ledger, randomUUID(), { initiativeId: INITIATIVE_B, stepId: "B" });
+    const unlinked = intakeOn(ledger, randomUUID(), { roadmapVersionId: null, stepId: null });
+    // A task with revision rows and no recorded intake: the legacy cohort.
+    const legacy = randomUUID();
+    ledger.append(makeEvent({ taskId: legacy, attempt: 1, transitionId: "revise", payload: revisionPayload() }));
+    const before = ledger.status().initiativeEventCount;
+    for (const stranger of [onA, otherVersion, otherInitiative, unlinked, legacy]) {
+      expect(ledger.getTaskRevision(stranger, 1)).not.toBeNull();
+      expect(
+        graphRefusal(() => ledger.appendInitiativeBatch(batch(GRAPH_ONE, [{ taskId: n1, dependsOn: [] }, { taskId: stranger, dependsOn: [n1] }]))),
+      ).toEqual({ reason: "GRAPH_TASK_OUT_OF_SCOPE", at: "nodes[1]" });
+      // The producer's reader answers the same question the same way.
+      expect(declare(ledger, GRAPH_ONE, [{ taskId: n1, dependsOn: [] }, { taskId: stranger, dependsOn: [n1] }])).toEqual({
+        ok: false,
+        reason: "GRAPH_TASK_OUT_OF_SCOPE",
+        at: "nodes[1]",
+      });
+    }
+    expect(ledger.status().initiativeEventCount).toBe(before);
+    expect(ledger.getTaskGraphRevision(GRAPH_ONE)).toBeNull();
+
+    // A task of step B is a node of B's graph only: once in B's, it is refused on A (the V1 shape).
+    expect(declare(ledger, GRAPH_ONE, [{ taskId: n1, dependsOn: [] }]).ok).toBe(true);
+    expect(declare(ledger, GRAPH_TWO, [{ taskId: n1, dependsOn: [] }], { stepId: "A" })).toEqual({
+      ok: false,
+      reason: "GRAPH_TASK_OUT_OF_SCOPE",
+      at: "nodes[0]",
+    });
+    // And A's own task is granted on A.
+    expect(declare(ledger, GRAPH_TWO, [{ taskId: onA, dependsOn: [] }], { stepId: "A" }).ok).toBe(true);
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+  });
+
+  it("GRAPH_TASK_OUT_OF_SCOPE reads the step from revision 1's intake: a later revision of a task entered on B is refused on A and granted on B", () => {
+    const { ledger, tasks } = graphLedger();
+    const [n1, n2] = tasks as [string, string, string];
+    // Revision 2 is not an intake: a door reading the latest revision would find no link.
+    ledger.append(
+      makeEvent({
+        taskId: n2,
+        transitionId: "revise-2",
+        fromState: "DISCOVERED",
+        toState: "DISCOVERED",
+        payload: revisionPayload({ revisionNumber: 2, envelopeSha256: "a".repeat(64) }),
+      }),
+    );
+    expect(ledger.getTaskRevision(n2, 2)).not.toBeNull();
+    const before = ledger.status().initiativeEventCount;
+    expect(
+      graphRefusal(() => ledger.appendInitiativeBatch(batch(GRAPH_ONE, [{ taskId: n2, taskRevisionNumber: 2, dependsOn: [] }], { stepId: "A" }))),
+    ).toEqual({ reason: "GRAPH_TASK_OUT_OF_SCOPE", at: "nodes[0]" });
+    expect(ledger.status().initiativeEventCount).toBe(before);
+    expect(ledger.getTaskGraphRevision(GRAPH_ONE)).toBeNull();
+
+    ledger.appendInitiativeBatch(batch(GRAPH_ONE, [{ taskId: n1, dependsOn: [] }, { taskId: n2, taskRevisionNumber: 2, dependsOn: [] }]));
+    expect(ledger.listTaskGraphNodes(GRAPH_ONE).map((node) => [node.taskId, node.taskRevisionNumber])).toEqual([
+      [n1, 1],
+      [n2, 2],
+    ]);
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+  });
+
+  it("holds the graph shape: nodes in order, one initiative, the header counting them; a graph batch with no nodes is refused", () => {
+    const { ledger, tasks } = graphLedger();
+    const [n1, n2] = tasks as [string, string, string];
+    const lawful = batch(GRAPH_ONE, [{ taskId: n1, dependsOn: [] }, { taskId: n2, dependsOn: [] }]);
+    const path = (events: readonly Record<string, unknown>[]) => (caught(() => ledger.appendInitiativeBatch(events)) as LedgerValidationError).issues[0]?.path;
+    expect(path([lawful[0] ?? {}])).toBe("<root>");
+    expect(path([lawful[0] ?? {}, lawful[2] ?? {}, lawful[1] ?? {}])).toBe("[1].payload.nodeIndex");
+    expect(path([lawful[0] ?? {}, lawful[1] ?? {}])).toBe("[0].payload.nodeCount");
+    expect(path([lawful[1] ?? {}, lawful[0] ?? {}])).toBe("[0].type");
+    expect(path([lawful[0] ?? {}, stepEvent("C", 2, [], 0)])).toBe("[1].type");
+  });
+
+  it("G5 at the door: an exact retry is a whole-batch replay, and a partial or differing one its own conflict", () => {
+    const { ledger, tasks } = graphLedger();
+    const [n1, n2] = tasks as [string, string, string];
+    const events = batch(GRAPH_ONE, [{ taskId: n1, dependsOn: [] }, { taskId: n2, dependsOn: [n1] }]);
+    const first = ledger.appendInitiativeBatch(events);
+    expect(first.insertedCount).toBe(3);
+    const again = ledger.appendInitiativeBatch(events);
+    expect(again.insertedCount).toBe(0);
+    expect(again.records.map((record) => record.sequence)).toEqual(first.records.map((record) => record.sequence));
+    const differing = [events[0] ?? {}, { ...(events[1] ?? {}), eventId: randomUUID() }, events[2] ?? {}];
+    expect(caught(() => ledger.appendInitiativeBatch(differing))).toBeInstanceOf(LedgerInitiativeBatchConflictError);
+  });
+
+  it("the producer answers a retry of its own id from the rows it wrote, and refuses the id with another declaration", () => {
+    const { ledger, tasks } = graphLedger();
+    const [n1, n2] = tasks as [string, string, string];
+    const nodes = [{ taskId: n1, dependsOn: [] }, { taskId: n2, dependsOn: [n1] }];
+    const first = declare(ledger, GRAPH_ONE, nodes);
+    const again = declare(ledger, GRAPH_ONE, nodes);
+    expect(again).toEqual(first.ok ? { ...first, replayed: true } : first);
+    expect(declare(ledger, GRAPH_ONE, nodes, { policy: "ALLOW_FAILURE" })).toEqual({
+      ok: false,
+      reason: "GRAPH_DECLARATION_INVALID",
+      at: "graphRevisionId",
+    });
+    expect(declare(ledger, GRAPH_ONE, [nodes[0] ?? { taskId: n1, dependsOn: [] }])).toMatchObject({ ok: false, reason: "GRAPH_DECLARATION_INVALID" });
+  });
+
+  it("refuses by name a rebuild over a history no producer at this build writes: an orphan node, and a revision short of its nodes", () => {
+    const { path, ledger, tasks } = graphLedger();
+    ledger.close();
+    const [header, node] = batch(GRAPH_ONE, [{ taskId: tasks[0] ?? "", dependsOn: [] }, { taskId: tasks[1] ?? "", dependsOn: [] }]);
+    plantInitiativeEvent(path, header ?? {});
+    const short = open(path);
+    expect(graphRefusal(() => short.rebuildReadModel())).toEqual({ reason: "GRAPH_NODE_COUNT_MISMATCH", at: "header.nodeCount" });
+    expect(detailsOf(short.verifyIntegrity().problems)).toContain("GRAPH_NODE_COUNT_MISMATCH at header.nodeCount");
+    short.close();
+
+    const orphan = graphLedger();
+    orphan.ledger.close();
+    plantInitiativeEvent(orphan.path, node ?? {});
+    const reopened = open(orphan.path);
+    expect(graphRefusal(() => reopened.rebuildReadModel())).toEqual({ reason: "GRAPH_DECLARATION_INVALID", at: "node.graphRevisionId" });
+    expect(detailsOf(reopened.verifyIntegrity().problems)).toContain("records a task graph the fold refuses: GRAPH_DECLARATION_INVALID");
   });
 });

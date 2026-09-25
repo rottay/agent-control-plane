@@ -21,7 +21,7 @@ import type {
   UsageSourceClass,
   WorkerRole,
 } from "@acp/contracts";
-import type { OUTBOX_FAILURE_CODES } from "@acp/contracts";
+import type { DEPENDENCY_FAILURE_POLICIES, OUTBOX_FAILURE_CODES } from "@acp/contracts";
 
 import type { OutboxCommandKind, OutboxState, OutboxStream } from "../outbox-store/index.js";
 
@@ -1490,6 +1490,54 @@ export interface RoadmapStepDependencyReadModel {
   readonly roadmapVersionId: string;
   readonly stepId: string;
   readonly dependsOnStepId: string;
+  readonly sequence: number;
+}
+
+/**
+ * One revision of one step's task graph (P-27 cut A, ADR 0115; planning §5.1),
+ * folded from its `TASK_GRAPH_DECLARED`.
+ *
+ * `supersededBy` is null while the revision is the step's current one, and names the
+ * revision that superseded it after: the one column a later declaration writes, once.
+ */
+export interface TaskGraphRevisionReadModel {
+  readonly graphRevisionId: string;
+  readonly roadmapVersionId: string;
+  readonly stepId: string;
+  /** The declaring event's `occurredAt`. Never a clock read. */
+  readonly declaredAt: string;
+  readonly supersededBy: string | null;
+  readonly sequence: number;
+}
+
+/**
+ * One node of one task graph revision: a task revision (planning §5.2), folded from
+ * its `TASK_GRAPH_NODE_DECLARED`. The task revision is the task stream's, named here
+ * and never a foreign key.
+ */
+export interface TaskGraphNodeReadModel {
+  readonly graphRevisionId: string;
+  readonly taskId: string;
+  readonly taskRevisionNumber: number;
+  readonly sequence: number;
+}
+
+/** A dependant's policy toward the task revision it depends on: the contract's vocabulary (datos §6.4). */
+export type DependencyFailurePolicy = (typeof DEPENDENCY_FAILURE_POLICIES)[number];
+
+/**
+ * One edge of one task graph revision (planning §5.3): the node that depends, the
+ * node it depends on, both of the same revision, and the policy the edge asks.
+ * `stepId` is denormalized from the revision, of the same cohort and refolded with it.
+ */
+export interface TaskDependencyReadModel {
+  readonly graphRevisionId: string;
+  readonly taskId: string;
+  readonly taskRevisionNumber: number;
+  readonly dependsOnTaskId: string;
+  readonly dependsOnTaskRevisionNumber: number;
+  readonly failPolicy: DependencyFailurePolicy;
+  readonly stepId: string;
   readonly sequence: number;
 }
 

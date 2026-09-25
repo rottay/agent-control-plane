@@ -1,4 +1,5 @@
 import type { RoadmapVersionRefusal } from "../roadmap-version/index.js";
+import type { TaskGraphRefusal } from "../task-graph/index.js";
 
 /**
  * Typed ledger errors.
@@ -28,7 +29,8 @@ export type LedgerErrorCode =
   | "LEDGER_QUERY"
   | "LEDGER_ARTIFACT_ENCRYPTION_CONFLICT"
   | "LEDGER_ROADMAP_VERSION_REFUSED"
-  | "LEDGER_INITIATIVE_BATCH_CONFLICT";
+  | "LEDGER_INITIATIVE_BATCH_CONFLICT"
+  | "LEDGER_TASK_GRAPH_REFUSED";
 
 /** Base class for everything this package throws deliberately. */
 export class LedgerError extends Error {
@@ -345,6 +347,27 @@ export class LedgerInitiativeBatchConflictError extends LedgerError {
     this.initiativeId = initiativeId;
     this.recordedKeys = recordedKeys;
     this.batchSize = batchSize;
+  }
+}
+
+/**
+ * The initiative door refused a task graph revision by the decision's word, or the
+ * fold met a revision the door would have refused (P-27 cut A, ADR 0115).
+ *
+ * `LedgerRoadmapVersionRefusedError`'s mould: the word and the field, never a value.
+ * A cycle's `at` names the nodes on it by task id and revision number, which are
+ * identifiers, never content.
+ */
+export class LedgerTaskGraphRefusedError extends LedgerError {
+  readonly reason: TaskGraphRefusal;
+  /** The field, or the nodes, that failed. Never content. */
+  readonly at: string;
+
+  constructor(reason: TaskGraphRefusal, at: string) {
+    super("LEDGER_TASK_GRAPH_REFUSED", "the task graph was refused: " + reason + " at " + at);
+    this.name = "LedgerTaskGraphRefusedError";
+    this.reason = reason;
+    this.at = at;
   }
 }
 

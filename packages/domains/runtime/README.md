@@ -388,6 +388,41 @@ refused the start.
 `dirname(L)/executions`, the providers' six checks restated, the product-path
 markers from `@acp/contracts` — and mints it as a `ScenarioRoot`.
 
+### The READY predicate
+
+P-27 cut A (ADR 0115, requirement A5) gives a scheduler concept its predicate and
+nothing that dispatches. `ready/` holds two things, kept apart by body (L-P27-1):
+
+- **`evaluateReady`** (on the barrel, with `READY_UNSATISFIED_REASONS` and
+  `READY_UNKNOWN_REASONS`) judges one node on four conditions — **R1** in force (the
+  graph revision and the task revision current, the task `CLASSIFIED` in the V2
+  cohort), **R2** every edge's dependency by its `failPolicy`, **R3** the step admits
+  work and the initiative is active, **R4** the assignment still resolves and the
+  approval of the A6 class, if one is required, is in force against the injected
+  instant. Each answers `SATISFIED`, `UNSATISFIED(reason)` or `UNKNOWN(reason)`; a node
+  is READY iff all four are satisfied, and `UNKNOWN` never is. Within a condition a
+  known block outranks an absence. The three policies' oracle is the definition ADR
+  0115 records: `WAIT_SUCCESS` ⇐ `COMPLETED`, `ALLOW_FAILURE` ⇐ `COMPLETED | FAILED`,
+  `REQUIRE_TERMINAL` ⇐ `COMPLETED | FAILED | CANCELLED`; `SUSPECT_WORKTREE` satisfies
+  none, a legacy terminal satisfies none, and an effect in `OUTCOME_UNKNOWN` is an
+  absence, never a failure. Pure and total: it reads no clock and no ledger, and `now`
+  is an input — null answers `UNKNOWN(INSTANT_UNAVAILABLE)` wherever an expiry must be
+  compared.
+- **`readinessOf`** (on the barrel) is the production adapter. It reads one revision's
+  nodes and edges and feeds each input from a row that exists or names its absence:
+  every task is of the legacy cohort (the V2 cohort is P-21's), a dependency's terminal
+  is its task's state only for the revision the task is at (the per-revision terminal
+  is P-18's), the step's state and whether it depends on other steps (step transitions
+  are a later cut's), the assignment through the intake's own recorded resolution
+  against today's GLOBAL reading (STEP and INITIATIVE precedence is P-28's), and no
+  approval producer (P-28). So no node reads READY in production — never a false READY
+  and never a false block. The verdicts are computed at read time and never stored.
+
+The intake (P-14/C) gained two refusal words with the task graph (decision 193's
+obligation): a step its linked version does not declare is `REQUEST_INVALID`
+`ROADMAP_STEP_UNKNOWN`, and a version of the cohort before steps, which declares
+nothing, is `ROADMAP_STEPS_UNDECLARED` — unknown is never zero.
+
 ### Loopback and data roots
 
 Every address is loopback and constant: Restate ingress `127.0.0.1:8080`, admin

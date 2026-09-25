@@ -150,6 +150,11 @@ export const SURFACE_MAP: readonly SurfaceEntry[] = Object.freeze([
   entry(null, "initiativeRoadmapDiff", "GET", "API_ONLY",
     "the initiative data plane is a console surface (P8-8A); no CLI verb was ever " +
       "specified for it"),
+  entry(null, "initiativeStepGraph", "GET", "API_ONLY",
+    "the initiative data plane is a console surface (P8-8A); no CLI verb was ever " +
+      "specified for it"),
+  entry(null, "initiativeStepGraph", "POST", "API_ONLY",
+    "a bearer-guarded write door; the same answer as initiativeRoadmap POST"),
   entry(null, "initiativeEvents", "GET", "API_ONLY",
     "the initiative data plane is a console surface (P8-8A); no CLI verb was ever " +
       "specified for it"),

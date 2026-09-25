@@ -102,6 +102,23 @@ than trusting this table.
   path only. Both are API_ONLY in `SURFACE_MAP` under the initiative plane's
   standing reason. `API_WRITE_ROUTES` and `API_PRIVATE_READ_ROUTES` do not move,
   and no error word moves.
+- **A step's task graph, and each node's READY verdict.** P-27 cut A moved
+  `API_CONTRACT_VERSION` to `0.22.0` with one route, `initiativeStepGraph`
+  (`/roadmap/steps/graph?version=&stepId=`), the seventh write: POST declares one
+  revision of a step's task graph (`TaskGraphDeclarationRequest`,
+  `TaskGraphDeclarationResponse`) — the caller's own revision id, the revision it
+  supersedes, and the nodes in order with every edge's `failPolicy`, required — and
+  GET (`TaskGraphQuery`, `TaskGraphResponse`) reads the step's current revision with
+  each node's four conditions, `SATISFIED`, `UNSATISFIED` or `UNKNOWN` with a reason
+  word, `ready` exactly when all four are satisfied, computed against the instant it
+  echoes as `evaluatedAt`. The reason travels by its grammar, never as a second copy of
+  the runtime's two lists. The timeline's type enum widens by derivation to
+  `TASK_GRAPH_DECLARED` and `TASK_GRAPH_NODE_DECLARED`, and the task intake's refusal
+  message gains `ROADMAP_STEP_UNKNOWN` and `ROADMAP_STEPS_UNDECLARED`. The builder
+  `initiativeStepGraphPath` returns the path only. Both arms are API_ONLY in
+  `SURFACE_MAP` under the standing reasons, and the parity row binds the read, with
+  `evaluatedAt` its one `OBSERVED_AT` exception. `API_PRIVATE_READ_ROUTES` and the
+  error words do not move.
 - **Every read is free but one, and that one is named.** P-15/F added two reads
   and moved `API_CONTRACT_VERSION` to `0.19.0`: `taskEffects`, a plain read of a
   task's effect ids, coordinates and outcome words, and `taskEffectResult`, one

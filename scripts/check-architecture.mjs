@@ -12061,6 +12061,98 @@ const P15A3_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-27, cut A: a step declares its task graph, all or none, and READY is pure (ADR
+ * 0115; decisions 194-198; brief v1, the ND-P27-1 adjudication, and Fable pre-audit
+ * C1-C4 and N1-N12, adopted as rulings).
+ *
+ * Requirement A3: migration 26 creates the three task graph tables of planning §5 and
+ * the supersede-once trigger; the contract gains the two initiative types that declare
+ * a revision and its nodes, the three failure policies and two bounds; the ledger
+ * gains the one decision `decideTaskGraph` (seven words, a cycle refused naming its
+ * nodes, a node whose task did not enter on the graph's step refused by name), the
+ * producer `declareTaskGraph`, the batch door's second shape and the fold.
+ * Requirement A5: the runtime gains `evaluateReady`, pure and total over four
+ * tri-state conditions whose oracle is the definition of the three policies, and
+ * `readinessOf`, which feeds it from the rows that exist and names every absence, so no
+ * node reads READY in production. The gateway gains `initiativeStepGraph`, GET and
+ * POST, the seventh write. The intake refuses a step its version does not declare
+ * (decision 193's obligation, C2). L-P26B-1 is widened in place; L-P27-1 and L-P27-2
+ * are new. Nothing dispatches.
+ *
+ * **Pins that move.** `MIGRATIONS` 25 -> **26**; `tr_` 15 -> **16**;
+ * `PROJECTION_SOURCES` 28 -> **31**; `INITIATIVE_PROJECTION_NAMES` 4 -> **7**;
+ * `DERIVED_TABLES` 31 -> **34**; `EXPECTED_SCHEMA_OBJECTS` 124 -> **129**;
+ * `INITIATIVE_EVENT_TYPES` 4 -> **6**; `CONTRACTS_SCHEMA_EXPORTS` 178 -> **183**;
+ * `RUNTIME_PUBLIC_EXPORTS` 303 -> **307**; `API_CONTRACT_VERSION` 0.21.0 -> **0.22.0**
+ * (eleven literal sites); `API_ROUTES` 24 -> **25**; `API_WRITE_ROUTES` 6 -> **7**;
+ * `SURFACE_MAP` 34 -> **36**; `PARITY_ROUTES` 24 -> **25**; `TASK_INTAKE_CODES` 10 ->
+ * **12**; `PATH_SCOPED_LAWS` 167 -> **169**; the ADR corpus 114 -> **115**; the ledger
+ * barrel gains three values and one error class.
+ * **Pins that do not.** `CONTRACT_VERSION` (2.10.0, ND-P27-5), `API_ERROR_CODES` (16),
+ * `API_PRIVATE_READ_ROUTES` (1), `TASK_INTAKE_WRITE_REFUSALS` (5), `PROJECTION_NAMES`
+ * (16).
+ *
+ * `API_ROUTES` moves by one, not two: the declaration and the read are the two arms of
+ * one route key on one path, as the roadmap route's are, and two keys would demand three
+ * surface arms where the brief counts two.
+ */
+const P27A_WRITE_SET = [
+  "docs/api-reference.md",
+  "docs/architecture/0115-a-step-declares-its-task-graph-and-ready-is-pure.md",
+  "docs/architecture/index.md",
+  "docs/audit/architecture/database/planning/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "packages/domains/runtime/README.md",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/src/intake/index.ts",
+  "packages/domains/runtime/src/ready/index.ts",
+  "packages/domains/runtime/src/ready/types/index.ts",
+  "packages/domains/runtime/test/intake/index.test.ts",
+  "packages/domains/runtime/test/ready/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/gateway/src/mappers/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/task-graph/index.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/roadmap-write/index.test.ts",
+  "packages/entrypoints/gateway/test/task-graph/index.test.ts",
+  "packages/entrypoints/gateway/test/task-intake/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/schemas/initiatives/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/protocol/README.md",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/surface-map/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/kernel/protocol/test/routes/index.test.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/surface-map/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/src/errors/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/task-graph/index.ts",
+  "packages/persistence/ledger/src/task-graph/types/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/task-graph/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12311,6 +12403,7 @@ const WRITE_SET = [
   ...ERRATA_WRITE_SET,
   ...P26C_WRITE_SET,
   ...P15A3_WRITE_SET,
+  ...P27A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13835,8 +13928,13 @@ const PATH_SCOPED_LAWS = [
   // L-P26A-1 and L-P15F-1 are amended in their own rows and add none.
   // The fence-limits errata (decision 184) widens L-P26B-1's writer check to every
   // src file in place: its row's scope grows and the register does not move.
+  // P-27 cut A widens L-P26B-1 in place (ADR 0115): the single door refuses
+  // "ROADMAP_STEP_DECLARED", "TASK_GRAPH_DECLARED" and "TASK_GRAPH_NODE_DECLARED", and
+  // the batch door decides through #assertRoadmapVersionGranted or
+  // #assertTaskGraphGranted before its insert. Its row's law names the task graph; the
+  // register does not move for it.
   {
-    law: "the single initiative door writes no step and no version that counts steps",
+    law: "the single initiative door writes no step, no version that counts steps and no task graph",
     scope: "packages/persistence/ledger/src/ledger/index.ts, packages/*/*/src/**",
   },
   {
@@ -13854,6 +13952,17 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the roadmap steps and diff reads carry no digest, no reference and no text but the title",
     scope: "packages/kernel/protocol/src/schemas/index.ts",
+  },
+  // P-27 cut A. Two new path-shaped surfaces, so two new rows: the register and the
+  // `requireScope` call sites both move 167 -> 169 for L-P27-1 and L-P27-2. L-P26B-1
+  // is widened in its own row and adds none.
+  {
+    law: "the READY predicate has one home, reads no clock and no ledger, and its reasons are sorted and closed",
+    scope: "packages/domains/runtime/src/ready/**, packages/*/*/src/**",
+  },
+  {
+    law: "only the batch door writes a task graph, rows insert-only, and superseded_by at one site",
+    scope: "packages/persistence/ledger/src/ledger/index.ts, packages/*/*/src/**",
   },
 ];
 
@@ -21383,6 +21492,12 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "resolveCredential",
   "CREDENTIAL_REFUSALS",
   "CredentialResolution",
+  // P-27 cut A (ADR 0115, decision 195): the READY predicate, its two closed reason
+  // sets, and the production adapter that feeds it named absences. 303 -> 307.
+  "evaluateReady",
+  "READY_UNSATISFIED_REASONS",
+  "READY_UNKNOWN_REASONS",
+  "readinessOf",
 ];
 
 /**
@@ -21909,6 +22024,14 @@ if (accountsIndex === null) {
   "ROADMAP_WRITE_SET_PREIMAGE_PREFIX_V1",
   "RoadmapStepManifest",
   "RoadmapStepDeclaration",
+  // P-27 cut A (ADR 0115): a step's task graph -- the header and the node a
+  // TASK_GRAPH_DECLARED and a TASK_GRAPH_NODE_DECLARED carry, the three failure
+  // policies, and the two bounds. 178 -> 183.
+  "TASK_GRAPH_NODES_MAX",
+  "TASK_GRAPH_DEPENDS_ON_MAX",
+  "DEPENDENCY_FAILURE_POLICIES",
+  "TaskGraphDeclaration",
+  "TaskGraphNodeDeclaration",
 ];
 
   const schemasBarrel = readIfPresent("packages/kernel/contracts/src/schemas/index.ts");
@@ -26325,16 +26448,20 @@ if (tracked.status === 0) {
   notes.push("the roadmap-version law runs inside the append, and a version is written insert-only");
 }
 
-// L-P26B-1 -- the single initiative door writes no step and no version that counts
-// steps (P-26 cut B, ADR 0111; decision 174).
+// L-P26B-1 -- the single initiative door writes no step, no version that counts
+// steps and no task graph (P-26 cut B, ADR 0111; decision 174; widened in place by
+// P-27 cut A, ADR 0115).
 //
 // The batch door's whole-batch replay rule -- every key recorded and equal is a
 // replay, some keys recorded is a conflict -- is sound only because no door can
 // write part of a batch. So over `ledger/src/ledger/index.ts`, comments stripped:
-// `#appendInitiativeInTransaction` refuses a `"ROADMAP_STEP_DECLARED"` and a
-// `ROADMAP_VERSION_RECORDED` whose `stepCount` is above 0, both before its
+// `#appendInitiativeInTransaction` refuses a `"ROADMAP_STEP_DECLARED"`, a
+// `"TASK_GRAPH_DECLARED"`, a `"TASK_GRAPH_NODE_DECLARED"` and a
+// `ROADMAP_VERSION_RECORDED` whose `stepCount` is above 0, all four before its
 // `#insertInitiativeRow(`; `appendInitiativeBatch(` exists and reaches
-// `#insertInitiativeRow(` only after `#assertRoadmapVersionGranted(`; and the stream
+// `#insertInitiativeRow(` only after both `#assertRoadmapVersionGranted(` and
+// `#assertTaskGraphGranted(` (one per shape, P-27 cut A); the task graph shape
+// requires its nodes to be `"TASK_GRAPH_NODE_DECLARED"`; and the stream
 // has exactly one SQL writer across `packages/*/*/src`, inside `#insertInitiativeRow`
 // (Fable C-B5): an `INSERT`, `INSERT OR <conflict>` or `REPLACE` `INTO
 // initiative_events`, any case and whitespace, the name optionally quoted (`"`, `'`,
@@ -26367,11 +26494,15 @@ if (tracked.status === 0) {
     const code = stripComments(source);
     const door = body(code, "  #appendInitiativeInTransaction(");
     const insert = door.indexOf("this.#insertInitiativeRow(");
-    const step = door.indexOf('event.type === "ROADMAP_STEP_DECLARED"');
     const counting = door.search(/stepCount\s*>\s*0/);
     if (insert === -1) fail(DOOR_SITE + " #appendInitiativeInTransaction no longer inserts through #insertInitiativeRow (L-P26B-1)");
-    if (step === -1 || step > insert) {
-      fail(DOOR_SITE + " #appendInitiativeInTransaction no longer refuses a ROADMAP_STEP_DECLARED before it inserts (L-P26B-1)");
+    // Widened in place by P-27 cut A: the two task graph types join the step, in the
+    // same literal form, before the same insert.
+    for (const type of ["ROADMAP_STEP_DECLARED", "TASK_GRAPH_DECLARED", "TASK_GRAPH_NODE_DECLARED"]) {
+      const refused = door.indexOf('event.type === "' + type + '"');
+      if (refused === -1 || refused > insert) {
+        fail(DOOR_SITE + " #appendInitiativeInTransaction no longer refuses a " + type + " before it inserts (L-P26B-1)");
+      }
     }
     if (counting === -1 || counting > insert) {
       fail(DOOR_SITE + " #appendInitiativeInTransaction no longer refuses a version that counts steps before it inserts (L-P26B-1)");
@@ -26379,10 +26510,21 @@ if (tracked.status === 0) {
     const batchStart = code.indexOf("  appendInitiativeBatch(");
     const batchEnd = batchStart === -1 ? -1 : code.indexOf("\n  }\n", code.indexOf("return run.immediate();", batchStart));
     const batch = batchStart === -1 || batchEnd === -1 ? "" : code.slice(batchStart, batchEnd);
-    const decided = batch.indexOf("this.#assertRoadmapVersionGranted(");
     const inserted = batch.indexOf("this.#insertInitiativeRow(");
-    if (decided === -1 || inserted === -1 || decided > inserted) {
-      fail(DOOR_SITE + " appendInitiativeBatch no longer decides the batch before it inserts a row (L-P26B-1)");
+    for (const decider of ["this.#assertRoadmapVersionGranted(", "this.#assertTaskGraphGranted("]) {
+      const decided = batch.indexOf(decider);
+      if (decided === -1 || inserted === -1 || decided > inserted) {
+        fail(DOOR_SITE + " appendInitiativeBatch no longer decides the batch through " + decider + " before it inserts a row (L-P26B-1)");
+      }
+    }
+    const shapeStart = code.indexOf("function taskGraphBatchShapeProblem(");
+    const shapeEnd = shapeStart === -1 ? -1 : code.indexOf("\n}\n", shapeStart);
+    const shape = shapeStart === -1 || shapeEnd === -1 ? "" : code.slice(shapeStart, shapeEnd);
+    if (!shape.includes('!== "TASK_GRAPH_NODE_DECLARED"')) {
+      fail(DOOR_SITE + " the task graph batch no longer requires every event after its header to be a TASK_GRAPH_NODE_DECLARED (L-P26B-1)");
+    }
+    if (!/version\?\.type === "TASK_GRAPH_DECLARED"\) return taskGraphBatchShapeProblem\(/.test(code)) {
+      fail(DOOR_SITE + " initiativeBatchShapeProblem no longer branches to the task graph shape on its first event's type (L-P26B-1)");
     }
   }
   // The one row writer (Fable C-B5), over every tracked src file: exactly one SQL write
@@ -26416,8 +26558,8 @@ if (tracked.status === 0) {
         " #insertInitiativeRow; the stream has one row writer (L-P26B-1)",
     );
   }
-  requireScope("the single initiative door writes no step and no version that counts steps", scanned);
-  notes.push("the single initiative door writes no step and no version that counts steps, and the batch door decides first");
+  requireScope("the single initiative door writes no step, no version that counts steps and no task graph", scanned);
+  notes.push("the single initiative door writes no step, no version that counts steps and no task graph, and the batch door decides first");
 }
 
 // L-P26B-2 -- a roadmap step's digests and rank have one home (P-26 cut B, ADR 0111;
@@ -26759,6 +26901,206 @@ if (tracked.status === 0) {
     }
     if (read.size < ROOTS.length) fail(SITE + " L-P26C-1 read fewer declarations than its roots; it would pass vacuously");
     notes.push("the roadmap steps and diff reads carry no digest, no reference and no text but the title (" + String(read.size) + " declarations read)");
+  }
+  requireScope(LAW, scanned);
+}
+
+// L-P27-1 -- the READY predicate has one home, reads no clock and no ledger, and its
+// reasons are sorted and closed (P-27 cut A, ADR 0115; decision 195).
+//
+// Over every tracked `packages/*/*/src` `.ts` file, comments stripped:
+// `evaluateReady` is declared (`export function evaluateReady(`) exactly once, in
+// `runtime/src/ready/index.ts`; the ready module -- `index.ts` and its type leaf --
+// names no clock: no `Date`, `performance`, `hrtime`, `uptime`, `Temporal` or
+// `DateTimeFormat` (a formatter handed no instant formats the clock's); the body of
+// `evaluateReady` names no `ledger` and no `Ledger`, so its one input is the value it
+// is handed; and
+// `READY_UNSATISFIED_REASONS` and `READY_UNKNOWN_REASONS` are declared there and only
+// there, each an array literal of string literals, sorted, without repeats, and the
+// two disjoint. The production adapter `readinessOf` lives in the same file and reads
+// the ledger; the law holds the predicate apart from it by body, not by file.
+//
+// Stated limit: a text-level matcher over those names. A clock reached through an
+// alias (a global assigned to another name) or a computed member (`process["up" +
+// "time"]`), a ledger reached through a helper the predicate calls under another
+// name, or a reason spelled outside the two arrays is not seen; the runtime suite's
+// oracle and producer tests are the behaviour.
+{
+  const HOME = "packages/domains/runtime/src/ready/index.ts";
+  const LEAF = "packages/domains/runtime/src/ready/types/index.ts";
+  const LAW = "the READY predicate has one home, reads no clock and no ledger, and its reasons are sorted and closed";
+  let scanned = 0;
+  const homes = [];
+  const arrays = new Map();
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      const code = stripComments(file);
+      if (/export\s+function\s+evaluateReady\s*\(/.test(code)) homes.push(relativePath);
+      for (const name of ["READY_UNSATISFIED_REASONS", "READY_UNKNOWN_REASONS"]) {
+        if (new RegExp("(?:const|let|var)\\s+" + name + "\\b").test(code)) {
+          arrays.set(name, [...(arrays.get(name) ?? []), relativePath]);
+        }
+      }
+    }
+  }
+  if (homes.length !== 1 || homes[0] !== HOME) {
+    fail("evaluateReady is declared in " + (homes.join(", ") || "no file") + "; its one home is " + HOME + " (L-P27-1)");
+  }
+  const home = readIfPresent(HOME);
+  const leaf = readIfPresent(LEAF);
+  if (home !== null && leaf !== null) {
+    scanned += 2;
+    const code = stripComments(home);
+    for (const [path, text] of [[HOME, code], [LEAF, stripComments(leaf)]]) {
+      const clock = /\bDate\b|\bperformance\b|\bhrtime\b|\buptime\b|\bTemporal\b|\bDateTimeFormat\b/.exec(text);
+      if (clock !== null) fail(path + " names " + clock[0] + "; the READY predicate reads no clock, its instant is an input (L-P27-1)");
+    }
+    const start = code.indexOf("export function evaluateReady(");
+    const end = start === -1 ? -1 : code.indexOf("\n}\n", start);
+    const predicate = start === -1 || end === -1 ? "" : code.slice(start, end);
+    if (predicate === "") fail(HOME + " evaluateReady has no body the law can read (L-P27-1)");
+    if (/\bledger\b|\bLedger\b/.test(predicate)) {
+      fail(HOME + " evaluateReady names a ledger; the predicate reads no ledger, only the value it is handed (L-P27-1)");
+    }
+    const words = new Map();
+    for (const name of ["READY_UNSATISFIED_REASONS", "READY_UNKNOWN_REASONS"]) {
+      const declared = arrays.get(name) ?? [];
+      if (declared.length !== 1 || declared[0] !== HOME) {
+        fail(name + " is declared in " + (declared.join(", ") || "no file") + "; its one home is " + HOME + " (L-P27-1)");
+      }
+      const literal = new RegExp("export const " + name + " = \\[([^\\]]*)\\] as const;").exec(code);
+      if (literal === null) {
+        fail(HOME + " no longer declares " + name + " as an array literal the law can read (L-P27-1)");
+        continue;
+      }
+      const entries = (literal[1] ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+      const values = entries.map((entry) => (/^"([A-Z][A-Z_]*)"$/.exec(entry) ?? [])[1]);
+      if (values.some((value) => value === undefined) || values.length === 0) {
+        fail(HOME + " " + name + " holds an entry that is not a reason word (L-P27-1)");
+        continue;
+      }
+      const sorted = [...values].sort();
+      if (values.join(",") !== sorted.join(",") || new Set(values).size !== values.length) {
+        fail(HOME + " " + name + " is not sorted without repeats (L-P27-1)");
+      }
+      words.set(name, values);
+    }
+    const shared = (words.get("READY_UNSATISFIED_REASONS") ?? []).filter((word) => (words.get("READY_UNKNOWN_REASONS") ?? []).includes(word));
+    if (shared.length > 0) fail(HOME + " names " + shared.join(", ") + " as both a block and an absence (L-P27-1)");
+    notes.push(
+      "the READY predicate has one home and reads no clock or ledger; " +
+        String((words.get("READY_UNSATISFIED_REASONS") ?? []).length) +
+        " + " +
+        String((words.get("READY_UNKNOWN_REASONS") ?? []).length) +
+        " reasons, sorted and closed",
+    );
+  }
+  requireScope(LAW, scanned);
+}
+
+// L-P27-2 -- only the batch door writes a task graph, rows insert-only, and a
+// predecessor's `superseded_by` is written at one site (P-27 cut A, ADR 0115; decision
+// 196; Fable N2).
+//
+// Over every tracked `packages/*/*/src` `.ts`/`.tsx` file, comments stripped: every
+// write naming `task_graph_revision_read_model`, `task_graph_node_read_model` or
+// `task_dependency_read_model` -- an `INSERT`, a `REPLACE`, an `UPDATE` or a `DELETE
+// FROM`, the name bare or qualified with the `main` schema (`main.task_graph_node_read_model`,
+// either part optionally quoted) -- is in `ledger/src/ledger/index.ts`, and none there is a `DELETE FROM` by
+// name (the rebuild clears every derived table through `DERIVED_TABLES`); no `INSERT OR
+// <conflict>`, `REPLACE INTO` or `ON CONFLICT` touches them; there is exactly one
+// `UPDATE` of any of them, `UPDATE task_graph_revision_read_model SET superseded_by = ?
+// WHERE graph_revision_id = ?`, inside `#supersedeTaskGraphRevision`; that method is
+// called exactly once, inside `#projectTaskGraphBatch`, which `appendInitiativeBatch`
+// calls after `#assertTaskGraphGranted(`. The single door's refusal of both types is
+// L-P26B-1's, widened in place.
+//
+// Stated limit: a text-level matcher, `L-P26A-1`'s. A table name assembled by
+// concatenation or held in a variable (the rebuild's clearing through
+// `DERIVED_TABLES` is one, and lawful), a name qualified with a schema other than
+// `main` (`temp.`, an attached database's), an SQL comment between the keywords or
+// between the schema and the name, whitespace around the qualifying dot, or a literal
+// written with escapes is not seen; the migration's supersede-once trigger is the
+// behaviour, and the ledger drills bite it. Widened in v2.1 (verifier v2 N-A): until
+// then `main.<table>` evaded the matcher.
+{
+  const DOOR_SITE = "packages/persistence/ledger/src/ledger/index.ts";
+  const LAW = "only the batch door writes a task graph, rows insert-only, and superseded_by at one site";
+  const TABLE = "(?:task_graph_revision_read_model|task_graph_node_read_model|task_dependency_read_model)";
+  const WRITE = new RegExp(
+    "\\b(?:INSERT(?:\\s+OR\\s+\\w+)?\\s+INTO|REPLACE\\s+INTO|UPDATE|DELETE\\s+FROM)\\s+(?:[\"'`[]?main[\"'`\\]]?\\.)?[\"'`[]?" + TABLE + "\\b",
+    "gi",
+  );
+  let scanned = 0;
+  const updates = [];
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      const code = stripComments(file);
+      for (const match of code.matchAll(WRITE)) {
+        const verb = match[0];
+        if (relativePath !== DOOR_SITE) {
+          fail(relativePath + " writes a task graph table (" + verb + "); only the ledger's batch door does (L-P27-2)");
+          continue;
+        }
+        const from = match.index ?? 0;
+        const to = code.indexOf(".run(", from);
+        const statement = code.slice(from, to === -1 ? code.length : to);
+        if (/^(?:INSERT\s+OR|REPLACE)/i.test(verb) || /ON CONFLICT/i.test(statement)) {
+          fail(DOOR_SITE + " writes a task graph table with a conflict clause (" + verb + "); its rows are insert-only (L-P27-2)");
+        }
+        if (/^DELETE/i.test(verb)) {
+          fail(DOOR_SITE + " deletes from a task graph table by name (" + verb + "); its rows are insert-only (L-P27-2)");
+        }
+        if (/^UPDATE/i.test(verb)) updates.push({ from, statement });
+      }
+    }
+  }
+  const door = readIfPresent(DOOR_SITE);
+  if (door !== null) {
+    const code = stripComments(door);
+    const methodStart = code.indexOf("  #supersedeTaskGraphRevision(");
+    const methodEnd = methodStart === -1 ? -1 : code.indexOf("\n  }\n", methodStart);
+    const only = updates.length === 1 ? updates[0] : undefined;
+    if (
+      only === undefined ||
+      methodEnd === -1 ||
+      only.from < methodStart ||
+      only.from > methodEnd ||
+      !/^UPDATE task_graph_revision_read_model SET superseded_by = \? WHERE graph_revision_id = \?"/.test(only.statement)
+    ) {
+      fail(
+        "task graph tables are updated " +
+          String(updates.length) +
+          " time(s); the one update is the predecessor's superseded_by, inside #supersedeTaskGraphRevision (L-P27-2)",
+      );
+    }
+    const calls = [...code.matchAll(/this\.#supersedeTaskGraphRevision\(/g)].map((match) => match.index ?? 0);
+    const projectStart = code.indexOf("  #projectTaskGraphBatch(");
+    const projectEnd = projectStart === -1 ? -1 : code.indexOf("\n  }\n", projectStart);
+    if (calls.length !== 1 || projectEnd === -1 || (calls[0] ?? 0) < projectStart || (calls[0] ?? 0) > projectEnd) {
+      fail(DOOR_SITE + " #supersedeTaskGraphRevision is called " + String(calls.length) + " time(s); once, inside #projectTaskGraphBatch (L-P27-2)");
+    }
+    const batchStart = code.indexOf("  appendInitiativeBatch(");
+    const batchEnd = batchStart === -1 ? -1 : code.indexOf("\n  }\n", code.indexOf("return run.immediate();", batchStart));
+    const batch = batchStart === -1 || batchEnd === -1 ? "" : code.slice(batchStart, batchEnd);
+    const projected = [...code.matchAll(/this\.#projectTaskGraphBatch\(/g)];
+    const decided = batch.indexOf("this.#assertTaskGraphGranted(");
+    const inBatch = batch.indexOf("this.#projectTaskGraphBatch(");
+    if (projected.length !== 1 || decided === -1 || inBatch === -1 || decided > inBatch) {
+      fail(DOOR_SITE + " the task graph fold runs " + String(projected.length) + " time(s); once, in appendInitiativeBatch, after #assertTaskGraphGranted (L-P27-2)");
+    }
+    notes.push("only the batch door writes a task graph, insert-only, and superseded_by is written at one site");
   }
   requireScope(LAW, scanned);
 }

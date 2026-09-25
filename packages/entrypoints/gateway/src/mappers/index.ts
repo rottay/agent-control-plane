@@ -6,6 +6,7 @@ import type {
   RoadmapStepsResponse,
   RoadmapVersionDto,
   TaskDetail,
+  TaskGraphResponse,
   TaskSummary,
   TimelineItem,
   WorkerDetail,
@@ -21,6 +22,7 @@ import type {
   WorkerReadModel,
 } from "@acp/ledger";
 import { payloadKeys } from "@acp/observation";
+import type { readinessOf } from "@acp/runtime";
 
 import type { InitiativeDetailModel, InitiativePortfolioRow } from "../initiatives/index.js";
 
@@ -203,6 +205,39 @@ export function roadmapStepItems(
         .filter((dependency) => dependency.stepId === step.stepId)
         .map((dependency) => dependency.dependsOnStepId),
     }));
+}
+
+/**
+ * One revision's nodes with their READY verdicts, field by field, for the task graph
+ * read (P-27 cut A). A verdict's reason travels as its word, and a satisfied condition
+ * carries none.
+ */
+export function taskGraphNodeItems(
+  reading: NonNullable<ReturnType<typeof readinessOf>>,
+): TaskGraphResponse["nodes"] {
+  const verdict = (
+    condition: NonNullable<ReturnType<typeof readinessOf>>["nodes"][number]["evaluation"]["conditions"]["R1"],
+  ): TaskGraphResponse["nodes"][number]["conditions"]["R1"] =>
+    condition.verdict === "SATISFIED"
+      ? { verdict: "SATISFIED", reason: null }
+      : { verdict: condition.verdict, reason: condition.reason };
+  return reading.nodes.map((node) => ({
+    taskId: node.taskId,
+    taskRevisionNumber: node.taskRevisionNumber,
+    nodeIndex: node.nodeIndex,
+    dependsOn: node.dependsOn.map((edge) => ({
+      taskId: edge.taskId,
+      taskRevisionNumber: edge.taskRevisionNumber,
+      failPolicy: edge.failPolicy,
+    })),
+    ready: node.evaluation.ready,
+    conditions: {
+      R1: verdict(node.evaluation.conditions.R1),
+      R2: verdict(node.evaluation.conditions.R2),
+      R3: verdict(node.evaluation.conditions.R3),
+      R4: verdict(node.evaluation.conditions.R4),
+    },
+  }));
 }
 
 /** The ledger's diff, field by field, for the diff read (P-26 cut C). */

@@ -15,7 +15,7 @@ import {
 import type { ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
-import { LedgerRoadmapVersionRefusedError } from "../../src/errors/index.js";
+import { LedgerRoadmapVersionRefusedError, LedgerTaskGraphRefusedError } from "../../src/errors/index.js";
 
 import {
   applyArtifactEventToSnapshot,
@@ -54,6 +54,10 @@ import {
   initiativeRegistrationPayloadOf,
   nextInitiativeProjection,
   applyInitiativeEventToSnapshot,
+  assertTaskGraphsComplete,
+  createTaskGraphFold,
+  foldTaskGraph,
+  taskGraphKey,
   assertRoadmapVersionUnfolded,
   createInitiativeProjectionSnapshot,
   nextRoadmapVersionProjection,
@@ -4348,5 +4352,168 @@ describe("the roadmap-version fold refuses a second claim and a malformed payloa
     asked.length = 0;
     assertRoadmapVersionUnfolded(row, holder(false, false));
     expect(asked).toEqual(["id:" + V1, "number:" + INITIATIVE + ":1"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-27 cut A: the task graph fold, from the payloads only (ADR 0115)
+// ---------------------------------------------------------------------------
+
+describe("the task graph fold (P-27 cut A)", () => {
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+  const VERSION = "11111111-1111-4111-8111-111111111111";
+  const G1 = "55555555-5555-4555-8555-555555555551";
+  const G2 = "55555555-5555-4555-8555-555555555552";
+  const T1 = "66666666-6666-4666-8666-666666666661";
+  const T2 = "66666666-6666-4666-8666-666666666662";
+  const AT = "2026-09-25T12:00:00.000Z";
+  const EMITTED_BY = "claude/opus/coordinator/01";
+
+  function event(type: string, payload: Record<string, unknown>): InitiativeEvent {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: "0000bbbb-0000-4000-8000-000000000001",
+      initiativeId: INITIATIVE,
+      transitionId: "graph.x",
+      idempotencyKey: INITIATIVE + "/1/graph.x",
+      type,
+      fromStatus: "ACTIVE",
+      toStatus: "ACTIVE",
+      emittedBy: EMITTED_BY,
+      occurredAt: AT,
+      recordedAt: AT,
+      payload,
+    } as unknown as InitiativeEvent;
+  }
+  const header = (graphRevisionId: string, supersedes: string | null, nodeCount: number) =>
+    event("TASK_GRAPH_DECLARED", { graphRevisionId, roadmapVersionId: VERSION, stepId: "B", supersedesGraphRevisionId: supersedes, nodeCount });
+  const node = (graphRevisionId: string, taskId: string, nodeIndex: number, dependsOn: readonly string[] = []) =>
+    event("TASK_GRAPH_NODE_DECLARED", {
+      graphRevisionId,
+      taskId,
+      taskRevisionNumber: 1,
+      nodeIndex,
+      dependsOn: dependsOn.map((id) => ({ taskId: id, taskRevisionNumber: 1, failPolicy: "REQUIRE_TERMINAL" })),
+    });
+
+  function history(fold: ReturnType<typeof createTaskGraphFold>, declared = true) {
+    return {
+      stepDeclared: (initiativeId: string, roadmapVersionId: string, stepId: string) =>
+        declared && initiativeId === INITIATIVE && roadmapVersionId === VERSION && stepId === "B",
+      currentRevision: (roadmapVersionId: string, stepId: string) =>
+        [...fold.taskGraphRevisions.values()].find(
+          (revision) => revision.roadmapVersionId === roadmapVersionId && revision.stepId === stepId && revision.supersededBy === null,
+        ),
+      revisionHeld: () => false,
+    };
+  }
+
+  function refusedBy(action: () => void): { readonly reason: string; readonly at: string } {
+    try {
+      action();
+    } catch (error: unknown) {
+      if (error instanceof LedgerTaskGraphRefusedError) return { reason: error.reason, at: error.at };
+      throw error;
+    }
+    throw new Error("expected a refusal");
+  }
+
+  it("folds a revision, its nodes and, once the last node is in, its edges, with the step denormalized", () => {
+    const fold = createTaskGraphFold();
+    foldTaskGraph(fold, history(fold), header(G1, null, 2), 10);
+    foldTaskGraph(fold, history(fold), node(G1, T2, 0, [T1]), 11);
+    expect(fold.taskDependencies.size).toBe(0);
+    foldTaskGraph(fold, history(fold), node(G1, T1, 1), 12);
+    expect([...fold.taskGraphRevisions.values()]).toEqual([
+      { graphRevisionId: G1, roadmapVersionId: VERSION, stepId: "B", declaredAt: AT, supersededBy: null, sequence: 10 },
+    ]);
+    expect([...fold.taskGraphNodes.keys()]).toEqual([taskGraphKey(G1, T2, "1"), taskGraphKey(G1, T1, "1")]);
+    expect([...fold.taskDependencies.values()]).toEqual([
+      {
+        graphRevisionId: G1,
+        taskId: T2,
+        taskRevisionNumber: 1,
+        dependsOnTaskId: T1,
+        dependsOnTaskRevisionNumber: 1,
+        failPolicy: "REQUIRE_TERMINAL",
+        stepId: "B",
+        sequence: 11,
+      },
+    ]);
+    expect(() => {
+      assertTaskGraphsComplete(fold);
+    }).not.toThrow();
+  });
+
+  it("records a supersession, once, and holds the predecessor's row to it", () => {
+    const fold = createTaskGraphFold();
+    foldTaskGraph(fold, history(fold), header(G1, null, 1), 10);
+    foldTaskGraph(fold, history(fold), node(G1, T1, 0), 11);
+    foldTaskGraph(fold, history(fold), header(G2, G1, 1), 12);
+    foldTaskGraph(fold, history(fold), node(G2, T1, 0), 13);
+    expect([...fold.supersessions]).toEqual([[G1, G2]]);
+    expect(fold.taskGraphRevisions.get(G1)?.supersededBy).toBe(G2);
+    expect(fold.taskGraphRevisions.get(G2)?.supersededBy).toBeNull();
+  });
+
+  it("refuses by the door's words what the door refuses", () => {
+    const unknownStep = createTaskGraphFold();
+    expect(refusedBy(() => {
+      foldTaskGraph(unknownStep, history(unknownStep, false), header(G1, null, 1), 10);
+    })).toEqual({
+      reason: "GRAPH_STEP_UNKNOWN",
+      at: "header.stepId",
+    });
+    const stale = createTaskGraphFold();
+    foldTaskGraph(stale, history(stale), header(G1, null, 1), 10);
+    foldTaskGraph(stale, history(stale), node(G1, T1, 0), 11);
+    expect(refusedBy(() => {
+      foldTaskGraph(stale, history(stale), header(G2, null, 1), 12);
+    })).toEqual({
+      reason: "GRAPH_HEAD_MISMATCH",
+      at: "header.supersedesGraphRevisionId",
+    });
+    expect(refusedBy(() => {
+      foldTaskGraph(stale, history(stale), header(G1, G1, 1), 12);
+    }).reason).toBe("GRAPH_DECLARATION_INVALID");
+    const orphan = createTaskGraphFold();
+    expect(refusedBy(() => {
+      foldTaskGraph(orphan, history(orphan), node(G1, T1, 0), 11);
+    })).toEqual({
+      reason: "GRAPH_DECLARATION_INVALID",
+      at: "node.graphRevisionId",
+    });
+    const order = createTaskGraphFold();
+    foldTaskGraph(order, history(order), header(G1, null, 2), 10);
+    expect(refusedBy(() => {
+      foldTaskGraph(order, history(order), node(G1, T1, 1), 11);
+    }).at).toBe("node.nodeIndex");
+    foldTaskGraph(order, history(order), node(G1, T1, 0), 11);
+    expect(refusedBy(() => {
+      foldTaskGraph(order, history(order), node(G1, T1, 1), 12);
+    }).at).toBe("node.taskId");
+    expect(refusedBy(() => {
+      foldTaskGraph(order, history(order), node(G1, T2, 1, ["77777777-7777-4777-8777-777777777777"]), 12);
+    }).at).toBe(
+      "node.dependsOn",
+    );
+    const short = createTaskGraphFold();
+    foldTaskGraph(short, history(short), header(G1, null, 2), 10);
+    foldTaskGraph(short, history(short), node(G1, T1, 0), 11);
+    expect(refusedBy(() => {
+      assertTaskGraphsComplete(short);
+    })).toEqual({ reason: "GRAPH_NODE_COUNT_MISMATCH", at: "header.nodeCount" });
+    const over = createTaskGraphFold();
+    foldTaskGraph(over, history(over), header(G1, null, 1), 10);
+    foldTaskGraph(over, history(over), node(G1, T1, 0), 11);
+    expect(refusedBy(() => {
+      foldTaskGraph(over, history(over), node(G1, T2, 1), 12);
+    }).reason).toBe("GRAPH_DECLARATION_INVALID");
+  });
+
+  it("folds every other initiative type to no graph row", () => {
+    const snapshot = createInitiativeProjectionSnapshot();
+    applyInitiativeEventToSnapshot(snapshot, event("INITIATIVE_STATE_CHANGED", {}), 1);
+    expect([snapshot.taskGraphRevisions.size, snapshot.taskGraphNodes.size, snapshot.taskDependencies.size]).toEqual([0, 0, 0]);
   });
 });

@@ -377,7 +377,7 @@ describe("usage", () => {
       // Asserted as a literal on purpose: the CLI's job here is to
       // report the number a reader can pin against, and comparing it to the
       // constant it prints would assert only that the CLI can echo itself.
-      apiContractVersion: "0.21.0",
+      apiContractVersion: "0.22.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });
@@ -1311,7 +1311,18 @@ describe("integrity", () => {
         "DROP INDEX ux_account_events__account_id__version;" +
         "DROP TABLE account_event_integrity;",
     );
-    // P-26 cut B: migration 25's objects go first — the cohort triggers, the step
+    // P-27 cut A: migration 26's objects go first — the supersede-once trigger, the
+    // three task graph tables children first, and their watermarks — or the
+    // re-applied 26 aborts on them, and the step table they name cannot go.
+    rewind.exec(
+      "DROP TRIGGER tr_task_graph_revision_read_model__supersede_once;" +
+        "DROP TABLE task_dependency_read_model;" +
+        "DROP TABLE task_graph_node_read_model;" +
+        "DROP TABLE task_graph_revision_read_model;" +
+        "DELETE FROM projection_watermark WHERE projection_name IN " +
+        "('task_graph_revision_read_model', 'task_graph_node_read_model', 'task_dependency_read_model');",
+    );
+    // P-26 cut B: migration 25's objects go next — the cohort triggers, the step
     // columns in CHECK order, the two step tables and their watermarks — or the
     // re-applied 25 aborts on them.
     rewind.exec(
@@ -1387,7 +1398,13 @@ describe("integrity", () => {
     ).toHaveLength(1);
     expect(
       (reapplied.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v,
-    ).toBe(25);
+    ).toBe(26);
+    // P-27 cut A: and it re-applied 26 without aborting — the task graph tables are back.
+    expect(
+      reapplied
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?) ORDER BY name")
+        .all("task_dependency_read_model", "task_graph_node_read_model", "task_graph_revision_read_model"),
+    ).toHaveLength(3);
     // P-26 cut B: and it re-applied 25 without aborting — the step tables are back.
     expect(
       reapplied

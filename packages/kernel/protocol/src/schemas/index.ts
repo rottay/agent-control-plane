@@ -6,6 +6,7 @@ import {
   EFFECT_OUTCOME_STATUSES,
   ConfidenceLevel,
   ControlPlaneEventType,
+  DEPENDENCY_FAILURE_POLICIES,
   ROADMAP_CONTENT_MAX_BYTES,
   ROADMAP_STEPS_MAX,
   ROADMAP_STEP_DEPENDS_ON_MAX,
@@ -15,6 +16,8 @@ import {
   INITIATIVE_STATUSES,
   LIFECYCLE_STATES,
   ROADMAP_VERSION_KINDS,
+  TASK_GRAPH_DEPENDS_ON_MAX,
+  TASK_GRAPH_NODES_MAX,
   TRANSPORT_KINDS,
   TaskEnvelope,
   TaskState,
@@ -2831,6 +2834,155 @@ export const RoadmapDiffResponse = z
   })
   .superRefine(attachGuards);
 export type RoadmapDiffResponse = z.infer<typeof RoadmapDiffResponse>;
+
+// ---------------------------------------------------------------------------
+// A step's task graph and its READY verdicts (P-27 cut A)
+// ---------------------------------------------------------------------------
+
+/**
+ * The task graph route's selector: a version by number, resolved inside the
+ * initiative as the steps read resolves it, and a step of that version by id (P-27
+ * cut A, ADR 0115).
+ */
+export const TaskGraphQuery = z.strictObject({
+  version: RoadmapVersionNumber,
+  stepId: BoundedIdentifier,
+});
+export type TaskGraphQuery = z.infer<typeof TaskGraphQuery>;
+
+/** A task revision named across streams, by the id and the number the task stream holds. */
+const TaskGraphTaskRevisionDto = {
+  taskId: z.uuid(),
+  taskRevisionNumber: z.number().int().min(1).max(1_000_000),
+};
+
+/** One edge: the task revision a node depends on, and the policy it asks. */
+const TaskGraphEdgeDto = z.strictObject({
+  ...TaskGraphTaskRevisionDto,
+  failPolicy: z.enum(DEPENDENCY_FAILURE_POLICIES),
+});
+
+/**
+ * What a caller sends to declare one revision of a step's task graph (P-27 cut A).
+ *
+ * The nodes in order: a node's position is its `nodeIndex`. `graphRevisionId` is the
+ * caller's own, checked for existence and never derived, so a retry of the same body
+ * is answered as a replay. `supersedesGraphRevisionId` names the step's current
+ * revision, null for its first. Every edge carries its `failPolicy`: datos names a
+ * default, and a fail-closed door fills in none. Ids, numbers and policy words only.
+ */
+export const TaskGraphDeclarationRequest = z
+  .strictObject({
+    graphRevisionId: z.uuid(),
+    supersedesGraphRevisionId: z.uuid().nullable(),
+    declaredBy: WorkerIdentityString,
+    nodes: z
+      .array(
+        z.strictObject({
+          ...TaskGraphTaskRevisionDto,
+          dependsOn: z.array(TaskGraphEdgeDto).max(TASK_GRAPH_DEPENDS_ON_MAX),
+        }),
+      )
+      .min(1)
+      .max(TASK_GRAPH_NODES_MAX),
+  })
+  .superRefine(attachGuards);
+export type TaskGraphDeclarationRequest = z.infer<typeof TaskGraphDeclarationRequest>;
+
+/** What the declaration answers: the revision recorded, or the one a replay names. */
+export const TaskGraphDeclarationResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    initiativeId: z.uuid(),
+    version: RoadmapVersionEcho,
+    stepId: BoundedIdentifier,
+    graphRevisionId: z.uuid(),
+    supersedesGraphRevisionId: z.uuid().nullable(),
+    nodeCount: z.number().int().min(1).max(TASK_GRAPH_NODES_MAX),
+    /** The initiative-stream position of the revision's header. */
+    sequence: z.number().int().positive(),
+    replayed: z.boolean(),
+  })
+  .superRefine(attachGuards);
+export type TaskGraphDeclarationResponse = z.infer<typeof TaskGraphDeclarationResponse>;
+
+/**
+ * One READY condition's answer: `SATISFIED`, or `UNSATISFIED`/`UNKNOWN` with its reason.
+ * The reason is the runtime's closed word, spelled here by its grammar and not by a
+ * second copy of the list.
+ */
+const ReadyVerdictDto = z
+  .strictObject({
+    verdict: z.enum(["SATISFIED", "UNSATISFIED", "UNKNOWN"]),
+    reason: z
+      .string()
+      .max(64)
+      .regex(/^[A-Z][A-Z_]*$/, "expected a reason word")
+      .nullable(),
+  })
+  .superRefine((value, ctx) => {
+    if ((value.reason === null) !== (value.verdict === "SATISFIED")) {
+      ctx.addIssue({
+        code: "custom",
+        message: "a satisfied condition carries no reason, and every other carries one",
+        path: ["reason"],
+      });
+    }
+  });
+
+/**
+ * One step's current task graph revision, with each node's READY verdict (P-27 cut A,
+ * ADR 0115; requirement A5).
+ *
+ * The verdicts are computed at read time against `evaluatedAt` and never stored
+ * (planning §5: "no se cachea"). A node is `ready` iff its four conditions are
+ * `SATISFIED`; `UNKNOWN` is never ready. Nothing here dispatches.
+ */
+export const TaskGraphResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    initiativeId: z.uuid(),
+    version: RoadmapVersionEcho,
+    stepId: BoundedIdentifier,
+    graph: z.strictObject({
+      graphRevisionId: z.uuid(),
+      declaredAt: Timestamp,
+      sequence: z.number().int().positive(),
+    }),
+    evaluatedAt: Timestamp,
+    nodes: z
+      .array(
+        z
+          .strictObject({
+            ...TaskGraphTaskRevisionDto,
+            nodeIndex: z.number().int().min(0).max(TASK_GRAPH_NODES_MAX - 1),
+            dependsOn: z.array(TaskGraphEdgeDto).max(TASK_GRAPH_DEPENDS_ON_MAX),
+            ready: z.boolean(),
+            conditions: z.strictObject({
+              R1: ReadyVerdictDto,
+              R2: ReadyVerdictDto,
+              R3: ReadyVerdictDto,
+              R4: ReadyVerdictDto,
+            }),
+          })
+          .superRefine((value, ctx) => {
+            const all = [value.conditions.R1, value.conditions.R2, value.conditions.R3, value.conditions.R4];
+            if (value.ready !== all.every((condition) => condition.verdict === "SATISFIED")) {
+              ctx.addIssue({
+                code: "custom",
+                message: "a node is ready exactly when its four conditions are satisfied",
+                path: ["ready"],
+              });
+            }
+          }),
+      )
+      .min(1)
+      .max(TASK_GRAPH_NODES_MAX),
+  })
+  .superRefine(attachGuards);
+export type TaskGraphResponse = z.infer<typeof TaskGraphResponse>;
 
 // ---------------------------------------------------------------------------
 // The explicit tool call (V2-B4b stage 3C)

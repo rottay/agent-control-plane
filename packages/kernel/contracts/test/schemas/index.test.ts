@@ -38,6 +38,7 @@ import {
   DriverHealth,
   DriverMode,
   DriverStatus,
+  DEPENDENCY_FAILURE_POLICIES,
   EVENT_PAYLOAD_MAX_BYTES,
   EXCEPTIONAL_STATES,
   EXECUTION_REFUSALS,
@@ -56,6 +57,10 @@ import {
   RESUMABLE_VERDICTS,
   ROADMAP_CONTENT_MAX_BYTES,
   ROADMAP_VERSION_KINDS,
+  TASK_GRAPH_DEPENDS_ON_MAX,
+  TASK_GRAPH_NODES_MAX,
+  TaskGraphDeclaration,
+  TaskGraphNodeDeclaration,
   ReconciliationReport,
   ReconciliationVerdict,
   ResolvedRoute,
@@ -1529,12 +1534,15 @@ describe("InitiativeEvent", () => {
     expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
   });
 
-  it("closes its vocabulary at the four initiative facts", () => {
+  it("closes its vocabulary at the six initiative facts", () => {
+    // Four until P-27 cut A appended the task graph's two, in declaration order.
     expect([...INITIATIVE_EVENT_TYPES]).toEqual([
       "INITIATIVE_REGISTERED",
       "INITIATIVE_STATE_CHANGED",
       "ROADMAP_VERSION_RECORDED",
       "ROADMAP_STEP_DECLARED",
+      "TASK_GRAPH_DECLARED",
+      "TASK_GRAPH_NODE_DECLARED",
     ]);
     expect(InitiativeEvent.safeParse(initiativeEvent({ type: "TASK_DISCOVERED" })).success).toBe(
       false,
@@ -3559,5 +3567,124 @@ describe("a roadmap's steps, in the contract (P-26 cut B)", () => {
       "declaring a roadmap step does not move the initiative's status",
     );
     expect(InitiativeEvent.safeParse(stepEvent({ fromStatus: null })).success).toBe(false);
+  });
+});
+
+describe("a step's task graph, in the contract (P-27 cut A)", () => {
+  const GRAPH = "55555555-5555-4555-8555-555555555555";
+  const PREVIOUS = "66666666-6666-4666-8666-666666666666";
+  const TASK = "77777777-7777-4777-8777-777777777777";
+  const header = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    graphRevisionId: GRAPH,
+    roadmapVersionId: OTHER_ID,
+    stepId: "a",
+    supersedesGraphRevisionId: null,
+    nodeCount: 2,
+    ...overrides,
+  });
+  const edge = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    taskId: TASK,
+    taskRevisionNumber: 1,
+    failPolicy: "WAIT_SUCCESS",
+    ...overrides,
+  });
+  const node = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    graphRevisionId: GRAPH,
+    taskId: INITIATIVE_ID,
+    taskRevisionNumber: 1,
+    nodeIndex: 1,
+    dependsOn: [edge()],
+    ...overrides,
+  });
+
+  it("names its bounds and the three policies, sorted", () => {
+    expect([TASK_GRAPH_NODES_MAX, TASK_GRAPH_DEPENDS_ON_MAX]).toEqual([200, 32]);
+    expect([...DEPENDENCY_FAILURE_POLICIES]).toEqual(["ALLOW_FAILURE", "REQUIRE_TERMINAL", "WAIT_SUCCESS"]);
+    expect([...DEPENDENCY_FAILURE_POLICIES]).toEqual([...DEPENDENCY_FAILURE_POLICIES].sort());
+  });
+
+  it("admits a header, and refuses each field as absent, a self-supersession and a count out of bounds", () => {
+    expect(TaskGraphDeclaration.safeParse(header()).success).toBe(true);
+    expect(TaskGraphDeclaration.safeParse(header({ supersedesGraphRevisionId: PREVIOUS })).success).toBe(true);
+    for (const field of Object.keys(header())) {
+      expect(TaskGraphDeclaration.safeParse(without(header(), field)).success, field).toBe(false);
+    }
+    for (const field of ["graphRevisionId", "roadmapVersionId", "stepId", "nodeCount"]) {
+      expect(TaskGraphDeclaration.safeParse({ ...header(), [field]: null }).success, field).toBe(false);
+    }
+    expect(TaskGraphDeclaration.safeParse(header({ supersedesGraphRevisionId: GRAPH })).success).toBe(false);
+    expect(TaskGraphDeclaration.safeParse(header({ nodeCount: 0 })).success).toBe(false);
+    expect(TaskGraphDeclaration.safeParse(header({ nodeCount: TASK_GRAPH_NODES_MAX + 1 })).success).toBe(false);
+    expect(TaskGraphDeclaration.safeParse(header({ title: "a graph" })).success).toBe(false);
+  });
+
+  it("admits a node, and refuses each field as null and as absent, a self-edge, a repeat and a policy it does not know", () => {
+    expect(TaskGraphNodeDeclaration.safeParse(node()).success).toBe(true);
+    for (const field of Object.keys(node())) {
+      expect(TaskGraphNodeDeclaration.safeParse({ ...node(), [field]: null }).success, field).toBe(false);
+      expect(TaskGraphNodeDeclaration.safeParse(without(node(), field)).success, field).toBe(false);
+    }
+    for (const field of Object.keys(edge())) {
+      expect(TaskGraphNodeDeclaration.safeParse(node({ dependsOn: [{ ...edge(), [field]: null }] })).success, field).toBe(false);
+      expect(TaskGraphNodeDeclaration.safeParse(node({ dependsOn: [without(edge(), field)] })).success, field).toBe(false);
+    }
+    expect(TaskGraphNodeDeclaration.safeParse(node({ dependsOn: [edge({ taskId: INITIATIVE_ID })] })).success).toBe(false);
+    // The same task at another revision is another node, not a self-edge.
+    expect(TaskGraphNodeDeclaration.safeParse(node({ dependsOn: [edge({ taskId: INITIATIVE_ID, taskRevisionNumber: 2 })] })).success).toBe(true);
+    expect(TaskGraphNodeDeclaration.safeParse(node({ dependsOn: [edge(), edge({ failPolicy: "ALLOW_FAILURE" })] })).success).toBe(false);
+    expect(TaskGraphNodeDeclaration.safeParse(node({ dependsOn: [edge({ failPolicy: "BEST_EFFORT" })] })).success).toBe(false);
+    expect(TaskGraphNodeDeclaration.safeParse(node({ taskRevisionNumber: 0 })).success).toBe(false);
+    expect(TaskGraphNodeDeclaration.safeParse(node({ nodeIndex: TASK_GRAPH_NODES_MAX })).success).toBe(false);
+    const edges = (count: number) =>
+      Array.from({ length: count }, (_, index) => edge({ taskId: "00000000-0000-4000-8000-" + String(index).padStart(12, "0") }));
+    expect(TaskGraphNodeDeclaration.safeParse(node({ dependsOn: edges(TASK_GRAPH_DEPENDS_ON_MAX) })).success).toBe(true);
+    expect(TaskGraphNodeDeclaration.safeParse(node({ dependsOn: edges(TASK_GRAPH_DEPENDS_ON_MAX + 1) })).success).toBe(false);
+  });
+
+  it("the largest node, derived from the same bounds, rides one event under EVENT_PAYLOAD_MAX_BYTES", () => {
+    const largestRevision = 1_000_000;
+    const id = (index: number) => "ffffffff-ffff-4fff-bfff-" + String(index).padStart(12, "f");
+    const largest = node({
+      taskId: id(TASK_GRAPH_DEPENDS_ON_MAX),
+      taskRevisionNumber: largestRevision,
+      nodeIndex: TASK_GRAPH_NODES_MAX - 1,
+      dependsOn: Array.from({ length: TASK_GRAPH_DEPENDS_ON_MAX }, (_, index) =>
+        edge({ taskId: id(index), taskRevisionNumber: largestRevision, failPolicy: "REQUIRE_TERMINAL" }),
+      ),
+    });
+    expect(TaskGraphNodeDeclaration.safeParse(largest).success).toBe(true);
+    const event = initiativeEvent({
+      transitionId: "graph." + GRAPH + ".node." + String(TASK_GRAPH_NODES_MAX - 1),
+      type: "TASK_GRAPH_NODE_DECLARED",
+      fromStatus: "ACTIVE",
+      toStatus: "ACTIVE",
+      payload: largest,
+    });
+    expect(InitiativeEvent.safeParse(event).success).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(largest), "utf8")).toBeLessThan(EVENT_PAYLOAD_MAX_BYTES);
+  });
+
+  it("admits both graph types only as passthroughs of the initiative's status", () => {
+    for (const [type, payload] of [
+      ["TASK_GRAPH_DECLARED", header()],
+      ["TASK_GRAPH_NODE_DECLARED", node()],
+    ] as const) {
+      const graphEvent = (overrides: Record<string, unknown> = {}) =>
+        initiativeEvent({
+          transitionId: "graph." + GRAPH,
+          type,
+          fromStatus: "ACTIVE",
+          toStatus: "ACTIVE",
+          payload,
+          ...overrides,
+        });
+      expect(InitiativeEvent.safeParse(graphEvent()).success, type).toBe(true);
+      const moved = InitiativeEvent.safeParse(graphEvent({ toStatus: "PAUSED" }));
+      expect(moved.success, type).toBe(false);
+      expect(moved.error?.issues.map((issue) => issue.message)).toContain(
+        "declaring a task graph does not move the initiative's status",
+      );
+      expect(InitiativeEvent.safeParse(graphEvent({ fromStatus: null })).success, type).toBe(false);
+    }
   });
 });

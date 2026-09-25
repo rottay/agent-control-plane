@@ -12,6 +12,7 @@ import {
   openArtifactBlobLeaseStore,
   openArtifactPlane,
   openLedger,
+  recordRoadmapRevision,
 } from "@acp/ledger";
 import type { ArtifactPlane, ArtifactPlaneTestFaults, Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
@@ -259,19 +260,83 @@ function assignGlobal(ledger: Ledger, role = "implementer", slot = 0, modelVersi
   );
 }
 
-/** An initiative with one roadmap version, one ACTIVE model version and the implementer's slot 0. */
-function seedWorld(ledger: Ledger): void {
-  registerInitiative(ledger, INITIATIVE);
-  recordRoadmapVersion(ledger, INITIATIVE, VERSION_ID);
-  registerInitiative(ledger, OTHER_INITIATIVE);
-  recordRoadmapVersion(ledger, OTHER_INITIATIVE, OTHER_VERSION_ID);
-  modelVersion(ledger, MODEL_ONE);
-  assignGlobal(ledger);
+/** The steps the fixture's version declares, through the producer and the batch door (P-27 cut A). */
+const DECLARED_STEPS = ["step.one", "step.two"] as const;
+
+/**
+ * Record a roadmap version that declares `stepIds`, through the ledger's one producer:
+ * the manifest published to the private plane, the version and its steps appended
+ * all or none. Since P-27 cut A an intake's step must be one its version declares.
+ */
+function recordRoadmapVersionWithSteps(
+  on: Substrates,
+  initiativeId: string,
+  roadmapVersionId: string,
+  stepIds: readonly string[],
+): void {
+  const outcome = recordRoadmapRevision({
+    reader: on.ledger,
+    writable: on.ledger,
+    plane: on.plane,
+    initiativeId,
+    request: {
+      content: "# Roadmap\n",
+      expectedHeadDigest: null,
+      kind: "EDIT",
+      restoresVersionId: null,
+      recordedBy: COORDINATOR,
+      steps: {
+        manifestContractVersion: 1,
+        steps: stepIds.map((stepId) => ({
+          stepId,
+          title: "Step " + stepId,
+          objective: "The objective of " + stepId + ".",
+          acceptance: "The acceptance of " + stepId + ".",
+          expectedWriteSet: ["docs/" + stepId + ".md"],
+          dependsOn: [],
+        })),
+      },
+    },
+    recordedAt: CREATED_AT,
+    roadmapVersionId,
+    eventId: randomUUID(),
+    holderPid: LIVE_PID,
+    stepIdentities: {
+      stepEventIds: stepIds.map(() => randomUUID()),
+      commandId: randomUUID(),
+      artifactPinId: randomUUID(),
+      artifactReferenceId: randomUUID(),
+      intentionEventId: randomUUID(),
+      terminalEventId: randomUUID(),
+    },
+  });
+  if (!outcome.ok) throw new Error("the fixture's roadmap version was refused: " + outcome.reason + " at " + outcome.at);
 }
 
-function world(ledgerPath?: string, faults?: ArtifactPlaneTestFaults): Substrates {
-  const on = substrates(ledgerPath, faults);
-  seedWorld(on.ledger);
+/**
+ * An initiative with one roadmap version declaring two steps, another initiative with
+ * a version declaring none, one ACTIVE model version and the implementer's slot 0.
+ */
+function seedWorld(on: Substrates): void {
+  registerInitiative(on.ledger, INITIATIVE);
+  recordRoadmapVersionWithSteps(on, INITIATIVE, VERSION_ID, DECLARED_STEPS);
+  registerInitiative(on.ledger, OTHER_INITIATIVE);
+  recordRoadmapVersion(on.ledger, OTHER_INITIATIVE, OTHER_VERSION_ID);
+  modelVersion(on.ledger, MODEL_ONE);
+  assignGlobal(on.ledger);
+}
+
+function world(ledgerPath = temporaryLedgerPath(), faults?: ArtifactPlaneTestFaults): Substrates {
+  // The world is seeded through a plane with no fault, because the version's manifest
+  // is itself a publication; the faults arm the handles the test drives.
+  if (faults !== undefined) {
+    const seeding = substrates(ledgerPath);
+    seedWorld(seeding);
+    seeding.die();
+    return substrates(ledgerPath, faults);
+  }
+  const on = substrates(ledgerPath);
+  seedWorld(on);
   return on;
 }
 
@@ -659,6 +724,86 @@ describe("the preconditions of the request link refuse with a class, a code and 
     // And with no link at all, the task enters with a null step: the one case the dictionary allows.
     const outside = entered(intake(on, { roadmapVersionId: null, stepId: null }));
     expect(on.ledger.getTask(outside.task.taskId)?.stepId).toBeNull();
+  });
+
+  it("P-27 cut A (decision 193): a step the version does not declare is ROADMAP_STEP_UNKNOWN, a version that declares none refuses every step", () => {
+    const on = world();
+    const held = heads(on.ledger);
+    expect(intake(on, { stepId: "step.nine" })).toEqual(refusal("REQUEST_INVALID", "ROADMAP_STEP_UNKNOWN", "stepId"));
+    // A second version of the initiative, declaring no step: zero declares none, and
+    // every stepId is unknown there, never undeclared.
+    const head = on.ledger.listRoadmapVersions(INITIATIVE).at(-1);
+    const empty = recordRoadmapRevision({
+      reader: on.ledger,
+      writable: on.ledger,
+      plane: on.plane,
+      initiativeId: INITIATIVE,
+      request: {
+        content: "# Roadmap, again\n",
+        expectedHeadDigest: head?.contentDigest ?? null,
+        kind: "EDIT",
+        restoresVersionId: null,
+        recordedBy: COORDINATOR,
+      },
+      recordedAt: CREATED_AT,
+      roadmapVersionId: randomUUID(),
+      eventId: randomUUID(),
+      holderPid: null,
+      stepIdentities: null,
+    });
+    if (!empty.ok) throw new Error("the second version was refused: " + empty.reason);
+    expect(empty.version.stepCount).toBe(0);
+    const zeroHeld = heads(on.ledger);
+    for (const stepId of DECLARED_STEPS) {
+      expect(intake(on, { roadmapVersionId: empty.version.roadmapVersionId, stepId })).toEqual(
+        refusal("REQUEST_INVALID", "ROADMAP_STEP_UNKNOWN", "stepId"),
+      );
+    }
+    expect(heads(on.ledger)).toEqual(zeroHeld);
+    expect(held[0]).toBe(zeroHeld[0]);
+    // A declared step enters, and its exact replay is still a replay.
+    const first = entered(intake(on, { stepId: "step.two" }));
+    const again = entered(intake(on, { stepId: "step.two" }));
+    expect(again.replayed).toBe(true);
+    expect(again.task).toEqual(first.task);
+  });
+
+  it("P-27 cut A (decision 193, ND-P27-9): a version of the cohort before steps declares nothing, and says so by its own word, never as an unknown step", () => {
+    const on = world();
+    const held = heads(on.ledger);
+    // A reader standing for a history recorded before P-26 cut B: the same rows, the
+    // version's step count read back null. The gateway's suite reaches the same row
+    // through a real rewind of the stream; this one isolates the decision.
+    const preCohort = new Proxy(on.ledger, {
+      get(target, property, receiver) {
+        if (property === "listRoadmapVersions") {
+          return (initiativeId: string) =>
+            target.listRoadmapVersions(initiativeId).map((version) => ({ ...version, recordingContractVersion: "2.9.0", stepCount: null }));
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const undeclared = intakeTask({
+      ledger: preCohort,
+      plane: on.plane,
+      request: fields(),
+      recordedAt: AT,
+      holderPid: LIVE_PID,
+      identities: {
+        eventId: randomUUID(),
+        revisionId: randomUUID(),
+        commandId: randomUUID(),
+        artifactPinId: randomUUID(),
+        artifactReferenceId: randomUUID(),
+        intentionEventId: randomUUID(),
+        terminalEventId: randomUUID(),
+      },
+    });
+    expect(undeclared).toEqual(refusal("REQUEST_INVALID", "ROADMAP_STEPS_UNDECLARED", "stepId"));
+    // Null and zero side by side: the same stepId on the real version, which declares it, enters.
+    expect(heads(on.ledger)).toEqual(held);
+    expect(entered(intake(on)).task.taskId).toBe(TASK_A);
   });
 
   it("N-P14C-10: a role the envelope does not admit is REQUEST_INVALID, before the registry is asked", () => {

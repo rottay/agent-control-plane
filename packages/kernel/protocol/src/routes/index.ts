@@ -90,6 +90,12 @@ export const API_ROUTES = Object.freeze({
   // and `?from=&to=` — so a version of another initiative is unrepresentable.
   initiativeRoadmapSteps: "/api/v1/initiatives/:initiativeId/roadmap/steps",
   initiativeRoadmapDiff: "/api/v1/initiatives/:initiativeId/roadmap/diff",
+  // P-27 cut A: one step's task graph, selected by `?version=&stepId=`. GET reads the
+  // step's current graph revision with each node's READY verdict, computed at read
+  // time; POST declares a revision. A write route, registered through the guarded
+  // registrar, so the bearer is inherited structurally. A distinct path from
+  // `initiativeRoadmapSteps`: `/roadmap/steps/graph` is not `/roadmap/steps`.
+  initiativeStepGraph: "/api/v1/initiatives/:initiativeId/roadmap/steps/graph",
 } as const);
 
 export type ApiRouteName = keyof typeof API_ROUTES;
@@ -160,6 +166,10 @@ export const API_WRITE_ROUTES = Object.freeze([
   // and publishes its envelope to the private plane before the event names it.
   // It executes nothing. The GET beside it is the task list, unchanged.
   "tasks",
+  // P-27 cut A. The seventh, and of the first kind: it records a graph the caller
+  // already planned for one step, under the caller's own revision id. It dispatches
+  // nothing. The GET beside it is the graph and its READY verdicts, computed at read.
+  "initiativeStepGraph",
 ] as const);
 export type ApiWriteRouteName = (typeof API_WRITE_ROUTES)[number];
 
@@ -288,6 +298,15 @@ export function initiativeRoadmapStepsPath(initiativeId: string): string {
  */
 export function initiativeRoadmapDiffPath(initiativeId: string): string {
   return initiativeRoadmapPath(initiativeId) + "/diff";
+}
+
+/**
+ * Build the task graph path for a single initiative's roadmap step (P-27 cut A).
+ *
+ * The path only, as above: the `?version=&stepId=` query is the caller's.
+ */
+export function initiativeStepGraphPath(initiativeId: string): string {
+  return initiativeRoadmapStepsPath(initiativeId) + "/graph";
 }
 
 /**

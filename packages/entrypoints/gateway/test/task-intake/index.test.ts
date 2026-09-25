@@ -8,14 +8,17 @@ import {
   API_CONTRACT_VERSION,
   ApiError,
   LEDGER_CONTRACT_VERSION,
+  RoadmapVersionWriteResponse,
   TaskDetailResponse,
   TaskIntakeResponse,
   TaskPageResponse,
 } from "@acp/protocol";
 import {
+  GENESIS_SHA256,
   artifactBlobLeaseStorePath,
   artifactPlaneRootFor,
   canonicalJsonStringify,
+  chainDigest,
   envelopeSha256,
   openArtifactBlobLeaseStore,
   openArtifactPlane,
@@ -485,5 +488,146 @@ describe("POST /api/v1/tasks refuses by the door that refused", () => {
     expect(taskEventCount(path)).toBe(0);
     expect(existsSync(artifactPlaneRootFor(path))).toBe(false);
     await app.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-27 cut A: an intake's step exists in the version it names (decision 193)
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/tasks refuses a step the linked version does not declare (P-27 cut A)", () => {
+  /** A version recorded through the roadmap route; `steps` declares them, none otherwise. */
+  async function recordVersion(app: ReturnType<typeof buildServer>, stepIds: readonly string[]): Promise<string> {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/initiatives/" + INITIATIVE + "/roadmap",
+      headers: AUTH,
+      payload: {
+        content: "# Roadmap\n",
+        expectedHeadDigest: null,
+        kind: "EDIT",
+        restoresVersionId: null,
+        recordedBy: COORDINATOR,
+        ...(stepIds.length === 0
+          ? {}
+          : {
+              steps: {
+                manifestContractVersion: 1,
+                steps: stepIds.map((stepId) => ({
+                  stepId,
+                  title: "Step " + stepId,
+                  objective: "The objective of " + stepId + ".",
+                  acceptance: "The acceptance of " + stepId + ".",
+                  expectedWriteSet: ["docs/" + stepId + ".md"],
+                  dependsOn: [],
+                })),
+              },
+            }),
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    return RoadmapVersionWriteResponse.parse(response.json()).version.roadmapVersionId;
+  }
+
+  it("ROADMAP_STEP_UNKNOWN: 409 WRITE_REFUSED at stepId for a step the version does not declare, and for every step of a version that declares none", async () => {
+    const path = temporaryDatabase();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const declaring = await recordVersion(app, ["A"]);
+
+    const unknown = await app.inject({ method: "POST", url: URL, headers: AUTH, payload: body({ roadmapVersionId: declaring, stepId: "Z" }) });
+    expect(unknown.statusCode).toBe(409);
+    const error = ApiError.parse(unknown.json()).error;
+    expect(error.code).toBe("WRITE_REFUSED");
+    expect(error.message).toContain("REQUEST_INVALID ROADMAP_STEP_UNKNOWN");
+    expect(error.detail).toBe("stepId");
+    expect(taskEventCount(path)).toBe(0);
+
+    const entered = await app.inject({ method: "POST", url: URL, headers: AUTH, payload: body({ roadmapVersionId: declaring, stepId: "A" }) });
+    expect(entered.statusCode).toBe(200);
+    expect(TaskIntakeResponse.parse(entered.json()).replayed).toBe(false);
+    await app.close();
+
+    // Zero declares none: every step of such a version is unknown, never undeclared.
+    const emptyPath = temporaryDatabase();
+    const emptyApp = buildServer({ ledgerPath: emptyPath, writeBearerPath: bearerFile() });
+    const empty = await recordVersion(emptyApp, []);
+    const refused = await emptyApp.inject({ method: "POST", url: URL, headers: AUTH, payload: body({ roadmapVersionId: empty, stepId: "A" }) });
+    expect(refused.statusCode).toBe(409);
+    expect(ApiError.parse(refused.json()).error.message).toContain("REQUEST_INVALID ROADMAP_STEP_UNKNOWN");
+    expect(taskEventCount(emptyPath)).toBe(0);
+    await emptyApp.close();
+  });
+
+  it("ROADMAP_STEPS_UNDECLARED: a version of the cohort before steps, reached by a real rewind, refuses by its own word (ND-P27-9)", async () => {
+    const path = temporaryDatabase();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const version = await recordVersion(app, []);
+    await app.close();
+
+    // The history as a build before P-26 cut B wrote it: every initiative event and the
+    // version's payload at 2.9.0, with no step field, the chain recomputed; then
+    // migrations 26 and 25 undone, so this build meets a ledger at 24 and migrates it.
+    const raw = new DatabaseSync(path);
+    const triggers = raw
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name IN ('initiative_events_deny_update', 'initiative_events_deny_delete')")
+      .all() as { sql: string }[];
+    raw.exec("DROP TRIGGER initiative_events_deny_update; DROP TRIGGER initiative_events_deny_delete;");
+    let previous = GENESIS_SHA256;
+    for (const row of raw.prepare("SELECT sequence, event_json FROM initiative_events ORDER BY sequence").all() as { sequence: number; event_json: string }[]) {
+      const decoded = JSON.parse(row.event_json) as Record<string, unknown>;
+      decoded["contractVersion"] = "2.9.0";
+      if (decoded["type"] === "ROADMAP_VERSION_RECORDED") {
+        const cohort = new Set(["stepCount", "stepManifestArtifactReferenceId", "stepManifestSha256"]);
+        decoded["payload"] = {
+          ...Object.fromEntries(Object.entries(decoded["payload"] as Record<string, unknown>).filter(([key]) => !cohort.has(key))),
+          contractVersion: "2.9.0",
+        };
+      }
+      const rewritten = canonicalJsonStringify(decoded);
+      const digest = chainDigest(previous, rewritten);
+      raw
+        .prepare("UPDATE initiative_events SET event_json = ?, contract_version = ?, previous_sha256 = ?, event_sha256 = ? WHERE sequence = ?")
+        .run(rewritten, "2.9.0", previous, digest, row.sequence);
+      previous = digest;
+    }
+    raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = 'initiative_head_event_sha256'").run(previous);
+    raw.prepare("UPDATE projection_watermark SET source_head_sha256 = ? WHERE source_stream = 'initiative_events'").run(previous);
+    for (const trigger of triggers) raw.exec(trigger.sql);
+    raw.exec(
+      "DROP TRIGGER tr_task_graph_revision_read_model__supersede_once;" +
+        "DROP TABLE task_dependency_read_model;" +
+        "DROP TABLE task_graph_node_read_model;" +
+        "DROP TABLE task_graph_revision_read_model;" +
+        "DELETE FROM projection_watermark WHERE projection_name IN " +
+        "('task_graph_revision_read_model', 'task_graph_node_read_model', 'task_dependency_read_model');" +
+        "DROP TRIGGER tr_roadmap_version_read_model__validate_steps_on_update;" +
+        "DROP TRIGGER tr_roadmap_version_read_model__validate_steps_on_insert;" +
+        "ALTER TABLE roadmap_version_read_model DROP COLUMN step_manifest_sha256;" +
+        "ALTER TABLE roadmap_version_read_model DROP COLUMN step_manifest_artifact_reference_id;" +
+        "ALTER TABLE roadmap_version_read_model DROP COLUMN step_count;" +
+        "ALTER TABLE roadmap_version_read_model DROP COLUMN recording_contract_version;" +
+        "DROP TABLE roadmap_step_dependency;" +
+        "DROP TABLE roadmap_step_read_model;" +
+        "DELETE FROM projection_watermark WHERE projection_name IN ('roadmap_step_read_model', 'roadmap_step_dependency');" +
+        "DELETE FROM schema_migrations WHERE version >= 25;",
+    );
+    raw.close();
+    const migrated = openLedger(path);
+    expect(migrated.listRoadmapVersions(INITIATIVE).map((row) => [row.recordingContractVersion, row.stepCount])).toEqual([["2.9.0", null]]);
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+    migrated.close();
+
+    const reopened = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const refused = await reopened.inject({ method: "POST", url: URL, headers: AUTH, payload: body({ roadmapVersionId: version, stepId: "A" }) });
+    expect(refused.statusCode).toBe(409);
+    const error = ApiError.parse(refused.json()).error;
+    expect(error.code).toBe("WRITE_REFUSED");
+    expect(error.message).toContain("REQUEST_INVALID ROADMAP_STEPS_UNDECLARED");
+    expect(error.detail).toBe("stepId");
+    expect(taskEventCount(path)).toBe(0);
+    // With no link at all the task still enters: the dictionary's one case.
+    const outside = await reopened.inject({ method: "POST", url: URL, headers: AUTH, payload: body() });
+    expect(outside.statusCode).toBe(200);
+    await reopened.close();
   });
 });

@@ -274,6 +274,27 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("roles", "LEDGER"),
     ]),
     /**
+     * One step's task graph and its READY verdicts (P-27 cut A, ADR 0115), bound on
+     * its read and only its read, as `initiativeRoadmap` is.
+     *
+     * `graph` and `nodes` are folds of the read model: the revision, its nodes and
+     * edges, and each node's four verdicts, which the pure predicate computes from
+     * rows two clients read alike. The one input that is not a row is the instant an
+     * approval's expiry is compared against, and in this build no approval producer
+     * exists, so no verdict reads it. `evaluatedAt` echoes that instant and is the
+     * exception: an observation instant, never ledger state.
+     */
+    initiativeStepGraph: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("initiativeId", "LEDGER"),
+      bind("version", "LEDGER"),
+      bind("stepId", "LEDGER"),
+      bind("graph", "LEDGER"),
+      bind("nodes", "LEDGER"),
+      bind("evaluatedAt", "OBSERVED_AT", "the instant the verdicts were computed against"),
+    ]),
+    /**
      * The merged timeline (P8-8E-pre, C2).
      *
      * `items` binds to `LEDGER` in the strong sense: every field of every entry

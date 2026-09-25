@@ -18,6 +18,7 @@ import {
   initiativeRoadmapDiffPath,
   initiativeRoadmapPath,
   initiativeRoadmapStepsPath,
+  initiativeStepGraphPath,
   taskPath,
   workerPath,
 } from "../../src/routes/index.js";
@@ -181,10 +182,10 @@ describe("the stream route is a read, and does not collide with the paged one (V
     // list a reviewer glances at to answer "what can mutate?", and it did not
     // move.
     expect(isWriteRoute("eventStream")).toBe(false);
-    // The table moved at V2-B4b stage 3C, at V2 L3, at P-14/B and at P-14/C:
-    // `taskToolCalls` is the third entry, `taskLifecycle` the fourth,
-    // `initiatives` the fifth and `tasks` the sixth. The stream still adds
-    // nothing, which is what this test is about.
+    // The table moved at V2-B4b stage 3C, at V2 L3, at P-14/B, at P-14/C and at
+    // P-27 cut A: `taskToolCalls` is the third entry, `taskLifecycle` the fourth,
+    // `initiatives` the fifth, `tasks` the sixth and `initiativeStepGraph` the
+    // seventh. The stream still adds nothing, which is what this test is about.
     expect([...API_WRITE_ROUTES]).toEqual([
       "initiativeRoadmap",
       "accountActions",
@@ -192,6 +193,7 @@ describe("the stream route is a read, and does not collide with the paged one (V
       "taskLifecycle",
       "initiatives",
       "tasks",
+      "initiativeStepGraph",
     ]);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
   });
@@ -210,8 +212,9 @@ describe("the stream route is a read, and does not collide with the paged one (V
 describe("the portfolio route takes the fifth write (P-14/B)", () => {
   it("answers POST beside its GET, on the same path, with no parameter to encode", () => {
     expect(isWriteRoute("initiatives")).toBe(true);
-    // Fifth when it landed; P-14/C's `tasks` follows it.
-    expect(API_WRITE_ROUTES.at(-2)).toBe("initiatives");
+    // Fifth when it landed; P-14/C's `tasks` and P-27 cut A's `initiativeStepGraph`
+    // follow it.
+    expect(API_WRITE_ROUTES.at(-3)).toBe("initiatives");
     expect(API_ROUTES.initiatives).toBe("/api/v1/initiatives");
     expect(API_ROUTES.initiatives).not.toContain(":");
     // The read plane's method list is the one that does not grow.
@@ -224,8 +227,9 @@ describe("the portfolio route takes the fifth write (P-14/B)", () => {
 describe("the task list route takes the sixth write (P-14/C)", () => {
   it("answers POST beside its GET, on the same path, with no parameter to encode", () => {
     expect(isWriteRoute("tasks")).toBe(true);
-    expect(API_WRITE_ROUTES.at(-1)).toBe("tasks");
-    expect(API_WRITE_ROUTES).toHaveLength(6);
+    // Sixth when it landed; P-27 cut A's `initiativeStepGraph` follows it.
+    expect(API_WRITE_ROUTES.at(-2)).toBe("tasks");
+    expect(API_WRITE_ROUTES).toHaveLength(7);
     expect(API_ROUTES.tasks).toBe("/api/v1/tasks");
     expect(API_ROUTES.tasks).not.toContain(":");
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
@@ -242,10 +246,11 @@ describe("the effect reads, and the one private read (P-15/F)", () => {
   it("adds two reads and no write: the method list and the write table do not move", () => {
     expect(API_ROUTES.taskEffects).toBe("/api/v1/tasks/:taskId/effects");
     expect(API_ROUTES.taskEffectResult).toBe("/api/v1/tasks/:taskId/effects/:effectId/result");
-    // 22 when it landed; P-26 cut C's two reads moved it again.
-    expect(Object.keys(API_ROUTES)).toHaveLength(24);
+    // 22 when it landed; P-26 cut C's two reads moved it again, and P-27 cut A's
+    // task graph route, the seventh write, once more.
+    expect(Object.keys(API_ROUTES)).toHaveLength(25);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
-    expect(API_WRITE_ROUTES).toHaveLength(6);
+    expect(API_WRITE_ROUTES).toHaveLength(7);
     expect(isWriteRoute("taskEffects")).toBe(false);
     expect(isWriteRoute("taskEffectResult")).toBe(false);
   });
@@ -285,8 +290,9 @@ describe("the steps and diff reads (P-26 cut C)", () => {
       expect(isWriteRoute(route)).toBe(false);
       expect(isPrivateReadRoute(route)).toBe(false);
     }
-    expect(Object.keys(API_ROUTES)).toHaveLength(24);
-    expect(API_WRITE_ROUTES).toHaveLength(6);
+    // 24 when they landed; P-27 cut A's task graph route, the seventh write.
+    expect(Object.keys(API_ROUTES)).toHaveLength(25);
+    expect(API_WRITE_ROUTES).toHaveLength(7);
     expect([...API_PRIVATE_READ_ROUTES]).toEqual(["taskEffectResult"]);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
   });
@@ -299,6 +305,32 @@ describe("the steps and diff reads (P-26 cut C)", () => {
     for (const bad of ["../../etc/passwd", INITIATIVE + "?version=1", ""]) {
       expect(() => initiativeRoadmapStepsPath(bad)).toThrow();
       expect(() => initiativeRoadmapDiffPath(bad)).toThrow();
+    }
+  });
+});
+
+describe("the task graph route takes the seventh write (P-27 cut A)", () => {
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+
+  it("answers GET and POST on one path beneath the steps read, and is no private read", () => {
+    expect(API_ROUTES.initiativeStepGraph).toBe("/api/v1/initiatives/:initiativeId/roadmap/steps/graph");
+    expect(API_ROUTES.initiativeStepGraph.startsWith(API_ROUTES.initiativeRoadmapSteps + "/")).toBe(true);
+    expect(API_ROUTES.initiativeStepGraph).not.toBe(API_ROUTES.initiativeRoadmapSteps);
+    expect(isWriteRoute("initiativeStepGraph")).toBe(true);
+    expect(API_WRITE_ROUTES.at(-1)).toBe("initiativeStepGraph");
+    expect(isPrivateReadRoute("initiativeStepGraph")).toBe(false);
+    // The steps read beside it stays a read.
+    expect(isWriteRoute("initiativeRoadmapSteps")).toBe(false);
+    expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
+    const patterns = [...API_ROUTE_PATTERNS];
+    expect(new Set(patterns).size).toBe(patterns.length);
+  });
+
+  it("builds the path only, validated then encoded; the query is the caller's", () => {
+    expect(initiativeStepGraphPath(INITIATIVE)).toBe("/api/v1/initiatives/" + INITIATIVE + "/roadmap/steps/graph");
+    expect(initiativeStepGraphPath(INITIATIVE)).not.toContain("?");
+    for (const bad of ["../../etc/passwd", INITIATIVE + "?version=1", ""]) {
+      expect(() => initiativeStepGraphPath(bad)).toThrow();
     }
   });
 });
