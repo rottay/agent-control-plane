@@ -443,7 +443,8 @@ describe("the task step route is api-only on both arms, under the standing reaso
     ]);
     expect(rows[0]?.because).toBe(content?.because);
     expect(rows[1]?.because).toBe(write?.because);
-    expect(SURFACE_MAP).toHaveLength(38);
+    // 38 when it landed; P-24 cut B(a)'s `tool-servers` document is the 39th.
+    expect(SURFACE_MAP).toHaveLength(39);
     expect(defects()).toEqual([]);
   });
 
@@ -452,5 +453,25 @@ describe("the task step route is api-only on both arms, under the standing reaso
       const dropped = defects(without((entry) => entry.route === "initiativeTaskStep" && entry.method === method));
       expect(names(dropped, "initiativeTaskStep " + method)).toBe(true);
     }
+  });
+});
+
+describe("the discovery read is one document at two doors (P-24 cut B(a))", () => {
+  it("pairs tool-servers with toolServerTools GET as a document, a private GET beside result", () => {
+    const get = SURFACE_MAP.filter((entry) => entry.route === "toolServerTools");
+    expect(get).toEqual([{ command: "tool-servers", route: "toolServerTools", method: "GET", equivalence: "DOCUMENT" }]);
+    expect(defects()).toEqual([]);
+  });
+
+  it("names the arm when the entry is dropped", () => {
+    const dropped = defects(without((entry) => entry.command === "tool-servers"));
+    expect(names(dropped, "missing", "toolServerTools GET")).toBe(true);
+  });
+
+  it("names the command when the CLI half is checked without the verb", () => {
+    const commands = SURFACE_MAP.flatMap((entry) => (entry.command === null ? [] : [entry.command]));
+    const withoutVerb = commands.filter((command) => command !== "tool-servers");
+    const found = surfaceDefects({ entries: SURFACE_MAP, routes: ROUTES, writeRoutes: WRITE_ROUTES, commands: withoutVerb });
+    expect(names(found, "tool-servers", "this CLI does not have")).toBe(true);
   });
 });

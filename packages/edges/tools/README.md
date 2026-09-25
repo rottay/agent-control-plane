@@ -183,8 +183,28 @@ composition, with long-lived connections, owns the choice between re-listing per
 call and trusting the notification.
 
 **What is not read.** A tool's `title` and `annotations` are not read: hints a
-server offers are not authority, and `writes` stays the operator's. The discovery
-listing reaches no door as a verb of its own.
+server offers are not authority, and `writes` stays the operator's.
+
+## A tool server is asked what it serves, and nothing is recorded (P-24/B(a), ADR 0118)
+
+**The discovery scope.** `openToolDiscovery({servers})` is declared beside
+`openToolOperation`, so the operation module stays the one place outside this
+package's suites that constructs a port. It exposes `listTools(serverId)` and
+`close()`, and no `callTool`: a discovery scope cannot call a tool by
+construction. Its scope id is constant and internal (`tool-discovery`, no slash,
+so it cannot collide with an execution scope or session); liveness is the
+operation scope's boolean rule, and `close()` drops liveness before it reaps.
+The CLI verb `tool-servers` and the private read `GET
+/api/v1/tool-servers/:serverId/tools` are its two consumers, so `port.listTools`
+now has production callers; neither records anything in a ledger.
+
+**Two corrections to `listTools`.** It now applies `callTool`'s step-7 rule to a
+failed listing: a transport refusal the loopback leg recorded out of band is
+preferred, word and `at`, and the connection is dropped, as it is on
+`PROTOCOL_VIOLATION`. A `SCHEMA_MISMATCH` listing now names the first mismatched
+allowlist entry, in allowlist order, in a `toolName` field of its own; `at` still
+carries no name (`server.tools.inputSchema` or `server.tools.outputSchema`), and
+every other refusal names no tool.
 
 ## A tool's output is pinned, and structure is carried only as text (P-24/B(b), ADR 0117)
 
@@ -347,11 +367,14 @@ join and the receipt live.
 | `openToolOperation` | the one composition site for the protocol port |
 | `ToolOperationScope` | one open operation: its id, its call, its close |
 | `ToolOperationInput` | the scope id and the servers it may reach |
+| `openToolDiscovery` | the discovery scope, composed at the same site: it lists and never calls |
+| `ToolDiscoveryScope` | one open discovery: its listing and its close, no `callTool` |
+| `ToolDiscoveryInput` | the servers it may reach |
 | `ToolCallReceipt` | the bounded record of one call |
 | `ToolCallOutcomeName` | `COMPLETED` or `REFUSED` |
 | `SessionLiveness` | the liveness predicate, read and never pushed |
 | `ToolProtocolPortInput` | the servers and the liveness join |
 | `ToolCallOutcome` | content plus a receipt, or a refusal plus a receipt |
-| `ToolListingOutcome` | the allowlist entries advertised under their pins, or the first mismatch |
+| `ToolListingOutcome` | the allowlist entries advertised under their pins, or the first mismatch and the tool it names |
 | `ToolProtocolPort` | the port itself |
 | `createToolProtocolPort` | its constructor |

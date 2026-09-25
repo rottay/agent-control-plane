@@ -10,14 +10,18 @@ table that this document omits fails. It also asserts that every response and
 query schema named below is exported by `@acp/protocol`.
 
 The parity suite is the behavioral authority **where it reaches**, and it does
-not reach every route. Thirteen of the thirty-two arms below are compared in full
+not reach every route. Fourteen of the thirty-five arms below are compared in full
 against an independently built CLI-side producer, including ordering,
-pagination, cursors and redaction; `eventStream` GET is compared in part, on one
+pagination, cursors and redaction — the fourteenth is `toolServerTools` GET, whose
+document the CLI's `tool-servers` verb produces over the same operator document and
+the same peer; `eventStream` GET is compared in part, on one
 frame's item; `health` has no ledger content and so has no CLI build to compare
 against, and is checked as the contract's declared non-ledger exception instead.
-The remaining seventeen arms — `taskLifecycle` GET, `tasks` POST, and the fifteen
-belonging to the eleven initiative and account routes — have no CLI-side parity
-comparison. `initiatives` POST and `tasks` POST are the two of them a command
+The remaining nineteen arms — `taskLifecycle` GET, `tasks` POST, and the seventeen
+belonging to the twelve initiative and account routes — have no CLI-side parity
+comparison. (Recounted from the tables at P-24/B(a): this sentence said thirty-two
+arms and fifteen initiative and account arms over a table P-27/C had already grown
+by two.) `initiatives` POST and `tasks` POST are the two of them a command
 answers, and each pair of doors is compared by its own suites through the one
 orchestration both call, not by the parity suite. The
 `CLI` column below says which arms a command answers; that a command answers an
@@ -31,9 +35,10 @@ arm is not by itself a claim that a behavioral comparison exists for it.
   describe, and should fail rather than guess.
 - **Methods.** `API_ALLOWED_METHODS` is `["GET"]` and describes the read plane.
   The routes that also accept a write are named in a separate frozen table,
-  `API_WRITE_ROUTES`, and are marked `GET, POST` below. The one read that is not
-  free is named in a third, `API_PRIVATE_READ_ROUTES`, and is marked
-  `GET (bearer)` below.
+  `API_WRITE_ROUTES`, and are marked `GET, POST` below. The reads that are not
+  free are named in a third, `API_PRIVATE_READ_ROUTES`, and are marked
+  `GET (bearer)` below: one answers model output, the other starts a child to ask
+  a tool server a question.
 - **Parameters** are validated before they are encoded. A traversal segment, a
   query string or a raw path produces a thrown validation error rather than a
   request to somewhere else.
@@ -74,6 +79,7 @@ arm is not by itself a claim that a behavioral comparison exists for it.
 | `taskLifecycle` | GET, POST | `/api/v1/tasks/:taskId/lifecycle` | `taskId` (uuid) | none | `TaskLifecycleResponse` / `TaskLifecycleExecuteResponse` | `cancel`:POST, `attach`:POST |
 | `taskEffects` | GET | `/api/v1/tasks/:taskId/effects` | `taskId` (uuid) | none | `TaskEffectsResponse` | `effects`:GET |
 | `taskEffectResult` | GET (bearer) | `/api/v1/tasks/:taskId/effects/:effectId/result` | `taskId` (uuid), `effectId` (64 lowercase hex) | `TaskEffectResultQuery` | `TaskEffectResultResponse` | `result`:GET |
+| `toolServerTools` | GET (bearer) | `/api/v1/tool-servers/:serverId/tools` | `serverId` (bounded identifier) | none | `ToolDiscoveryResponse` | `tool-servers`:GET |
 
 Two commands have no row above, because they have no route. `submission`
 re-elects a daemon config's route and prints the document; `switch-decision`
@@ -94,7 +100,7 @@ the mechanism and its anchors.
 | --- | --- | --- |
 | `initiativeRoadmap` | `RoadmapVersionWriteRequest` | a roadmap version, content-addressed; the event carries the digest and the bytes live in the artifact store. From `0.20.0` it may carry `steps`, a step manifest published to the private artifact plane: the version and one `ROADMAP_STEP_DECLARED` per step are recorded all or none, the events carry each step's title and digests, and the response names the step count and the manifest's digest, never its text |
 | `accountActions` | `AccountActionRequest` | an account action, with the refusal vocabulary the accounts domain defines |
-| `taskToolCalls` | `ToolCallExecuteRequest` | one explicit tool call, and whatever it did: this is the only route that starts a child process, and a refused call is a `200` with a recorded row rather than an error |
+| `taskToolCalls` | `ToolCallExecuteRequest` | one explicit tool call, and whatever it did: this is the only route that **acts** through a child process (the private read `toolServerTools` starts one only to ask, and records nothing), and a refused call is a `200` with a recorded row rather than an error |
 | `taskLifecycle` | `TaskLifecycleRequest` | one lifecycle verb — `CANCEL` or `ATTACH` — against an attempt already running; the rows it appends are the ones the cancellation settlement already produced, and `ATTACH` appends none |
 | `initiatives` | `InitiativeRegistrationRequest` | one initiative, under the caller's own `initiativeId`; its objective is published to the private artifact plane and the event carries the digest and the reference, never the objective |
 | `tasks` | `TaskIntakeRequest` | one task intake, under the caller's client key and task id: the envelope published to the private artifact plane, revision 1 recorded by reference, and the role resolved from the registry with the vector it was read at; nothing executes the task |
@@ -205,19 +211,21 @@ for the length of that run. This is the honest consequence of the verb rather
 than an oversight: rejoining an invocation means waiting for it. A caller that
 cannot hold a connection should poll the `GET` instead.
 
-## The private read
+## The private reads
 
+Two GETs of this plane are not free, and both are guarded the same way.
 `taskEffectResult` answers **model output**: one effect's result document, read
 back by reference from the private artifact plane (P-15/F, ADR 0107). Tests §8.1
 admits that on a public response only as an explicitly authorized read, audited
-before it existed (decision 149), so it is the one GET of this plane that is not
-free:
+before it existed (decision 149). `toolServerTools` (P-24/B(a), ADR 0118) starts a
+child to ask a tool server a question, and describes the operator's tool document;
+it is described under its own heading below. Both are:
 
 - **Registered behind the bearer**, through the gateway's `registerPrivateGet`,
   and named in `API_PRIVATE_READ_ROUTES`. The bearer is checked before any
   parameter is read. No bearer or a wrong one is `401` `AUTH_REQUIRED`; a server
   started without a token is `403` `PRIVATE_READ_UNCONFIGURED`. One credential
-  authorizes writes and this read alike until P-36's read policy.
+  authorizes writes and these reads alike until P-36's read policy.
 - **`Cache-Control: no-store`** on every answer on the path, a `200` or an error,
   including the framework's own refusals before the route runs (a malformed escape,
   an over-long parameter) and the not-found answer.
@@ -247,6 +255,46 @@ digest or a byte of it. It carries at most `MAX_TASK_EFFECTS` (1000), in intenti
 order, and `truncated: true` when the task has more. The CLI answers both: `acp effects <task-id>` and
 `acp result --task <id> --effect <id> [--block <n>]`, whose authorization is the
 operator's own access to the ledger and the plane (root `0700`, objects `0600`).
+
+### The discovery read
+
+`GET /api/v1/tool-servers/:serverId/tools` asks one server the operator's tool
+document admits which of its allowlisted tools it serves under their pins (P-24/B(a),
+ADR 0118). It is a **query and records nothing**: no ledger is opened, read or
+appended to, and the route answers the same whether or not this process has a
+ledger. The gateway starts the server through the tool edge's discovery scope,
+lists once — every page, bounded as a call's listing is — and reaps the child
+before the response is sent. No `tools/call` is ever sent.
+
+- **Guarded like the other private read**, and for a second reason: it starts a
+  process and it describes the operator's document. The bearer is checked before
+  `serverId` is read and before any child exists; a server started without a tool
+  document answers `503` `TOOL_SERVERS_UNCONFIGURED`, after the bearer, naming no
+  path. A `serverId` outside the bounded-identifier grammar is `400` naming
+  `serverId`; any query parameter is `400`. POST, PUT, PATCH and DELETE are `405`;
+  the framework's implicit `HEAD` runs the handler behind the bearer, as it does on
+  `taskEffectResult`, so it starts and reaps a child and drops only the body. The router refuses a path parameter past
+  100 characters before any handler runs, so an id of 101 to 120 characters — inside
+  the grammar — is the framework's `400` here, before the bearer check as well, so
+  an unauthenticated caller sees that `400` rather than `401`: such an id is askable
+  at the CLI door only. A stated limit (ADR 0118): raising the router's bound would change parameter
+  handling on every route.
+- **`ToolDiscoveryResponse`**: the allowlisted tools the server advertises under a
+  schema equal to the pin, as `{name, writes}` sorted by name, with `count`; or the
+  port's refusal word and its `at`, with `tools` empty. A tool the allowlist names
+  and the server does not advertise is omitted, not refused; a tool the server
+  advertises and nobody allowed is never named. On `SCHEMA_MISMATCH` — input
+  (`server.tools.inputSchema`) or output (`server.tools.outputSchema`), the first in
+  allowlist order refusing the whole listing — `toolName` names the entry; it is
+  `null` on every other answer. No schema byte and no transport kind is carried.
+- **A port refusal is a `200`.** The request was valid and the plane answered it
+  truthfully about the peer: `SERVER_NOT_ADMITTED`, `PROTOCOL_VIOLATION`,
+  `RESULT_UNBOUNDED`, `SCHEMA_MISMATCH` and, on the loopback leg,
+  `TRANSPORT_REFUSED` are each the port's own word, never a status code.
+
+The CLI answers the same document: `acp tool-servers --tool-servers <path> --server
+<id>`, the one verb that opens no ledger and refuses `--database`, authorized by the
+operator's own `0600` document.
 
 ## The one stream
 
@@ -438,7 +486,7 @@ the wrong thing with at least one of them.
 | `CLAIM_HELD` | another operating-system process holds this durable tool coordinate | **read** the recorded call; do not retry |
 
 `403` is answered by two codes, one per door: `WRITE_BEARER_UNCONFIGURED` on a
-write and `PRIVATE_READ_UNCONFIGURED` on the private read. Both mean this server
+write and `PRIVATE_READ_UNCONFIGURED` on a private read. Both mean this server
 holds no bearer token, so no header a caller sends can help.
 
 ### `501` and `503`, and why a capability gap is neither an outage nor a defect
@@ -491,9 +539,10 @@ lost, not who beat it.
 
 ### The tool-call guarantee, stated exactly
 
-`taskToolCalls` is the only route that starts a child process, so it is the
-only one where "how many times did this happen" is a question about the world
-rather than about the ledger. Since V2 X1b it is arbitrated by a claim beside
+`taskToolCalls` is the only route that **acts** through a child process, so it is
+the only one where "how many times did this happen" is a question about the world
+rather than about the ledger. (`toolServerTools` starts a child too, but only to ask
+what a server serves: it sends no `tools/call`, and records nothing.) Since V2 X1b it is arbitrated by a claim beside
 the ledger that every caller in every process passes through:
 
 - the **receipt** is exactly-once per coordinate, canonical;

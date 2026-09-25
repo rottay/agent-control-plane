@@ -1,4 +1,4 @@
-import { WorkerIdentityString } from "@acp/contracts";
+import { BoundedIdentifier, WorkerIdentityString } from "@acp/contracts";
 import { z } from "zod";
 
 import { EffectIdParam } from "../schemas/index.js";
@@ -101,6 +101,12 @@ export const API_ROUTES = Object.freeze({
   // to a declared step, an adoption or a re-link. A write route, registered through
   // the guarded registrar, so the bearer is inherited structurally.
   initiativeTaskStep: "/api/v1/initiatives/:initiativeId/tasks/:taskId/step",
+  // P-24/B(a): which of an admitted server's allowlisted tools it serves under
+  // their pins. A GET, and a private read: it starts a child to ask a peer and
+  // describes the operator's tool document, so it is named in
+  // `API_PRIVATE_READ_ROUTES` below and registered behind the bearer. It records
+  // nothing.
+  toolServerTools: "/api/v1/tool-servers/:serverId/tools",
 } as const);
 
 export type ApiRouteName = keyof typeof API_ROUTES;
@@ -146,8 +152,10 @@ export type ApiAllowedMethod = (typeof API_ALLOWED_METHODS)[number];
  * caller had already made; `taskToolCalls` makes this process start a child and
  * speak a protocol to it, and `taskLifecycle` speaks to an execution engine
  * about an invocation already running. That is why the API contract version
- * moves with those two, and why they are the only places in this plane where
- * process-start authority exists at all.
+ * moves with those two. Process-start authority exists in exactly two places in
+ * this plane, both behind the bearer: `taskToolCalls` POST, which starts a child
+ * to act and records what it did, and the private read `toolServerTools` GET
+ * (P-24/B(a)), which starts one to ask and records nothing.
  *
  * The value is the route **name**, not the pattern, so the two tables cannot
  * disagree about a path: the pattern always comes from `API_ROUTES`.
@@ -185,16 +193,19 @@ export type ApiWriteRouteName = (typeof API_WRITE_ROUTES)[number];
 /**
  * The private read routes, frozen — a third closed table (P-15 escalón F, ADR 0107).
  *
- * Observation is free on this plane, and every GET above stays so. A route that
- * answers **model output** is the exception tests §8.1 admits only as a read
+ * Observation is free on this plane, and every GET above stays so. A read that
+ * is **not free** is the exception tests §8.1 admits only as a read
  * "explícitamente autorizada", audited before it exists (decision 149): it is a
  * GET, `API_ALLOWED_METHODS` does not change, and it is named here so the
- * exception is a visible table rather than a guard remembered in one handler. The
- * gateway registers every member through its bearer-guarded read registrar and
- * nothing else. The initiative's objective, an internal plan document on an
- * unguarded GET since decision 76, is not model output and is not in this table.
+ * exception is a visible table rather than a guard remembered in one handler. A
+ * read is not free when it answers model output (`taskEffectResult`) or when it
+ * starts a child to ask a peer about the operator's tool document
+ * (`toolServerTools`, P-24/B(a), ADR 0118). The gateway registers every member
+ * through its bearer-guarded read registrar and nothing else. The initiative's
+ * objective, an internal plan document on an unguarded GET since decision 76, is
+ * neither and is not in this table.
  */
-export const API_PRIVATE_READ_ROUTES = Object.freeze(["taskEffectResult"] as const);
+export const API_PRIVATE_READ_ROUTES = Object.freeze(["taskEffectResult", "toolServerTools"] as const);
 export type ApiPrivateReadRouteName = (typeof API_PRIVATE_READ_ROUTES)[number];
 
 /** Is this route a private read, answered only behind the bearer? Data, so the server asserts rather than recalls. */
@@ -362,4 +373,16 @@ export function taskEffectsPath(taskId: string): string {
  */
 export function taskEffectResultPath(taskId: string, effectId: string): string {
   return taskEffectsPath(taskId) + "/" + encodeURIComponent(EffectIdParam.parse(effectId)) + "/result";
+}
+
+/**
+ * Build the discovery path for one admitted tool server (P-24/B(a)).
+ *
+ * The server id is validated against the bounded-identifier grammar, which
+ * admits no slash, before it is encoded as one path component — `taskPath`'s
+ * rule: a traversal segment or a raw path is a thrown validation error rather
+ * than a request to somewhere else.
+ */
+export function toolServerToolsPath(serverId: string): string {
+  return API_BASE_PATH + "/tool-servers/" + encodeURIComponent(BoundedIdentifier.parse(serverId)) + "/tools";
 }

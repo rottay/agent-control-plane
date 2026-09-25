@@ -184,12 +184,26 @@ const cliToolCallDoorSource = fileURLToPath(
 const cliLifecycleDoorSource = fileURLToPath(
   new URL('./packages/entrypoints/cli/src/lifecycle/index.ts', import.meta.url),
 );
+/**
+ * P-24/B(a) (ADR 0118): the fifth alias, and the third that reaches a door.
+ *
+ * The discovery equivalence drives the CLI's `tool-servers` verb as values and
+ * compares its document, and the fake server's log, with the private read's
+ * body. It follows the two door precedents above: `@acp/cli/tool-discovery-door`
+ * rather than `@acp/cli/tool-discovery`, because the sole-importer scan is a
+ * substring test and the `-door` suffix keeps every door pin from being a prefix
+ * of another specifier.
+ */
+const cliToolDiscoveryDoorSource = fileURLToPath(
+  new URL('./packages/entrypoints/cli/src/tool-discovery/index.ts', import.meta.url),
+);
 const parityAliases = [
   ...workspaceSourceAliases,
   { find: /^@acp\/cli\/observation-rows$/, replacement: cliRowModelSource },
   { find: /^@acp\/console\/row-model$/, replacement: uiRowModelSource },
   { find: /^@acp\/cli\/tool-call-door$/, replacement: cliToolCallDoorSource },
   { find: /^@acp\/cli\/lifecycle-door$/, replacement: cliLifecycleDoorSource },
+  { find: /^@acp\/cli\/tool-discovery-door$/, replacement: cliToolDiscoveryDoorSource },
 ];
 
 export default defineConfig({

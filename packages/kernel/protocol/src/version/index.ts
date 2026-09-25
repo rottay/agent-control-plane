@@ -270,8 +270,21 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * `CONTRACT_VERSION` and `LEDGER_CONTRACT_VERSION` do not move (decision 200: the
  * link's identity is its task and target version, derived, and no existing shape
  * gains a cohort). ADR 0116 carries the reasoning.
+ *
+ * `0.23.0` → `0.24.0` at P-24 cut B(a): a tool server is asked what it serves. One
+ * route, `toolServerTools`, a GET and the second private read: it starts a child
+ * through the tool edge's discovery scope to ask one admitted server which of its
+ * allowlisted tools it advertises under their pins, and records nothing. One schema
+ * arrives with it (`ToolDiscoveryResponse`, with `DiscoveredTool` and
+ * `MAX_DISCOVERED_TOOLS`); a port refusal is a 200 with `outcome: "REFUSED"`. Minor
+ * for the reason `0.13.0` gave first: the route surface moves.
+ * `API_PRIVATE_READ_ROUTES` moves by one; `API_ALLOWED_METHODS`, `API_WRITE_ROUTES`
+ * and `API_ERROR_CODES` do not. `CONTRACT_VERSION` and `LEDGER_CONTRACT_VERSION` do
+ * not move: a query records nothing. ADR 0116 and decision 200 had assigned this minor to P-16/A1,
+ * which re-takes the next one when it lands (decision 209). ADR 0118 carries the
+ * reasoning.
  */
-export const API_CONTRACT_VERSION = "0.23.0" as const;
+export const API_CONTRACT_VERSION = "0.24.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

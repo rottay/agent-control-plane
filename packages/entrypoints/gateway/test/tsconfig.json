@@ -12,7 +12,8 @@
       "@acp/cli/observation-rows": ["../../cli/dist/observation/index.d.ts"],
       "@acp/console/row-model": ["../../console/dist/app/api/client/index.d.ts"],
       "@acp/cli/tool-call-door": ["../../cli/dist/tool-call/index.d.ts"],
-      "@acp/cli/lifecycle-door": ["../../cli/dist/lifecycle/index.d.ts"]
+      "@acp/cli/lifecycle-door": ["../../cli/dist/lifecycle/index.d.ts"],
+      "@acp/cli/tool-discovery-door": ["../../cli/dist/tool-discovery/index.d.ts"]
     }
   },
   "include": ["**/*.ts", "../src/**/*.ts"],

@@ -11,9 +11,10 @@ import type { ApiRouteName, ApiWriteMethod } from "../routes/index.js";
  * **The relation is many-to-many, not a bijection.** `cancel` and `attach` both
  * reach `taskLifecycle` POST, distinguished only by the `verb` field of the
  * lifecycle request; a registry shaped as a bijection would have been forced to
- * invent a second route or to drop one of the two commands. Thirteen arms
- * therefore carry fourteen paired entries, and the duplicate rule below is written
- * over the key that makes the distinction.
+ * invent a second route or to drop one of the two commands. The paired arms
+ * therefore carry one more entry than there are arms (a count this sentence said
+ * as two cardinals, and let go stale, until P-24/B(a)), and the duplicate rule
+ * below is written over the key that makes the distinction.
  *
  * **This is a compile, test and documentation contract, and nothing else.** No
  * runtime dispatch, no help output and no request handling reads it. That is a
@@ -107,6 +108,7 @@ export const SURFACE_MAP: readonly SurfaceEntry[] = Object.freeze([
   entry("intake", "tasks", "POST", "DOCUMENT"),
   entry("effects", "taskEffects", "GET", "PROJECTION"),
   entry("result", "taskEffectResult", "GET", "DOCUMENT"),
+  entry("tool-servers", "toolServerTools", "GET", "DOCUMENT"),
   entry("submission", null, null, "CLI_ONLY",
     "a planning verb: it re-elects a config's route and prints the document; it opens " +
       "the ledger query-only and appends nothing, and the plane exposes no route that plans"),

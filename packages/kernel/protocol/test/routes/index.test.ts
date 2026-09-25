@@ -21,6 +21,7 @@ import {
   initiativeStepGraphPath,
   initiativeTaskStepPath,
   taskPath,
+  toolServerToolsPath,
   workerPath,
 } from "../../src/routes/index.js";
 import {
@@ -243,7 +244,7 @@ describe("the task list route takes the sixth write (P-14/C)", () => {
   });
 });
 
-describe("the effect reads, and the one private read (P-15/F)", () => {
+describe("the effect reads, and the first private read (P-15/F)", () => {
   const TASK = "3f2a9c1e-5b7d-4e8f-9a0b-1c2d3e4f5a6b";
   const EFFECT = "a".repeat(64);
 
@@ -251,21 +252,23 @@ describe("the effect reads, and the one private read (P-15/F)", () => {
     expect(API_ROUTES.taskEffects).toBe("/api/v1/tasks/:taskId/effects");
     expect(API_ROUTES.taskEffectResult).toBe("/api/v1/tasks/:taskId/effects/:effectId/result");
     // 22 when it landed; P-26 cut C's two reads moved it again, P-27 cut A's task
-    // graph route, the seventh write, once more, and P-27 cut C's task step route,
-    // the eighth.
-    expect(Object.keys(API_ROUTES)).toHaveLength(26);
+    // graph route, the seventh write, once more, P-27 cut C's task step route, the
+    // eighth, and P-24 cut B(a)'s discovery read.
+    expect(Object.keys(API_ROUTES)).toHaveLength(27);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_WRITE_ROUTES).toHaveLength(8);
     expect(isWriteRoute("taskEffects")).toBe(false);
     expect(isWriteRoute("taskEffectResult")).toBe(false);
   });
 
-  it("names exactly one private read, frozen, and it is not a write", () => {
-    expect([...API_PRIVATE_READ_ROUTES]).toEqual(["taskEffectResult"]);
+  it("names exactly the private reads, frozen, and none is a write", () => {
+    // One when it landed; P-24 cut B(a)'s discovery read is the second.
+    expect([...API_PRIVATE_READ_ROUTES]).toEqual(["taskEffectResult", "toolServerTools"]);
     expect(Object.isFrozen(API_PRIVATE_READ_ROUTES)).toBe(true);
     expect(isPrivateReadRoute("taskEffectResult")).toBe(true);
+    expect(isPrivateReadRoute("toolServerTools")).toBe(true);
     for (const route of Object.keys(API_ROUTES) as (keyof typeof API_ROUTES)[]) {
-      if (route === "taskEffectResult") continue;
+      if (route === "taskEffectResult" || route === "toolServerTools") continue;
       expect(isPrivateReadRoute(route)).toBe(false);
     }
     for (const route of API_PRIVATE_READ_ROUTES) {
@@ -295,11 +298,11 @@ describe("the steps and diff reads (P-26 cut C)", () => {
       expect(isWriteRoute(route)).toBe(false);
       expect(isPrivateReadRoute(route)).toBe(false);
     }
-    // 24 when they landed; P-27 cut A's task graph route, the seventh write, and P-27
-    // cut C's task step route, the eighth.
-    expect(Object.keys(API_ROUTES)).toHaveLength(26);
+    // 24 when they landed; P-27 cut A's task graph route, the seventh write, P-27
+    // cut C's task step route, the eighth, and P-24 cut B(a)'s discovery read.
+    expect(Object.keys(API_ROUTES)).toHaveLength(27);
     expect(API_WRITE_ROUTES).toHaveLength(8);
-    expect([...API_PRIVATE_READ_ROUTES]).toEqual(["taskEffectResult"]);
+    expect([...API_PRIVATE_READ_ROUTES]).toEqual(["taskEffectResult", "toolServerTools"]);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
   });
 
@@ -365,6 +368,31 @@ describe("the task step route takes the eighth write (P-27 cut C)", () => {
     for (const bad of ["../../etc/passwd", INITIATIVE + "?version=1", "", "not-a-uuid"]) {
       expect(() => initiativeTaskStepPath(bad, TASK)).toThrow();
       expect(() => initiativeTaskStepPath(INITIATIVE, bad)).toThrow();
+    }
+  });
+});
+
+describe("the discovery read is the second private read, and no write (P-24 cut B(a))", () => {
+  it("is a GET under the versioned prefix, private, and not a write", () => {
+    expect(API_ROUTES.toolServerTools).toBe("/api/v1/tool-servers/:serverId/tools");
+    expect(isPrivateReadRoute("toolServerTools")).toBe(true);
+    expect(isWriteRoute("toolServerTools")).toBe(false);
+    expect(API_WRITE_ROUTES as readonly string[]).not.toContain("toolServerTools");
+    expect(API_WRITE_ROUTES).toHaveLength(8);
+    expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
+    const patterns = [...API_ROUTE_PATTERNS];
+    expect(new Set(patterns).size).toBe(patterns.length);
+  });
+
+  it("builds the path from a bounded identifier, encoded as one component", () => {
+    expect(toolServerToolsPath("docs")).toBe("/api/v1/tool-servers/docs/tools");
+    expect(toolServerToolsPath("a".repeat(120))).toBe("/api/v1/tool-servers/" + "a".repeat(120) + "/tools");
+    expect(segmentBefore(toolServerToolsPath("docs.v2_x-1"), "/tools")).toBe("docs.v2_x-1");
+  });
+
+  it("refuses a server id outside the grammar before it builds anything", () => {
+    for (const bad of ["a/b", "..", "%2F", "", "a".repeat(121), "docs?x=1", " docs"]) {
+      expect(() => toolServerToolsPath(bad), bad).toThrow();
     }
   });
 });

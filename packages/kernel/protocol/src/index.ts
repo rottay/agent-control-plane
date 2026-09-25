@@ -52,6 +52,7 @@ export {
   isPrivateReadRoute,
   taskEffectResultPath,
   taskEffectsPath,
+  toolServerToolsPath,
   workerPath,
 } from "./routes/index.js";
 export type {
@@ -157,6 +158,10 @@ export {
   ToolCallPageResponse,
   ToolCallRow,
   ToolCallsQuery,
+  // P-24/B(a): the discovery answer both doors print, and its bound.
+  DiscoveredTool,
+  MAX_DISCOVERED_TOOLS,
+  ToolDiscoveryResponse,
   // V2 L3: the lifecycle door's contract surface. Re-exported here for the
   // same reason the tool-call schemas above are — this barrel is the package's
   // only entry point, so a schema the gateway must parse against is reachable

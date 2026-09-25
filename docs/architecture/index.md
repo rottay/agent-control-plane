@@ -124,7 +124,7 @@ new records from `_template.md`, which carries the required fields.
 | 0106 | [One canonical-instant authority](0106-one-canonical-instant-authority.md) | accepted |
 | 0107 | [A result is read by reference, behind authorization](0107-a-result-is-read-by-reference-behind-authorization.md) | accepted |
 | 0108 | [A client reaches its model with a credential it never holds outside the boundary](0108-a-client-reaches-its-model-with-a-credential-it-never-holds-outside-the-boundary.md) | accepted |
-| 0109 | [A tool is called only under the schema it was allowed with](0109-a-tool-is-called-only-under-the-schema-it-was-allowed-with.md) | accepted, amended by 0117 |
+| 0109 | [A tool is called only under the schema it was allowed with](0109-a-tool-is-called-only-under-the-schema-it-was-allowed-with.md) | accepted, amended by 0117, 0118 |
 | 0110 | [The roadmap-version law runs inside the append](0110-the-roadmap-version-law-runs-inside-the-append.md) | accepted |
 | 0111 | [A roadmap version declares its steps, all or none](0111-a-roadmap-version-declares-its-steps-all-or-none.md) | accepted |
 | 0112 | [The Claude adapter admits what a capture shows](0112-the-claude-adapter-admits-what-a-capture-shows.md) | accepted, amended by 0114 |
@@ -133,6 +133,7 @@ new records from `_template.md`, which carries the required fields.
 | 0115 | [A step declares its task graph, all or none, and READY is pure](0115-a-step-declares-its-task-graph-and-ready-is-pure.md) | accepted |
 | 0116 | [A task changes step only by a recorded link](0116-a-task-changes-step-only-by-a-recorded-link.md) | accepted |
 | 0117 | [A tool's output interface is pinned, and structured content is admitted only when its text carries it](0117-a-tool-output-is-pinned-and-carried-only-as-text.md) | accepted |
+| 0118 | [A tool server is asked what it serves, and nothing is recorded](0118-a-tool-server-is-asked-what-it-serves-and-nothing-is-recorded.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

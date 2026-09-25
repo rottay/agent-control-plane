@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { WorkerIdentityString } from "@acp/contracts";
 
 import { admitToolServer, admitToolServers } from "../../src/admission/index.js";
 import type { AdmittedToolServer } from "../../src/admission/index.js";
-import { openToolOperation } from "../../src/operation/index.js";
+import { openToolDiscovery, openToolOperation } from "../../src/operation/index.js";
 import {
   makeToolFixtureDir,
   readToolCallLog,
@@ -42,6 +42,15 @@ const LEAKED = "sk-ant-api03-" + "A".repeat(32);
 let dir = "";
 let pidLog = "";
 let server: AdmittedToolServer;
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function childPids(): readonly number[] {
   return readToolCallLog(pidLog).map((line) => Number(line));
@@ -247,6 +256,72 @@ describe("ok agrees with the receipt, or the answer becomes a refusal", () => {
     expect(JSON.stringify(outcome)).not.toContain("must not be carried");
     expect(outcome.receipt).toMatchObject({ outcome: "REFUSED", refusal: "SCHEMA_MISMATCH", resultBytes: 0, contentBlocks: 0 });
     expect(readToolCallLog(dir + "/mismatch-calls.log")).toEqual([]);
+  });
+});
+
+describe("the discovery scope lists, never calls, and closes what it started (P-24/B(a))", () => {
+  it("answers the port's listing and reaps the child on close, idempotently", async () => {
+    const scope = openToolDiscovery({ servers: [server] });
+    let pids: readonly number[] = [];
+    try {
+      const listed = await scope.listTools("docs");
+      expect(listed.ok).toBe(true);
+      if (listed.ok) expect(listed.tools.map((tool) => tool.name)).toEqual(["docs.search", "docs.leak"]);
+      pids = childPids();
+      expect(pids).toHaveLength(1);
+      expect(readToolCallLog(dir + "/calls.log")).toEqual([]);
+    } finally {
+      await scope.close();
+      await scope.close();
+    }
+    await vi.waitFor(() => {
+      expect(pids.some(pidAlive)).toBe(false);
+    });
+  });
+
+  it("has no callTool member, by construction", () => {
+    const scope = openToolDiscovery({ servers: [server] });
+    expect("callTool" in scope).toBe(false);
+    expect(Object.keys(scope).sort()).toEqual(["close", "listTools"]);
+    expect(Object.isFrozen(scope)).toBe(true);
+  });
+
+  it("refuses a listing after close as SESSION_NOT_LIVE, with no spawn", async () => {
+    const scope = openToolDiscovery({ servers: [server] });
+    await scope.close();
+    expect(await scope.listTools("docs")).toEqual({ ok: false, refusal: "SESSION_NOT_LIVE", at: "request.sessionId" });
+    expect(childPids()).toHaveLength(0);
+  });
+
+  it("refuses a server it was not handed as SERVER_NOT_ADMITTED, with no spawn", async () => {
+    const scope = openToolDiscovery({ servers: [server] });
+    try {
+      expect(await scope.listTools("elsewhere")).toEqual({ ok: false, refusal: "SERVER_NOT_ADMITTED", at: "request.serverId" });
+      expect(childPids()).toHaveLength(0);
+    } finally {
+      await scope.close();
+    }
+  });
+
+  it("reuses one connection and its cached listing for two listings on one scope", async () => {
+    const listLog = dir + "/lists.log";
+    const fake = writeFakeToolServer(dir + "/cached", {
+      pidLog,
+      listLog,
+      advertises: ["docs.search"],
+      answers: { "docs.search": { kind: "TEXT", blocks: ["the answer"] } },
+    });
+    const admitted = admitToolServer({ serverId: "docs", transport: "STDIO", command: fake.command, args: fake.args, tools: ALLOWLIST.slice(0, 1) });
+    if (!admitted.ok) throw new Error("fixture server was not admitted: " + admitted.at);
+    const scope = openToolDiscovery({ servers: [admitted.server] });
+    try {
+      expect((await scope.listTools("docs")).ok).toBe(true);
+      expect((await scope.listTools("docs")).ok).toBe(true);
+      expect(childPids()).toHaveLength(1);
+      expect(readToolCallLog(listLog)).toEqual(["list null"]);
+    } finally {
+      await scope.close();
+    }
   });
 });
 

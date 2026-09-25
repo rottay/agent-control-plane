@@ -542,3 +542,81 @@ describe("the loopback leg reads the output pin and the structured result alike 
     }
   });
 });
+
+describe("a listing prefers the transport refusal the loopback leg carried (P-24/B(a))", () => {
+  const PIN = { type: "object" };
+
+  /**
+   * A peer that answers the first `redirects` listings with a 302, and every
+   * later one with the tool under its pin. Each `initialize` is counted, so a
+   * dropped connection is visible as a second handshake.
+   */
+  function redirectingPeer(redirects: number): { readonly methods: () => readonly string[] } {
+    const methods: string[] = [];
+    let lists = 0;
+    scripted = scriptFetch((body: string) => {
+      const parsed = JSON.parse(body) as { method?: string; id?: number };
+      methods.push(parsed.method ?? "");
+      const id = parsed.id ?? 0;
+      if (parsed.method === "initialize") return { status: 200, headers: JSON_HEADERS, body: initializeBody(id) };
+      if (parsed.method === "notifications/initialized") return { status: 202 };
+      if (parsed.method === "tools/list") {
+        lists += 1;
+        if (lists <= redirects) return { status: 302, headers: { location: "http://127.0.0.1:9001/elsewhere" } };
+        return { status: 200, headers: SSE_HEADERS, body: "data: " + jsonRpcBody(id, { tools: [{ name: "docs.search", inputSchema: PIN }] }) + "\n\n" };
+      }
+      return { status: 200, headers: JSON_HEADERS, body: jsonRpcBody(id, { content: [{ type: "text", text: "the answer" }] }) };
+    });
+    return { methods: () => methods };
+  }
+
+  const loopbackPort = (): ToolProtocolPort => {
+    const admitted = admitToolServer({
+      serverId: "docs",
+      transport: "HTTP_LOOPBACK",
+      url: URL_TEXT,
+      tools: [{ name: "docs.search", writes: false, inputSchema: PIN }],
+    });
+    if (!admitted.ok) throw new Error("fixture endpoint was not admitted: " + admitted.at);
+    return createToolProtocolPort({ servers: [admitted.server], liveness: { isLive: () => true } });
+  };
+
+  it("answers a redirect during the listing as TRANSPORT_REFUSED at its field path, promptly, and drops the connection", async () => {
+    const peer = redirectingPeer(1);
+    const target = loopbackPort();
+    try {
+      const started = Date.now();
+      expect(await target.listTools("s", "docs")).toEqual({
+        ok: false,
+        refusal: "TRANSPORT_REFUSED",
+        at: "server.response.redirect",
+      });
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(peer.methods()).not.toContain("tools/call");
+      // Dropped: the next listing opens a new session with a new handshake. A
+      // kept connection would answer the next listing with the broken client's
+      // PROTOCOL_VIOLATION and the stale carried word, so this half is red when
+      // the drop is removed. The loopback ends the connection when it records the
+      // refusal, so the client's own word here is PROTOCOL_VIOLATION and the drop
+      // comes from that disjunct; the `|| carried !== null` disjunct alone is not
+      // separable by any row and is carried by code reading (ADR 0118 §Two).
+      expect(await target.listTools("s", "docs")).toMatchObject({ ok: true, tools: [{ name: "docs.search" }] });
+      expect(peer.methods().filter((method) => method === "initialize")).toHaveLength(2);
+    } finally {
+      await target.closeAll();
+    }
+  });
+
+  it("lists the same peer without a redirect on one connection (the positive twin)", async () => {
+    const peer = redirectingPeer(0);
+    const target = loopbackPort();
+    try {
+      expect(await target.listTools("s", "docs")).toMatchObject({ ok: true, tools: [{ name: "docs.search" }] });
+      expect(await target.listTools("s", "docs")).toMatchObject({ ok: true });
+      expect(peer.methods().filter((method) => method === "initialize")).toHaveLength(1);
+      expect(peer.methods().filter((method) => method === "tools/list")).toHaveLength(1);
+    } finally {
+      await target.closeAll();
+    }
+  });
+});

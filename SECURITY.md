@@ -74,9 +74,11 @@ Three properties, each mechanical:
 > Anchor: `packages/entrypoints/gateway/src/bearer/index.ts` — `Fail-closed`
 > Anchor: `packages/kernel/protocol/src/routes/index.ts` — `export const API_WRITE_ROUTES`
 
-**One read is guarded too (P-15/F, ADR 0107).** Observation stays free, with one
-exception: `taskEffectResult` (`GET /api/v1/tasks/:taskId/effects/:effectId/result`)
-answers **model output**, which tests §8.1 admits on a public response only as an
+**Two reads are guarded too.** Observation stays free, with two exceptions, both
+named in one frozen table.
+
+**Model output (P-15/F, ADR 0107).** The first exception is `taskEffectResult` (`GET /api/v1/tasks/:taskId/effects/:effectId/result`),
+which answers **model output**, which tests §8.1 admits on a public response only as an
 explicitly authorized read (decision 149). It is named in a third frozen table,
 `API_PRIVATE_READ_ROUTES`, and registered through the read-side twin of the write
 registrar, `registerPrivateGet`, so it is guarded by where it is registered:
@@ -84,7 +86,10 @@ registrar, `registerPrivateGet`, so it is guarded by where it is registered:
 - **Fail-closed.** A server started without a token answers
   `403 PRIVATE_READ_UNCONFIGURED`; a missing or wrong bearer answers
   `401 AUTH_REQUIRED`, one answer for both. The bearer is checked before any
-  parameter is read.
+  parameter is read by a handler. The framework's router is earlier still: a path
+  parameter past 100 characters is its own `400` before any hook, bearer included,
+  so for such a parameter an unauthenticated caller sees `400`, not `401`. It
+  carries a closed word and nothing about the ledger, the plane or a tool document.
 - **One credential.** The same token file authorizes writes and this read until
   P-36's read policy; there is no least privilege between the two uses yet.
 - **Never cached.** Every answer on the path, a `200` or an error — the framework's
@@ -96,6 +101,22 @@ registrar, `registerPrivateGet`, so it is guarded by where it is registered:
 
 On the CLI, `acp result` is the same read; its authorization is the operator's own
 access to the ledger and the private plane beside it (root `0700`, objects `0600`).
+
+**A second read is guarded, for a different reason (P-24/B(a), ADR 0118).**
+`toolServerTools` (`GET /api/v1/tool-servers/:serverId/tools`) answers no model
+output, but it is not free either: it **starts a child** to ask one admitted tool
+server which of its allowlisted tools it serves, and it describes the operator's
+tool document. So it joins `API_PRIVATE_READ_ROUTES` and is registered through the
+same `registerPrivateGet`, with the same four properties above but the last: the
+bearer is checked before `serverId` is read and before any child exists, and a
+server started without a tool document answers `503 TOOL_SERVERS_UNCONFIGURED`
+only after it. It records nothing, sends no `tools/call`, and reaps the child before
+the response is sent; the answer carries tool names and whether each writes, never a
+schema byte or the transport. Like every GET the framework registers, it also answers
+`HEAD`: behind the same bearer, a `HEAD` runs the same handler, so it starts and reaps a
+child and records nothing, and only the body is dropped. `taskEffectResult` has the same
+`HEAD`. Answering `405` to `HEAD` on the private reads is left to a later cut. On the CLI, `acp tool-servers` is the same read,
+authorized by the owning uid over the `0600` tool document, and it opens no ledger.
 
 > Anchor: `packages/entrypoints/gateway/src/routes/index.ts` — `function registerPrivateGet(`
 > Anchor: `packages/kernel/protocol/src/routes/index.ts` — `export const API_PRIVATE_READ_ROUTES`

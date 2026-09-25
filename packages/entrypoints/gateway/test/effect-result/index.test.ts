@@ -28,10 +28,11 @@ import { buildServer } from "../../src/build-server/index.js";
 /**
  * P-15 escalón F (ADR 0107): the two effect reads at the HTTP door.
  *
- * The door's own behaviour is proved here: the bearer on the one private read
- * and on nothing else, the method and parameter refusals, `no-store`, and the
- * mapping of every answer the runtime reader can give onto the wire and the one
- * error envelope. The reader's decisions are proved against a real ledger and a
+ * The door's own behaviour is proved here: the bearer on this private read and
+ * on no public GET (P-24/B(a) added a second private read, the tool-server
+ * discovery, whose bearer rows live in its own suite), the method and parameter
+ * refusals, `no-store`, and the mapping of every answer the runtime reader can
+ * give onto the wire and the one error envelope. The reader's decisions are proved against a real ledger and a
  * real plane in the runtime's suite, and the whole path — a task entered by a
  * real door, executed by the daemon, read back through this route and the CLI
  * verb — in the daemon's door-to-result drill. The reader is wrapped here so a
@@ -140,7 +141,7 @@ describe("P-15/F: the effects list is a plain read", () => {
   });
 });
 
-describe("P-15/F N-F-19: the model-output read is the one guarded GET", () => {
+describe("P-15/F N-F-19: the model-output read is guarded, beside the tool-server discovery and no other GET", () => {
   it("answers 401 without a bearer and with a wrong one, alike, before any parameter is read", async () => {
     const { ledgerPath, taskId } = seeded();
     const app = buildServer({ ledgerPath, writeBearerPath: bearerFile() });
@@ -182,12 +183,12 @@ describe("P-15/F N-F-19: the model-output read is the one guarded GET", () => {
     await app.close();
   });
 
-  it("leaves every other GET free: the exception is the private table, and the table names model output only", async () => {
+  it("leaves every other GET free: the exception is the private table, and the table names model output and tool-server discovery only", async () => {
     const { ledgerPath, taskId } = seeded();
     const app = buildServer({ ledgerPath, writeBearerPath: bearerFile() });
-    expect([...API_PRIVATE_READ_ROUTES]).toEqual(["taskEffectResult"]);
+    expect([...API_PRIVATE_READ_ROUTES]).toEqual(["taskEffectResult", "toolServerTools"]);
     for (const name of Object.keys(API_ROUTES) as ApiRouteName[]) {
-      expect(isPrivateReadRoute(name)).toBe(name === "taskEffectResult");
+      expect(isPrivateReadRoute(name)).toBe(name === "taskEffectResult" || name === "toolServerTools");
     }
     const parameterless = API_ROUTE_PATTERNS.filter((pattern) => !pattern.includes(":") && pattern !== API_ROUTES.eventStream);
     for (const url of [...parameterless, API_ROUTES.tasks + "/" + taskId, taskEffectsPath(taskId)]) {

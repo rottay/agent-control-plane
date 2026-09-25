@@ -68,9 +68,20 @@ export type ToolCallOutcome =
       readonly at: string;
     };
 
+/**
+ * What a listing answers (P-24, ADR 0109; P-24/B(a), ADR 0118).
+ *
+ * `toolName` is present on a refusal exactly when the refusal is
+ * `SCHEMA_MISMATCH`, and names the first allowlist entry, in allowlist order,
+ * whose pin the advertisement did not match. It is a field of its own rather
+ * than a segment of `at` because a bounded name (up to 120 characters) spliced
+ * into the path would overflow the protocol's 120-character `at`; `at` still
+ * says which schema differed. Every other refusal names no tool: it is about
+ * the session, the admission or the wire, not about one entry.
+ */
 export type ToolListingOutcome =
   | { readonly ok: true; readonly tools: readonly ToolAllowlistEntry[] }
-  | { readonly ok: false; readonly refusal: ToolRefusal; readonly at: string };
+  | { readonly ok: false; readonly refusal: ToolRefusal; readonly at: string; readonly toolName?: string };
 
 export interface ToolProtocolPort {
   readonly listTools: (sessionId: string, serverId: string) => Promise<ToolListingOutcome>;
@@ -231,9 +242,21 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
         return { ok: false, refusal: "PROTOCOL_VIOLATION", at: "server.process" };
       }
 
+      // The rule `callTool` applies at its step 7, applied here too (P-24/B(a),
+      // ADR 0118): the loopback leg records a transport refusal out of band, so
+      // a refused redirect during a listing would otherwise reach the caller as
+      // the client's `PROTOCOL_VIOLATION` at `server.response`. Where one was
+      // recorded it is preferred, word and `at`. The drop is the rule's too, but
+      // recording a refusal ends the loopback connection, which settles the
+      // client with `PROTOCOL_VIOLATION`, so on every path a row can drive the
+      // first disjunct already drops; the second is carried by this reading.
       const listed = await trustedListing(connection);
       if (!listed.ok) {
-        if (listed.refusal === "PROTOCOL_VIOLATION") await drop(connectionKey(sessionId, serverId));
+        const carried = transportRefusalOf(connection.transport);
+        if (listed.refusal === "PROTOCOL_VIOLATION" || carried !== null) {
+          await drop(connectionKey(sessionId, serverId));
+        }
+        if (carried !== null) return { ok: false, refusal: carried.refusal, at: carried.at };
         return { ok: false, refusal: listed.refusal, at: listed.at };
       }
 
@@ -252,7 +275,7 @@ export function createToolProtocolPort(input: ToolProtocolPortInput): ToolProtoc
         if (at === null) {
           available.push(entry);
         } else if (at !== "server.tools") {
-          return { ok: false, refusal: "SCHEMA_MISMATCH", at };
+          return { ok: false, refusal: "SCHEMA_MISMATCH", at, toolName: entry.name };
         }
       }
       return { ok: true, tools: Object.freeze(available) };

@@ -88,6 +88,7 @@ import { LifecycleRefused, runLifecycleVerb } from "../lifecycle/index.js";
 import { InitiativeRefused, runInitiativeVerb } from "../initiative/index.js";
 import { IntakeRefused, runIntakeVerb } from "../intake/index.js";
 import { RegistryRefused, runRegistryVerb } from "../registry/index.js";
+import { runToolDiscoveryVerb } from "../tool-discovery/index.js";
 import type { LifecycleDriverFactory, LifecycleOutcome } from "../lifecycle/index.js";
 import {
   buildEventPage,
@@ -199,6 +200,7 @@ const OPTIONS = {
   "duration-seconds": { type: "string" },
   request: { type: "string" },
   "tool-servers": { type: "string" },
+  server: { type: "string" },
   attempt: { type: "string" },
   mode: { type: "string" },
   scenario: { type: "string" },
@@ -270,6 +272,16 @@ export const INTAKE_COMMAND = "intake";
  * those three come to disagree.
  */
 export const REGISTRY_COMMAND = "registry";
+
+/**
+ * The discovery verb's name, as one literal (P-24/B(a)).
+ *
+ * Named for the registry verb's reason: the table declares it, `run` branches on
+ * it and `SURFACE_MAP` pairs it with `toolServerTools` GET. Not `tools`, which
+ * would read as a local catalogue, and not `tool-call` or `tool-calls`, which are
+ * taken.
+ */
+export const TOOL_SERVERS_COMMAND = "tool-servers";
 
 type OptionName = keyof typeof OPTIONS;
 type ParsedValues = Partial<Record<OptionName, string | boolean>>;
@@ -443,6 +455,16 @@ const COMMANDS: readonly CommandSpec[] = [
     options: ["request"],
     summary: "publish one registry version from a request document and print it",
   },
+  // P-24/B(a). Which of one admitted server's allowlisted tools it serves under
+  // their pins: the CLI's side of the private read `toolServerTools`. The one
+  // verb that opens no ledger, and it refuses `--database` rather than ignoring
+  // it: a discovery records nothing, so the answer is not a fact in a ledger.
+  {
+    name: TOOL_SERVERS_COMMAND,
+    positional: null,
+    options: ["tool-servers", "server"],
+    summary: "ask one admitted tool server which allowlisted tools it serves; records nothing",
+  },
 ];
 
 /**
@@ -510,6 +532,10 @@ const USAGE = ((): string => {
     "  --mode <driver-mode>       SQLITE_SUPERVISOR or RESTATE. Required, never inferred.",
     "  --scenario <id>            The scenario whose execution evidence is probed.",
     "",
+    "Tool discovery (P-24/B(a)):",
+    "  --tool-servers <path>      The operator's tool-servers document. Absolute, 0600.",
+    "  --server <id>              The admitted server to ask.",
+    "",
     "Submission planning (V2-B7S):",
     "  --config <path>            Daemon config document to re-elect. Absolute.",
     "  --accounts <path>          Owner accounts file. Absolute.",
@@ -526,7 +552,9 @@ const USAGE = ((): string => {
     "`" + REGISTRY_COMMAND + "` publishes one registry version, its digest derived from its payload. The CLI",
     "prints no absolute path and no event payload value. `acp submission` opens no",
     "ledger at all: it reads three documents, elects a route and prints one",
-    "document to stdout, creating and modifying no file.",
+    "document to stdout, creating and modifying no file. `acp " + TOOL_SERVERS_COMMAND + "`",
+    "opens no ledger and refuses --database: it asks one tool server what it",
+    "serves, reaps the child, and records nothing.",
     "",
   ].join("\n");
 })();
@@ -1984,6 +2012,33 @@ export async function run(
       format,
       io,
     );
+  }
+
+  // P-24/B(a). The discovery verb branches here, above the `--database` law: a
+  // discovery records nothing, so the answer is not a fact in a ledger and this
+  // verb has none to name. `--database` is refused for it rather than accepted
+  // and ignored, because a flag a verb silently ignores is a claim it does not
+  // keep.
+  if (spec.name === TOOL_SERVERS_COMMAND) {
+    if (values.database !== undefined) {
+      return emitFailure(
+        usageFailure("acp " + TOOL_SERVERS_COMMAND + " opens no ledger, so --database is refused", "--database"),
+        format,
+        io,
+      );
+    }
+    try {
+      const result = await runToolDiscoveryVerb({
+        toolServersPath: stringOption(values, "tool-servers") ?? "",
+        serverId: stringOption(values, "server") ?? "",
+      });
+      // JSON regardless of `--format`, on the tool call's precedent. A port
+      // refusal is a truthful answer about the peer and exits `EXIT_OK`.
+      io.stdout(renderJson(result.document));
+      return EXIT_OK;
+    } catch (error: unknown) {
+      return emitFailure(fromToolCallError(error), format, io);
+    }
   }
 
   const databasePath = stringOption(values, "database");

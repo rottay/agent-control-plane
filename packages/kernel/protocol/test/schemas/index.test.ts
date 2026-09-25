@@ -86,6 +86,8 @@ import {
   TaskEffectResultQuery,
   TaskEffectResultResponse,
   TaskEffectsResponse,
+  MAX_DISCOVERED_TOOLS,
+  ToolDiscoveryResponse,
 } from "../../src/index.js";
 import * as protocolBarrel from "../../src/index.js";
 import { EffectIdParam } from "../../src/schemas/index.js";
@@ -2308,7 +2310,7 @@ describe("the initiative registration's wire contract (P-14/B)", () => {
 
   it("N-P14B-14: moves the API version and the write table, and adds no error code", () => {
     // `0.16.0` when it landed; P-14/C's sixth write door moved it again.
-    expect(API_CONTRACT_VERSION).toBe("0.23.0");
+    expect(API_CONTRACT_VERSION).toBe("0.24.0");
     expect(isWriteRoute("initiatives")).toBe(true);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(16);
@@ -2465,7 +2467,7 @@ describe("the task intake's wire contract (P-14/C)", () => {
   });
 
   it("N-P14C-23: moves the API version and the write table, and adds no method and no error code", () => {
-    expect(API_CONTRACT_VERSION).toBe("0.23.0");
+    expect(API_CONTRACT_VERSION).toBe("0.24.0");
     expect(isWriteRoute("tasks")).toBe(true);
     // Six when it landed; P-27 cut A's task graph route is the seventh, and P-27 cut
     // C's task step route the eighth.
@@ -2601,7 +2603,7 @@ describe("the registry publication's request (P-15/R, ADR 0104)", () => {
     ).toBe(false);
     // No route parses it: the registry publication moved neither the API contract
     // version nor the write table. Both literals are today's: P-27 cut C moved them.
-    expect(API_CONTRACT_VERSION).toBe("0.23.0");
+    expect(API_CONTRACT_VERSION).toBe("0.24.0");
     expect(API_WRITE_ROUTES).toHaveLength(8);
   });
 });
@@ -3093,7 +3095,7 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.23.0");
+    expect(API_CONTRACT_VERSION).toBe("0.24.0");
   });
 
   it("names the thirteenth error code, and the version the surface now stands at", () => {
@@ -3110,7 +3112,7 @@ describe("the tool call's wire contract", () => {
     // that did not move with it is exactly the point — the version tracks the
     // whole surface, not one list. The number stays a literal so it is asserted
     // rather than echoed.
-    expect(API_CONTRACT_VERSION).toBe("0.23.0");
+    expect(API_CONTRACT_VERSION).toBe("0.24.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
@@ -3123,7 +3125,7 @@ describe("the tool call's wire contract", () => {
     expect(API_ERROR_CODES).toContain("CAPABILITY_UNSUPPORTED");
     expect(API_ERROR_CODES).toContain("SCENARIO_UNCONFIGURED");
     expect(API_ERROR_CODES).toHaveLength(16);
-    expect(API_CONTRACT_VERSION).toBe("0.23.0");
+    expect(API_CONTRACT_VERSION).toBe("0.24.0");
 
     // The distinction is the reason both exist. `SCENARIO_UNCONFIGURED` is an
     // operator problem a restart fixes, on the shape
@@ -3408,7 +3410,7 @@ describe("P-15/F: the effect reads on the wire (ADR 0107)", () => {
   it("names the private read's unconfigured server apart from the write door's", () => {
     expect(API_ERROR_CODES).toContain("PRIVATE_READ_UNCONFIGURED");
     expect(API_ERROR_CODES).toContain("WRITE_BEARER_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.23.0");
+    expect(API_CONTRACT_VERSION).toBe("0.24.0");
   });
 });
 
@@ -3890,5 +3892,82 @@ describe("the task step route's schemas (P-27 cut C)", () => {
 
   it("the timeline's type enum carries TASK_STEP_LINKED by derivation", () => {
     expect(InitiativeEventTypeDto.safeParse("TASK_STEP_LINKED").success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-24 cut B(a): the discovery answer (ADR 0118)
+// ---------------------------------------------------------------------------
+
+describe("the discovery answer is strict, and its fields agree with its outcome (P-24 cut B(a))", () => {
+  const completed = {
+    apiContractVersion: API_CONTRACT_VERSION,
+    ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+    serverId: "docs",
+    outcome: "COMPLETED",
+    refusal: null,
+    at: null,
+    toolName: null,
+    tools: [
+      { name: "docs.search", writes: false },
+      { name: "docs.write", writes: true },
+    ],
+    count: 2,
+  };
+  const mismatch = {
+    ...completed,
+    outcome: "REFUSED",
+    refusal: "SCHEMA_MISMATCH",
+    at: "server.tools.outputSchema",
+    toolName: "docs.search",
+    tools: [],
+    count: 0,
+  };
+
+  it("admits a completed listing, an empty one, a mismatch and a refusal that names no tool", () => {
+    expect(ToolDiscoveryResponse.safeParse(completed).success).toBe(true);
+    expect(ToolDiscoveryResponse.safeParse({ ...completed, tools: [], count: 0 }).success).toBe(true);
+    expect(ToolDiscoveryResponse.safeParse(mismatch).success).toBe(true);
+    expect(ToolDiscoveryResponse.safeParse({ ...mismatch, at: "server.tools.inputSchema" }).success).toBe(true);
+    expect(
+      ToolDiscoveryResponse.safeParse({ ...mismatch, refusal: "SERVER_NOT_ADMITTED", at: "request.serverId", toolName: null }).success,
+    ).toBe(true);
+    const full = Array.from({ length: MAX_DISCOVERED_TOOLS }, (_, index) => ({ name: "t." + String(index).padStart(3, "0"), writes: false }));
+    expect(ToolDiscoveryResponse.safeParse({ ...completed, tools: full, count: full.length }).success).toBe(true);
+  });
+
+  it("refuses every shape whose fields disagree with its outcome, or that says more than it may", () => {
+    const tooMany = Array.from({ length: MAX_DISCOVERED_TOOLS + 1 }, (_, index) => ({ name: "t." + String(index).padStart(3, "0"), writes: false }));
+    const cases: readonly [string, unknown][] = [
+      ["completed with a refusal", { ...completed, refusal: "SCHEMA_MISMATCH" }],
+      ["completed with an at", { ...completed, at: "server.tools" }],
+      ["completed with a toolName", { ...completed, toolName: "docs.search" }],
+      ["refused with tools", { ...mismatch, tools: [{ name: "docs.search", writes: false }], count: 1 }],
+      ["refused with no refusal", { ...mismatch, refusal: null, toolName: null }],
+      ["refused with no at", { ...mismatch, at: null }],
+      ["count not the number of tools", { ...completed, count: 1 }],
+      ["toolName on a refusal that is not a mismatch", { ...mismatch, refusal: "PROTOCOL_VIOLATION" }],
+      ["a mismatch naming no tool", { ...mismatch, toolName: null }],
+      ["tools out of name order", { ...completed, tools: [...completed.tools].reverse() }],
+      ["one tool twice", { ...completed, tools: [completed.tools[0], completed.tools[0]] }],
+      ["past the bound", { ...completed, tools: tooMany, count: tooMany.length }],
+      ["an unknown key", { ...completed, extra: 1 }],
+      ["a transport key", { ...completed, transport: "STDIO" }],
+      ["a schema on a tool", { ...completed, tools: [{ name: "docs.search", writes: false, inputSchema: {} }], count: 1 }],
+      ["a server id out of grammar", { ...completed, serverId: "a/b" }],
+      ["a refusal out of grammar", { ...mismatch, refusal: "schema mismatch" }],
+      ["an at past 120 characters", { ...mismatch, at: "x".repeat(121) }],
+    ];
+    for (const [name, value] of cases) {
+      expect(ToolDiscoveryResponse.safeParse(value).success, name).toBe(false);
+    }
+  });
+
+  it("carries no ledger coordinate: no sequence, no event id, no transition", () => {
+    const keys = Object.keys(ToolDiscoveryResponse.shape);
+    for (const absent of ["sequence", "eventId", "transitionId", "transport", "replayed", "content"]) {
+      expect(keys).not.toContain(absent);
+    }
+    expect(MAX_DISCOVERED_TOOLS).toBe(256);
   });
 });

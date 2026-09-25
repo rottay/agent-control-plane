@@ -37,7 +37,7 @@ routes that also accept a write are named in a separate frozen table,
 | --- | --- | --- |
 | `initiativeRoadmap` | `POST /api/v1/initiatives/:initiativeId/roadmap` | a roadmap version |
 | `accountActions` | `POST /api/v1/accounts/:accountId/actions` | an account action |
-| `taskToolCalls` | `POST /api/v1/tasks/:taskId/tool-calls` | one explicit tool call — the only route that starts a child process |
+| `taskToolCalls` | `POST /api/v1/tasks/:taskId/tool-calls` | one explicit tool call — the only route that acts through a child process (the private read `toolServerTools` starts one only to ask, and records nothing) |
 | `taskLifecycle` | `POST /api/v1/tasks/:taskId/lifecycle` | one lifecycle verb against an attempt already running — `CANCEL` or `ATTACH`, through the same operation the CLI door calls |
 | `initiatives` | `POST /api/v1/initiatives` | one initiative, under the caller's own id, through `registerInitiative` — the orchestration `acp initiative` calls too; its objective goes to the private artifact plane and the stream records the digest and the reference |
 | `tasks` | `POST /api/v1/tasks` | one task intake, under the caller's client key and task id, through `intakeTask` — the orchestration `acp intake` calls too; its envelope goes to the private artifact plane, revision 1 names it by reference, and nothing executes the task |
@@ -53,6 +53,18 @@ authorizes writes and this read until P-36's read policy. Its sibling
 `taskEffects` (`GET /api/v1/tasks/:taskId/effects`) is a plain read: a task's effect
 ids, coordinates and outcome words, never a reference, a digest or a byte. Both
 live in `effect-result`, which logs nothing and publishes nothing (L-P15F-1).
+
+**A second read is not free (P-24/B(a), ADR 0118).** `toolServerTools`
+(`GET /api/v1/tool-servers/:serverId/tools`) starts a child through the tool edge's
+discovery scope to ask one admitted server which of its allowlisted tools it serves
+under their pins, so it is the second member of `API_PRIVATE_READ_ROUTES`, registered
+through the same `registerPrivateGet`. It lives in `tool-discovery`, which opens,
+reads and appends to no ledger (L-P24BA-2): the tool document loaded once at startup
+is the only input, `503 TOOL_SERVERS_UNCONFIGURED` answers its absence after the
+bearer, the child is reaped before the response, and every port refusal is a `200`
+with `outcome: "REFUSED"` and the port's word. The answer is `ToolDiscoveryResponse`,
+the document `acp tool-servers` prints too. The framework's implicit `HEAD` runs the
+same handler behind the same bearer, as it does on `taskEffectResult`.
 
 The fifth (P-14/B) is the portfolio route's own POST: the GET beside it is
 unchanged and unguarded. Its seam, `initiative-write`, decides nothing — it

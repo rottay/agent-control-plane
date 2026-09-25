@@ -57,6 +57,7 @@ acp <command> --database <path> [options]
 | `registry`          | Publish one registry version from a request document and print it         |
 | `effects <task-id>` | List one task's effects and whether each recorded a result                 |
 | `result`            | Print one effect's result document, or one block of it, read by reference  |
+| `tool-servers`      | Ask one admitted tool server which allowlisted tools it serves; records nothing |
 
 The table above said eight while there were fourteen: `submission`,
 `switch-decision`, `tool-calls`, `tool-call`, `cancel` and `attach` all landed
@@ -75,6 +76,20 @@ nothing, because the plane serves no route that plans, decides or publishes
 registry configuration — is declared in
 `SURFACE_MAP` (`packages/kernel/protocol/src/surface-map/index.ts`), the one
 place the CLI/API relation is written down.
+
+`tool-servers`, the twentieth (P-24/B(a), ADR 0118), is **the one verb that opens
+no ledger**: `acp tool-servers --tool-servers <path> --server <id>` asks one server
+the operator's tool document admits which of its allowlisted tools it serves under
+their pins, and a discovery records nothing, so its answer is not a fact in a
+ledger. It branches above the `--database` law and refuses `--database` rather than
+accepting a flag it would ignore. The document is read through the tool-call verb's
+uid ladder with the `0600` rule, the child is started through the tool edge's
+discovery scope and reaped before anything is printed, and no `tools/call` is sent.
+It prints `ToolDiscoveryResponse` as JSON whatever `--format` says — the document
+the private read `GET /api/v1/tool-servers/:serverId/tools` answers — and a port
+refusal (`SCHEMA_MISMATCH` with the tool it names, `SERVER_NOT_ADMITTED`, …) is that
+document with `outcome: "REFUSED"` and exit `0`. A document the edge does not admit
+or a `--server` outside the bounded-identifier grammar is `2`.
 
 Global options:
 

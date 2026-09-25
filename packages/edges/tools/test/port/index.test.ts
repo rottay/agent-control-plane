@@ -946,7 +946,93 @@ describe("the port lists before it calls, and calls only under the pinned schema
     const equal = await portWith({ advertises: ["docs.search"] }).listTools(SESSION, "docs");
     expect(equal).toEqual({ ok: true, tools: [{ ...ALLOWLIST[0], outputSchema: null }] });
     const differing = await portWith({ schemas: { "docs.write": { type: "object", required: ["x"] } } }).listTools(SESSION, "docs");
-    expect(differing).toEqual({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.inputSchema" });
+    expect(differing).toEqual({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.inputSchema", toolName: "docs.write" });
+  });
+
+  // P-24/B(a) (ADR 0118): the listing names the tool it refused over, and only then.
+  it("names the first mismatched entry in allowlist order, not advertisement order", async () => {
+    const pinned = [
+      { name: "docs.search", writes: false, inputSchema: { type: "object" } },
+      { name: "docs.write", writes: true, inputSchema: { type: "object" } },
+      { name: "docs.huge", writes: false, inputSchema: { type: "object" } },
+    ];
+    const other = { type: "object", required: ["x"] };
+    const listed = await portWith(
+      { advertises: ["docs.huge", "docs.write", "docs.search"], schemas: { "docs.huge": other, "docs.write": other } },
+      pinned,
+    ).listTools(SESSION, "docs");
+    expect(listed).toEqual({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.inputSchema", toolName: "docs.write" });
+    expect(readToolCallLog(callLog)).toEqual([]);
+  });
+
+  it("omits an allowlisted tool the server does not advertise, never names an unallowlisted one, and names no tool on success", async () => {
+    const listed = await portWith({ advertises: ["docs.search", "shell.exec"] }).listTools(SESSION, "docs");
+    expect(listed).toEqual({ ok: true, tools: [{ ...ALLOWLIST[0], outputSchema: null }] });
+    expect(JSON.stringify(listed)).not.toContain("shell.exec");
+    expect(Object.hasOwn(listed, "toolName")).toBe(false);
+  });
+
+  it("names no tool on a refusal that is not a mismatch", async () => {
+    const names = Array.from({ length: TOOL_LIST_PAGES_MAX + 1 }, (_, index) => "a." + String(index));
+    const unbounded = await portWith({ pageSize: 1, advertises: names }).listTools(SESSION, "docs");
+    expect(unbounded).toEqual({ ok: false, refusal: "RESULT_UNBOUNDED", at: "server.tools" });
+    const cycle = await portWith({ pageSize: 1, cursorCycle: true, advertises: ["a.1", "a.2", "docs.search"] }).listTools(SESSION, "docs");
+    expect(cycle).toEqual({ ok: false, refusal: "PROTOCOL_VIOLATION", at: "server.tools.nextCursor" });
+    expect(await port.listTools(SESSION, "nobody")).toEqual({ ok: false, refusal: "SERVER_NOT_ADMITTED", at: "request.serverId" });
+    live.delete(SESSION);
+    expect(await port.listTools(SESSION, "docs")).toEqual({ ok: false, refusal: "SESSION_NOT_LIVE", at: "request.sessionId" });
+  });
+
+  it("keeps the connection after a RESULT_UNBOUNDED listing and drops it after a PROTOCOL_VIOLATION", async () => {
+    const names = Array.from({ length: TOOL_LIST_PAGES_MAX + 1 }, (_, index) => "a." + String(index));
+    const unbounded = portWith({ pageSize: 1, advertises: names });
+    expect(await unbounded.listTools(SESSION, "docs")).toMatchObject({ refusal: "RESULT_UNBOUNDED" });
+    expect(await unbounded.listTools(SESSION, "docs")).toMatchObject({ refusal: "RESULT_UNBOUNDED" });
+    expect(childPids()).toHaveLength(1);
+    expect(childPids().every(pidAlive)).toBe(true);
+
+    const cycling = portWith({ pageSize: 1, cursorCycle: true, advertises: ["a.1", "a.2", "docs.search"] });
+    expect(await cycling.listTools(SESSION, "docs")).toMatchObject({ refusal: "PROTOCOL_VIOLATION" });
+    expect(await cycling.listTools(SESSION, "docs")).toMatchObject({ refusal: "PROTOCOL_VIOLATION" });
+    // One child for the unbounded port, and a fresh one for each cycling listing.
+    expect(childPids()).toHaveLength(3);
+  });
+
+  /**
+   * The listing and the call agree on every allowlisted tool the server
+   * advertises: it is listed exactly when a call on it passes step 7. On a tool
+   * the server does not advertise they part on purpose — the listing omits it
+   * and completes, the call refuses at `server.tools` — which is the omission
+   * rule, not a disagreement about the pin.
+   */
+  it("agrees with callTool's step 7 on every advertised tool, and parts from it only on the omitted one", async () => {
+    const pinned = [{ name: "docs.search", writes: false, inputSchema: { type: "object", properties: { q: { type: "string" } } } }];
+    const served = { "docs.search": pinned[0]?.inputSchema };
+    const rows: readonly {
+      readonly options: Parameters<typeof writeFakeToolServer>[1];
+      readonly listed: boolean;
+      readonly callAt: string | null;
+    }[] = [
+      { options: { schemas: served }, listed: true, callAt: null },
+      { options: { schemas: { "docs.search": { type: "object", properties: { q: { type: "number" } } } } }, listed: false, callAt: "server.tools.inputSchema" },
+      { options: { schemas: served, outputSchemas: { "docs.search": { type: "object" } } }, listed: false, callAt: "server.tools.outputSchema" },
+      { options: { schemas: served, pageSize: 1, advertises: ["a.1", "a.2", "docs.search"] }, listed: true, callAt: null },
+    ];
+    for (const row of rows) {
+      const listing = await portWith(row.options, pinned).listTools(SESSION, "docs");
+      const called = await callOn(portWith(row.options, pinned));
+      expect(listing.ok).toBe(row.listed);
+      if (listing.ok) expect(listing.tools.map((tool) => tool.name)).toEqual(["docs.search"]);
+      if (row.callAt === null) {
+        expect(called.ok).toBe(true);
+      } else {
+        expect(called).toMatchObject({ ok: false, refusal: "SCHEMA_MISMATCH", at: row.callAt });
+        expect(listing).toEqual({ ok: false, refusal: "SCHEMA_MISMATCH", at: row.callAt, toolName: "docs.search" });
+      }
+    }
+    const omitted = await portWith({ advertises: ["a.1"] }, pinned).listTools(SESSION, "docs");
+    expect(omitted).toEqual({ ok: true, tools: [] });
+    expect(await callOn(portWith({ advertises: ["a.1"] }, pinned))).toMatchObject({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools" });
   });
 });
 
@@ -1184,7 +1270,7 @@ describe("the port calls only under the pinned output schema, and carries struct
     const equal = await outputPort({ outputSchemas: { "docs.search": REORDERED } }, OUTPUT).listTools(SESSION, "docs");
     expect(equal).toMatchObject({ ok: true, tools: [{ name: "docs.search", outputSchema: OUTPUT }] });
     const differing = await outputPort({ outputSchemas: { "docs.search": OUTPUT } }, null).listTools(SESSION, "docs");
-    expect(differing).toEqual({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.outputSchema" });
+    expect(differing).toEqual({ ok: false, refusal: "SCHEMA_MISMATCH", at: "server.tools.outputSchema", toolName: "docs.search" });
   });
 
   it("hands a declined result on through the operation scope as a coherent refusal with no content", async () => {

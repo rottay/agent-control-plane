@@ -43,6 +43,7 @@ import {
   ToolCallPageResponse,
   TaskLifecycleResponse,
   TaskEffectResultResponse,
+  ToolDiscoveryResponse,
   TaskEffectsResponse,
 } from "../../src/schemas/index.js";
 
@@ -85,8 +86,15 @@ describe("the contract covers every frozen route", () => {
       "apiContractVersion",
       "ledgerContractVersion",
     ]);
+    // `toolServerTools` is the third (P-24 cut B(a)): a discovery records nothing,
+    // so its every field but the versions is the peer's advertisement read through
+    // the operator's document, `TOOL_SERVER`, and says so.
+    expect(comparableFields("toolServerTools")).toEqual([
+      "apiContractVersion",
+      "ledgerContractVersion",
+    ]);
     for (const route of PARITY_ROUTES) {
-      if (route === "health" || route === "accounts") continue;
+      if (route === "health" || route === "accounts" || route === "toolServerTools") continue;
       const ledgerFields = PARITY_BINDINGS[route].filter((b) => b.source === "LEDGER");
       expect(ledgerFields.length).toBeGreaterThan(0);
     }
@@ -166,7 +174,27 @@ describe("the binding table matches the schemas it claims to bind", () => {
     // document read by reference, bound whole and compared across the two doors.
     taskEffects: TaskEffectsResponse,
     taskEffectResult: TaskEffectResultResponse,
+    // P-24 cut B(a). The discovery answer, bound whole and compared across the two
+    // doors by the gateway's parity rows.
+    toolServerTools: ToolDiscoveryResponse,
 };
+
+  it("binds the discovery answer to the tool server, each field with its reason (P-24 cut B(a))", () => {
+    expect(NON_LEDGER_SOURCES).toContain("TOOL_SERVER");
+    const excepted = declaredExceptions("toolServerTools").filter((binding) => binding.source !== "CONTRACT_VERSION");
+    expect(excepted.map((binding) => binding.field).sort()).toEqual(
+      ["at", "count", "outcome", "refusal", "serverId", "toolName", "tools"],
+    );
+    for (const binding of excepted) {
+      expect({ field: binding.field, source: binding.source }).toEqual({ field: binding.field, source: "TOOL_SERVER" });
+      expect((binding.because ?? "") !== "").toBe(true);
+    }
+    // No other route reads a tool server.
+    for (const route of PARITY_ROUTES) {
+      if (route === "toolServerTools") continue;
+      expect(PARITY_BINDINGS[route].some((binding) => binding.source === "TOOL_SERVER")).toBe(false);
+    }
+  });
 
   it("binds the roadmap route's read, and deliberately not its write (P8-8D-pre)", () => {
     // Parity is an equality over what the three clients *render*. The write

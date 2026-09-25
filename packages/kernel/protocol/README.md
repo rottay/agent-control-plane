@@ -132,6 +132,19 @@ than trusting this table.
   both ids before it encodes either. Both arms are API_ONLY in `SURFACE_MAP` under the
   standing reasons, and the parity row binds the read whole to the ledger.
   `API_PRIVATE_READ_ROUTES` and the error words do not move.
+- **A tool server is asked what it serves.** P-24 cut B(a) moved
+  `API_CONTRACT_VERSION` to `0.24.0` with one route, `toolServerTools`
+  (`/api/v1/tool-servers/:serverId/tools`), a GET and the second private read: it
+  starts a child to ask one admitted server which of its allowlisted tools it
+  advertises under their pins, and records nothing. `ToolDiscoveryResponse` answers
+  the tools sorted by name as `{name, writes}` (never a schema, never the transport),
+  or the port's refusal with its `at` and, on `SCHEMA_MISMATCH` only, the mismatched
+  `toolName`; a refusal is a 200. The builder `toolServerToolsPath` validates the
+  bounded identifier before it encodes it. The CLI verb `tool-servers` answers the
+  same document (`SURFACE_MAP` `DOCUMENT`), and the parity row binds every field but
+  the versions to a new non-ledger source, `TOOL_SERVER`. `API_WRITE_ROUTES` and the
+  error words do not move; ADR 0116 had assigned this minor to P-16/A1, which
+  re-takes the next one.
 - **Every read is free but one, and that one is named.** P-15/F added two reads
   and moved `API_CONTRACT_VERSION` to `0.19.0`: `taskEffects`, a plain read of a
   task's effect ids, coordinates and outcome words, and `taskEffectResult`, one
@@ -143,6 +156,7 @@ than trusting this table.
   | Private read route | Method and path | Added by |
   | --- | --- | --- |
   | `taskEffectResult` | `GET /api/v1/tasks/:taskId/effects/:effectId/result` | P-15/F |
+  | `toolServerTools` | `GET /api/v1/tool-servers/:serverId/tools` | P-24/B(a): starts a child to ask a peer |
 
   Its response, `TaskEffectResultResponse`, carries the document as the result
   contract's own `ResultContractSchema`, imported from `@acp/contracts` rather

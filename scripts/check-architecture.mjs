@@ -12335,6 +12335,95 @@ const P24B_WRITE_SET = [
   "docs/audit/architecture/contracts/index.md",
 ];
 
+/**
+ * P-24, cut B(a): a tool server is asked what it serves, and nothing is recorded
+ * (ADR 0118; decisions 208-211; brief v1 with the Kimi K3 pre-audit's five blocking
+ * and six non-blocking corrections adopted as the DT's rulings; Fable's audit of this
+ * cut is pending its quota).
+ *
+ * Fixtures only. The tool edge's operation module gains `openToolDiscovery`, a scope
+ * composed at the one composition site that exposes `listTools(serverId)` and
+ * `close()` and no `callTool`, over a constant internal scope id. `port.listTools`
+ * gains `callTool`'s step-7 rule (a carried loopback transport refusal is preferred
+ * and the connection dropped) and names the first mismatched allowlist entry in a
+ * `toolName` field on `SCHEMA_MISMATCH`, input or output. Two doors consume it: the
+ * private read `GET /api/v1/tool-servers/:serverId/tools` (`toolServerTools`,
+ * registered through `registerPrivateGet`) and the CLI verb `tool-servers`, which
+ * branches above the `--database` law and refuses `--database`. Both answer
+ * `ToolDiscoveryResponse` — `{name, writes}` sorted by name, or the port's refusal as
+ * a 200 / `EXIT_OK` — and neither opens, reads or appends to a ledger. L-P24BA-1 and
+ * L-P24BA-2 are new; L-B4B-8, L-B4B-9, L-B4B-11, L-B4B-12 and L-P15F-2 hold unchanged,
+ * L-P15F-2 now over two private reads.
+ *
+ * **Pins that move.** `API_CONTRACT_VERSION` 0.23.0 -> **0.24.0** (ten test literals
+ * restamped in four files, recomputed from the constant); `API_ROUTES` 26 -> **27**;
+ * `API_PRIVATE_READ_ROUTES` 1 -> **2**; `SURFACE_MAP` 38 -> **39**; `PARITY_ROUTES`
+ * 26 -> **27**; `ParitySource`/`NON_LEDGER_SOURCES` 5/4 -> **6/5** (`TOOL_SERVER`);
+ * `TOOLS_PUBLIC_EXPORTS` 48 -> **51**; the CLI's `COMMANDS` +1 (`tool-servers`);
+ * `PATH_SCOPED_LAWS` 171 -> **173**; the ADR corpus 117 -> **118**. Computed and pinned
+ * by no doc: this constant is one more epoch-frozen record (243 -> 244).
+ * **Pins that do not.** `CONTRACT_VERSION` (2.10.0), `MIGRATIONS` (27),
+ * `API_WRITE_ROUTES` (8), `API_ERROR_CODES` (16), `API_ALLOWED_METHODS` (`["GET"]`),
+ * `TOOL_REFUSALS` (12), `MCP_PROTOCOL_RECORD` and L-B4B-17's table (20).
+ *
+ * **Forty paths; five are new**: the two door modules, their two suites and
+ * ADR 0118 (stop-ruling 1 said "still four new"; this line corrects the count). The
+ * fortieth is the P-15/F effect-result suite, added by the independent verification's
+ * B-1: it pinned `API_PRIVATE_READ_ROUTES` to one member, so its two assertions and its
+ * prose are restated to the two-member table. The
+ * brief's `build-server` suite row is not here: its method matrix covers
+ * parameterless routes only, and the discovery route takes a parameter, so the file
+ * was not touched. `vitest.config.ts` and the gateway test `tsconfig.json` joined by
+ * the DT's stop-ruling 1 (Q1, option a): the parity rows reach the CLI verb through
+ * a fifth deep alias, `@acp/cli/tool-discovery-door`, declared in both. Both files
+ * were already members of the epoch-frozen union, so adding them moves no
+ * distinct-path count. Stop-ruling 1 (Q2, option b) left `build-server`'s
+ * source out too: Fastify's default `maxParamLength` of 100 stays, so a server id of
+ * 101 to 120 characters is asked through the CLI door only, a stated limit.
+ */
+const P24BA_WRITE_SET = [
+  "packages/edges/tools/src/operation/index.ts",
+  "packages/edges/tools/src/port/index.ts",
+  "packages/edges/tools/src/index.ts",
+  "packages/edges/tools/README.md",
+  "packages/edges/tools/test/operation/index.test.ts",
+  "packages/edges/tools/test/port/index.test.ts",
+  "packages/edges/tools/test/http-loopback/index.test.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/surface-map/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/README.md",
+  "packages/kernel/protocol/test/routes/index.test.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/kernel/protocol/test/surface-map/index.test.ts",
+  "packages/entrypoints/cli/src/cli/index.ts",
+  "packages/entrypoints/cli/src/tool-discovery/index.ts",
+  "packages/entrypoints/cli/test/tool-discovery/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/cli/README.md",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/tool-discovery/index.ts",
+  "packages/entrypoints/gateway/test/tool-discovery/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/entrypoints/gateway/test/parity/index.test.ts",
+  "packages/entrypoints/gateway/test/effect-result/index.test.ts",
+  "packages/entrypoints/gateway/test/tsconfig.json",
+  "vitest.config.ts",
+  "packages/entrypoints/gateway/README.md",
+  "docs/api-reference.md",
+  "SECURITY.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0118-a-tool-server-is-asked-what-it-serves-and-nothing-is-recorded.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12589,6 +12678,7 @@ const WRITE_SET = [
   ...P27B_WRITE_SET,
   ...P27C_WRITE_SET,
   ...P24B_WRITE_SET,
+  ...P24BA_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -14162,6 +14252,17 @@ const PATH_SCOPED_LAWS = [
   {
     law: "structured content is read in one place, compared by value, and carried nowhere",
     scope: "packages/*/*/src/**",
+  },
+  // P-24 cut B(a). Two new path-shaped surfaces, so two new rows: the register and the
+  // `requireScope` call sites both move 171 -> 173 for L-P24BA-1 and L-P24BA-2. L-B4B-8,
+  // L-B4B-9, L-B4B-12 and L-P15F-2 are unchanged and add none.
+  {
+    law: "discovery is asked from two doors, through the discovery scope, and never at readiness",
+    scope: "packages/*/*/src/** outside packages/edges/tools/",
+  },
+  {
+    law: "a query records nothing: the discovery doors open no ledger and the discovery scope names no callTool",
+    scope: "the two discovery door sources, packages/edges/tools/src/operation/index.ts",
   },
 ];
 
@@ -22309,8 +22410,8 @@ if (accountsIndex === null) {
     }
   }
 
-// The P3D deep aliases: exactly four since V2 L3, pointing at exactly
-// those four modules, and
+// The P3D deep aliases: exactly five since P-24/B(a), pointing at exactly
+// those five modules, and
 // importable only by the parity test. Aliasing rather than widening either
 // package's entry point is what keeps both closed surfaces byte-untouched.
 const vitestConfig = readIfPresent("vitest.config.ts");
@@ -22327,6 +22428,10 @@ if (vitestConfig !== null) {
     // projection. The lifecycle equivalence drives the CLI's verb as values and
     // compares its document with the API door's.
     ["@acp/cli/lifecycle-door", "packages/entrypoints/cli/src/lifecycle/index.ts"],
+    // P-24/B(a) (ADR 0118; stop-ruling 1, Q1): the fifth, and the third that
+    // reaches a door. The discovery equivalence drives the CLI's `tool-servers`
+    // verb as values and compares its document with the private read's body.
+    ["@acp/cli/tool-discovery-door", "packages/entrypoints/cli/src/tool-discovery/index.ts"],
   ];
   for (const [specifier, target] of aliasTargets) {
     if (!vitestConfig.includes(target)) {
@@ -22365,7 +22470,7 @@ if (vitestConfig !== null) {
       }
     }
   }
-  notes.push("the parity deep aliases point at four modules and are used by one test");
+  notes.push("the parity deep aliases point at five modules and are used by one test");
 }
 
 // The TypeScript side of the same three aliases, pinned against the TEST project
@@ -22390,6 +22495,8 @@ const GATEWAY_TS_ALIASES = {
   "@acp/cli/tool-call-door": "../../cli/dist/tool-call/index.d.ts",
   // V2 L3: the lifecycle equivalence reaches the CLI's verb as values.
   "@acp/cli/lifecycle-door": "../../cli/dist/lifecycle/index.d.ts",
+  // P-24/B(a): the discovery equivalence reaches the CLI's `tool-servers` verb as values.
+  "@acp/cli/tool-discovery-door": "../../cli/dist/tool-discovery/index.d.ts",
 };
 // P8-8A adds `../../domains/observation`: the initiative plane folds token
 // rollups, and `tsc --build` resolves a workspace package through project
@@ -23682,6 +23789,10 @@ const TOOLS_PUBLIC_EXPORTS = [
   "openToolOperation",
   "ToolOperationScope",
   "ToolOperationInput",
+  // P-24/B(a) (ADR 0118): the discovery scope, beside the operation scope.
+  "openToolDiscovery",
+  "ToolDiscoveryScope",
+  "ToolDiscoveryInput",
   "AdmittedToolServer",
   "ToolAdmissionOutcome",
   "ToolCallReceipt",
@@ -26585,6 +26696,223 @@ if (tracked.status === 0) {
   }
   requireScope(LAW, scanned);
   notes.push("structured content is read only in the tool client's callTool, compared by value, and carried by no other source");
+}
+
+// L-P24BA-1 -- discovery is asked from two doors, through the discovery scope, and
+// never at readiness (P-24/B(a), ADR 0118; decision 211).
+//
+// Over every tracked `packages/*/*/src/` `.ts` file outside `packages/edges/tools/`,
+// plus the write-set entries under that same filter (the two door modules are new),
+// comments stripped, every call matched whitespace-tolerant (`name (`, `name?.(`,
+// `. listTools (`): the call `openToolDiscovery(` appears in exactly the two door
+// files, and in each; the call `.listTools(` appears under `packages/entrypoints/`
+// only in those two files; neither door names `runToolCall`, `openToolOperation` or
+// `createToolProtocolPort`; the gateway door's `discoverTools(` is called exactly once,
+// in `gateway/src/routes/index.ts`, inside the `registerPrivateGet(` call that
+// registers `API_ROUTES.toolServerTools`; and the CLI door's `runToolDiscoveryVerb(` is
+// called exactly once, in `cli/src/cli/index.ts`. What it pins: process-start authority
+// for a listing is reachable, by name, from the CLI verb and the bearer-guarded private
+// read and from no other call site — not from the daemon's readiness, not from the
+// tool-call door, not from an unguarded route calling the gateway door, and not by a
+// door that composes a port or an operation scope instead of the discovery scope.
+//
+// Stated limit: a text-level matcher. An alias of any of these functions (`const f =
+// discoverTools; f(...)`), a computed member (`scope["listTools"](`), or a re-export
+// under another name is not seen, nor a `registerPrivateGet(` call that names the route
+// through a variable. Nor, named by verification v2 (N-2) and harmless in effect, a
+// parenthesised callee (`(discoverTools)(...)`), which is not counted as a call; nor a
+// guard clause satisfied by text: `API_ROUTES.toolServerTools` is matched over the whole
+// `registerPrivateGet(` argument span, string literals included, so the one call could sit
+// in the `taskEffectResult` registration if that span held the name in a string, still
+// behind the bearer. The two doors' suites carry the behaviour.
+{
+  const LAW = "discovery is asked from two doors, through the discovery scope, and never at readiness";
+  const DISCOVERY_DOORS = [
+    "packages/entrypoints/cli/src/tool-discovery/index.ts",
+    "packages/entrypoints/gateway/src/tool-discovery/index.ts",
+  ];
+  const DOOR_CALLERS = [
+    {
+      callee: "discoverTools",
+      door: "packages/entrypoints/gateway/src/tool-discovery/index.ts",
+      site: "packages/entrypoints/gateway/src/routes/index.ts",
+    },
+    {
+      callee: "runToolDiscoveryVerb",
+      door: "packages/entrypoints/cli/src/tool-discovery/index.ts",
+      site: "packages/entrypoints/cli/src/cli/index.ts",
+    },
+  ];
+  const callPattern = (name) => new RegExp("(?<![\\w$])" + name + "\\s*(?:\\?\\.\\s*)?\\(", "g");
+  const declarationPattern = (name) => new RegExp("\\bfunction\\s*\\*?\\s*" + name + "\\s*\\(", "g");
+  const callsOf = (code, name) => {
+    const declared = new Set([...code.matchAll(declarationPattern(name))].map((match) => match.index + match[0].indexOf(name)));
+    return [...code.matchAll(callPattern(name))].filter((match) => !declared.has(match.index)).map((match) => match.index);
+  };
+  // The span of the parenthesised arguments that open at `open`, quote-aware.
+  const argumentSpan = (code, open) => {
+    let depth = 0;
+    let quote = null;
+    for (let cursor = open; cursor < code.length; cursor += 1) {
+      const character = code[cursor];
+      if (quote !== null) {
+        if (character === "\\") cursor += 1;
+        else if (character === quote) quote = null;
+        continue;
+      }
+      if (character === '"' || character === "'" || character === "`") {
+        quote = character;
+        continue;
+      }
+      if (character === "(") depth += 1;
+      else if (character === ")") {
+        depth -= 1;
+        if (depth === 0) return [open, cursor];
+      }
+    }
+    return null;
+  };
+  let scanned = 0;
+  const openers = [];
+  const listers = [];
+  const callers = new Map(DOOR_CALLERS.map(({ callee }) => [callee, []]));
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      if (relativePath.startsWith("packages/edges/tools/")) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      const code = stripComments(file);
+      if (callsOf(code, "openToolDiscovery").length > 0) openers.push(relativePath);
+      if (relativePath.startsWith("packages/entrypoints/") && /\.\s*listTools\s*(?:\?\.\s*)?\(/.test(code)) {
+        listers.push(relativePath);
+      }
+      for (const { callee } of DOOR_CALLERS) {
+        for (const at of callsOf(code, callee)) callers.get(callee).push({ relativePath, at, code });
+      }
+    }
+  }
+  const expected = [...DISCOVERY_DOORS].sort().join(", ");
+  if (openers.sort().join(", ") !== expected) {
+    fail(
+      "openToolDiscovery( is called from [" + openers.join(", ") + "]; the discovery scope is opened by exactly the two doors [" +
+        expected + "], and a third opener is a third place a listing can start a child (L-P24BA-1)",
+    );
+  }
+  if (listers.sort().join(", ") !== expected) {
+    fail(
+      ".listTools( is called under packages/entrypoints/ from [" + listers.join(", ") + "]; only the two discovery doors [" +
+        expected + "] list, through the discovery scope (L-P24BA-1)",
+    );
+  }
+  for (const { callee, door, site } of DOOR_CALLERS) {
+    const calls = callers.get(callee);
+    const where = calls.map((call) => call.relativePath).join(", ");
+    if (calls.length !== 1 || calls[0].relativePath !== site) {
+      fail(
+        callee + "( of " + door + " is called " + calls.length + " time(s), from [" + where + "]; it is called exactly once, from " +
+          site + ", and another caller is another place a listing can start a child (L-P24BA-1)",
+      );
+      continue;
+    }
+    if (callee !== "discoverTools") continue;
+    const { at, code } = calls[0];
+    const guarded = [...code.matchAll(/(?<![\w$])registerPrivateGet\s*\(/g)].some((match) => {
+      const span = argumentSpan(code, match.index + match[0].length - 1);
+      if (span === null || at <= span[0] || at >= span[1]) return false;
+      return /\bAPI_ROUTES\s*\.\s*toolServerTools\b/.test(code.slice(span[0], span[1]));
+    });
+    if (!guarded) {
+      fail(
+        site + " calls discoverTools( outside the registerPrivateGet( call that registers API_ROUTES.toolServerTools; a listing starts a child only behind the bearer (L-P24BA-1)",
+      );
+    }
+  }
+  for (const door of DISCOVERY_DOORS) {
+    const file = readIfPresent(door);
+    if (file === null) {
+      fail(door + " is missing; it is one of the two discovery doors (L-P24BA-1)");
+      continue;
+    }
+    const code = stripComments(file);
+    for (const forbidden of ["runToolCall", "openToolOperation", "createToolProtocolPort"]) {
+      if (new RegExp("\\b" + forbidden + "\\b").test(code)) {
+        fail(door + " names " + forbidden + "; a discovery door lists through the discovery scope and reaches no operation and no port (L-P24BA-1)");
+      }
+    }
+  }
+  requireScope(LAW, scanned);
+  notes.push("discovery is opened only by the CLI verb and the private read, each door has one call site, and neither door reaches an operation or a port");
+}
+
+// L-P24BA-2 -- a query records nothing: the discovery doors open no ledger and the
+// discovery scope names no callTool (P-24/B(a), ADR 0118; decision 211).
+//
+// Over the two discovery door files, comments stripped: none calls `openLedger(`,
+// `openForWrite(`, `openToolClaimStore(`, `.append(`, `requireOpen(` or `getTask(`
+// (whitespace-tolerant, `name (` and `name?.(` included), and none names the packages
+// `@acp/ledger` or `@acp/runtime`, or a subpath of either, in any quote — double,
+// single or backtick — so an aliased import (`import { openLedger as open } from
+// '@acp/ledger'`) and a dynamic `import()` are both seen by their specifier. And in
+// `packages/edges/tools/src/operation/index.ts`, the body of `openToolDiscovery` (by
+// brace matching from its declaration) names no `callTool`. What it pins: the
+// catalogue's "consultas no crean efectos ficticios" at the two doors, and "a
+// discovery scope cannot call a tool" at the scope, by construction rather than by a
+// door's good manners.
+//
+// Stated limit: a helper in another file that opens a ledger and is called from a
+// door is not seen, nor a specifier assembled at run time, nor a `callTool` reached
+// through a variable the scope body does not name. The A-4 rows of both door suites
+// (ledger bytes, head and events unchanged, no database file created) and the scope's
+// own row (`"callTool" in scope` is false) carry the behaviour.
+{
+  const LAW = "a query records nothing: the discovery doors open no ledger and the discovery scope names no callTool";
+  const DISCOVERY_DOORS = [
+    "packages/entrypoints/cli/src/tool-discovery/index.ts",
+    "packages/entrypoints/gateway/src/tool-discovery/index.ts",
+  ];
+  const FORBIDDEN = [
+    ["openLedger(", /(?<![\w$])openLedger\s*(?:\?\.\s*)?\(/],
+    ["openForWrite(", /(?<![\w$])openForWrite\s*(?:\?\.\s*)?\(/],
+    ["openToolClaimStore(", /(?<![\w$])openToolClaimStore\s*(?:\?\.\s*)?\(/],
+    [".append(", /\.\s*append\s*(?:\?\.\s*)?\(/],
+    ["requireOpen(", /(?<![\w$])requireOpen\s*(?:\?\.\s*)?\(/],
+    ["getTask(", /(?<![\w$])getTask\s*(?:\?\.\s*)?\(/],
+    ["@acp/ledger", /(["'`])@acp\/ledger(?:\/[^"'`]*)?\1/],
+    ["@acp/runtime", /(["'`])@acp\/runtime(?:\/[^"'`]*)?\1/],
+  ];
+  let scanned = 0;
+  for (const door of DISCOVERY_DOORS) {
+    const file = readIfPresent(door);
+    if (file === null) {
+      fail(door + " is missing; it is one of the two discovery doors (L-P24BA-2)");
+      continue;
+    }
+    scanned += 1;
+    const code = stripComments(file);
+    for (const [label, pattern] of FORBIDDEN) {
+      if (pattern.test(code)) {
+        fail(door + " names " + label + "; a discovery is a query and records nothing, so its door opens and touches no ledger (L-P24BA-2)");
+      }
+    }
+  }
+  const operation = readIfPresent(TOOLS_OPERATION_SITE);
+  if (operation === null) {
+    fail(TOOLS_OPERATION_SITE + " is missing; the discovery scope cannot be read (L-P24BA-2)");
+  } else {
+    scanned += 1;
+    const body = functionBody(stripComments(operation), "export function openToolDiscovery(");
+    if (body === null) {
+      fail(TOOLS_OPERATION_SITE + " no longer declares openToolDiscovery where L-P24BA-2 can read it (L-P24BA-2)");
+    } else if (/\bcallTool\b/.test(body)) {
+      fail(TOOLS_OPERATION_SITE + " openToolDiscovery names callTool; a discovery scope lists and cannot call a tool (L-P24BA-2)");
+    }
+  }
+  requireScope(LAW, scanned);
+  notes.push("the discovery doors open no ledger and append nothing, and the discovery scope names no callTool");
 }
 
 // L-P37S-1 -- the protocol declares no sha-256 grammar of its own (P-37, the sha-256

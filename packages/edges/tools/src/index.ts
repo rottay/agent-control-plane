@@ -62,8 +62,13 @@ export type { ToolCallOutcomeName, ToolCallReceipt } from "./receipt/index.js";
 // V2-B4b stage 3C: the operation scope. The one composition site for the
 // protocol port outside this package's own suites, and the seam where "ok
 // agrees with the receipt" is enforced.
-export { openToolOperation } from "./operation/index.js";
-export type { ToolOperationInput, ToolOperationScope } from "./operation/index.js";
+export { openToolDiscovery, openToolOperation } from "./operation/index.js";
+export type {
+  ToolDiscoveryInput,
+  ToolDiscoveryScope,
+  ToolOperationInput,
+  ToolOperationScope,
+} from "./operation/index.js";
 
 export { createToolProtocolPort } from "./port/index.js";
 export type {

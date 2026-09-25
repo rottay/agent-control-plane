@@ -346,6 +346,11 @@ describe("usage", () => {
     // the command column the banner prints and the names `COMMANDS` declares,
     // so the two can neither diverge nor be quietly reduced.
     expect(bannerCommandNames(result.stdout)).toEqual([...CLI_COMMAND_NAMES].sort());
+    // P-24/B(a). The discovery verb is the one that opens no ledger, and the
+    // banner says so where it states the ledger posture.
+    expect(CLI_COMMAND_NAMES).toContain("tool-servers");
+    expect(result.stdout).toContain("opens no ledger and refuses --database");
+    expect(result.stdout).toContain("--server <id>");
   });
 
   it("reports both contract versions and the schema version", async () => {
@@ -373,11 +378,13 @@ describe("usage", () => {
       // 0.14.0 rejects the result rather than ignoring the key. To 0.16.0 at
       // P-14/B for a fifth write route, `initiatives` POST, which this CLI
       // answers too as `acp initiative`, and to 0.17.0 at P-14/C for a sixth,
-      // `tasks` POST, which it answers as `acp intake`.
+      // `tasks` POST, which it answers as `acp intake`. To 0.24.0 at P-24/B(a)
+      // for the second private read, `toolServerTools`, which this CLI answers
+      // as `acp tool-servers`.
       // Asserted as a literal on purpose: the CLI's job here is to
       // report the number a reader can pin against, and comparing it to the
       // constant it prints would assert only that the CLI can echo itself.
-      apiContractVersion: "0.23.0",
+      apiContractVersion: "0.24.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });

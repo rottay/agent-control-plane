@@ -38,6 +38,8 @@ import {
   MAX_TASK_EFFECTS,
   taskEffectResultPath,
   taskEffectsPath,
+  ToolDiscoveryResponse,
+  toolServerToolsPath,
 } from "@acp/protocol";
 import type { ApiRouteName } from "@acp/protocol";
 import { openToolClaimStore, openLedger, toolClaimStorePath } from "@acp/ledger";
@@ -66,6 +68,9 @@ import { runToolCallVerb } from "@acp/cli/tool-call-door";
 // CLI's lifecycle verb as values; this alias is what makes T2 and T3 possible
 // at all, and it is the only way this test reaches that door.
 import { runLifecycleVerb } from "@acp/cli/lifecycle-door";
+// P-24/B(a) (ADR 0118). The discovery equivalence drives the CLI's `tool-servers`
+// verb as values; the fifth alias, and the third that reaches a door.
+import { runToolDiscoveryVerb } from "@acp/cli/tool-discovery-door";
 import { uiRowModel } from "@acp/console/row-model";
 // V2 X1b: the coordinate a request lands on, derived exactly as the operation
 // derives it. Values, not a copy of the derivation.
@@ -2329,6 +2334,169 @@ describe("P-24/B(b): the two doors agree on every output-pin and structured-resu
       expect({ outcome: api["outcome"], refusal: api["refusal"], at: api["at"] }).toEqual(row.expect);
       expect({ resultBytes: api["resultBytes"], contentBlocks: api["contentBlocks"] }).toEqual(row.counts);
       expect(methodLines(fixture.methodLog)).toEqual([...row.log, ...row.log]);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// P-24/B(a) (ADR 0118): a tool server is asked what it serves, at both doors
+// ---------------------------------------------------------------------------
+
+/** The allowlist the discovery rows admit, unless a row names its own. */
+const P24BA_ALLOWLIST: readonly Record<string, unknown>[] = [
+  { name: "docs.search", writes: false, inputSchema: P24_PIN },
+  { name: "docs.write", writes: true, inputSchema: { type: "object" } },
+];
+
+/** The D rows the two door suites carry, asserted here as one document from two producers. */
+const P24BA_ROWS: readonly {
+  readonly row: string;
+  readonly script: P24Script;
+  readonly allowlist?: readonly Record<string, unknown>[];
+  readonly serverId?: string;
+  readonly expect: {
+    readonly outcome: string;
+    readonly refusal: string | null;
+    readonly at: string | null;
+    readonly toolName: string | null;
+    readonly tools: readonly { readonly name: string; readonly writes: boolean }[];
+  };
+  readonly log: readonly string[];
+  readonly children: number;
+}[] = [
+  {
+    row: "D1: pins equal, one allowlisted tool advertised beside one nobody allowed",
+    script: { advertises: ["docs.search", "shell.exec"], schemas: { "docs.search": P24_PIN } },
+    expect: { outcome: "COMPLETED", refusal: null, at: null, toolName: null, tools: [{ name: "docs.search", writes: false }] },
+    log: ["list null"],
+    children: 1,
+  },
+  {
+    row: "D2: the tool on page 3 of 3",
+    script: { advertises: ["a.1", "a.2", "docs.search"], pageSize: 1, schemas: { "docs.search": P24_PIN } },
+    expect: { outcome: "COMPLETED", refusal: null, at: null, toolName: null, tools: [{ name: "docs.search", writes: false }] },
+    log: ["list null", "list c1", "list c2"],
+    children: 1,
+  },
+  {
+    row: "D3: one nested input key differs",
+    script: { schemas: { "docs.search": { type: "object", properties: { q: { type: "number" } } } } },
+    expect: { outcome: "REFUSED", refusal: "SCHEMA_MISMATCH", at: "server.tools.inputSchema", toolName: "docs.search", tools: [] },
+    log: ["list null"],
+    children: 1,
+  },
+  {
+    row: "D3o: an output schema advertised against a pin of none",
+    script: { schemas: { "docs.search": P24_PIN }, outputSchemas: { "docs.search": { type: "object" } } },
+    expect: { outcome: "REFUSED", refusal: "SCHEMA_MISMATCH", at: "server.tools.outputSchema", toolName: "docs.search", tools: [] },
+    log: ["list null"],
+    children: 1,
+  },
+  {
+    row: "D5: a cursor cycle",
+    script: { advertises: ["a.1", "a.2", "a.3", "docs.search"], pageSize: 1, cursorCycle: true },
+    expect: { outcome: "REFUSED", refusal: "PROTOCOL_VIOLATION", at: "server.tools.nextCursor", toolName: null, tools: [] },
+    log: ["list null", "list c1"],
+    children: 1,
+  },
+  {
+    row: "D6: pages past TOOL_LIST_PAGES_MAX",
+    script: { advertises: Array.from({ length: TOOL_LIST_PAGES_MAX + 1 }, (_, index) => "a." + String(index)), pageSize: 1 },
+    expect: { outcome: "REFUSED", refusal: "RESULT_UNBOUNDED", at: "server.tools", toolName: null, tools: [] },
+    log: Array.from({ length: TOOL_LIST_PAGES_MAX }, (_, index) => "list " + (index === 0 ? "null" : "c" + String(index))),
+    children: 1,
+  },
+  {
+    row: "D7: a server the document does not admit",
+    script: {},
+    serverId: "elsewhere",
+    expect: { outcome: "REFUSED", refusal: "SERVER_NOT_ADMITTED", at: "request.serverId", toolName: null, tools: [] },
+    log: [],
+    children: 0,
+  },
+  {
+    row: "D12: two tools, sorted by name whatever order the allowlist and the server use",
+    script: { advertises: ["zeta.tool", "alpha.tool"] },
+    allowlist: [
+      { name: "zeta.tool", writes: true, inputSchema: { type: "object" } },
+      { name: "alpha.tool", writes: false, inputSchema: { type: "object" } },
+    ],
+    expect: {
+      outcome: "COMPLETED",
+      refusal: null,
+      at: null,
+      toolName: null,
+      tools: [
+        { name: "alpha.tool", writes: false },
+        { name: "zeta.tool", writes: true },
+      ],
+    },
+    log: ["list null"],
+    children: 1,
+  },
+];
+
+describe("P-24/B(a): the two discovery doors answer the same document (D1-D12)", () => {
+  /** One fake and one operator document, shared by both doors as the E and F rows share theirs. */
+  function p24baDoorFixture(
+    script: P24Script,
+    allowlist: readonly Record<string, unknown>[],
+  ): DoorFixture & { readonly methodLog: string } {
+    const dir = temporaryDirectory();
+    const pidLog = join(dir, "pids.log");
+    const methodLog = join(dir, "methods.log");
+    writeFileSync(pidLog, "", "utf8");
+    const bearerPath = join(dir, "write.token");
+    writeFileSync(bearerPath, TOOL_BEARER + "\n", "utf8");
+    chmodSync(bearerPath, 0o600);
+    const fake = writeP24Server(dir, pidLog, methodLog, script);
+    const toolServersPath = join(dir, "tool-servers-p24ba.json");
+    writeFileSync(
+      toolServersPath,
+      JSON.stringify([{ serverId: "docs", transport: "STDIO", command: fake.command, args: fake.args, tools: allowlist }]),
+      "utf8",
+    );
+    chmodSync(toolServersPath, 0o600);
+    return { dir, pidLog, bearerPath, toolServersPath, methodLog };
+  }
+
+  for (const row of P24BA_ROWS) {
+    it(row.row + ": the same document at both doors", async () => {
+      const serverId = row.serverId ?? "docs";
+      const fixture = p24baDoorFixture(row.script, row.allowlist ?? P24BA_ALLOWLIST);
+
+      const app = buildServer({
+        ledgerPath: seedForExecution(),
+        writeBearerPath: fixture.bearerPath,
+        toolServersPath: fixture.toolServersPath,
+      });
+      let api: ToolDiscoveryResponse;
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: toolServerToolsPath(serverId),
+          headers: { authorization: "Bearer " + TOOL_BEARER },
+        });
+        expect(response.statusCode).toBe(200);
+        api = ToolDiscoveryResponse.parse(response.json());
+      } finally {
+        await app.close();
+      }
+      const apiLog = methodLines(fixture.methodLog);
+
+      const cli = (await runToolDiscoveryVerb({ toolServersPath: fixture.toolServersPath, serverId })).document;
+
+      // The whole document, from two producers over one operator document and one peer.
+      expect(cli).toEqual(api);
+      expect({ outcome: api.outcome, refusal: api.refusal, at: api.at, toolName: api.toolName, tools: api.tools }).toEqual(row.expect);
+      expect(api.count).toBe(row.expect.tools.length);
+      // Each door drove the fake through the same sequence, and neither sent a call.
+      expect(apiLog).toEqual(row.log);
+      expect(methodLines(fixture.methodLog)).toEqual([...row.log, ...row.log]);
+      // One child per door, or none when the server is not admitted; every one reaped.
+      const started = pidsIn(fixture.pidLog);
+      expect(started).toHaveLength(2 * row.children);
+      for (const pid of started) expect(() => process.kill(pid, 0)).toThrow();
     });
   }
 });

@@ -1,6 +1,6 @@
 import type { ToolCallRequest, ToolRefusal } from "../contract/index.js";
 import { createToolProtocolPort } from "../port/index.js";
-import type { ToolCallOutcome } from "../port/index.js";
+import type { ToolCallOutcome, ToolListingOutcome } from "../port/index.js";
 import type { AdmittedToolServer } from "../admission/index.js";
 
 /**
@@ -135,6 +135,57 @@ export function openToolOperation(input: ToolOperationInput): ToolOperationScope
     async close(): Promise<void> {
       // Liveness first, then the reap. A call arriving in between finds a dead
       // session and is refused, rather than racing a child being killed.
+      live = false;
+      await port.closeAll();
+    },
+  });
+}
+
+/**
+ * The discovery scope (P-24/B(a), ADR 0118): a door asks one admitted server
+ * which of its allowlisted tools it serves under their pins, and nothing else.
+ *
+ * Declared here, beside `openToolOperation`, so this file stays the one place
+ * outside the package's suites that constructs a protocol port. The scope
+ * exposes `listTools` and `close` and **no `callTool`**: a discovery scope
+ * cannot call a tool by construction, not by the door's good manners.
+ *
+ * **The scope id is constant and internal.** `"tool-discovery"` never crosses a
+ * boundary, and cannot collide with an execution scope (`tool/<taskId>/…`, four
+ * segments led by a literal) or an execution session (three segments led by a
+ * task id), because it holds no slash. Liveness is the operation scope's rule:
+ * a boolean, true for this id until `close()`, false afterwards.
+ *
+ * A door opens one, lists once, and closes it in a `finally`; `close()` drops
+ * liveness before it reaps, and is idempotent.
+ */
+export interface ToolDiscoveryScope {
+  readonly listTools: (serverId: string) => Promise<ToolListingOutcome>;
+  readonly close: () => Promise<void>;
+}
+
+export interface ToolDiscoveryInput {
+  readonly servers: readonly AdmittedToolServer[];
+  /** The child's hard backstop, forwarded for suites that need to observe it. */
+  readonly serverLifetimeMs?: number;
+}
+
+const DISCOVERY_SCOPE_ID = "tool-discovery";
+
+/** Open one discovery scope. The caller owes a `close()`, in a `finally`. */
+export function openToolDiscovery(input: ToolDiscoveryInput): ToolDiscoveryScope {
+  let live = true;
+  const port = createToolProtocolPort({
+    servers: input.servers,
+    liveness: { isLive: (sessionId: string) => live && sessionId === DISCOVERY_SCOPE_ID },
+    ...(input.serverLifetimeMs === undefined ? {} : { serverLifetimeMs: input.serverLifetimeMs }),
+  });
+
+  return Object.freeze({
+    async listTools(serverId: string): Promise<ToolListingOutcome> {
+      return await port.listTools(DISCOVERY_SCOPE_ID, serverId);
+    },
+    async close(): Promise<void> {
       live = false;
       await port.closeAll();
     },

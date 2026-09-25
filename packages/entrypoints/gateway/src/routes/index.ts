@@ -95,6 +95,7 @@ import { recordTaskIntake } from "../task-intake/index.js";
 import { recordTaskGraph, resolveStepVersion, stepGraph } from "../task-graph/index.js";
 import { recordTaskStepLink, taskStepChain } from "../task-step-link/index.js";
 import { effectResult, parseEffectIdParam, taskEffects } from "../effect-result/index.js";
+import { discoverTools, parseServerIdParam } from "../tool-discovery/index.js";
 import {
   initiativeDetailDto,
   initiativeSummary,
@@ -1521,7 +1522,7 @@ export function registerRoutes(
     return listed;
   });
 
-  // P-15/F: one effect's result, the plane's one private read. Registered
+  // P-15/F: one effect's result, the plane's first private read. Registered
   // through `registerPrivateGet`, so the bearer is inherited by where this is
   // written (L-P15F-2).
   registerPrivateGet(
@@ -1533,6 +1534,22 @@ export function registerRoutes(
       const query = parseQuery(TaskEffectResultQuery, queryOf(request));
       const { ledger } = requireOpen(source);
       return effectResult(ledger, taskId, effectId, query.block ?? null);
+    },
+    bearer,
+  );
+
+  // P-24/B(a): which of one admitted server's allowlisted tools it serves under
+  // their pins. The second private read, registered through `registerPrivateGet`
+  // (L-P15F-2): it starts a child to ask a peer and describes the operator's tool
+  // document, so nothing about either is learnable before the bearer check. It
+  // opens no ledger and records nothing (L-P24BA-2).
+  registerPrivateGet(
+    app,
+    API_ROUTES.toolServerTools,
+    async (request) => {
+      const serverId = parseServerIdParam(paramsOf(request)["serverId"] ?? "");
+      assertEmptyQuery(queryOf(request));
+      return await discoverTools({ servers: toolServers, serverId });
     },
     bearer,
   );

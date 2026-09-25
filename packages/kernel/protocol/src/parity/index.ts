@@ -51,7 +51,18 @@ export type ParitySource =
    * this table assert a provenance the data does not have, so the honest move
    * is a source of its own that must say why.
    */
-  | "ACCOUNTS_FILE";
+  | "ACCOUNTS_FILE"
+  /**
+   * Not from the ledger: a tool server's advertisement, read at request time
+   * through the operator's tool document (P-24/B(a), ADR 0118).
+   *
+   * The `ACCOUNTS_FILE` precedent, and for the same reason: two clients handed
+   * the same document and the same server agree, so the value is deterministic,
+   * but "the same peer" is a precondition no ledger route needs, and a discovery
+   * records nothing a ledger could be asked for. Binding these fields to `LEDGER`
+   * would assert a provenance the data does not have.
+   */
+  | "TOOL_SERVER";
 
 export interface FieldBinding {
   readonly field: string;
@@ -66,6 +77,7 @@ export const NON_LEDGER_SOURCES: readonly ParitySource[] = Object.freeze([
   "LIVENESS",
   "OBSERVED_AT",
   "ACCOUNTS_FILE",
+  "TOOL_SERVER",
 ]);
 
 /**
@@ -516,6 +528,24 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("cohort", "LEDGER"),
       bind("result", "LEDGER"),
       bind("blockContent", "LEDGER"),
+    ]),
+    /**
+     * One tool server's listing (P-24/B(a), ADR 0118). Nothing here is ledger
+     * state: a discovery records nothing. Every field but the versions is the
+     * peer's advertisement read through the operator's document, so it binds to
+     * `TOOL_SERVER` and says so; the CLI = API parity rows prove two producers
+     * over one advertisement answer the same document.
+     */
+    toolServerTools: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("serverId", "TOOL_SERVER", "the operator's own server id, echoed from the request"),
+      bind("outcome", "TOOL_SERVER", "the tool server's advertisement, read at request time through the operator's document"),
+      bind("refusal", "TOOL_SERVER", "the port's word for the listing, read at request time; not a fact in a ledger"),
+      bind("at", "TOOL_SERVER", "the port's field path for the listing, read at request time"),
+      bind("toolName", "TOOL_SERVER", "the allowlist entry the advertisement did not match, read at request time"),
+      bind("tools", "TOOL_SERVER", "the allowlisted tools the server advertises under their pins, read at request time"),
+      bind("count", "TOOL_SERVER", "the number of tools listed, read at request time"),
     ]),
   });
 

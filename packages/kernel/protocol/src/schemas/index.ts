@@ -3215,6 +3215,84 @@ export const ToolCallsQuery = z
 export type ToolCallsQuery = z.infer<typeof ToolCallsQuery>;
 
 // ---------------------------------------------------------------------------
+// Tool discovery (P-24/B(a), ADR 0118)
+// ---------------------------------------------------------------------------
+
+/**
+ * The most tools one discovery answer may name.
+ *
+ * The protocol's own bound, because this package may not import the tool edge.
+ * The answer is a subset of one server's advertisement, which the edge caps at
+ * `TOOL_LIST_TOOLS_MAX`; the gateway suite, the one place that sees both, asserts
+ * the two are equal.
+ */
+export const MAX_DISCOVERED_TOOLS = 256;
+
+/** One tool a discovery lists: its name and whether the operator declared it writes. No schema bytes. */
+export const DiscoveredTool = z.strictObject({ name: BoundedIdentifier, writes: z.boolean() });
+export type DiscoveredTool = z.infer<typeof DiscoveredTool>;
+
+/**
+ * What both doors answer when an operator asks one admitted server which of its
+ * allowlisted tools it serves under their pins (P-24/B(a), ADR 0118).
+ *
+ * A query, and it records nothing: there is no sequence, no event id and no
+ * ledger coordinate here, because none exists. A port refusal is **not** an
+ * error: `outcome: "REFUSED"` is a 200 (and `EXIT_OK` at the CLI), because the
+ * request was valid and the plane answered it truthfully about the peer; 4xx is
+ * reserved for requests that never reached a listing. `tools` is sorted by name,
+ * by the door, so two producers over one advertisement answer the same bytes.
+ * `toolName` is non-null exactly on `SCHEMA_MISMATCH`, and names the allowlist
+ * entry whose pin the advertisement did not match; `at` says which schema.
+ *
+ * Deliberately absent: the transport kind (unasked, and a description of the
+ * operator's document), and any advertised schema (peer-authored bytes; pin
+ * authoring is a separate owner row).
+ */
+export const ToolDiscoveryResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    serverId: BoundedIdentifier,
+    outcome: z.enum(["COMPLETED", "REFUSED"]),
+    /** A refusal vocabulary word, or null when the listing completed. */
+    refusal: z.string().regex(/^[A-Z][A-Z0-9_]{0,39}$/).nullable(),
+    /** The refused field's path, or null when the listing completed. */
+    at: z.string().min(1).max(120).nullable(),
+    /** The mismatched allowlist entry, non-null exactly on `SCHEMA_MISMATCH`. */
+    toolName: BoundedIdentifier.nullable(),
+    tools: z.array(DiscoveredTool).max(MAX_DISCOVERED_TOOLS),
+    count: Count,
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx);
+    const completed = value.outcome === "COMPLETED";
+    if (completed && (value.refusal !== null || value.at !== null || value.toolName !== null)) {
+      ctx.addIssue({ code: "custom", message: "a completed listing carries no refusal, at or toolName", path: ["outcome"] });
+    }
+    if (!completed && (value.refusal === null || value.at === null)) {
+      ctx.addIssue({ code: "custom", message: "a refused listing names its refusal and its at", path: ["refusal"] });
+    }
+    if (!completed && value.tools.length !== 0) {
+      ctx.addIssue({ code: "custom", message: "a refused listing lists no tool", path: ["tools"] });
+    }
+    if ((value.refusal === "SCHEMA_MISMATCH") !== (value.toolName !== null)) {
+      ctx.addIssue({ code: "custom", message: "toolName is named exactly on SCHEMA_MISMATCH", path: ["toolName"] });
+    }
+    if (value.count !== value.tools.length) {
+      ctx.addIssue({ code: "custom", message: "count is the number of tools listed", path: ["count"] });
+    }
+    for (let index = 1; index < value.tools.length; index += 1) {
+      const previous = value.tools[index - 1]?.name ?? "";
+      const current = value.tools[index]?.name ?? "";
+      if (!(previous < current)) {
+        ctx.addIssue({ code: "custom", message: "tools are sorted by name, each once", path: ["tools", index] });
+      }
+    }
+  });
+export type ToolDiscoveryResponse = z.infer<typeof ToolDiscoveryResponse>;
+
+// ---------------------------------------------------------------------------
 // Task lifecycle (V2 L3)
 // ---------------------------------------------------------------------------
 
