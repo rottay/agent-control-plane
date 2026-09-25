@@ -486,8 +486,8 @@ describe("routes", () => {
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     // P8-8D-pre: the read plane's method list did not move when the first
     // write route arrived, and it has not moved since. The exceptions live in
-    // their own frozen table, which is the one that grows -- seven entries as of
-    // P-27 cut A, the newest being a step's task graph.
+    // their own frozen table, which is the one that grows -- eight entries as of
+    // P-27 cut C, the newest being a task's step link.
     expect([...API_WRITE_ROUTES]).toEqual([
       "initiativeRoadmap",
       "accountActions",
@@ -496,6 +496,7 @@ describe("routes", () => {
       "initiatives",
       "tasks",
       "initiativeStepGraph",
+      "initiativeTaskStep",
     ]);
     expect([...API_WRITE_METHODS]).toEqual(["GET", "POST"]);
     expect(Object.isFrozen(API_WRITE_ROUTES)).toBe(true);
@@ -2307,7 +2308,7 @@ describe("the initiative registration's wire contract (P-14/B)", () => {
 
   it("N-P14B-14: moves the API version and the write table, and adds no error code", () => {
     // `0.16.0` when it landed; P-14/C's sixth write door moved it again.
-    expect(API_CONTRACT_VERSION).toBe("0.22.0");
+    expect(API_CONTRACT_VERSION).toBe("0.23.0");
     expect(isWriteRoute("initiatives")).toBe(true);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(16);
@@ -2464,10 +2465,11 @@ describe("the task intake's wire contract (P-14/C)", () => {
   });
 
   it("N-P14C-23: moves the API version and the write table, and adds no method and no error code", () => {
-    expect(API_CONTRACT_VERSION).toBe("0.22.0");
+    expect(API_CONTRACT_VERSION).toBe("0.23.0");
     expect(isWriteRoute("tasks")).toBe(true);
-    // Six when it landed; P-27 cut A's task graph route is the seventh.
-    expect(API_WRITE_ROUTES).toHaveLength(7);
+    // Six when it landed; P-27 cut A's task graph route is the seventh, and P-27 cut
+    // C's task step route the eighth.
+    expect(API_WRITE_ROUTES).toHaveLength(8);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(16);
     // Derived from `CONTRACT_VERSION`, which P-26 cut B moved to 2.10.0 (ADR 0111).
@@ -2598,9 +2600,9 @@ describe("the registry publication's request (P-15/R, ADR 0104)", () => {
       RegistryPublicationResponse.safeParse({ ...response, document: { ...response.document, documentKind: "CAPABILITY_POLICY" } }).success,
     ).toBe(false);
     // No route parses it: the registry publication moved neither the API contract
-    // version nor the write table. Both literals are today's: P-27 cut A moved them.
-    expect(API_CONTRACT_VERSION).toBe("0.22.0");
-    expect(API_WRITE_ROUTES).toHaveLength(7);
+    // version nor the write table. Both literals are today's: P-27 cut C moved them.
+    expect(API_CONTRACT_VERSION).toBe("0.23.0");
+    expect(API_WRITE_ROUTES).toHaveLength(8);
   });
 });
 
@@ -3091,7 +3093,7 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.22.0");
+    expect(API_CONTRACT_VERSION).toBe("0.23.0");
   });
 
   it("names the thirteenth error code, and the version the surface now stands at", () => {
@@ -3108,7 +3110,7 @@ describe("the tool call's wire contract", () => {
     // that did not move with it is exactly the point — the version tracks the
     // whole surface, not one list. The number stays a literal so it is asserted
     // rather than echoed.
-    expect(API_CONTRACT_VERSION).toBe("0.22.0");
+    expect(API_CONTRACT_VERSION).toBe("0.23.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
@@ -3121,7 +3123,7 @@ describe("the tool call's wire contract", () => {
     expect(API_ERROR_CODES).toContain("CAPABILITY_UNSUPPORTED");
     expect(API_ERROR_CODES).toContain("SCENARIO_UNCONFIGURED");
     expect(API_ERROR_CODES).toHaveLength(16);
-    expect(API_CONTRACT_VERSION).toBe("0.22.0");
+    expect(API_CONTRACT_VERSION).toBe("0.23.0");
 
     // The distinction is the reason both exist. `SCENARIO_UNCONFIGURED` is an
     // operator problem a restart fixes, on the shape
@@ -3406,7 +3408,7 @@ describe("P-15/F: the effect reads on the wire (ADR 0107)", () => {
   it("names the private read's unconfigured server apart from the write door's", () => {
     expect(API_ERROR_CODES).toContain("PRIVATE_READ_UNCONFIGURED");
     expect(API_ERROR_CODES).toContain("WRITE_BEARER_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.22.0");
+    expect(API_CONTRACT_VERSION).toBe("0.23.0");
   });
 });
 
@@ -3778,6 +3780,115 @@ describe("the task graph route's schemas (P-27 cut A)", () => {
   it("the timeline's type enum widens by derivation to the two graph types", () => {
     expect(InitiativeEventTypeDto.safeParse("TASK_GRAPH_DECLARED").success).toBe(true);
     expect(InitiativeEventTypeDto.safeParse("TASK_GRAPH_NODE_DECLARED").success).toBe(true);
-    expect(InitiativeEventTypeDto.options).toHaveLength(6);
+    // Six when it landed; P-27 cut C's `TASK_STEP_LINKED` is the seventh.
+    expect(InitiativeEventTypeDto.options).toHaveLength(7);
+  });
+
+  it("carries TASK_LINK_MOVED through the reason grammar it already has (P-27 cut C)", () => {
+    const moved = readNode({
+      conditions: {
+        R1: { verdict: "UNSATISFIED", reason: "TASK_LINK_MOVED" },
+        R2: satisfied,
+        R3: satisfied,
+        R4: { verdict: "UNKNOWN", reason: "APPROVAL_UNPRODUCED" },
+      },
+    });
+    expect(TaskGraphResponse.safeParse(graphBody({ nodes: [moved] })).success).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-27 cut C: a task's step link, adoption and re-link (ADR 0116)
+// ---------------------------------------------------------------------------
+
+describe("the task step route's schemas (P-27 cut C)", () => {
+  const { TaskStepLinkRequest, TaskStepLinkResponse, TaskStepResponse, InitiativeEventTypeDto, LEDGER_CONTRACT_VERSION } =
+    protocolBarrel;
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+  const VERSION_ID = "11111111-1111-4111-8111-111111111111";
+  const TASK = "66666666-6666-4666-8666-666666666666";
+  const echo = { version: 2, roadmapVersionId: VERSION_ID, kind: "EDIT", stepCount: 1 };
+  const request = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    version: 2,
+    stepId: "A",
+    from: { version: 1, stepId: "A" },
+    linkedBy: "claude/opus/coordinator/01",
+    ...overrides,
+  });
+  const linkResponse = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    apiContractVersion: API_CONTRACT_VERSION,
+    ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+    initiativeId: INITIATIVE,
+    taskId: TASK,
+    version: echo,
+    stepId: "A",
+    from: { version: 1, stepId: "A" },
+    sequence: 7,
+    replayed: false,
+    ...overrides,
+  });
+  const chain = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    apiContractVersion: API_CONTRACT_VERSION,
+    ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+    initiativeId: INITIATIVE,
+    taskId: TASK,
+    enteredOn: { version: 1, stepId: "A" },
+    links: [{ version: 2, stepId: "A", from: { version: 1, stepId: "A" }, sequence: 7, linkedAt: "2026-09-25T00:00:00.000Z" }],
+    current: { version: 2, stepId: "A" },
+    ...overrides,
+  });
+
+  it("admits an adoption and a re-link, strict, with every field required", () => {
+    expect(TaskStepLinkRequest.safeParse(request()).success).toBe(true);
+    expect(TaskStepLinkRequest.safeParse(request({ from: null })).success).toBe(true);
+    for (const field of Object.keys(request())) {
+      const rest = Object.fromEntries(Object.entries(request()).filter(([key]) => key !== field));
+      expect(TaskStepLinkRequest.safeParse(rest).success, field).toBe(false);
+    }
+    expect(TaskStepLinkRequest.safeParse(request({ linkId: TASK })).success).toBe(false);
+    expect(TaskStepLinkRequest.safeParse(request({ from: { version: 1 } })).success).toBe(false);
+    expect(TaskStepLinkRequest.safeParse(request({ from: { version: 1, stepId: "A", roadmapVersionId: VERSION_ID } })).success).toBe(false);
+  });
+
+  it("bounds the version as a positive number and the step by the declared step's grammar", () => {
+    for (const version of [0, -1, 1.5, "2", 1_000_001]) {
+      expect(TaskStepLinkRequest.safeParse(request({ version })).success, String(version)).toBe(false);
+    }
+    expect(TaskStepLinkRequest.safeParse(request({ version: 1_000_000 })).success).toBe(true);
+    expect(TaskStepLinkRequest.safeParse(request({ stepId: "a".repeat(120) })).success).toBe(true);
+    expect(TaskStepLinkRequest.safeParse(request({ stepId: "a".repeat(121) })).success).toBe(false);
+    expect(TaskStepLinkRequest.safeParse(request({ stepId: "a b" })).success).toBe(false);
+    expect(TaskStepLinkRequest.safeParse(request({ linkedBy: "not an identity" })).success).toBe(false);
+  });
+
+  it("answers the link by number, echo and sequence, strict, and carries no content", () => {
+    expect(TaskStepLinkResponse.safeParse(linkResponse()).success).toBe(true);
+    expect(TaskStepLinkResponse.safeParse(linkResponse({ from: null, replayed: true })).success).toBe(true);
+    expect(TaskStepLinkResponse.safeParse(linkResponse({ sequence: 0 })).success).toBe(false);
+    expect(TaskStepLinkResponse.safeParse(linkResponse({ title: "a step" })).success).toBe(false);
+    expect(TaskStepLinkResponse.safeParse(linkResponse({ version: 2 })).success).toBe(false);
+  });
+
+  it("reads the chain: entered on, the links in order, and the current step, each nullable where it can be", () => {
+    expect(TaskStepResponse.safeParse(chain()).success).toBe(true);
+    // An adopted task: entered on no step, one link, current is the link's target.
+    expect(
+      TaskStepResponse.safeParse(
+        chain({
+          enteredOn: null,
+          links: [{ version: 1, stepId: "B", from: null, sequence: 4, linkedAt: "2026-09-25T00:00:00.000Z" }],
+          current: { version: 1, stepId: "B" },
+        }),
+      ).success,
+    ).toBe(true);
+    expect(TaskStepResponse.safeParse(chain({ enteredOn: null, links: [], current: null })).success).toBe(true);
+    expect(TaskStepResponse.safeParse(chain({ links: [{ version: 2, stepId: "A", from: null, sequence: 7 }] })).success).toBe(false);
+    expect(TaskStepResponse.safeParse(chain({ links: [{ version: 2, stepId: "A", from: null, sequence: 7, linkedAt: "2026-09-25T00:00:00.000Z", envelopeSha256: "0".repeat(64) }] })).success).toBe(false);
+    expect(TaskStepResponse.safeParse(chain({ current: { stepId: "A" } })).success).toBe(false);
+    expect(TaskStepResponse.safeParse(chain({ objective: "x" })).success).toBe(false);
+  });
+
+  it("the timeline's type enum carries TASK_STEP_LINKED by derivation", () => {
+    expect(InitiativeEventTypeDto.safeParse("TASK_STEP_LINKED").success).toBe(true);
   });
 });

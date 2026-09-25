@@ -194,6 +194,23 @@ describe("the task graph decision (P-27 cut A)", () => {
     expect(refusal(request({}, over))?.reason).toBe("GRAPH_DECLARATION_INVALID");
   });
 
+  it("GRAPH_TASK_OUT_OF_SCOPE reads the caller's current link, the same word (P-27 cut C, decision 201)", () => {
+    // The door and the producer hand `currentTaskStepLink`: the last link row's target,
+    // else the intake's pair. A task re-linked from V1's B to V2's B is out of scope on
+    // V1's B, and in scope on V2's B; the decision itself reads nothing else.
+    const moved = { initiativeId: INITIATIVE, roadmapVersionId: OTHER_VERSION, stepId: "B" };
+    expect(refusal(request({ taskLink: () => moved }))).toEqual({ reason: "GRAPH_TASK_OUT_OF_SCOPE", at: "nodes[0]" });
+    const onOther = request({
+      header: { graphRevisionId: GRAPH, roadmapVersionId: OTHER_VERSION, stepId: "B", supersedesGraphRevisionId: null, nodeCount: 3 },
+      stepDeclared: (roadmapVersionId, stepId) => roadmapVersionId === OTHER_VERSION && stepId === "B",
+      taskLink: () => moved,
+    });
+    expect(refusal(onOther)).toBeNull();
+    // An adoption is the same answer from a null intake pair: in scope once linked.
+    const adopted = { initiativeId: INITIATIVE, roadmapVersionId: VERSION, stepId: "B" };
+    expect(refusal(request({ taskLink: () => adopted }))).toBeNull();
+  });
+
   it("derives its transition ids from the producer's revision id, within the grammar's bound", () => {
     expect(taskGraphTransitionId(GRAPH)).toBe("graph." + GRAPH);
     expect(taskGraphNodeTransitionId(GRAPH, TASK_GRAPH_NODES_MAX - 1)).toBe("graph." + GRAPH + ".node.199");

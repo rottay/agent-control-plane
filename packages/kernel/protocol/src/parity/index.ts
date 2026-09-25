@@ -295,6 +295,21 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("evaluatedAt", "OBSERVED_AT", "the instant the verdicts were computed against"),
     ]),
     /**
+     * One task's step chain (P-27 cut C, ADR 0116), bound on its read and only its
+     * read, as `initiativeStepGraph` is. Every field is a fold of the read model: the
+     * intake's pair, the link rows in `sequence` order and the current step they
+     * derive, with every version resolved to its number.
+     */
+    initiativeTaskStep: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("initiativeId", "LEDGER"),
+      bind("taskId", "LEDGER"),
+      bind("enteredOn", "LEDGER"),
+      bind("links", "LEDGER"),
+      bind("current", "LEDGER"),
+    ]),
+    /**
      * The merged timeline (P8-8E-pre, C2).
      *
      * `items` binds to `LEDGER` in the strong sense: every field of every entry

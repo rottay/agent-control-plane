@@ -1,5 +1,6 @@
 import type { RoadmapVersionRefusal } from "../roadmap-version/index.js";
 import type { TaskGraphRefusal } from "../task-graph/index.js";
+import type { TaskStepLinkRefusal } from "../task-step-link/index.js";
 
 /**
  * Typed ledger errors.
@@ -30,7 +31,8 @@ export type LedgerErrorCode =
   | "LEDGER_ARTIFACT_ENCRYPTION_CONFLICT"
   | "LEDGER_ROADMAP_VERSION_REFUSED"
   | "LEDGER_INITIATIVE_BATCH_CONFLICT"
-  | "LEDGER_TASK_GRAPH_REFUSED";
+  | "LEDGER_TASK_GRAPH_REFUSED"
+  | "LEDGER_TASK_STEP_LINK_REFUSED";
 
 /** Base class for everything this package throws deliberately. */
 export class LedgerError extends Error {
@@ -366,6 +368,25 @@ export class LedgerTaskGraphRefusedError extends LedgerError {
   constructor(reason: TaskGraphRefusal, at: string) {
     super("LEDGER_TASK_GRAPH_REFUSED", "the task graph was refused: " + reason + " at " + at);
     this.name = "LedgerTaskGraphRefusedError";
+    this.reason = reason;
+    this.at = at;
+  }
+}
+
+/**
+ * The initiative door refused a task's step link by the decision's word, or the fold
+ * met a link the door would have refused (P-27 cut C, ADR 0116).
+ *
+ * `LedgerTaskGraphRefusedError`'s mould: the word and the field, never a value.
+ */
+export class LedgerTaskStepLinkRefusedError extends LedgerError {
+  readonly reason: TaskStepLinkRefusal;
+  /** The field that failed. Never content. */
+  readonly at: string;
+
+  constructor(reason: TaskStepLinkRefusal, at: string) {
+    super("LEDGER_TASK_STEP_LINK_REFUSED", "the task step link was refused: " + reason + " at " + at);
+    this.name = "LedgerTaskStepLinkRefusedError";
     this.reason = reason;
     this.at = at;
   }

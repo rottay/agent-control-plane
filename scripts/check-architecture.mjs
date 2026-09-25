@@ -12185,6 +12185,97 @@ const P27B_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-27, cut C: a task changes step only through a recorded link (ADR 0116; decisions
+ * 200-203; brief v1 and Fable pre-audit B1-B4 and N1-N17, ND-1..ND-10 adopted as
+ * rulings).
+ *
+ * Requirement A3: the producer decision 196 named. A task that entered with no step is
+ * adopted onto any declared step of its initiative, and a task of a step is re-linked
+ * to the same step id in a strictly later version, each by one `TASK_STEP_LINKED`
+ * through the single initiative door, which runs the one decision `decideTaskStepLink`
+ * (six words, closed and sorted) under its own grant; migration 27 creates the
+ * insert-only `task_step_link_read_model`, folded by `foldTaskStepLink` at the door and
+ * at the rebuild. `currentTaskStepLink` is the one read of a task's current step --
+ * the last link by sequence, else the intake's pair -- and the task graph door's
+ * `GRAPH_TASK_OUT_OF_SCOPE` reads it (decision 201). READY's R1 gains
+ * `TASK_LINK_MOVED`, fed by `readinessOf`; `verifyIntegrity()` reports a first link
+ * that does not leave the intake and a graph node not of its step at its sequence, and
+ * reports rather than throws a link the fold refuses (B3). The gateway gains
+ * `initiativeTaskStep`, GET and POST, the eighth write. L-P27C-1 is new; L-P26B-1,
+ * L-P27-1 and L-P27-2 are unchanged. Nothing dispatches.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 169 -> **170**; the ADR corpus 115 ->
+ * **116**; `MIGRATIONS` 26 -> **27**; `tr_` 16 -> **17**; `PROJECTION_SOURCES` 31 ->
+ * **32**; `INITIATIVE_PROJECTION_NAMES` 7 -> **8**; `DERIVED_TABLES` 34 -> **35**;
+ * `EXPECTED_SCHEMA_OBJECTS` 129 -> **132**; `INITIATIVE_EVENT_TYPES` 6 -> **7**;
+ * `CONTRACTS_SCHEMA_EXPORTS` 183 -> **184** (`TaskStepLinkDeclaration`);
+ * `API_CONTRACT_VERSION` 0.22.0 -> **0.23.0** (eleven literals restamped in five
+ * files; three historical mentions kept); `API_ROUTES` 25 -> **26**;
+ * `API_WRITE_ROUTES` 7 -> **8**; `SURFACE_MAP` 36 -> **38**; `PARITY_ROUTES` 25 ->
+ * **26**; `READY_UNSATISFIED_REASONS` 11 -> **12**. Two computed counts move, pinned
+ * by no doc: this constant is one more epoch-frozen record (241 -> 242), whose 53 paths
+ * hold 46 more package-path literals (3277 -> 3323); the live law literals 485 -> 487.
+ * **Pins that do not.** `CONTRACT_VERSION` (2.10.0, ND-1), `TASK_INTAKE_CODES` (12),
+ * `API_ERROR_CODES` (16), `RUNTIME_PUBLIC_EXPORTS` (307), `API_PRIVATE_READ_ROUTES`
+ * (1), `PROJECTION_NAMES` (16).
+ */
+const P27C_WRITE_SET = [
+  "docs/api-reference.md",
+  "docs/architecture/0116-a-task-changes-step-only-by-a-recorded-link.md",
+  "docs/architecture/index.md",
+  "docs/audit/architecture/database/planning/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "packages/domains/runtime/README.md",
+  "packages/domains/runtime/src/ready/index.ts",
+  "packages/domains/runtime/src/ready/types/index.ts",
+  "packages/domains/runtime/test/ready/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/gateway/src/mappers/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/src/task-step-link/index.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/roadmap-write/index.test.ts",
+  "packages/entrypoints/gateway/test/task-graph/index.test.ts",
+  "packages/entrypoints/gateway/test/task-intake/index.test.ts",
+  "packages/entrypoints/gateway/test/task-step-link/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/schemas/initiatives/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/protocol/README.md",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/surface-map/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/kernel/protocol/test/routes/index.test.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/surface-map/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/src/errors/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/task-graph/index.ts",
+  "packages/persistence/ledger/src/task-step-link/index.ts",
+  "packages/persistence/ledger/src/task-step-link/types/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/task-graph/index.test.ts",
+  "packages/persistence/ledger/test/task-step-link/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12437,6 +12528,7 @@ const WRITE_SET = [
   ...P15A3_WRITE_SET,
   ...P27A_WRITE_SET,
   ...P27B_WRITE_SET,
+  ...P27C_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13996,6 +14088,13 @@ const PATH_SCOPED_LAWS = [
   {
     law: "only the batch door writes a task graph, rows insert-only, and superseded_by at one site",
     scope: "packages/persistence/ledger/src/ledger/index.ts, packages/*/*/src/**",
+  },
+  // P-27 cut C. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 169 -> 170 for L-P27C-1. L-P26B-1, L-P27-1 and
+  // L-P27-2 are unchanged.
+  {
+    law: "a task's step link has one decision, one door, and insert-only rows",
+    scope: "packages/persistence/ledger/src/ledger/index.ts, packages/persistence/ledger/src/task-step-link/index.ts, packages/*/*/src/**",
   },
 ];
 
@@ -22065,6 +22164,8 @@ if (accountsIndex === null) {
   "DEPENDENCY_FAILURE_POLICIES",
   "TaskGraphDeclaration",
   "TaskGraphNodeDeclaration",
+  // P-27 cut C (ADR 0116): the declaration a TASK_STEP_LINKED carries. 183 -> 184.
+  "TaskStepLinkDeclaration",
 ];
 
   const schemasBarrel = readIfPresent("packages/kernel/contracts/src/schemas/index.ts");
@@ -27134,6 +27235,158 @@ if (tracked.status === 0) {
       fail(DOOR_SITE + " the task graph fold runs " + String(projected.length) + " time(s); once, in appendInitiativeBatch, after #assertTaskGraphGranted (L-P27-2)");
     }
     notes.push("only the batch door writes a task graph, insert-only, and superseded_by is written at one site");
+  }
+  requireScope(LAW, scanned);
+}
+
+// L-P27C-1 -- a task's step link has one decision, one door, and insert-only rows
+// (P-27 cut C, ADR 0116; decisions 200 and 203; ND-8).
+//
+// Over `ledger/src/ledger/index.ts`, comments stripped: `#appendInitiativeInTransaction`
+// holds `event.type === "TASK_STEP_LINKED"` and `this.#assertTaskStepLinkGranted(`, the
+// literal before the call and both before its `this.#insertInitiativeRow(` (L-P26B-1's
+// literal form); the grant is called at that one site and nowhere else in the file; and
+// neither `appendInitiativeBatch` nor the two batch shape functions name
+// `"TASK_STEP_LINKED"`, so the batch door admits it by no shape. Over every tracked
+// `packages/*/*/src` `.ts`/`.tsx` file: `decideTaskStepLink` and `currentTaskStepLink`
+// are declared (`export function <name>(`) exactly once, in
+// `ledger/src/task-step-link/index.ts`; `TASK_STEP_LINK_REFUSALS` is declared there and
+// only there, as an array literal of `LINK_*` words, sorted and without repeats; and
+// every write naming `task_step_link_read_model` -- an `INSERT`, a `REPLACE`, an
+// `UPDATE` or a `DELETE FROM`, the name bare or `main`-qualified, either part
+// optionally quoted (L-P27-2's matcher) -- is in `ledger/src/ledger/index.ts`, inside
+// `#insertTaskStepLink`, with no conflict clause, and none is an `UPDATE` or a `DELETE
+// FROM` by name (the rebuild clears it through `DERIVED_TABLES`).
+//
+// Stated limit: L-P27-2's, restated. A text-level matcher: a table name assembled by
+// concatenation or held in a variable, a schema other than `main`, an SQL comment
+// between the keywords, whitespace around the qualifying dot, a literal written with
+// escapes, a refusal reached through a helper under another name, or a condition
+// neutralized while its text stays, is not seen. Its own: "declared once" matches only
+// the spelling `export function <name>(`, so an `export const` of either name is caught
+// only by the cross-package duplicate-export law, and a non-exported `function <name>(`
+// in another package passes both. Migration 27's insert-only trigger and the ledger
+// drills are the behaviour. Not a law (ND-8): the link read's cost.
+{
+  const DOOR_SITE = "packages/persistence/ledger/src/ledger/index.ts";
+  const HOME = "packages/persistence/ledger/src/task-step-link/index.ts";
+  const LAW = "a task's step link has one decision, one door, and insert-only rows";
+  const WRITE = new RegExp(
+    "\\b(?:INSERT(?:\\s+OR\\s+\\w+)?\\s+INTO|REPLACE\\s+INTO|UPDATE|DELETE\\s+FROM)\\s+(?:[\"'`[]?main[\"'`\\]]?\\.)?[\"'`[]?task_step_link_read_model\\b",
+    "gi",
+  );
+  const span = (code, head, close) => {
+    const start = code.indexOf(head);
+    const end = start === -1 ? -1 : code.indexOf(close, start);
+    return start === -1 || end === -1 ? { start: -1, end: -1, text: "" } : { start, end, text: code.slice(start, end) };
+  };
+  let scanned = 0;
+  const homes = new Map([
+    ["decideTaskStepLink", []],
+    ["currentTaskStepLink", []],
+  ]);
+  const vocabulary = [];
+  const inserts = [];
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      const code = stripComments(file);
+      for (const [name, found] of homes) {
+        const declared = code.match(new RegExp("export\\s+function\\s+" + name + "\\s*\\(", "g")) ?? [];
+        for (let index = 0; index < declared.length; index += 1) found.push(relativePath);
+      }
+      if (/(?:const|let|var)\s+TASK_STEP_LINK_REFUSALS\b/.test(code)) vocabulary.push(relativePath);
+      for (const match of code.matchAll(WRITE)) {
+        const verb = match[0];
+        if (relativePath !== DOOR_SITE) {
+          fail(relativePath + " writes task_step_link_read_model (" + verb + "); only the ledger's single door does (L-P27C-1)");
+          continue;
+        }
+        const from = match.index ?? 0;
+        const to = code.indexOf(".run(", from);
+        const statement = code.slice(from, to === -1 ? code.length : to);
+        if (/^(?:INSERT\s+OR|REPLACE)/i.test(verb) || /ON CONFLICT/i.test(statement)) {
+          fail(DOOR_SITE + " writes task_step_link_read_model with a conflict clause (" + verb + "); a link is insert-only (L-P27C-1)");
+        } else if (/^UPDATE/i.test(verb)) {
+          fail(DOOR_SITE + " updates task_step_link_read_model (" + verb + "); a link is never rewritten (L-P27C-1)");
+        } else if (/^DELETE/i.test(verb)) {
+          fail(DOOR_SITE + " deletes from task_step_link_read_model by name (" + verb + "); a link is insert-only (L-P27C-1)");
+        } else {
+          inserts.push({ from, code });
+        }
+      }
+    }
+  }
+  for (const [name, found] of homes) {
+    if (found.length !== 1 || found[0] !== HOME) {
+      fail(name + " is declared " + String(found.length) + " time(s) (" + (found.join(", ") || "no file") + "); its one home is " + HOME + " (L-P27C-1)");
+    }
+  }
+  if (vocabulary.length !== 1 || vocabulary[0] !== HOME) {
+    fail("TASK_STEP_LINK_REFUSALS is declared in " + (vocabulary.join(", ") || "no file") + "; its one home is " + HOME + " (L-P27C-1)");
+  }
+  const home = readIfPresent(HOME);
+  let words = [];
+  if (home !== null) {
+    const literal = /export const TASK_STEP_LINK_REFUSALS = \[([^\]]*)\] as const;/.exec(stripComments(home));
+    if (literal === null) {
+      fail(HOME + " no longer declares TASK_STEP_LINK_REFUSALS as an array literal the law can read (L-P27C-1)");
+    } else {
+      const entries = (literal[1] ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+      words = entries.map((entry) => (/^"(LINK_[A-Z_]+)"$/.exec(entry) ?? [])[1]);
+      if (words.length === 0 || words.some((word) => word === undefined)) {
+        fail(HOME + " TASK_STEP_LINK_REFUSALS holds an entry that is not a LINK_ word (L-P27C-1)");
+      } else if (words.join(",") !== [...words].sort().join(",") || new Set(words).size !== words.length) {
+        fail(HOME + " TASK_STEP_LINK_REFUSALS is not sorted without repeats (L-P27C-1)");
+      }
+    }
+  }
+  const door = readIfPresent(DOOR_SITE);
+  if (door !== null) {
+    const code = stripComments(door);
+    const single = span(code, "  #appendInitiativeInTransaction(", "\n  }\n");
+    const insert = single.text.indexOf("this.#insertInitiativeRow(");
+    const literal = single.text.indexOf('event.type === "TASK_STEP_LINKED"');
+    const call = single.text.indexOf("this.#assertTaskStepLinkGranted(");
+    if (insert === -1 || literal === -1 || call === -1 || literal > call || call > insert) {
+      fail(
+        DOOR_SITE +
+          " #appendInitiativeInTransaction no longer grants a TASK_STEP_LINKED through this.#assertTaskStepLinkGranted( under its literal, before it inserts (L-P27C-1)",
+      );
+    }
+    const calls = [...code.matchAll(/this\.#assertTaskStepLinkGranted\(/g)].map((match) => match.index ?? 0);
+    if (calls.length !== 1 || single.start === -1 || (calls[0] ?? 0) < single.start || (calls[0] ?? 0) > single.end) {
+      fail(DOOR_SITE + " #assertTaskStepLinkGranted is called " + String(calls.length) + " time(s); once, in #appendInitiativeInTransaction (L-P27C-1)");
+    }
+    const batchStart = code.indexOf("  appendInitiativeBatch(");
+    const batchEnd = batchStart === -1 ? -1 : code.indexOf("\n  }\n", code.indexOf("return run.immediate();", batchStart));
+    const batch = batchStart === -1 || batchEnd === -1 ? "" : code.slice(batchStart, batchEnd);
+    const shapes = span(code, "function initiativeBatchShapeProblem(", "\n}\n").text + span(code, "function taskGraphBatchShapeProblem(", "\n}\n").text;
+    if (batch === "" || shapes === "") {
+      fail(DOOR_SITE + " the batch door or its shape functions are no longer where the law can read them (L-P27C-1)");
+    } else if (batch.includes('"TASK_STEP_LINKED"') || shapes.includes('"TASK_STEP_LINKED"')) {
+      fail(DOOR_SITE + " the batch door names TASK_STEP_LINKED; a link is one event, through the single door (L-P27C-1)");
+    }
+    const writer = span(code, "  #insertTaskStepLink(", "\n  }\n");
+    const inWriter = inserts.filter((entry) => entry.from >= writer.start && entry.from <= writer.end && writer.start !== -1);
+    if (inserts.length === 0 || inWriter.length !== inserts.length) {
+      fail(
+        DOOR_SITE +
+          " inserts into task_step_link_read_model " +
+          String(inserts.length) +
+          " time(s), " +
+          String(inWriter.length) +
+          " inside #insertTaskStepLink; the one writer is #insertTaskStepLink (L-P27C-1)",
+      );
+    }
+    notes.push(
+      "a task's step link has one decision, one door and insert-only rows; " + String(words.length) + " refusal words, sorted and closed",
+    );
   }
   requireScope(LAW, scanned);
 }

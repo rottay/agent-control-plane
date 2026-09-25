@@ -395,8 +395,9 @@ nothing that dispatches. `ready/` holds two things, kept apart by body (L-P27-1)
 
 - **`evaluateReady`** (on the barrel, with `READY_UNSATISFIED_REASONS` and
   `READY_UNKNOWN_REASONS`) judges one node on four conditions — **R1** in force (the
-  graph revision and the task revision current, the task `CLASSIFIED` in the V2
-  cohort), **R2** every edge's dependency by its `failPolicy`, **R3** the step admits
+  graph revision and the task revision current, the task still of the graph's step by
+  its current link — else `UNSATISFIED(TASK_LINK_MOVED)`, P-27 cut C, ADR 0116 — and the
+  task `CLASSIFIED` in the V2 cohort), **R2** every edge's dependency by its `failPolicy`, **R3** the step admits
   work and the initiative is active, **R4** the assignment still resolves and the
   approval of the A6 class, if one is required, is in force against the injected
   instant. Each answers `SATISFIED`, `UNSATISFIED(reason)` or `UNKNOWN(reason)`; a node
@@ -410,7 +411,9 @@ nothing that dispatches. `ready/` holds two things, kept apart by body (L-P27-1)
   compared.
 - **`readinessOf`** (on the barrel) is the production adapter. It reads one revision's
   nodes and edges and feeds each input from a row that exists or names its absence:
-  every task is of the legacy cohort (the V2 cohort is P-21's), a dependency's terminal
+  every task is of the legacy cohort (the V2 cohort is P-21's), the task's current link
+  from its intake and its link rows through the ledger's `currentTaskStepLink` (no current
+  link at all is the block by definition), a dependency's terminal
   is its task's state only for the revision the task is at (the per-revision terminal
   is P-18's), the step's state and whether it depends on other steps (step transitions
   are a later cut's), the assignment through the intake's own recorded resolution

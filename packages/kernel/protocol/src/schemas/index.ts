@@ -2985,6 +2985,88 @@ export const TaskGraphResponse = z
 export type TaskGraphResponse = z.infer<typeof TaskGraphResponse>;
 
 // ---------------------------------------------------------------------------
+// A task's step link: adoption and re-link (P-27 cut C)
+// ---------------------------------------------------------------------------
+
+/** A version number in a body: positive, bounded as `RoadmapVersionNumber` bounds a query. */
+const TaskStepVersionNumber = z.number().int().positive().max(1_000_000);
+
+/**
+ * A step named inside one initiative: a version by number, resolved inside the
+ * initiative as the graph route resolves it, so a version of another initiative is
+ * unrepresentable, and a step id by the declared step's grammar.
+ */
+const TaskStepPairDto = z.strictObject({
+  version: TaskStepVersionNumber,
+  stepId: BoundedIdentifier,
+});
+
+/**
+ * What a caller sends to link one task to a declared step (P-27 cut C, ADR 0116).
+ *
+ * The target step, and `from`: the step the caller says the task is of now, null for an
+ * adoption of a task that entered with none. The link's identity is its task and its
+ * target version, so a retry of the same body is answered as a replay; the caller names
+ * no link id. Numbers, ids and the producer only.
+ */
+export const TaskStepLinkRequest = z
+  .strictObject({
+    version: TaskStepVersionNumber,
+    stepId: BoundedIdentifier,
+    from: TaskStepPairDto.nullable(),
+    linkedBy: WorkerIdentityString,
+  })
+  .superRefine(attachGuards);
+export type TaskStepLinkRequest = z.infer<typeof TaskStepLinkRequest>;
+
+/** What the link answers: the link recorded, or the one a replay names. */
+export const TaskStepLinkResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    initiativeId: z.uuid(),
+    taskId: z.uuid(),
+    version: RoadmapVersionEcho,
+    stepId: BoundedIdentifier,
+    from: TaskStepPairDto.nullable(),
+    /** The initiative-stream position of the link. */
+    sequence: z.number().int().positive(),
+    replayed: z.boolean(),
+  })
+  .superRefine(attachGuards);
+export type TaskStepLinkResponse = z.infer<typeof TaskStepLinkResponse>;
+
+/**
+ * One task's step chain within its initiative (P-27 cut C, ADR 0116): the step it
+ * entered on, null when its intake named none; its recorded links in `sequence` order;
+ * and its current step, the last link's target or else `enteredOn`. A task read's
+ * `stepId` is the step it entered on and never moves; this is where the current one is
+ * read. Identifiers and numbers only.
+ */
+export const TaskStepResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    initiativeId: z.uuid(),
+    taskId: z.uuid(),
+    enteredOn: TaskStepPairDto.nullable(),
+    links: z
+      .array(
+        z.strictObject({
+          version: TaskStepVersionNumber,
+          stepId: BoundedIdentifier,
+          from: TaskStepPairDto.nullable(),
+          sequence: z.number().int().positive(),
+          linkedAt: Timestamp,
+        }),
+      )
+      .max(MAX_PAGE_LIMIT),
+    current: TaskStepPairDto.nullable(),
+  })
+  .superRefine(attachGuards);
+export type TaskStepResponse = z.infer<typeof TaskStepResponse>;
+
+// ---------------------------------------------------------------------------
 // The explicit tool call (V2-B4b stage 3C)
 // ---------------------------------------------------------------------------
 

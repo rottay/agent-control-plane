@@ -99,6 +99,13 @@ export interface ReadyInput {
   readonly graphRevisionCurrent: boolean;
   /** R1: the node's task revision is the task's current one. */
   readonly taskRevisionCurrent: boolean;
+  /**
+   * R1: the task's current link — its last link row by `sequence`, else its intake's
+   * pair, by `currentTaskStepLink` — is this graph's `(roadmapVersionId, stepId)` (P-27
+   * cut C, ADR 0116 §Four). False for a task with no current link at all: a block by
+   * definition, as an unresolved assignment is.
+   */
+  readonly taskLinkCurrent: boolean;
   /** R1: the task's state, with its cohort. */
   readonly taskState: ReadyTaskState;
   /** R2: every incoming edge. */

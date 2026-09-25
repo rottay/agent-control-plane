@@ -1,8 +1,8 @@
 import { resolveAssignment } from "@acp/accounts";
 import { isCanonicalInstant } from "@acp/contracts";
 import type { TransportKind, WorkerRole } from "@acp/contracts";
-import { LedgerIntegrityError, taskIntakePayloadOf } from "@acp/ledger";
-import type { Ledger, TaskReadModel } from "@acp/ledger";
+import { LedgerIntegrityError, currentTaskStepLink, taskIntakePayloadOf } from "@acp/ledger";
+import type { Ledger, TaskIntakePayload } from "@acp/ledger";
 
 import { assignmentReadingOf } from "../intake/index.js";
 
@@ -45,8 +45,9 @@ export type {
  * ## Four conditions, three answers
  *
  * A node is READY iff four conditions are `SATISFIED`: **R1** it is in force (the
- * graph revision is current, the task revision is current, and the task is
- * `CLASSIFIED` in the V2 cohort); **R2** every edge's dependency satisfies the edge's
+ * graph revision is current, the task revision is current, the task's current link is
+ * still the graph's step — P-27 cut C, ADR 0116 — and the task is `CLASSIFIED` in the
+ * V2 cohort); **R2** every edge's dependency satisfies the edge's
  * policy; **R3** its step admits work and its initiative is active; **R4** its
  * assignment still resolves and the approval of the A6 class it needs, if any, is in
  * force. Each condition answers `SATISFIED`, `UNSATISFIED(reason)` — a known block —
@@ -85,6 +86,7 @@ export const READY_UNSATISFIED_REASONS = [
   "GRAPH_REVISION_SUPERSEDED",
   "INITIATIVE_NOT_ACTIVE",
   "STEP_NOT_ADMITTING",
+  "TASK_LINK_MOVED",
   "TASK_NOT_CLASSIFIED",
   "TASK_REVISION_SUPERSEDED",
 ] as const;
@@ -141,7 +143,12 @@ function edgeVerdict(edge: ReadyEdge): ReadyVerdict {
   }
 }
 
-/** R1: the revisions in force and the task's state in its cohort. */
+/**
+ * R1: the revisions in force, the task still of the graph's step, and the task's state
+ * in its cohort. A task a recorded link moved to another step reads
+ * `TASK_LINK_MOVED` in its old step's graph (P-27 cut C, ADR 0116 §Four): without it, a
+ * re-linked task would be a node of two current graphs.
+ */
 function inForce(input: ReadyInput): ReadyVerdict {
   const state: ReadyVerdict =
     input.taskState.vocabulary !== "TASK_V2"
@@ -152,6 +159,7 @@ function inForce(input: ReadyInput): ReadyVerdict {
   return combine([
     input.graphRevisionCurrent ? SATISFIED : unsatisfied("GRAPH_REVISION_SUPERSEDED"),
     input.taskRevisionCurrent ? SATISFIED : unsatisfied("TASK_REVISION_SUPERSEDED"),
+    input.taskLinkCurrent ? SATISFIED : unsatisfied("TASK_LINK_MOVED"),
     state,
   ]);
 }
@@ -229,18 +237,25 @@ function dependencyOf(ledger: Ledger, taskId: string, taskRevisionNumber: number
 }
 
 /**
+ * A task's recorded intake, read once per node from its revision 1's event, or null when
+ * it has none: both R1's link clause and R4's assignment read it.
+ */
+function intakeOf(ledger: Ledger, taskId: string): TaskIntakePayload | null {
+  const opening = ledger.getTaskRevision(taskId, 1);
+  const record = opening === null ? null : ledger.getEventBySequence(opening.sequence);
+  return record === null ? null : taskIntakePayloadOf(record.event);
+}
+
+/**
  * Whether the assignment a task entered under still resolves (option (a) of the
  * pre-audit's C3): the intake recorded the role, the slot, the transport and the
  * assignment it resolved; the current GLOBAL reading for that role and slot must
  * resolve, through the intake's own resolution, to the same assignment. A task that
  * entered with no recorded intake has no assignment to hold. GLOBAL only: the
- * precedence STEP > INITIATIVE > GLOBAL is P-28's.
+ * precedence STEP > INITIATIVE > GLOBAL is P-28's. A task a link moved keeps its
+ * intake's resolution (ADR 0115 §Four; P-28 re-resolves).
  */
-function assignmentResolvedFor(ledger: Ledger, task: TaskReadModel | null): boolean {
-  if (task === null) return false;
-  const opening = ledger.getTaskRevision(task.taskId, 1);
-  const record = opening === null ? null : ledger.getEventBySequence(opening.sequence);
-  const intake = record === null ? null : taskIntakePayloadOf(record.event);
+function assignmentResolvedFor(ledger: Ledger, intake: TaskIntakePayload | null): boolean {
   if (intake === null) return false;
   const reading = ledger.getGlobalRoutingAssignment({ role: intake.role, slot: intake.resolution.slot });
   const resolved = resolveAssignment(
@@ -260,9 +275,10 @@ function assignmentResolvedFor(ledger: Ledger, task: TaskReadModel | null): bool
  *
  * Each input is read or named: the task's state as the legacy cohort (no V2 cohort is
  * declared in this build; P-21), a dependency's terminal for the revision the edge
- * names (P-18, D-S1-4), the step's state and whether it depends on other steps, the
- * initiative's status, the assignment through the intake's resolution, and no
- * approval producer (P-28). `now` is the caller's instant, or null.
+ * names (P-18, D-S1-4), whether the task's current link is still the graph's step (its
+ * last link row, else its intake's pair; P-27 cut C), the step's state and whether it
+ * depends on other steps, the initiative's status, the assignment through the intake's
+ * resolution, and no approval producer (P-28). `now` is the caller's instant, or null.
  */
 export function readinessOf(ledger: Ledger, graphRevisionId: string, now: string | null): ReadinessReading | null {
   const revision = ledger.getTaskGraphRevision(graphRevisionId);
@@ -280,12 +296,24 @@ export function readinessOf(ledger: Ledger, graphRevisionId: string, now: string
 
   const nodes: ReadinessNode[] = ledger.listTaskGraphNodes(graphRevisionId).map((node, nodeIndex) => {
     const task = ledger.getTask(node.taskId);
+    const intake = task === null ? null : intakeOf(ledger, node.taskId);
+    const link = currentTaskStepLink(
+      intake === null
+        ? null
+        : { initiativeId: intake.initiativeId, roadmapVersionId: intake.roadmapVersionId, stepId: intake.stepId },
+      ledger.getTaskStepLinks(node.taskId),
+    );
     const incoming = edges.filter(
       (edge) => edge.taskId === node.taskId && edge.taskRevisionNumber === node.taskRevisionNumber,
     );
     const evaluation = evaluateReady({
       graphRevisionCurrent: revision.supersededBy === null,
       taskRevisionCurrent: task?.latestRevisionNumber === node.taskRevisionNumber,
+      taskLinkCurrent:
+        link !== null &&
+        link.initiativeId === version.initiativeId &&
+        link.roadmapVersionId === revision.roadmapVersionId &&
+        link.stepId === revision.stepId,
       taskState: Object.freeze({ vocabulary: "LEGACY" as const, value: task?.currentState ?? "" }),
       dependencies: incoming.map((edge) => ({
         failPolicy: edge.failPolicy,
@@ -294,7 +322,7 @@ export function readinessOf(ledger: Ledger, graphRevisionId: string, now: string
       stepState: step.state,
       stepHasDependsOn,
       initiativeStatus: initiative.currentStatus,
-      assignmentResolved: assignmentResolvedFor(ledger, task),
+      assignmentResolved: assignmentResolvedFor(ledger, intake),
       approval: Object.freeze({ produced: false as const }),
       now,
     });

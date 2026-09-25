@@ -255,8 +255,23 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * moves and no existing field changes meaning. `CONTRACT_VERSION` and
  * `LEDGER_CONTRACT_VERSION` do not move (ND-P27-5: the revision id is the producer's,
  * never derived). ADR 0115 carries the reasoning.
+ *
+ * `0.22.0` → `0.23.0` at P-27 cut C: a task changes step only through a recorded
+ * link. One route, `initiativeTaskStep`, the eighth write: POST links one task to a
+ * declared step of its initiative — an adoption of a task that entered with none, or
+ * a re-link to the same step id in a strictly later version — and GET reads the
+ * task's step chain: the step it entered on, its links in order and its current step.
+ * The contract's `INITIATIVE_EVENT_TYPES` gains `TASK_STEP_LINKED`, so the timeline
+ * DTO's type enum widens by derivation. Three schemas arrive
+ * (`TaskStepLinkRequest`, `TaskStepLinkResponse`, `TaskStepResponse`), and the task
+ * graph read's R1 may answer one more block word, `TASK_LINK_MOVED`, through the
+ * reason grammar it already has. Minor: the route surface moves and no existing field
+ * changes meaning — a task read's `stepId` stays the step the task entered on.
+ * `CONTRACT_VERSION` and `LEDGER_CONTRACT_VERSION` do not move (decision 200: the
+ * link's identity is its task and target version, derived, and no existing shape
+ * gains a cohort). ADR 0116 carries the reasoning.
  */
-export const API_CONTRACT_VERSION = "0.22.0" as const;
+export const API_CONTRACT_VERSION = "0.23.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

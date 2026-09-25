@@ -119,6 +119,19 @@ than trusting this table.
   `SURFACE_MAP` under the standing reasons, and the parity row binds the read, with
   `evaluatedAt` its one `OBSERVED_AT` exception. `API_PRIVATE_READ_ROUTES` and the
   error words do not move.
+- **A task's step, adopted or re-linked.** P-27 cut C moved `API_CONTRACT_VERSION` to
+  `0.23.0` with one route, `initiativeTaskStep`
+  (`/api/v1/initiatives/:initiativeId/tasks/:taskId/step`), the eighth write: POST
+  links one task to a declared step of its initiative (`TaskStepLinkRequest`,
+  `TaskStepLinkResponse`) — the target by version number and step id, and `from`, the
+  step the task is of now or null for an adoption — and GET (`TaskStepResponse`) reads
+  the task's chain: the step it entered on, its links in order and its current step,
+  every version by number. The timeline's type enum widens by derivation to
+  `TASK_STEP_LINKED`, and the task graph read's R1 may carry `TASK_LINK_MOVED` through
+  the reason grammar it already has. The builder `initiativeTaskStepPath` validates
+  both ids before it encodes either. Both arms are API_ONLY in `SURFACE_MAP` under the
+  standing reasons, and the parity row binds the read whole to the ledger.
+  `API_PRIVATE_READ_ROUTES` and the error words do not move.
 - **Every read is free but one, and that one is named.** P-15/F added two reads
   and moved `API_CONTRACT_VERSION` to `0.19.0`: `taskEffects`, a plain read of a
   task's effect ids, coordinates and outcome words, and `taskEffectResult`, one

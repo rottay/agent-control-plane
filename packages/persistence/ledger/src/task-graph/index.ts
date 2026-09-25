@@ -3,6 +3,7 @@ import type { ControlPlaneEvent } from "@acp/contracts";
 
 import { LedgerIntegrityError } from "../errors/index.js";
 import { taskIntakePayloadOf } from "../projection/index.js";
+import { currentTaskStepLink } from "../task-step-link/index.js";
 
 import type {
   TaskGraphDeclarationInput,
@@ -45,9 +46,10 @@ export type {
  * the same revision, and a cycle is refused **naming its nodes** (A3), by task id and
  * revision, in cycle order from the member of the lowest `nodeIndex`. Identifiers only,
  * never content. The task revisions are the task stream's, asked across streams and
- * never held by a foreign key (datos §8 item 3), and each node's task must have entered
- * on the graph's own step: a node asserts that its task belongs to this step, so the
- * step a task is in stays unambiguous (A3).
+ * never held by a foreign key (datos §8 item 3), and each node's task must be of the
+ * graph's own step by its current link — the step it entered on, or the step a recorded
+ * link moved it to (P-27 cut C, decision 201): a node asserts that its task belongs to
+ * this step, so the step a task is in stays unambiguous (A3).
  *
  * ## One producer
  *
@@ -145,10 +147,11 @@ function namedCycle(nodes: readonly TaskGraphNodeDeclaration[]): string | null {
  * never for its scope.
  *
  * `GRAPH_TASK_OUT_OF_SCOPE` covers three cases under one word: a task that entered
- * under another initiative, a task linked to another `(roadmapVersionId, stepId)`
- * (the pair is the step's identity, so the same step id in another version is
- * another step), and a task with no link at all, whether it entered with none or
- * has no recorded intake.
+ * under another initiative, a task whose current link is another `(roadmapVersionId,
+ * stepId)` (the pair is the step's identity, so the same step id in another version is
+ * another step), and a task with no link at all, whether it entered with none and was
+ * never adopted or has no recorded intake. The current link is the caller's answer,
+ * `currentTaskStepLink` (P-27 cut C, decision 201); the word is unchanged.
  */
 export function decideTaskGraph(request: TaskGraphRequest): TaskGraphOutcome {
   const header = TaskGraphDeclaration.safeParse(request.header);
@@ -338,10 +341,12 @@ export function declareTaskGraph(input: TaskGraphDeclarationInput): TaskGraphDec
     currentGraphRevisionId: (versionId, id) =>
       reader.listTaskGraphRevisions(versionId, id).find((revision) => revision.supersededBy === null)?.graphRevisionId ?? null,
     taskRevisionKnown: (taskId, taskRevisionNumber) => reader.getTaskRevision(taskId, taskRevisionNumber) !== null,
+    // The task's current link (P-27 cut C, decision 201): its last link row by
+    // sequence, else the step its intake named.
     taskLink: (taskId) => {
       const opening = reader.getTaskRevision(taskId, 1);
       const record = opening === null ? null : reader.getEventBySequence(opening.sequence);
-      return record === null ? null : taskGraphLinkOf(record.event);
+      return currentTaskStepLink(record === null ? null : taskGraphLinkOf(record.event), reader.getTaskStepLinks(taskId));
     },
   });
   if (!decision.ok) return refuseDeclaration(decision.reason, decision.at);

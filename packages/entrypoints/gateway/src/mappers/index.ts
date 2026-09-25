@@ -7,6 +7,7 @@ import type {
   RoadmapVersionDto,
   TaskDetail,
   TaskGraphResponse,
+  TaskStepResponse,
   TaskSummary,
   TimelineItem,
   WorkerDetail,
@@ -25,6 +26,7 @@ import { payloadKeys } from "@acp/observation";
 import type { readinessOf } from "@acp/runtime";
 
 import type { InitiativeDetailModel, InitiativePortfolioRow } from "../initiatives/index.js";
+import type { TaskStepChainLink, TaskStepPair } from "../task-step-link/index.js";
 
 /**
  * Ledger read models to observation DTOs.
@@ -238,6 +240,31 @@ export function taskGraphNodeItems(
       R4: verdict(node.evaluation.conditions.R4),
     },
   }));
+}
+
+/**
+ * A task's step chain, field by field, for the task step read (P-27 cut C): the step it
+ * entered on, its links in `sequence` order and its current step, every version by
+ * number. Identifiers and numbers only.
+ */
+export function taskStepChainBody(chain: {
+  readonly enteredOn: TaskStepPair | null;
+  readonly links: readonly TaskStepChainLink[];
+  readonly current: TaskStepPair | null;
+}): Pick<TaskStepResponse, "enteredOn" | "links" | "current"> {
+  const pair = (value: TaskStepPair | null): TaskStepResponse["current"] =>
+    value === null ? null : { version: value.version, stepId: value.stepId };
+  return {
+    enteredOn: pair(chain.enteredOn),
+    links: chain.links.map((link) => ({
+      version: link.version,
+      stepId: link.stepId,
+      from: pair(link.from),
+      sequence: link.sequence,
+      linkedAt: link.linkedAt,
+    })),
+    current: pair(chain.current),
+  };
 }
 
 /** The ledger's diff, field by field, for the diff read (P-26 cut C). */

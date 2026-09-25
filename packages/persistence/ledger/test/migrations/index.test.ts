@@ -68,6 +68,8 @@ import {
   TASK_GRAPH_MIGRATION,
   TASK_GRAPH_NODE_PROJECTION,
   TASK_GRAPH_REVISION_PROJECTION,
+  TASK_STEP_LINK_MIGRATION,
+  TASK_STEP_LINK_PROJECTION,
   TASK_STREAM,
   checkMigrationConformance,
 } from "../../src/migrations/index.js";
@@ -218,7 +220,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -247,6 +249,7 @@ describe("migration 7 appends the watermark table without touching the applied s
       "roadmap_version_uniqueness",
       "roadmap_steps",
       "task_graph",
+      "task_step_link",
     ]);
   });
 
@@ -261,7 +264,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     const naming = MIGRATIONS.filter((migration) =>
       migration.sql.includes("projection_watermark"),
     );
-    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 25, 26]);
+    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 25, 26, 27]);
   });
 
   it("declares the table STRICT and names its constraints by the §3.2 convention", () => {
@@ -350,6 +353,7 @@ describe("the closed set of watermark rows is exactly the streams under discipli
       "task_graph_revision_read_model@initiative_events",
       "task_graph_node_read_model@initiative_events",
       "task_dependency_read_model@initiative_events",
+      "task_step_link_read_model@initiative_events",
       "artifact_blob_read_model@registry_events",
       "artifact_reference_read_model@registry_events",
       "artifact_pin_read_model@registry_events",
@@ -524,6 +528,8 @@ describe("migration 8 types causality without touching the applied seven", () =>
       { type: "trigger", name: "tr_roadmap_version_read_model__validate_steps_on_update" },
       // P-27 cut A: a task graph revision's one admitted update, its successor, once.
       { type: "trigger", name: "tr_task_graph_revision_read_model__supersede_once" },
+      // P-27 cut C: a task step link is never rewritten.
+      { type: "trigger", name: "tr_task_step_link_read_model__insert_only" },
     ]);
     // And the legacy prefix still names exactly the three streams that coined
     // it, so the rename did not quietly move one of theirs.
@@ -584,7 +590,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
     ]);
   });
 
@@ -811,9 +817,9 @@ describe("the two-source projection is the only name with two watermark rows", (
       ["routing_assignment_read_model", 2],
     ]);
     // Twenty-five before P-33/catálogo A's catalog took the twenty-sixth row,
-    // twenty-six before P-26 cut B's two step projections, and twenty-eight before
-    // P-27 cut A's three task graph projections.
-    expect(PROJECTION_SOURCES).toHaveLength(31);
+    // twenty-six before P-26 cut B's two step projections, twenty-eight before P-27
+    // cut A's three task graph projections, and thirty-one before P-27 cut C's link.
+    expect(PROJECTION_SOURCES).toHaveLength(32);
   });
 
   it("still does not claim the account stream (D3)", () => {
@@ -1032,9 +1038,9 @@ describe("migration 12 adds the attempt's own record without touching the applie
     const triggers = EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"));
     // Nine until migration 22 added its two (P-07 escalón B), eleven until
     // migration 23 added its two (P-15 escalón C), thirteen until migration 25
-    // added its two (P-26 cut B), and fifteen until migration 26 added its one
-    // (P-27 cut A).
-    expect(triggers).toHaveLength(16);
+    // added its two (P-26 cut B), fifteen until migration 26 added its one (P-27
+    // cut A), and sixteen until migration 27 added its one (P-27 cut C).
+    expect(triggers).toHaveLength(17);
     expect(triggers.filter((object) => object.name.startsWith("tr_task_attempt"))).toEqual([]);
   });
 
@@ -1116,7 +1122,7 @@ describe("migration 14 adds the occurrences without touching the applied thirtee
     expect(statements).not.toContain("CREATE TRIGGER");
     // Eight when this migration landed; migration 16 adds the ninth, and
     // migration 22 the tenth and eleventh.
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(16);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(17);
   });
 
   it("names both tables' constraints by the §3.2 convention, and §8's pair verbatim", () => {
@@ -1537,7 +1543,7 @@ describe("migration 15 rebuilds the registry stream and adds the artifact plane"
     ]);
     // Eight when this migration landed; the ninth is migration 16's, the tenth
     // and eleventh migration 22's.
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(16);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(17);
     expect(statements).not.toMatch(/CREATE TRIGGER tr_artifact/);
   });
 });
@@ -1571,7 +1577,7 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
     // Sixteen when this migration landed; the seventeenth is P-14 A's, the
     // eighteenth P-14 B's, the nineteenth P-14 C's, the twentieth P-32/captura B's
     // the twenty-first P-33/catálogo A's and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(26);
+    expect(MIGRATIONS).toHaveLength(27);
     expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION]?.name).toBe("model_version_registry");
   });
 
@@ -1616,7 +1622,7 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
       type: "trigger",
       name: "tr_task_revision_read_model__validate_envelope_reference",
     });
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(16);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(17);
   });
 
   it("freezes the cohort as a closed list, spelled as the fold spells it, and never compares versions", () => {
@@ -1669,7 +1675,7 @@ describe("migration 17 folds the model version registry from the registry stream
     // Seventeen when this migration landed; the eighteenth is P-14 B's, the
     // nineteenth P-14 C's, the twentieth P-32/captura B's and the twenty-first
     // P-33/catálogo A's, and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(26);
+    expect(MIGRATIONS).toHaveLength(27);
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION]?.name).toBe("initiative_registration_detail");
   });
 
@@ -1765,7 +1771,7 @@ describe("migration 17 folds the model version registry from the registry stream
       { type: "table", name: "model_version_transport" },
       { type: "index", name: "ux_model_version_transport__transport" },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(16);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(17);
   });
 });
 
@@ -1794,7 +1800,7 @@ describe("migration 18 adds the initiative projection's three columns and nothin
     // Eighteen when this migration landed; the nineteenth is P-14 C's, the
     // twentieth P-32/captura B's, the twenty-first P-33/catálogo A's and the
     // twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(26);
+    expect(MIGRATIONS).toHaveLength(27);
     expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION]?.name).toBe("task_submission");
   });
 
@@ -1844,7 +1850,7 @@ describe("migration 19 gives a task's client key its one home", () => {
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION - 1]?.name).toBe("task_submission");
     // Nineteen when this migration landed; the twentieth is P-32/captura B's and
     // the twenty-first P-33/catálogo A's, and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(26);
+    expect(MIGRATIONS).toHaveLength(27);
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION]?.name).toBe("usage_capture");
   });
 
@@ -1921,7 +1927,7 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
     expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION - 1]?.name).toBe("usage_capture");
     // Twenty when this migration landed; the twenty-first is P-33/catálogo A's
     // and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(26);
+    expect(MIGRATIONS).toHaveLength(27);
     expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION]?.name).toBe("price_interval_catalog");
   });
 
@@ -2044,9 +2050,9 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
     expect(at(USAGE_OBSERVATION_PROJECTION)).toBeLessThan(at(DISPATCH_ATTEMPT_PROJECTION));
     expect(PROJECTION_NAMES).toHaveLength(16);
     // Twenty-five when this cohort landed; P-33/catálogo A's registry row is the
-    // twenty-sixth, P-26 cut B's two step projections the next two, and P-27 cut A's
-    // three task graph projections the last three.
-    expect(PROJECTION_SOURCES).toHaveLength(31);
+    // twenty-sixth, P-26 cut B's two step projections the next two, P-27 cut A's three
+    // task graph projections the next three, and P-27 cut C's link the last.
+    expect(PROJECTION_SOURCES).toHaveLength(32);
     expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("usage_"))).toEqual([
       { type: "table", name: "usage_measurement_stream_read_model" },
       { type: "index", name: "ux_usage_measurement_stream__identity" },
@@ -2060,7 +2066,7 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
       { type: "table", name: "usage_settlement_source_head_read_model" },
       { type: "table", name: "usage_settlement_observation_read_model" },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(16);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(17);
   });
 });
 
@@ -2087,7 +2093,7 @@ describe("migration 21 gives a price catalog version its one table", () => {
     expect(PRICE_INTERVAL_CATALOG_MIGRATION).toBe(21);
     expect(MIGRATIONS[PRICE_INTERVAL_CATALOG_MIGRATION - 1]?.name).toBe("price_interval_catalog");
     // Twenty-one when this migration landed; the twenty-second is P-07 B's.
-    expect(MIGRATIONS).toHaveLength(26);
+    expect(MIGRATIONS).toHaveLength(27);
   });
 
   it("H-1: creates economy's table under economy's name, STRICT, and nothing else is created, altered or dropped", () => {
@@ -2162,12 +2168,13 @@ describe("migration 21 gives a price catalog version its one table", () => {
       { projectionName: PRICE_INTERVAL_PROJECTION, sourceStream: REGISTRY_STREAM },
     ]);
     expect(PROJECTION_SOURCES.filter((source) => source.sourceStream === REGISTRY_STREAM)).toHaveLength(7);
-    // Twenty-eight until P-27 cut A's three task graph projections.
-    expect(PROJECTION_SOURCES).toHaveLength(31);
+    // Twenty-eight until P-27 cut A's three task graph projections, and thirty-one
+    // until P-27 cut C's link.
+    expect(PROJECTION_SOURCES).toHaveLength(32);
     expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("price_"))).toEqual([
       { type: "table", name: PRICE_INTERVAL_PROJECTION },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(16);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(17);
     // No kind is added: the stream has carried PRICE_TABLE since migration 9.
     expect(DOCUMENT_KINDS).toContain("PRICE_TABLE");
   });
@@ -2194,7 +2201,7 @@ describe("migration 22 names an effect's result by reference, with its outcome, 
     expect(TWENTY_SECOND?.name).toBe("effect_result_reference");
     expect(EFFECT_RESULT_REFERENCE_MIGRATION).toBe(22);
     expect(MIGRATIONS[EFFECT_RESULT_REFERENCE_MIGRATION - 1]?.name).toBe("effect_result_reference");
-    expect(MIGRATIONS).toHaveLength(26);
+    expect(MIGRATIONS).toHaveLength(27);
   });
 
   it("adds three columns in place and two triggers, and creates, drops, updates and seeds nothing else", () => {
@@ -2276,7 +2283,7 @@ describe("migration 23 pins a delivery's price catalog version, by cohort", () =
     expect(TWENTY_THIRD?.name).toBe("dispatch_catalog_pin");
     expect(DISPATCH_CATALOG_PIN_MIGRATION).toBe(23);
     expect(MIGRATIONS[DISPATCH_CATALOG_PIN_MIGRATION - 1]?.name).toBe("dispatch_catalog_pin");
-    expect(MIGRATIONS).toHaveLength(26);
+    expect(MIGRATIONS).toHaveLength(27);
   });
 
   it("adds three columns in place and two triggers, and creates, drops, updates and seeds nothing else", () => {
@@ -2474,7 +2481,7 @@ describe("migration 24 makes a roadmap version's number unique per initiative", 
     expect(TWENTY_FOURTH?.name).toBe("roadmap_version_uniqueness");
     expect(ROADMAP_VERSION_UNIQUENESS_MIGRATION).toBe(24);
     expect(MIGRATIONS[ROADMAP_VERSION_UNIQUENESS_MIGRATION - 1]?.name).toBe("roadmap_version_uniqueness");
-    expect(MIGRATIONS).toHaveLength(26);
+    expect(MIGRATIONS).toHaveLength(27);
   });
 
   it("creates one unique index and nothing else, and the inventory names it", () => {
@@ -2548,8 +2555,15 @@ describe("migration 24 makes a roadmap version's number unique per initiative", 
     return { initiativeId, ids };
   }
 
-  /** Migrations 26, 25 and 24 undone on a raw handle: the ledger is back at 23. */
+  /** Migrations 27, 26, 25 and 24 undone on a raw handle: the ledger is back at 23. */
   function rewindTo23(raw: Database.Database): void {
+    // Migration 27 first (P-27 cut C): its table names the step table by foreign key.
+    raw.exec(
+      "DROP TRIGGER tr_task_step_link_read_model__insert_only; " +
+        "DROP INDEX ix_task_step_link_read_model__task_sequence; " +
+        "DROP TABLE task_step_link_read_model; " +
+        "DELETE FROM projection_watermark WHERE projection_name = 'task_step_link_read_model';",
+    );
     // Migration 26 first (P-27 cut A): its tables name the step table by foreign key.
     raw.exec(
       "DROP TRIGGER tr_task_graph_revision_read_model__supersede_once; " +
@@ -2637,8 +2651,8 @@ describe("migration 24 makes a roadmap version's number unique per initiative", 
   it("is present on a fresh ledger", () => {
     const path = scratch();
     openLedger(path).close();
-    // 25 when this migration's suite was written; migration 26 (P-27 cut A) is the tail.
-    expect(state(path)).toEqual({ applied: 26, index: 1 });
+    // 25 when this migration's suite was written; migration 27 (P-27 cut C) is the tail.
+    expect(state(path)).toEqual({ applied: 27, index: 1 });
   });
 
   it("upgrades a ledger at 23 holding versions 1..3, and every row is unchanged", () => {
@@ -2657,7 +2671,7 @@ describe("migration 24 makes a roadmap version's number unique per initiative", 
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     expect(rows.map((row) => row.version)).toEqual([1, 2, 3]);
-    expect(state(path)).toEqual({ applied: 26, index: 1 });
+    expect(state(path)).toEqual({ applied: 27, index: 1 });
   });
 
   it("refuses a stream holding two events with one (initiativeId, version), names the pair, and applies nothing", () => {
@@ -2757,8 +2771,8 @@ describe("migration 25 gives a roadmap version its steps", () => {
     expect(TWENTY_FIFTH?.version).toBe(25);
     expect(TWENTY_FIFTH?.name).toBe("roadmap_steps");
     expect(ROADMAP_STEPS_MIGRATION).toBe(25);
-    // The tail until P-27 cut A's migration 26 followed it.
-    expect(MIGRATIONS).toHaveLength(26);
+    // The tail until P-27 cut A's migration 26 followed it, and 27 after that.
+    expect(MIGRATIONS).toHaveLength(27);
     expect(MIGRATIONS[ROADMAP_STEPS_MIGRATION]?.name).toBe("task_graph");
   });
 
@@ -2796,7 +2810,7 @@ describe("migration 25 gives a roadmap version its steps", () => {
     const at = (name: string): number => DERIVED_TABLES.indexOf(name);
     expect(at(ROADMAP_STEP_DEPENDENCY_PROJECTION)).toBeLessThan(at(ROADMAP_STEP_PROJECTION));
     expect(at(ROADMAP_STEP_PROJECTION)).toBeLessThan(at("roadmap_version_read_model"));
-    // P-27 cut A's three task graph projections follow the steps.
+    // P-27 cut A's three task graph projections follow the steps, and P-27 cut C's link.
     expect(INITIATIVE_PROJECTION_NAMES).toEqual([
       "initiative_read_model",
       "roadmap_version_read_model",
@@ -2805,6 +2819,7 @@ describe("migration 25 gives a roadmap version its steps", () => {
       TASK_GRAPH_REVISION_PROJECTION,
       TASK_GRAPH_NODE_PROJECTION,
       TASK_DEPENDENCY_PROJECTION,
+      TASK_STEP_LINK_PROJECTION,
     ]);
     for (const object of [
       { type: "table", name: ROADMAP_STEP_PROJECTION },
@@ -2979,12 +2994,14 @@ describe("migration 26 gives a step its task graph", () => {
     .join("\n");
   const TABLES = [TASK_GRAPH_REVISION_PROJECTION, TASK_GRAPH_NODE_PROJECTION, TASK_DEPENDENCY_PROJECTION];
 
-  it("sits at the tail of a set whose order is fixed", () => {
+  it("sits at the position a set whose order is fixed gave it", () => {
     expect(TWENTY_SIXTH?.version).toBe(26);
     expect(TWENTY_SIXTH?.name).toBe("task_graph");
     expect(TASK_GRAPH_MIGRATION).toBe(26);
     expect(MIGRATIONS[TASK_GRAPH_MIGRATION - 1]?.name).toBe("task_graph");
-    expect(MIGRATIONS).toHaveLength(26);
+    // The tail until P-27 cut C's migration 27 followed it.
+    expect(MIGRATIONS).toHaveLength(27);
+    expect(MIGRATIONS[TASK_GRAPH_MIGRATION]?.name).toBe("task_step_link");
   });
 
   it("adds three tables, one trigger and one index, alters nothing, and seeds three watermarks", () => {
@@ -3030,8 +3047,10 @@ describe("migration 26 gives a step its task graph", () => {
     }
     expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({ type: "trigger", name: "tr_task_graph_revision_read_model__supersede_once" });
     expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({ type: "index", name: "ix_task_dependency_read_model__depends_on" });
-    expect(DERIVED_TABLES).toHaveLength(34);
-    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(129);
+    // 34 and 129 when this migration landed; P-27 cut C's migration 27 added one table,
+    // and one table, one index and one trigger to the inventory.
+    expect(DERIVED_TABLES).toHaveLength(35);
+    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(132);
   });
 
   function scratch(): string {
@@ -3083,6 +3102,14 @@ describe("migration 26 gives a step its task graph", () => {
     const head = ledger.status();
     ledger.close();
     const raw = new Database(path);
+    // Migration 27 first (P-27 cut C): its table names the step table, and it is undone
+    // before 26 by the rule that undoes 26 before 25.
+    raw.exec(
+      "DROP TRIGGER tr_task_step_link_read_model__insert_only; " +
+        "DROP INDEX ix_task_step_link_read_model__task_sequence; " +
+        "DROP TABLE task_step_link_read_model; " +
+        "DELETE FROM projection_watermark WHERE projection_name = 'task_step_link_read_model';",
+    );
     raw.exec(
       "DROP TRIGGER tr_task_graph_revision_read_model__supersede_once; " +
         "DROP TABLE task_dependency_read_model; " +
@@ -3096,7 +3123,7 @@ describe("migration 26 gives a step its task graph", () => {
     expect(watermarks(path)).toEqual([]);
 
     const migrated = openLedger(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_GRAPH_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_STEP_LINK_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     const rows = watermarks(path);
@@ -3106,7 +3133,7 @@ describe("migration 26 gives a step its task graph", () => {
       [1, 1],
     ]);
     expect(new Set(rows.map((row) => row.head)).size).toBe(1);
-    expect(head.migrations.at(-1)?.version).toBe(TASK_GRAPH_MIGRATION);
+    expect(head.migrations.at(-1)?.version).toBe(TASK_STEP_LINK_MIGRATION);
   });
 
   /** A raw handle with foreign keys ON, over a step the three tables can hang off. */
@@ -3251,6 +3278,251 @@ describe("migration 26 gives a step its task graph", () => {
     expect(update("superseded_by = 'g3'").message).toContain("written once");
     expect(update("superseded_by = NULL").message).toContain("written once");
     expect(update("sequence = 9").message).toContain("written once");
+    raw.close();
+  });
+});
+
+/**
+ * Migration 27, a task's step links (P-27 cut C, ADR 0116).
+ *
+ * The text; the rosters the rebuild and the watermarks read; a fresh ledger and one
+ * upgraded from 26 with its watermark born at the initiative head; one NULL per
+ * predicate of the `from` pair's CHECK, both halves, and the two lawful shapes; the
+ * foreign key to a declared step; and the insert-only trigger bitten by an update of
+ * every column. `test/ledger` and `test/task-step-link` assert the door and the fold.
+ */
+describe("migration 27 records a task's step links", () => {
+  const TWENTY_SEVENTH = MIGRATIONS[26];
+  const statements = (TWENTY_SEVENTH?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+  const COLUMNS = [
+    "task_id",
+    "roadmap_version_id",
+    "step_id",
+    "initiative_id",
+    "from_roadmap_version_id",
+    "from_step_id",
+    "sequence",
+    "linked_at",
+  ];
+  const adoption: Record<string, unknown> = {
+    task_id: "t1",
+    roadmap_version_id: "v",
+    step_id: "a",
+    initiative_id: "i",
+    from_roadmap_version_id: null,
+    from_step_id: null,
+    sequence: 3,
+    linked_at: "2026-09-25T00:00:00.000Z",
+  };
+
+  it("sits at the tail of a set whose order is fixed", () => {
+    expect(TWENTY_SEVENTH?.version).toBe(27);
+    expect(TWENTY_SEVENTH?.name).toBe("task_step_link");
+    expect(TASK_STEP_LINK_MIGRATION).toBe(27);
+    expect(MIGRATIONS[TASK_STEP_LINK_MIGRATION - 1]?.name).toBe("task_step_link");
+    expect(MIGRATIONS).toHaveLength(27);
+  });
+
+  it("adds one table, one index and one trigger, alters nothing, and seeds one watermark", () => {
+    expect([...statements.matchAll(/CREATE TABLE (\w+)/g)].map((match) => match[1])).toEqual([TASK_STEP_LINK_PROJECTION]);
+    expect([...statements.matchAll(/CREATE TRIGGER (\w+)/g)].map((match) => match[1])).toEqual([
+      "tr_task_step_link_read_model__insert_only",
+    ]);
+    expect([...statements.matchAll(/CREATE (?:UNIQUE )?INDEX (\w+)/g)].map((match) => match[1])).toEqual([
+      "ix_task_step_link_read_model__task_sequence",
+    ]);
+    expect(statements).not.toMatch(/DROP |ALTER TABLE|ON CONFLICT|\bSET\b/);
+    // The pair's CHECK names both columns in each branch, so one NULL cannot pass it.
+    expect(statements).toContain(
+      "(from_roadmap_version_id IS NULL AND from_step_id IS NULL)\n      OR (from_roadmap_version_id IS NOT NULL AND from_step_id IS NOT NULL)",
+    );
+    expect(statements).toContain(
+      "FOREIGN KEY (roadmap_version_id, step_id) REFERENCES roadmap_step_read_model (roadmap_version_id, step_id)",
+    );
+    // The trigger has no condition: every update aborts, whatever it names.
+    const body = [...statements.matchAll(/BEGIN\n([\s\S]*?)\nEND;/g)].map((match) => match[1] ?? "");
+    expect(body).toHaveLength(1);
+    expect(body[0]).not.toContain("WHERE");
+    expect(body[0]).toContain("RAISE(ABORT");
+    expect(statements).toContain("'initiative_events',\n  1,");
+  });
+
+  it("declares the projection in every roster that must agree, cleared before the steps it names", () => {
+    const at = (name: string): number => DERIVED_TABLES.indexOf(name);
+    expect(at(TASK_STEP_LINK_PROJECTION)).toBeGreaterThan(at(TASK_GRAPH_REVISION_PROJECTION));
+    expect(at(TASK_STEP_LINK_PROJECTION)).toBeLessThan(at(ROADMAP_STEP_DEPENDENCY_PROJECTION));
+    expect(at(TASK_STEP_LINK_PROJECTION)).toBeLessThan(at(ROADMAP_STEP_PROJECTION));
+    expect(INITIATIVE_PROJECTION_NAMES).toContain(TASK_STEP_LINK_PROJECTION);
+    expect(PROJECTION_NAMES).not.toContain(TASK_STEP_LINK_PROJECTION);
+    expect(PROJECTION_SOURCES.filter((source) => source.projectionName === TASK_STEP_LINK_PROJECTION)).toEqual([
+      { projectionName: TASK_STEP_LINK_PROJECTION, sourceStream: INITIATIVE_STREAM },
+    ]);
+    for (const object of [
+      { type: "table", name: TASK_STEP_LINK_PROJECTION },
+      { type: "index", name: "ix_task_step_link_read_model__task_sequence" },
+      { type: "trigger", name: "tr_task_step_link_read_model__insert_only" },
+    ]) {
+      expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual(object);
+    }
+    // 34 + 1 and 129 + 3: the table, and the table, its index and its trigger.
+    expect(DERIVED_TABLES).toHaveLength(35);
+    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(132);
+    expect(INITIATIVE_PROJECTION_NAMES).toHaveLength(8);
+  });
+
+  function scratch(): string {
+    return join(mkdtempSync(join(realpathSync(tmpdir()), "acp-p27c-migration-")), "ledger.sqlite");
+  }
+
+  function watermark(path: string): readonly { readonly sequence: number; readonly count: number; readonly head: string }[] {
+    const raw = new Database(path, { readonly: true });
+    try {
+      return raw
+        .prepare(
+          "SELECT applied_sequence AS sequence, event_count AS count, source_head_sha256 AS head " +
+            "FROM projection_watermark WHERE projection_name = ?",
+        )
+        .all(TASK_STEP_LINK_PROJECTION) as { readonly sequence: number; readonly count: number; readonly head: string }[];
+    } finally {
+      raw.close();
+    }
+  }
+
+  it("is present on a fresh ledger, its watermark at the empty initiative head", () => {
+    const path = scratch();
+    openLedger(path).close();
+    expect(watermark(path).map((row) => [row.sequence, row.count])).toEqual([[0, 0]]);
+  });
+
+  it("upgrades a ledger at 26 holding an initiative, its watermark born at the head, and verifies", () => {
+    const path = scratch();
+    const ledger = openLedger(path);
+    const initiativeId = randomUUID();
+    ledger.appendInitiativeEvent({
+      contractVersion: CONTRACT_VERSION,
+      eventId: randomUUID(),
+      initiativeId,
+      transitionId: "initiative.registered",
+      idempotencyKey: initiativeId + "/1/initiative.registered",
+      type: "INITIATIVE_REGISTERED",
+      fromStatus: null,
+      toStatus: "ACTIVE",
+      emittedBy: "claude/opus/coordinator/01",
+      occurredAt: "2026-09-25T00:00:00.000Z",
+      recordedAt: "2026-09-25T00:00:00.000Z",
+      payload: {},
+    });
+    ledger.close();
+    const raw = new Database(path);
+    raw.exec(
+      "DROP TRIGGER tr_task_step_link_read_model__insert_only; " +
+        "DROP INDEX ix_task_step_link_read_model__task_sequence; " +
+        "DROP TABLE task_step_link_read_model; " +
+        "DELETE FROM projection_watermark WHERE projection_name = 'task_step_link_read_model';",
+    );
+    raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(TASK_STEP_LINK_MIGRATION);
+    raw.close();
+    expect(watermark(path)).toEqual([]);
+
+    const migrated = openLedger(path);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_STEP_LINK_MIGRATION);
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+    migrated.close();
+    const rows = watermark(path);
+    expect(rows.map((row) => [row.sequence, row.count])).toEqual([[1, 1]]);
+    const check = new Database(path, { readonly: true });
+    const initiativeHead = check
+      .prepare("SELECT source_head_sha256 AS head FROM projection_watermark WHERE projection_name = 'initiative_read_model'")
+      .get() as { readonly head: string };
+    check.close();
+    expect(rows[0]?.head).toBe(initiativeHead.head);
+  });
+
+  /** A raw handle with foreign keys ON, over a step a link can name. */
+  function base(): Database.Database {
+    const path = scratch();
+    openLedger(path).close();
+    const raw = new Database(path);
+    raw.pragma("foreign_keys = ON");
+    raw
+      .prepare(
+        "INSERT INTO roadmap_version_read_model (roadmap_version_id, initiative_id, version, content_digest, parent_version_id, " +
+          "kind, restores_version_id, recorded_by, recorded_at, sequence, recording_contract_version, step_count, " +
+          "step_manifest_artifact_reference_id, step_manifest_sha256) " +
+          "VALUES ('v', 'i', 1, '" + "a".repeat(64) + "', NULL, 'EDIT', NULL, 'k/k/c/01', '2026-09-25T00:00:00.000Z', 1, " +
+          "'2.10.0', 1, 'ref', '" + "d".repeat(64) + "')",
+      )
+      .run();
+    raw
+      .prepare(
+        "INSERT INTO roadmap_step_read_model (roadmap_version_id, step_id, step_index, title, objective_sha256, " +
+          "acceptance_sha256, expected_write_set_sha256, dependency_rank, state, sequence) " +
+          "VALUES ('v', 'a', 0, 'A', ?, ?, ?, 0, 'DECLARED', 2)",
+      )
+      .run("b".repeat(64), "b".repeat(64), "b".repeat(64));
+    return raw;
+  }
+
+  function verdict(write: () => void): { readonly admit: boolean; readonly message: string } {
+    try {
+      write();
+      return { admit: true, message: "" };
+    } catch (error: unknown) {
+      return { admit: false, message: String(error) };
+    }
+  }
+
+  function insert(raw: Database.Database, row: Record<string, unknown>): Database.RunResult {
+    return raw
+      .prepare(
+        "INSERT INTO task_step_link_read_model (" + COLUMNS.join(", ") + ") VALUES (" + COLUMNS.map(() => "?").join(", ") + ")",
+      )
+      .run(...COLUMNS.map((column) => row[column]));
+  }
+
+  it("refuses one NULL per predicate, each half of the from pair alone, and a step no version declares", () => {
+    const raw = base();
+    for (const column of COLUMNS.filter((name) => !name.startsWith("from_"))) {
+      expect(verdict(() => insert(raw, { ...adoption, [column]: null })).admit, column).toBe(false);
+    }
+    // One half of the pair set and the other NULL, each way: the CHECK names both.
+    expect(verdict(() => insert(raw, { ...adoption, from_roadmap_version_id: "v0" })).message).toContain(
+      "ck_task_step_link_read_model__from_pair",
+    );
+    expect(verdict(() => insert(raw, { ...adoption, from_step_id: "a" })).message).toContain(
+      "ck_task_step_link_read_model__from_pair",
+    );
+    expect(verdict(() => insert(raw, { ...adoption, sequence: 0 })).message).toContain("ck_task_step_link_read_model__sequence");
+    expect(verdict(() => insert(raw, { ...adoption, step_id: "z" })).message).toContain("FOREIGN KEY constraint failed");
+    // The two lawful shapes: an adoption, and a re-link with the pair whole.
+    expect(verdict(() => insert(raw, adoption)).admit).toBe(true);
+    expect(
+      verdict(() => insert(raw, { ...adoption, task_id: "t2", from_roadmap_version_id: "v0", from_step_id: "a", sequence: 4 })).admit,
+    ).toBe(true);
+    // One link per (task, version).
+    expect(verdict(() => insert(raw, { ...adoption, sequence: 5 })).message).toContain("UNIQUE constraint failed");
+    raw.close();
+  });
+
+  it("the trigger bites an update of every column, and a delete still clears the table", () => {
+    const raw = base();
+    insert(raw, adoption);
+    for (const column of COLUMNS) {
+      const value = column === "sequence" ? 9 : column === "step_id" || column === "roadmap_version_id" ? "a" : "x";
+      const outcome = verdict(() =>
+        raw.prepare("UPDATE task_step_link_read_model SET " + column + " = ? WHERE task_id = 't1'").run(value),
+      );
+      expect(outcome.message, column).toContain("insert-only");
+    }
+    // The same value written back is still an update, and still refused.
+    expect(verdict(() => raw.prepare("UPDATE task_step_link_read_model SET sequence = sequence").run()).message).toContain(
+      "insert-only",
+    );
+    // The rebuild's clearing is a DELETE, which the trigger does not see.
+    expect(verdict(() => raw.prepare("DELETE FROM task_step_link_read_model").run()).admit).toBe(true);
     raw.close();
   });
 });

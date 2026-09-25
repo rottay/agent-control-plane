@@ -64,6 +64,7 @@ arm is not by itself a claim that a behavioral comparison exists for it.
 | `initiativeRoadmapSteps` | GET | `/api/v1/initiatives/:initiativeId/roadmap/steps` | `initiativeId` (uuid) | `RoadmapStepsQuery` | `RoadmapStepsResponse` | — |
 | `initiativeRoadmapDiff` | GET | `/api/v1/initiatives/:initiativeId/roadmap/diff` | `initiativeId` (uuid) | `RoadmapDiffQuery` | `RoadmapDiffResponse` | — |
 | `initiativeStepGraph` | GET, POST | `/api/v1/initiatives/:initiativeId/roadmap/steps/graph` | `initiativeId` (uuid) | `TaskGraphQuery` | `TaskGraphResponse` / `TaskGraphDeclarationResponse` | — |
+| `initiativeTaskStep` | GET, POST | `/api/v1/initiatives/:initiativeId/tasks/:taskId/step` | `initiativeId` (uuid), `taskId` (uuid) | none | `TaskStepResponse` / `TaskStepLinkResponse` | — |
 | `initiativeEvents` | GET | `/api/v1/initiatives/:initiativeId/events` | `initiativeId` (uuid) | none | `InitiativeTimelineResponse` | — |
 | `initiativeAgents` | GET | `/api/v1/initiatives/:initiativeId/agents` | `initiativeId` (uuid) | none | `InitiativeAgentsResponse` | — |
 | `accounts` | GET | `/api/v1/accounts` | — | none | `AccountsResponse` | — |
@@ -98,6 +99,7 @@ the mechanism and its anchors.
 | `initiatives` | `InitiativeRegistrationRequest` | one initiative, under the caller's own `initiativeId`; its objective is published to the private artifact plane and the event carries the digest and the reference, never the objective |
 | `tasks` | `TaskIntakeRequest` | one task intake, under the caller's client key and task id: the envelope published to the private artifact plane, revision 1 recorded by reference, and the role resolved from the registry with the vector it was read at; nothing executes the task |
 | `initiativeStepGraph` | `TaskGraphDeclarationRequest` | one revision of one step's task graph, under the caller's own `graphRevisionId`: a `TASK_GRAPH_DECLARED` and one `TASK_GRAPH_NODE_DECLARED` per node, all or none; nodes are task revisions and every edge carries its `failPolicy`; nothing dispatches |
+| `initiativeTaskStep` | `TaskStepLinkRequest` | one task's link to a declared step of its initiative, from `0.23.0`: a `TASK_STEP_LINKED` through the single initiative door, an adoption of a task that entered with no step or a re-link to the same step id in a strictly later version; the link's identity is its task and target version; nothing dispatches |
 
 A write that is refused answers with a classified refusal rather than a bare
 failure: `AccountActionRefusalDto` names which rule refused it.
@@ -174,6 +176,28 @@ its reason — computed at read time against the instant it echoes as `evaluated
 stored; `UNKNOWN` is never ready, and in this build every node reads
 `UNKNOWN(TASK_COHORT_LEGACY)` on R1 (ADR 0115). A step with no graph, or not declared by the
 version, is `404`.
+
+**`initiativeTaskStep` moves a task's step only by a recorded link (ADR 0116).** A task
+enters on a step, or on none, by its intake, and that fact never moves: the ledger's task
+row keeps the step the task entered on, and the task read (`taskById`) names no step at
+all. The `POST` body names the target by version number and step id and the step the
+caller says the task is of now, `from: { version, stepId }`, or `null` for an adoption of a
+task that entered with none; both versions are numbers resolved inside the initiative, and
+either unknown is `404`, as is an unknown initiative. An adoption goes to any declared
+step of the initiative; a re-link goes to the same step id in a strictly later version,
+skipping versions allowed; another step id or another initiative is refused. The same body
+sent again answers `200` with `replayed: true` from the row it wrote. Every refusal of the
+decision is a `409` `WRITE_REFUSED` carrying its word and field —
+`LINK_DECLARATION_INVALID` (the target is the `from` pair, or the task already holds a link
+to that version with another `from`), `LINK_STEP_UNKNOWN`, `LINK_TASK_UNKNOWN` (no revision
+recorded), `LINK_TASK_OUT_OF_SCOPE` (no recorded intake, or an intake of another
+initiative), `LINK_HEAD_MISMATCH` (`from` is not the task's current step) or
+`LINK_TARGET_NOT_LATER`; a lost race carries `WRITE_CONFLICT`. The `GET` answers
+`enteredOn` (the intake's step, null when it named none), the `links` in order and the
+`current` step — the last link's target, else `enteredOn` — every version by number; a task
+not of that initiative is `404`. The task graph door reads the current step: a node's task
+must be of the graph's step by its current link (`GRAPH_TASK_OUT_OF_SCOPE`), and a node
+whose task a link moved away reads R1 `UNSATISFIED(TASK_LINK_MOVED)` in its old graph.
 
 **`ATTACH` blocks until the invocation completes, and no request timeout is
 imposed.** A caller that attaches to a long run holds the HTTP connection open
@@ -379,8 +403,9 @@ it identically. ADR 0065 carries the reasoning.
 Route helpers (`taskPath`, `workerPath`, `initiativePath`,
 `initiativeRoadmapPath`, `initiativeRoadmapContentPath`,
 `initiativeRoadmapStepsPath`, `initiativeRoadmapDiffPath`,
-`initiativeStepGraphPath`, `initiativeEventsPath`, `initiativeAgentsPath`,
-`accountActionsPath`) validate before they encode. Do not build these paths by string
+`initiativeStepGraphPath`, `initiativeTaskStepPath`, `initiativeEventsPath`,
+`initiativeAgentsPath`, `accountActionsPath`) validate before they encode; the task step
+path validates both of its ids before it encodes either. Do not build these paths by string
 concatenation. The three roadmap reads and the task graph route return the path only: the
 selector (`?version=`, `?from=&to=` on the diff, `?version=&stepId=` on the graph) is the
 caller's query, built with `URLSearchParams`.

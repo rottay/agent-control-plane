@@ -193,7 +193,36 @@ mismo grafo — no referencias sueltas.
 | `ix_task_dependency_read_model__depends_on` | `INDEX (graph_revision_id, depends_on_task_id, depends_on_task_revision_number)` |
 | Predicado `READY` | No es una columna: se computa por `JOIN` entre `task_dependency_read_model` (con su `fail_policy`) y el estado terminal de cada `depends_on_*` en [execution](../execution/index.md); no se cachea acá para no duplicar autoridad de estado de tarea. |
 | Política de dependencia fallida | La decide `fail_policy` por arista (columna, ya no una regla de lectura implícita); el cruce con el desenlace real de la tarea referenciada sigue viviendo en [execution](../execution/index.md). |
-| Rebuild | Determinista desde `initiative_events` (declaración del grafo) — las revisiones/estados de tarea referenciados se leen de `execution` contra el mismo vector de watermarks, nunca se copian. **Admisión del DT (P-27 corte A, ADR 0115):** la fuente son dos tipos de iniciativa en un lote todo-o-nada por la puerta de lote — `TASK_GRAPH_DECLARED` (`graphRevisionId` del productor, `(roadmapVersionId, stepId)`, la revisión que reemplaza y `nodeCount`) y un `TASK_GRAPH_NODE_DECLARED` por nodo (la revisión de tarea, su `nodeIndex` y sus aristas con `failPolicy`); la puerta rechaza con `decideTaskGraph` —también un nodo cuya tarea no entró en ese paso exacto, `GRAPH_TASK_OUT_OF_SCOPE`, leído del ingreso registrado en la misma transacción—, y el pliegue escribe las tres tablas sólo desde los payloads. |
+| Rebuild | Determinista desde `initiative_events` (declaración del grafo) — las revisiones/estados de tarea referenciados se leen de `execution` contra el mismo vector de watermarks, nunca se copian. **Admisión del DT (P-27 corte A, ADR 0115):** la fuente son dos tipos de iniciativa en un lote todo-o-nada por la puerta de lote — `TASK_GRAPH_DECLARED` (`graphRevisionId` del productor, `(roadmapVersionId, stepId)`, la revisión que reemplaza y `nodeCount`) y un `TASK_GRAPH_NODE_DECLARED` por nodo (la revisión de tarea, su `nodeIndex` y sus aristas con `failPolicy`); la puerta rechaza con `decideTaskGraph` —también un nodo cuya tarea no entró en ese paso exacto, `GRAPH_TASK_OUT_OF_SCOPE`, leído del ingreso registrado en la misma transacción—, y el pliegue escribe las tres tablas sólo desde los payloads. **Admisión del DT (P-27 corte C, ADR 0116):** esa pregunta de alcance lee ahora el vínculo actual de la tarea —la última fila de `task_step_link_read_model` (§5.4) por `sequence`, si no el par del ingreso—, en la misma transacción y nunca copiado al grafo. |
+
+### 5.4 `task_step_link_read_model`
+
+**Admisión del DT (P-27 corte C, ADR 0116; decisiones 200–202).** El paso de una tarea
+es un hecho de su ingreso (§7 ítem 4 de datos) y sólo cambia por un vínculo registrado:
+una fila por `TASK_STEP_LINKED` del stream de iniciativas, insert-only. Los vínculos de
+una tarea son una cadena en orden de `sequence`; su paso actual es el destino del último,
+o si no el par de su ingreso. La tarea es del stream de ejecución: se nombra y se verifica
+en la puerta, nunca por clave foránea (datos §8 ítem 3); el paso destino es de la misma
+cohorte y va por clave foránea inmediata (datos §8 ítem 1).
+
+| Columna | Tipo | Nullable | Semántica |
+| --- | --- | --- | --- |
+| `task_id` | TEXT | NOT NULL | PK (compuesta). La tarea, del stream de ejecución; verificada en la puerta. |
+| `roadmap_version_id` | TEXT | NOT NULL | PK (compuesta). Con `step_id`, `fk_task_step_link_read_model__roadmap_step_read_model`. Los destinos de una tarea son versiones estrictamente posteriores, así que una tarea se vincula a una versión a lo sumo una vez. |
+| `step_id` | TEXT | NOT NULL | El paso destino: el paso de la tarea desde este vínculo. |
+| `initiative_id` | TEXT | NOT NULL | La iniciativa del evento, la del ingreso de la tarea. |
+| `from_roadmap_version_id` | TEXT | NULL | El paso que la tarea dejaba; `NULL` en una adopción. |
+| `from_step_id` | TEXT | NULL | Ídem. `ck_task_step_link_read_model__from_pair`: ambos `NULL` o ambos presentes, escrito por predicado para que un `NULL` no pase. |
+| `sequence` | INTEGER | NOT NULL | `CHECK >= 1`. Posición del evento en el stream de iniciativas. |
+| `linked_at` | TEXT | NOT NULL | El `occurredAt` del evento; nunca una lectura de reloj. |
+
+| Objeto | Forma |
+| --- | --- |
+| `pk_task_step_link_read_model` | `PRIMARY KEY (task_id, roadmap_version_id)` |
+| `ix_task_step_link_read_model__task_sequence` | `INDEX (task_id, sequence)`: el último vínculo de una tarea sin barrer |
+| `tr_task_step_link_read_model__insert_only` | `BEFORE UPDATE`: aborta toda actualización, cualquiera sea la columna |
+| Transacción | La puerta única de iniciativas decide con `decideTaskStepLink` dentro de su `BEGIN IMMEDIATE`, sobre el modelo de lectura y el ingreso de la tarea, e inserta la fila en la misma transacción que el evento. |
+| Rebuild | Determinista desde `initiative_events`: `foldTaskStepLink` rechaza con las palabras de la puerta lo que el stream de iniciativas juzga solo, sin preguntas al stream de tareas; `verifyIntegrity()` informa el primer vínculo que no sale del ingreso y un nodo de grafo cuya tarea no era de su paso en su secuencia. |
 
 ---
 

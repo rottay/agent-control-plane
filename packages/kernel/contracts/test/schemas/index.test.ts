@@ -60,6 +60,7 @@ import {
   TASK_GRAPH_DEPENDS_ON_MAX,
   TASK_GRAPH_NODES_MAX,
   TaskGraphDeclaration,
+  TaskStepLinkDeclaration,
   TaskGraphNodeDeclaration,
   ReconciliationReport,
   ReconciliationVerdict,
@@ -1534,8 +1535,9 @@ describe("InitiativeEvent", () => {
     expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
   });
 
-  it("closes its vocabulary at the six initiative facts", () => {
-    // Four until P-27 cut A appended the task graph's two, in declaration order.
+  it("closes its vocabulary at the seven initiative facts", () => {
+    // Four until P-27 cut A appended the task graph's two, and six until P-27 cut C
+    // appended the link, in declaration order.
     expect([...INITIATIVE_EVENT_TYPES]).toEqual([
       "INITIATIVE_REGISTERED",
       "INITIATIVE_STATE_CHANGED",
@@ -1543,6 +1545,7 @@ describe("InitiativeEvent", () => {
       "ROADMAP_STEP_DECLARED",
       "TASK_GRAPH_DECLARED",
       "TASK_GRAPH_NODE_DECLARED",
+      "TASK_STEP_LINKED",
     ]);
     expect(InitiativeEvent.safeParse(initiativeEvent({ type: "TASK_DISCOVERED" })).success).toBe(
       false,
@@ -3686,5 +3689,90 @@ describe("a step's task graph, in the contract (P-27 cut A)", () => {
       );
       expect(InitiativeEvent.safeParse(graphEvent({ fromStatus: null })).success, type).toBe(false);
     }
+  });
+});
+
+describe("a task's step link, in the contract (P-27 cut C)", () => {
+  const TASK = "77777777-7777-4777-8777-777777777777";
+  const V1 = "88888888-8888-4888-8888-888888888888";
+  const V2 = "99999999-9999-4999-8999-999999999999";
+  const adoption = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    taskId: TASK,
+    roadmapVersionId: V1,
+    stepId: "a",
+    fromRoadmapVersionId: null,
+    fromStepId: null,
+    ...overrides,
+  });
+  const relink = (overrides: Record<string, unknown> = {}): Record<string, unknown> =>
+    adoption({ roadmapVersionId: V2, fromRoadmapVersionId: V1, fromStepId: "a", ...overrides });
+  const issues = (candidate: unknown) =>
+    TaskStepLinkDeclaration.safeParse(candidate).error?.issues.map((issue) => issue.path.join(".")) ?? [];
+
+  it("admits an adoption and a re-link, and survives a JSON round trip", () => {
+    for (const link of [adoption(), relink()]) {
+      const parsed = TaskStepLinkDeclaration.parse(link);
+      expect(JSON.parse(JSON.stringify(parsed))).toEqual(parsed);
+    }
+  });
+
+  it("refuses each field as absent, each required field as null, and an extra key", () => {
+    for (const field of Object.keys(relink())) {
+      expect(TaskStepLinkDeclaration.safeParse(without(relink(), field)).success, field).toBe(false);
+    }
+    for (const field of ["taskId", "roadmapVersionId", "stepId"]) {
+      expect(TaskStepLinkDeclaration.safeParse(relink({ [field]: null })).success, field).toBe(false);
+    }
+    expect(TaskStepLinkDeclaration.safeParse(relink({ linkId: TASK })).success).toBe(false);
+    expect(TaskStepLinkDeclaration.safeParse(relink({ taskId: "not-a-uuid" })).success).toBe(false);
+  });
+
+  it("refuses a from pair half set, naming the missing half, each way", () => {
+    expect(issues(adoption({ fromRoadmapVersionId: V2 }))).toEqual(["fromStepId"]);
+    expect(issues(adoption({ fromStepId: "a" }))).toEqual(["fromRoadmapVersionId"]);
+  });
+
+  it("refuses a target that is the from pair, and admits the same step in another version or another step", () => {
+    expect(issues(relink({ roadmapVersionId: V1 }))).toEqual(["roadmapVersionId"]);
+    // Only the whole pair is refused here; a later version and a same-step rule are
+    // the ledger's, where the versions' numbers are visible.
+    expect(TaskStepLinkDeclaration.safeParse(relink({ roadmapVersionId: V1, stepId: "b" })).success).toBe(true);
+    expect(TaskStepLinkDeclaration.safeParse(relink({ stepId: "b" })).success).toBe(true);
+  });
+
+  it("holds both step ids to the declared step's grammar, at its bounds", () => {
+    const longest = "a".repeat(120);
+    expect(TaskStepLinkDeclaration.safeParse(relink({ stepId: longest, fromStepId: longest })).success).toBe(true);
+    expect(TaskStepLinkDeclaration.safeParse(relink({ stepId: longest + "a" })).success).toBe(false);
+    expect(TaskStepLinkDeclaration.safeParse(relink({ fromStepId: longest + "a" })).success).toBe(false);
+    // BoundedIdentifier admits a colon; the step a colon names is a declared step's id.
+    expect(TaskStepLinkDeclaration.safeParse(relink({ stepId: "phase:1" })).success).toBe(true);
+    expect(TaskStepLinkDeclaration.safeParse(relink({ stepId: "-a" })).success).toBe(false);
+    expect(TaskStepLinkDeclaration.safeParse(relink({ fromStepId: "" })).success).toBe(false);
+  });
+
+  it("refuses a credential-shaped id through the standard guards", () => {
+    expect(TaskStepLinkDeclaration.safeParse(relink({ stepId: "sk-ant-api03-" + "A".repeat(40) })).success).toBe(false);
+  });
+
+  it("admits the link only as a passthrough of the initiative's status", () => {
+    const linkEvent = (overrides: Record<string, unknown> = {}) =>
+      initiativeEvent({
+        transitionId: "link." + TASK + "." + V2,
+        type: "TASK_STEP_LINKED",
+        fromStatus: "ACTIVE",
+        toStatus: "ACTIVE",
+        payload: relink(),
+        ...overrides,
+      });
+    // The deterministic transition id is 78 characters, inside the coordinates' 120.
+    expect(("link." + TASK + "." + V2).length).toBe(78);
+    expect(InitiativeEvent.safeParse(linkEvent()).success).toBe(true);
+    const moved = InitiativeEvent.safeParse(linkEvent({ toStatus: "PAUSED" }));
+    expect(moved.success).toBe(false);
+    expect(moved.error?.issues.map((issue) => issue.message)).toContain(
+      "linking a task to a step does not move the initiative's status",
+    );
+    expect(InitiativeEvent.safeParse(linkEvent({ fromStatus: null })).success).toBe(false);
   });
 });

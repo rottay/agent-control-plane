@@ -7,6 +7,7 @@ import {
   TERMINAL_STATES,
   TaskGraphDeclaration,
   TaskGraphNodeDeclaration,
+  TaskStepLinkDeclaration,
   TRANSPORT_KINDS,
   WORKER_ROLES,
   parseWorkerIdentity,
@@ -30,6 +31,7 @@ import {
   LedgerIdempotencyConflictError,
   LedgerRoadmapVersionRefusedError,
   LedgerTaskGraphRefusedError,
+  LedgerTaskStepLinkRefusedError,
   LedgerValidationError,
   type LedgerValidationIssue,
 } from "../errors/index.js";
@@ -108,6 +110,7 @@ import type {
   TaskIntakeWatermark,
   TaskReadModel,
   TaskRevisionReadModel,
+  TaskStepLinkReadModel,
   TaskSubmissionReadModel,
   WorkerReadModel,
 } from "../types/index.js";
@@ -5456,6 +5459,103 @@ export function assertTaskGraphsComplete(fold: TaskGraphFold): void {
 }
 
 /**
+ * The task step links a fold holds (P-27 cut C, ADR 0116): every link by its key,
+ * `taskGraphKey(taskId, roadmapVersionId)`, and per task the last link folded, which
+ * is the task's current link by `sequence`. The head is held rather than scanned for,
+ * decision 199's rule, so folding a link costs O(1) map operations. The rebuild's
+ * snapshot carries both maps; the single door folds its one event through a fresh fold
+ * whose history is the read model.
+ */
+export interface TaskStepLinkFold {
+  readonly taskStepLinks: Map<string, TaskStepLinkReadModel>;
+  readonly taskStepLinkHeads: Map<string, TaskStepLinkReadModel>;
+}
+
+export function createTaskStepLinkFold(): TaskStepLinkFold {
+  return {
+    taskStepLinks: new Map<string, TaskStepLinkReadModel>(),
+    taskStepLinkHeads: new Map<string, TaskStepLinkReadModel>(),
+  };
+}
+
+/**
+ * What a link fold asks of the history outside its own maps: whether a step is declared
+ * under an initiative, a version's number within an initiative, a task's last recorded
+ * link, and whether a link is already held. The rebuild answers from its snapshot; the
+ * single door from the read model, inside its transaction.
+ */
+export interface TaskStepLinkHistory {
+  readonly stepDeclared: (initiativeId: string, roadmapVersionId: string, stepId: string) => boolean;
+  readonly versionNumber: (initiativeId: string, roadmapVersionId: string) => number | undefined;
+  readonly lastLink: (taskId: string) => TaskStepLinkReadModel | undefined;
+  readonly linkHeld: (taskId: string, roadmapVersionId: string) => boolean;
+}
+
+function refuseTaskStepLink(reason: ConstructorParameters<typeof LedgerTaskStepLinkRefusedError>[0], at: string): never {
+  throw new LedgerTaskStepLinkRefusedError(reason, at);
+}
+
+/**
+ * Fold one `TASK_STEP_LINKED`, refusing by the door's words what the initiative stream
+ * can judge on its own (P-27 cut C, ADR 0116): the payload's shape, the target step
+ * declared under the event's initiative, a link held twice, the `from` pair against the
+ * task's last link when it has one, and a re-link's target as the same step id in a
+ * strictly later version of the initiative. A `from` pair naming a version the
+ * initiative does not hold is `LINK_TARGET_NOT_LATER`.
+ *
+ * It asks no task-stream question: not whether the task exists, what its intake named,
+ * or whether a first link's `from` pair is the intake's. Those are the door's, in its
+ * transaction, and `verifyIntegrity()`'s, which reopens the task stream; the rebuild
+ * does not (ADR 0115 §Two). The row and the head move only after every refusal of the
+ * event, so a refused event consumes neither.
+ */
+export function foldTaskStepLink(
+  fold: TaskStepLinkFold,
+  history: TaskStepLinkHistory,
+  event: InitiativeEvent,
+  sequence: number,
+): void {
+  if (event.type !== "TASK_STEP_LINKED") return;
+  const parsed = TaskStepLinkDeclaration.safeParse(event.payload);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    refuseTaskStepLink("LINK_DECLARATION_INVALID", ["link", ...(issue?.path ?? []).map(String)].join("."));
+  }
+  const link = parsed.data;
+  if (!history.stepDeclared(event.initiativeId, link.roadmapVersionId, link.stepId)) {
+    refuseTaskStepLink("LINK_STEP_UNKNOWN", "link.stepId");
+  }
+  const key = taskGraphKey(link.taskId, link.roadmapVersionId);
+  if (fold.taskStepLinks.has(key) || history.linkHeld(link.taskId, link.roadmapVersionId)) {
+    refuseTaskStepLink("LINK_DECLARATION_INVALID", "link.roadmapVersionId");
+  }
+  const last = fold.taskStepLinkHeads.get(link.taskId) ?? history.lastLink(link.taskId);
+  if (last !== undefined) {
+    if (link.fromRoadmapVersionId !== last.roadmapVersionId) refuseTaskStepLink("LINK_HEAD_MISMATCH", "link.fromRoadmapVersionId");
+    if (link.fromStepId !== last.stepId) refuseTaskStepLink("LINK_HEAD_MISMATCH", "link.fromStepId");
+  }
+  if (link.fromRoadmapVersionId !== null) {
+    const from = history.versionNumber(event.initiativeId, link.fromRoadmapVersionId);
+    const target = history.versionNumber(event.initiativeId, link.roadmapVersionId);
+    if (link.stepId !== link.fromStepId || from === undefined || target === undefined || target <= from) {
+      refuseTaskStepLink("LINK_TARGET_NOT_LATER", "link.roadmapVersionId");
+    }
+  }
+  const row: TaskStepLinkReadModel = {
+    taskId: link.taskId,
+    roadmapVersionId: link.roadmapVersionId,
+    stepId: link.stepId,
+    initiativeId: event.initiativeId,
+    fromRoadmapVersionId: link.fromRoadmapVersionId,
+    fromStepId: link.fromStepId,
+    sequence,
+    linkedAt: event.occurredAt,
+  };
+  fold.taskStepLinks.set(key, row);
+  fold.taskStepLinkHeads.set(link.taskId, row);
+}
+
+/**
  * What a fold already holds, asked by both of a version's keys.
  *
  * The live step answers from the read model, inside the append's transaction;
@@ -5501,7 +5601,11 @@ export function assertRoadmapVersionUnfolded(
  * rather than *forgotten*: the fold below runs over every initiative event and
  * returns no row for every type the contract defines.
  */
-export interface InitiativeProjectionSnapshot extends RegistryProjectionSnapshot, RoadmapStepFold, TaskGraphFold {
+export interface InitiativeProjectionSnapshot
+  extends RegistryProjectionSnapshot,
+    RoadmapStepFold,
+    TaskGraphFold,
+    TaskStepLinkFold {
   readonly initiatives: Map<string, InitiativeReadModel>;
   readonly roadmapVersions: Map<string, RoadmapVersionReadModel>;
 }
@@ -5512,6 +5616,7 @@ export function createInitiativeProjectionSnapshot(): InitiativeProjectionSnapsh
     roadmapVersions: new Map<string, RoadmapVersionReadModel>(),
     ...createRoadmapStepFold(),
     ...createTaskGraphFold(),
+    ...createTaskStepLinkFold(),
     routingAssignments: new Map<string, RoutingAssignmentReadModel>(),
     routingFallbacks: new Map<string, RoutingAssignmentFallbackRow>(),
   };
@@ -5554,6 +5659,23 @@ export function applyInitiativeEventToSnapshot(
         return head === undefined ? undefined : snapshot.taskGraphRevisions.get(head);
       },
       revisionHeld: () => false,
+    },
+    event,
+    sequence,
+  );
+
+  foldTaskStepLink(
+    snapshot,
+    {
+      stepDeclared: (initiativeId, roadmapVersionId, stepId) =>
+        snapshot.roadmapVersions.get(roadmapVersionId)?.initiativeId === initiativeId &&
+        snapshot.roadmapSteps.has(roadmapStepKey(roadmapVersionId, stepId)),
+      versionNumber: (initiativeId, roadmapVersionId) => {
+        const version = snapshot.roadmapVersions.get(roadmapVersionId);
+        return version?.initiativeId === initiativeId ? version.version : undefined;
+      },
+      lastLink: () => undefined,
+      linkHeld: () => false,
     },
     event,
     sequence,

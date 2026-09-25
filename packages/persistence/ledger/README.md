@@ -66,6 +66,10 @@ ledger.close();
 | `listTaskGraphNodes(graphRevisionId)` / `listTaskDependencies(graphRevisionId)` | A revision's nodes in `nodeIndex` order, and its edges with their `failPolicy`. Task ids and revision numbers, never a task's text. |
 | `decideTaskGraph(request)` | Pure. One task graph revision against what its caller answers about the history — whether its id is held, whether its step is declared under the initiative, the step's current revision, whether each task revision exists, and the step each task entered on — refused by one of seven words, `TASK_GRAPH_REFUSALS`; a cycle is `GRAPH_DEPENDENCY_CYCLE` at the nodes on it, by task id and revision, and a node whose task did not enter on this step is `GRAPH_TASK_OUT_OF_SCOPE` at the node. Two callers: the batch door, which is the law, and `declareTaskGraph`, the fast path. |
 | `declareTaskGraph(input)` | The one producer of a task graph revision: a revision id already recorded is answered as a replay from its rows, or refused if they differ; otherwise decide, then append the header and its nodes through the batch door. Handles, the instant and identities are injected; ledger errors are thrown untouched. |
+| `getTaskStepLinks(taskId)` | One task's step links in `sequence` order (P-27 cut C): the chain whose last target is its current step; empty for a task never linked. |
+| `currentTaskStepLink(intake, links)` | Pure. The one read of a task's current step: the last link by `sequence`, else the step its intake named, else null. The task graph door and producer, the link decision and the runtime's READY adapter share it. |
+| `decideTaskStepLink(request)` | Pure. One task's link to one step against what its caller answers — the step declared under the initiative, the versions' numbers, the task's revision 1, its intake and its links — refused by one of six words, `TASK_STEP_LINK_REFUSALS`, in the order ADR 0116 records. An adoption goes to any declared step, a re-link to the same step id in a strictly later version. Two callers: the single initiative door, which is the law, and `linkTaskToStep`, the fast path. |
+| `linkTaskToStep(input)` | The one producer of a task's step link: a link already recorded at `(task, version)` is answered as a replay from its row, or refused if it differs; otherwise decide, then append one `TASK_STEP_LINKED` through the single door. Handles, the instant and the event id are injected; ledger errors are thrown untouched. |
 | `recordRoadmapRevision(input)` | The one producer of a roadmap version, steps optional: publish the document, fold, derive and decide, publish the manifest as a `PLAN_DOCUMENT`, append through the single door or the batch door. Handles, instants, the pid and identities are injected. |
 | `roadmapStepDigests(manifest)` | Pure. The one derivation of a step's digests and rank (L-P26B-2), or the cycle that has none. |
 | `diffRoadmapVersions(input)` | Pure. The semantic diff between two versions of one initiative (P-26 cut C, ADR 0113), over rows the caller read with `listRoadmapVersions`, `listRoadmapSteps` and `listRoadmapStepDependencies`: added, removed and changed steps by `stepId` (the changed fields by name, never a digest), dependency pairs added and removed, whether the content changed, the version a rollback restores, and `roles` as `STEP_ASSIGNMENTS_UNPRODUCED`, derived from the rows. Refuses only rows the caller's resolution cannot produce. |
@@ -184,6 +188,7 @@ seventeenth class cannot arrive without appearing here.
 | `LedgerRoadmapVersionRefusedError` | the initiative door refuses a roadmap version by the decision's word, or the fold meets a second claim on a version's identity or number; carries `reason` and `at`, never the roadmap |
 | `LedgerInitiativeBatchConflictError` | an initiative batch meets a stream that holds part of it, or all of it with other content; a batch is recorded whole or replayed whole, and carries the count of keys already recorded, never a body |
 | `LedgerTaskGraphRefusedError` | the batch door refuses a task graph revision by the decision's word, or the fold meets a revision the door would have refused; carries `reason` and `at` — a field path, or the nodes on a cycle by task id and revision — never content |
+| `LedgerTaskStepLinkRefusedError` | the single initiative door refuses a task's step link by the decision's word, or the fold meets a link the door would have refused; carries `reason` and `at`, a field path, never content. `rebuildReadModel()` throws it; `verifyIntegrity()` reports it |
 
 ## Tables
 
@@ -1680,7 +1685,9 @@ acyclic — a cycle refused naming its nodes — each task revision recorded in
 event) names the event's initiative and exactly the header's `(roadmapVersionId,
 stepId)`, or the node is `GRAPH_TASK_OUT_OF_SCOPE` — a task of another initiative or
 step, a task with no roadmap link and a task with no recorded intake alike. So a task is
-a node of one step's graphs only. A refusal is `LedgerTaskGraphRefusedError` and appends nothing. The
+a node of one step's graphs only. Since P-27 cut C the step is the task's **current**
+link, `currentTaskStepLink`: its last row of `task_step_link_read_model` by sequence, read
+in the same transaction, else its intake's pair (decision 201). A refusal is `LedgerTaskGraphRefusedError` and appends nothing. The
 single initiative door refuses both types (L-P26B-1, widened), so no door writes part of
 a graph, and the whole-batch replay rule holds for this shape too.
 
@@ -1695,12 +1702,39 @@ stream, so neither task-stream question — existence or scope — is the fold's
 cannot pass. A revision short of its nodes, or a node of no open revision, is refused by
 the door's word at rebuild and reported by `verifyIntegrity()`.
 
+### A task's step link (P-27 cut C, ADR 0116)
+
+A task changes step only through a `TASK_STEP_LINKED` on its initiative's stream: an
+adoption of a task that entered with no step, to any declared step of its initiative, or
+a re-link to the same step id in a strictly later version. The single initiative door
+grants it, after the exact replay and the contiguity guard and before causation and the
+insert, through `#assertTaskStepLinkGranted` and the one decision, `decideTaskStepLink`,
+over the read model and the task's revision 1 and intake — the task stream's, read here
+and never a foreign key; the batch door refuses the type by shape (L-P27C-1). The link's
+identity is its task and target version (`link.<taskId>.<roadmapVersionId>`), so a
+retry is a replay. Migration 27 creates `task_step_link_read_model`, keyed by
+`(task_id, roadmap_version_id)`, with an immediate foreign key to the target step, the
+`from` pair's CHECK written per predicate, `ix_task_step_link_read_model__task_sequence`
+and `tr_task_step_link_read_model__insert_only`, which aborts every update; one watermark
+is seeded at the initiative head. `foldTaskStepLink` writes the row at the door and at the
+rebuild and refuses by the door's words what the initiative stream judges alone, asking
+no task-stream question. `verifyIntegrity()` reports a link the fold refuses rather than
+throwing, a task's first link whose `from` pair is not its intake's, and a graph node
+whose task was not of its step at the node's sequence (decision 202).
+
 ### Migration 26
 
 Three tables, the edge lookup `ix_task_dependency_read_model__depends_on`, the trigger,
 and three watermarks seeded at the initiative head, migration 25's text. Nothing is
 backfilled: no history before it holds a graph. `CONTRACT_VERSION` does not move: the
 revision id is the producer's, checked for existence, never derived (ND-P27-5).
+
+### Migration 27
+
+One table, `ix_task_step_link_read_model__task_sequence`, the insert-only trigger, and
+one watermark seeded at the initiative head, migration 26's text. Nothing is backfilled:
+no history before it holds a link. `CONTRACT_VERSION` does not move: the link's ids are
+derived and no existing shape gains a cohort (ND-1).
 
 ## Integrity
 

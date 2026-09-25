@@ -1541,6 +1541,28 @@ export interface TaskDependencyReadModel {
   readonly sequence: number;
 }
 
+/**
+ * One link of one task to a declared step (P-27 cut C, ADR 0116; planning §5.4),
+ * folded from its `TASK_STEP_LINKED`.
+ *
+ * The target pair is the step the task is of from this link on; the `from` pair is the
+ * step it was of before, both null for an adoption. A task's links are a chain in
+ * `sequence` order, and its current step is the last link's target, or failing that
+ * the step its intake named (`currentTaskStepLink`). The task is the task stream's,
+ * named here and never a foreign key. Insert-only: a link is never rewritten.
+ */
+export interface TaskStepLinkReadModel {
+  readonly taskId: string;
+  readonly roadmapVersionId: string;
+  readonly stepId: string;
+  readonly initiativeId: string;
+  readonly fromRoadmapVersionId: string | null;
+  readonly fromStepId: string | null;
+  readonly sequence: number;
+  /** The linking event's `occurredAt`. Never a clock read. */
+  readonly linkedAt: string;
+}
+
 // ---------------------------------------------------------------------------
 // The registry stream (P-09/log-C)
 //

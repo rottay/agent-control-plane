@@ -323,7 +323,7 @@ describe("the door executes one explicit tool call and records it", () => {
     expect(payload.refusal).toBeNull();
     expect(payload.at).toBeNull();
     expect(payload.content).toEqual(["the answer"]);
-    expect(payload.apiContractVersion).toBe("0.22.0");
+    expect(payload.apiContractVersion).toBe("0.23.0");
     // The door projects `sequence`; the operation cannot answer one.
     expect(typeof payload.sequence).toBe("number");
     expect(payload.transitionId).toBe("tool.0.0");

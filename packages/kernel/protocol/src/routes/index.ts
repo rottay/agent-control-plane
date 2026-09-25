@@ -96,6 +96,11 @@ export const API_ROUTES = Object.freeze({
   // registrar, so the bearer is inherited structurally. A distinct path from
   // `initiativeRoadmapSteps`: `/roadmap/steps/graph` is not `/roadmap/steps`.
   initiativeStepGraph: "/api/v1/initiatives/:initiativeId/roadmap/steps/graph",
+  // P-27 cut C: one task's step, within its initiative. GET reads the step the task
+  // entered on, its recorded links in order and its current step; POST links the task
+  // to a declared step, an adoption or a re-link. A write route, registered through
+  // the guarded registrar, so the bearer is inherited structurally.
+  initiativeTaskStep: "/api/v1/initiatives/:initiativeId/tasks/:taskId/step",
 } as const);
 
 export type ApiRouteName = keyof typeof API_ROUTES;
@@ -170,6 +175,10 @@ export const API_WRITE_ROUTES = Object.freeze([
   // already planned for one step, under the caller's own revision id. It dispatches
   // nothing. The GET beside it is the graph and its READY verdicts, computed at read.
   "initiativeStepGraph",
+  // P-27 cut C. The eighth, and of the first kind: it records a step the caller
+  // already chose for one task, adopted or re-linked. It dispatches nothing. The GET
+  // beside it is the task's step chain.
+  "initiativeTaskStep",
 ] as const);
 export type ApiWriteRouteName = (typeof API_WRITE_ROUTES)[number];
 
@@ -307,6 +316,16 @@ export function initiativeRoadmapDiffPath(initiativeId: string): string {
  */
 export function initiativeStepGraphPath(initiativeId: string): string {
   return initiativeRoadmapStepsPath(initiativeId) + "/graph";
+}
+
+/**
+ * Build the step path for one task of one initiative (P-27 cut C).
+ *
+ * Both components are validated before either is encoded: the initiative by
+ * `initiativePath`'s rule, the task by `taskPath`'s.
+ */
+export function initiativeTaskStepPath(initiativeId: string, taskId: string): string {
+  return initiativePath(initiativeId) + "/tasks/" + encodeURIComponent(TaskIdParam.parse(taskId)) + "/step";
 }
 
 /**

@@ -38,6 +38,7 @@ import {
   RoadmapDiffResponse,
   RoadmapStepsResponse,
   TaskGraphResponse,
+  TaskStepResponse,
   StreamFrame,
   ToolCallPageResponse,
   TaskLifecycleResponse,
@@ -138,6 +139,9 @@ describe("the binding table matches the schemas it claims to bind", () => {
     // P-27 cut A. The read is bound, and the declaration's answer is not, for the
     // roadmap route's reason: no client renders a write's receipt.
     initiativeStepGraph: TaskGraphResponse,
+    // P-27 cut C. The chain read is bound, and the link's answer is not, for the same
+    // reason.
+    initiativeTaskStep: TaskStepResponse,
     initiativeEvents: InitiativeTimelineResponse,
     initiativeAgents: InitiativeAgentsResponse,
     accounts: AccountsResponse,
@@ -183,6 +187,13 @@ describe("the binding table matches the schemas it claims to bind", () => {
     const excepted = declaredExceptions("initiativeStepGraph").filter((binding) => binding.source !== "CONTRACT_VERSION");
     expect(excepted.map((binding) => [binding.field, binding.source])).toEqual([["evaluatedAt", "OBSERVED_AT"]]);
     expect((excepted[0]?.because ?? "") !== "").toBe(true);
+  });
+
+  it("binds the task step chain whole to the ledger, with no exception but the versions (P-27 cut C)", () => {
+    const comparable = comparableFields("initiativeTaskStep");
+    expect(comparable).toEqual(expect.arrayContaining(["enteredOn", "links", "current", "taskId"]));
+    const excepted = declaredExceptions("initiativeTaskStep").filter((binding) => binding.source !== "CONTRACT_VERSION");
+    expect(excepted).toEqual([]);
   });
 
   it("has a schema for every bound route, so the comparison below can be total", () => {

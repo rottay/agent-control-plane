@@ -41,12 +41,15 @@ import {
   LedgerRoadmapVersionRefusedError,
   LedgerSequenceError,
   LedgerTaskGraphRefusedError,
+  LedgerTaskStepLinkRefusedError,
   LedgerValidationError,
   type LedgerValidationIssue,
 } from "../errors/index.js";
 import { decideRoadmapVersion } from "../roadmap-version/index.js";
 import { readRoadmapStepManifest } from "../roadmap-steps/index.js";
 import { decideTaskGraph, taskGraphLinkOf } from "../task-graph/index.js";
+import type { TaskGraphTaskLink } from "../task-graph/index.js";
+import { currentTaskStepLink, decideTaskStepLink } from "../task-step-link/index.js";
 import {
   ACCOUNT_INTEGRITY_MIGRATION,
   DISPATCH_CATALOG_PIN_MIGRATION,
@@ -167,6 +170,8 @@ import {
   createTaskGraphFold,
   foldTaskGraph,
   taskGraphKey,
+  createTaskStepLinkFold,
+  foldTaskStepLink,
   nextRoutingAssignmentProjection,
   nextTaskProjection,
   nextWorkerProjection,
@@ -283,6 +288,7 @@ import {
   type TaskGraphRevisionReadModel,
   type TaskReadModel,
   type TaskRevisionReadModel,
+  type TaskStepLinkReadModel,
   type TaskSubmissionReadModel,
   TASK_CLIENT_KEY_PATTERN,
   type WorkerPage,
@@ -1336,6 +1342,30 @@ interface TaskDependencyRow {
   readonly sequence: number;
 }
 
+interface TaskStepLinkRow {
+  readonly task_id: string;
+  readonly roadmap_version_id: string;
+  readonly step_id: string;
+  readonly initiative_id: string;
+  readonly from_roadmap_version_id: string | null;
+  readonly from_step_id: string | null;
+  readonly sequence: number;
+  readonly linked_at: string;
+}
+
+function taskStepLinkRowToModel(row: TaskStepLinkRow): TaskStepLinkReadModel {
+  return {
+    taskId: row.task_id,
+    roadmapVersionId: row.roadmap_version_id,
+    stepId: row.step_id,
+    initiativeId: row.initiative_id,
+    fromRoadmapVersionId: row.from_roadmap_version_id,
+    fromStepId: row.from_step_id,
+    sequence: row.sequence,
+    linkedAt: row.linked_at,
+  };
+}
+
 function taskGraphRevisionRowToModel(row: TaskGraphRevisionRow): TaskGraphRevisionReadModel {
   return {
     graphRevisionId: row.graph_revision_id,
@@ -2329,6 +2359,75 @@ function assertInitiativeVersionInForce(event: InitiativeEvent): void {
       },
     ]);
   }
+}
+
+/**
+ * The two cross-stream reports of a task's step (P-27 cut C, ADR 0116 §Five; decision
+ * 202), over what one `verifyIntegrity()` walk folded: the task stream's intakes and
+ * the initiative stream's links and graph nodes. Reports, never a rebuild refusal: the
+ * rebuild does not reopen the task stream (ADR 0115 §Two).
+ *
+ * 1. A task's first link leaves its intake: the link's `from` pair is the intake's pair
+ *    and the link's initiative is the intake's. A link whose task has no intake is
+ *    reported too.
+ * 2. A graph node's task was of the graph's step **at the node's sequence**: its last
+ *    link before the node, else its intake, names the revision's initiative and pair. A
+ *    node whose task moved later is lawful history and not reported; READY answers it.
+ */
+function taskStepMembershipProblems(
+  snapshot: InitiativeProjectionSnapshot,
+  intakes: ReadonlyMap<string, TaskGraphTaskLink>,
+): IntegrityProblem[] {
+  const problems: IntegrityProblem[] = [];
+  const chains = new Map<string, TaskStepLinkReadModel[]>();
+  for (const link of snapshot.taskStepLinks.values()) {
+    const chain = chains.get(link.taskId) ?? [];
+    chain.push(link);
+    chains.set(link.taskId, chain);
+  }
+  for (const chain of chains.values()) {
+    chain.sort((left, right) => left.sequence - right.sequence);
+    const first = chain[0];
+    if (first === undefined) continue;
+    const intake = intakes.get(first.taskId);
+    if (
+      intake?.initiativeId !== first.initiativeId ||
+      intake.roadmapVersionId !== first.fromRoadmapVersionId ||
+      intake.stepId !== first.fromStepId
+    ) {
+      problems.push({
+        kind: "PROJECTION",
+        detail:
+          "initiative sequence " +
+          String(first.sequence) +
+          " records a task's first step link whose from pair is not the step its intake named",
+        sequence: first.sequence,
+      });
+    }
+  }
+  for (const node of snapshot.taskGraphNodes.values()) {
+    const revision = snapshot.taskGraphRevisions.get(node.graphRevisionId);
+    if (revision === undefined) continue;
+    const initiativeId = snapshot.roadmapVersions.get(revision.roadmapVersionId)?.initiativeId;
+    const before = (chains.get(node.taskId) ?? []).filter((link) => link.sequence < node.sequence);
+    const inForce = currentTaskStepLink(intakes.get(node.taskId) ?? null, before);
+    if (
+      inForce === null ||
+      inForce.initiativeId !== initiativeId ||
+      inForce.roadmapVersionId !== revision.roadmapVersionId ||
+      inForce.stepId !== revision.stepId
+    ) {
+      problems.push({
+        kind: "PROJECTION",
+        detail:
+          "initiative sequence " +
+          String(node.sequence) +
+          " records a task graph node whose task was not of the graph's step at that sequence",
+        sequence: node.sequence,
+      });
+    }
+  }
+  return problems;
 }
 
 /**
@@ -7147,6 +7246,10 @@ export class Ledger {
     if (event.type === "ROADMAP_VERSION_RECORDED") {
       this.#assertRoadmapVersionGranted(event);
     }
+    // L-P27C-1: a task's step link, by the one decision, under the same rule (P-27 cut
+    // C, ADR 0116): a new event only, judged over the read model and the task stream
+    // this transaction keeps level, before causation, head and INSERT.
+    if (event.type === "TASK_STEP_LINKED") this.#assertTaskStepLinkGranted(event);
 
     this.#assertCausationResolves(causation);
 
@@ -7474,15 +7577,97 @@ export class Ledger {
           taskId,
           taskRevisionNumber,
         ) !== undefined,
-      taskLink: (taskId) => {
-        const opening = this.#stmt(
-          "SELECT sequence FROM task_revision_read_model WHERE task_id = ? AND revision_number = 1",
-        ).get(taskId) as { readonly sequence: number } | undefined;
-        const record = opening === undefined ? null : this.getEventBySequence(opening.sequence);
-        return record === null ? null : taskGraphLinkOf(record.event);
-      },
+      // The task's current link (P-27 cut C, decision 201): its last link row by
+      // sequence, else the step its intake named.
+      taskLink: (taskId) => currentTaskStepLink(this.#taskIntakeLink(taskId), this.#taskStepLinkRows(taskId)),
     });
     if (!decision.ok) throw new LedgerTaskGraphRefusedError(decision.reason, decision.at);
+  }
+
+  /**
+   * The step a task entered on, read from its revision 1's recorded intake, or null when
+   * it has none: the task stream's, read here and never a foreign key (P-27 cut A).
+   */
+  #taskIntakeLink(taskId: string): TaskGraphTaskLink | null {
+    const opening = this.#stmt(
+      "SELECT sequence FROM task_revision_read_model WHERE task_id = ? AND revision_number = 1",
+    ).get(taskId) as { readonly sequence: number } | undefined;
+    const record = opening === undefined ? null : this.getEventBySequence(opening.sequence);
+    return record === null ? null : taskGraphLinkOf(record.event);
+  }
+
+  /** A task's recorded step links, in `sequence` order (P-27 cut C). */
+  #taskStepLinkRows(taskId: string): readonly TaskStepLinkReadModel[] {
+    return (
+      this.#stmt("SELECT * FROM task_step_link_read_model WHERE task_id = ? ORDER BY sequence ASC").all(
+        taskId,
+      ) as TaskStepLinkRow[]
+    ).map(taskStepLinkRowToModel);
+  }
+
+  /**
+   * Run the task step link decision at the single door, or throw its refusal by name
+   * (P-27 cut C, ADR 0116). Every question it asks is answered inside this transaction:
+   * the target step under this initiative, the versions' numbers within it, the task's
+   * revision 1 and the step its intake named — the task stream's, read here and never a
+   * foreign key — and the task's recorded links.
+   */
+  #assertTaskStepLinkGranted(event: InitiativeEvent): void {
+    const decision = decideTaskStepLink({
+      initiativeId: event.initiativeId,
+      link: event.payload,
+      stepDeclared: (roadmapVersionId, stepId) =>
+        this.#stmt(
+          "SELECT 1 FROM roadmap_step_read_model s JOIN roadmap_version_read_model v " +
+            "ON v.roadmap_version_id = s.roadmap_version_id " +
+            "WHERE s.roadmap_version_id = ? AND s.step_id = ? AND v.initiative_id = ?",
+        ).get(roadmapVersionId, stepId, event.initiativeId) !== undefined,
+      versionNumber: (roadmapVersionId) => this.#initiativeVersionNumber(event.initiativeId, roadmapVersionId) ?? null,
+      taskKnown: (taskId) =>
+        this.#stmt("SELECT 1 FROM task_revision_read_model WHERE task_id = ? AND revision_number = 1").get(taskId) !==
+        undefined,
+      taskIntake: (taskId) => this.#taskIntakeLink(taskId),
+      taskLinks: (taskId) => this.#taskStepLinkRows(taskId),
+    });
+    if (!decision.ok) throw new LedgerTaskStepLinkRefusedError(decision.reason, decision.at);
+  }
+
+  /** A version's number, when it is a version of this initiative. */
+  #initiativeVersionNumber(initiativeId: string, roadmapVersionId: string): number | undefined {
+    const row = this.#stmt(
+      "SELECT version FROM roadmap_version_read_model WHERE roadmap_version_id = ? AND initiative_id = ?",
+    ).get(roadmapVersionId, initiativeId) as { readonly version: number } | undefined;
+    return row?.version;
+  }
+
+  /**
+   * Fold one task step link through the rebuild's function and write its row (P-27 cut
+   * C). The history outside the event is the read model, in this transaction. The row
+   * is inserted; a link is never updated.
+   */
+  #projectTaskStepLink(event: InitiativeEvent, sequence: number): void {
+    const fold = createTaskStepLinkFold();
+    foldTaskStepLink(
+      fold,
+      {
+        stepDeclared: (initiativeId, roadmapVersionId, stepId) =>
+          this.#stmt(
+            "SELECT 1 FROM roadmap_step_read_model s JOIN roadmap_version_read_model v " +
+              "ON v.roadmap_version_id = s.roadmap_version_id " +
+              "WHERE s.roadmap_version_id = ? AND s.step_id = ? AND v.initiative_id = ?",
+          ).get(roadmapVersionId, stepId, initiativeId) !== undefined,
+        versionNumber: (initiativeId, roadmapVersionId) => this.#initiativeVersionNumber(initiativeId, roadmapVersionId),
+        lastLink: (taskId) => this.#taskStepLinkRows(taskId).at(-1),
+        linkHeld: (taskId, roadmapVersionId) =>
+          this.#stmt("SELECT 1 FROM task_step_link_read_model WHERE task_id = ? AND roadmap_version_id = ?").get(
+            taskId,
+            roadmapVersionId,
+          ) !== undefined,
+      },
+      event,
+      sequence,
+    );
+    for (const link of fold.taskStepLinks.values()) this.#insertTaskStepLink(link);
   }
 
   #taskGraphRevisionRow(graphRevisionId: string): TaskGraphRevisionReadModel | null {
@@ -7627,6 +7812,8 @@ export class Ledger {
       });
       this.#insertRoadmapVersion(version);
     }
+
+    if (event.type === "TASK_STEP_LINKED") this.#projectTaskStepLink(event, sequence);
   }
 
   #upsertInitiative(initiative: InitiativeReadModel): void {
@@ -7758,6 +7945,27 @@ export class Ledger {
       "INSERT INTO task_graph_node_read_model (graph_revision_id, task_id, task_revision_number, sequence) " +
         "VALUES (?, ?, ?, ?)",
     ).run(node.graphRevisionId, node.taskId, node.taskRevisionNumber, node.sequence);
+  }
+
+  /**
+   * Write one task step link. Insert-only (P-27 cut C; L-P27C-1): no conflict clause,
+   * and the migration's trigger refuses any update.
+   */
+  #insertTaskStepLink(link: TaskStepLinkReadModel): void {
+    this.#stmt(
+      "INSERT INTO task_step_link_read_model (" +
+        "task_id, roadmap_version_id, step_id, initiative_id, from_roadmap_version_id, from_step_id, sequence, linked_at" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      link.taskId,
+      link.roadmapVersionId,
+      link.stepId,
+      link.initiativeId,
+      link.fromRoadmapVersionId,
+      link.fromStepId,
+      link.sequence,
+      link.linkedAt,
+    );
   }
 
   /** Write one edge of a task graph revision. Insert-only. */
@@ -9792,6 +10000,11 @@ export class Ledger {
       for (const dependency of initiativeSnapshot.taskDependencies.values()) {
         this.#insertTaskDependency(dependency);
       }
+      // The task step links after the steps they name (P-27 cut C), in the order the
+      // fold met them.
+      for (const link of initiativeSnapshot.taskStepLinks.values()) {
+        this.#insertTaskStepLink(link);
+      }
 
       // One table, two partitions, written from the two snapshots that folded
       // them. The partitions are disjoint by
@@ -9965,6 +10178,10 @@ export class Ledger {
 
     const snapshot = createProjectionSnapshot();
     const outbox = createOutboxFold();
+    // The step each task entered on, captured in the same walk (P-27 cut C, ADR 0116
+    // §Five): the task stream is reopened once, here, and never again for the link
+    // reports below.
+    const taskIntakes = new Map<string, TaskGraphTaskLink>();
     const replay = this.#replay((event, row) => {
       applyEventToSnapshot(snapshot, event, row.sequence, row.event_sha256);
       applyEventToOutboxFold(outbox, {
@@ -9973,6 +10190,8 @@ export class Ledger {
         sha256: row.event_sha256,
         causation: OUTBOX_EVENT_TYPES.includes(event.type) ? causationFromRow(row, row.sequence) : null,
       });
+      const intake = taskGraphLinkOf(event);
+      if (intake !== null && !taskIntakes.has(event.taskId)) taskIntakes.set(event.taskId, intake);
     });
     problems.push(...replay.problems);
 
@@ -9985,7 +10204,11 @@ export class Ledger {
       try {
         applyInitiativeEventToSnapshot(initiativeSnapshot, event, row.sequence);
       } catch (error: unknown) {
-        if (!(error instanceof LedgerRoadmapVersionRefusedError) && !(error instanceof LedgerTaskGraphRefusedError)) {
+        if (
+          !(error instanceof LedgerRoadmapVersionRefusedError) &&
+          !(error instanceof LedgerTaskGraphRefusedError) &&
+          !(error instanceof LedgerTaskStepLinkRefusedError)
+        ) {
           throw error;
         }
         roadmapRefusals.push({
@@ -9995,7 +10218,9 @@ export class Ledger {
             String(row.sequence) +
             (error instanceof LedgerTaskGraphRefusedError
               ? " records a task graph the fold refuses: "
-              : " records a roadmap version the fold refuses: ") +
+              : error instanceof LedgerTaskStepLinkRefusedError
+                ? " records a task step link the fold refuses: "
+                : " records a roadmap version the fold refuses: ") +
             error.reason +
             " at " +
             error.at,
@@ -10024,6 +10249,7 @@ export class Ledger {
         sequence: null,
       });
     }
+    problems.push(...taskStepMembershipProblems(initiativeSnapshot, taskIntakes));
 
     const registrySnapshot = createRegistryProjectionSnapshot();
     const artifactSnapshot = createArtifactProjectionSnapshot();
@@ -10626,6 +10852,16 @@ export class Ledger {
           ),
         ),
       },
+      // The task step links (P-27 cut C), by the same three questions.
+      {
+        table: "task_step_link_read_model",
+        expected: snapshot.taskStepLinks,
+        stored: new Map(
+          (this.#stmt("SELECT * FROM task_step_link_read_model ORDER BY sequence ASC").all() as TaskStepLinkRow[]).map(
+            (row) => [taskGraphKey(row.task_id, row.roadmap_version_id), taskStepLinkRowToModel(row)],
+          ),
+        ),
+      },
       {
         table: "task_dependency_read_model",
         expected: snapshot.taskDependencies,
@@ -10730,6 +10966,16 @@ export class Ledger {
         graphRevisionId,
       ) as TaskGraphNodeRow[]
     ).map(taskGraphNodeRowToModel);
+  }
+
+  /**
+   * One task's step links, in `sequence` order (P-27 cut C, ADR 0116): the chain whose
+   * last target is the task's current step. Empty for a task never linked. Unpaged: a
+   * task's links are strictly increasing in version, a declared history.
+   */
+  getTaskStepLinks(taskId: string): readonly TaskStepLinkReadModel[] {
+    this.#assertOpen("getTaskStepLinks");
+    return this.#taskStepLinkRows(taskId);
   }
 
   /** The edges of one revision, by their dependant's declaration, then their key. */

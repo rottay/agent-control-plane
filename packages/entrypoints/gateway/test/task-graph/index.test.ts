@@ -701,7 +701,7 @@ describe("production feeds named absences (readinessOf)", () => {
 });
 
 describe("P-P18-2: this build opens the history the previous one wrote", () => {
-  it("a 2.10.0 history rewound to 25 migrates under 2.10.0 at 26, verifies and rebuilds identically, and takes G1 on top", async () => {
+  it("a 2.10.0 history rewound to 25 migrates under 2.10.0 through 26 to 27, verifies and rebuilds identically, and takes G1 on top", async () => {
     const { path, bearer, app, tasks } = await world();
     await app.close();
     const before = withReader(path, (ledger) => ({
@@ -709,10 +709,15 @@ describe("P-P18-2: this build opens the history the previous one wrote", () => {
       tasks: tasks.map((taskId) => ledger.getTaskRevision(taskId, 1)),
     }));
 
-    // Migration 26 undone: the ledger is at 25, as the previous build left it.
+    // Migrations 27 and 26 undone, 27 first (P-27 cut C): the ledger is at 25, as the
+    // build before P-27 cut A left it.
     const raw = new DatabaseSync(path);
     raw.exec(
-      "DROP TRIGGER tr_task_graph_revision_read_model__supersede_once;" +
+      "DROP TRIGGER tr_task_step_link_read_model__insert_only;" +
+        "DROP INDEX ix_task_step_link_read_model__task_sequence;" +
+        "DROP TABLE task_step_link_read_model;" +
+        "DELETE FROM projection_watermark WHERE projection_name = 'task_step_link_read_model';" +
+        "DROP TRIGGER tr_task_graph_revision_read_model__supersede_once;" +
         "DROP TABLE task_dependency_read_model;" +
         "DROP TABLE task_graph_node_read_model;" +
         "DROP TABLE task_graph_revision_read_model;" +
@@ -724,8 +729,9 @@ describe("P-P18-2: this build opens the history the previous one wrote", () => {
 
     // The server's handle is read-only and may not migrate; a writable open does.
     const migrated = openLedger(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(26);
-    expect(migrated.status().migrations.at(-1)?.name).toBe("task_graph");
+    // 26 when P-27 cut A wrote this; P-27 cut C's 27 is the tail now.
+    expect(migrated.status().migrations.at(-1)?.version).toBe(27);
+    expect(migrated.status().migrations.at(-1)?.name).toBe("task_step_link");
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     expect(migrated.listRoadmapVersions(INITIATIVE)).toEqual(before.versions);
     migrated.rebuildReadModel();

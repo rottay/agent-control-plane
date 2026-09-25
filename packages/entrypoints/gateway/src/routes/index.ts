@@ -31,6 +31,9 @@ import {
   TaskGraphDeclarationResponse,
   TaskGraphQuery,
   TaskGraphResponse,
+  TaskStepLinkRequest,
+  TaskStepLinkResponse,
+  TaskStepResponse,
   RoadmapVersionWriteRequest,
   RoadmapVersionWriteResponse,
   IntegrityResult,
@@ -90,6 +93,7 @@ import { recordRoadmapVersion } from "../roadmap-write/index.js";
 import { recordInitiativeRegistration } from "../initiative-write/index.js";
 import { recordTaskIntake } from "../task-intake/index.js";
 import { recordTaskGraph, resolveStepVersion, stepGraph } from "../task-graph/index.js";
+import { recordTaskStepLink, taskStepChain } from "../task-step-link/index.js";
 import { effectResult, parseEffectIdParam, taskEffects } from "../effect-result/index.js";
 import {
   initiativeDetailDto,
@@ -100,6 +104,7 @@ import {
   roadmapVersionEcho,
   taskDetail,
   taskGraphNodeItems,
+  taskStepChainBody,
   taskSummary,
   timelineItem,
   workerDetail,
@@ -979,6 +984,94 @@ export function registerRoutes(
         graphRevisionId: outcome.revision.graphRevisionId,
         supersedesGraphRevisionId: parsed.data.supersedesGraphRevisionId,
         nodeCount: outcome.nodeCount,
+        sequence: outcome.sequence,
+        replayed: outcome.replayed,
+      });
+    },
+    bearer,
+  );
+
+  // One task's step (P-27 cut C): the eighth write. GET reads the task's step chain --
+  // the step it entered on, its links in order and its current step -- unguarded like
+  // every read; POST links the task to a declared step, behind the bearer the
+  // registrar inherits. Versions travel by number, resolved inside the initiative, so a
+  // version of another initiative is unrepresentable.
+  registerGetAndPost(
+    app,
+    API_ROUTES.initiativeTaskStep,
+    (request) => {
+      assertEmptyQuery(queryOf(request));
+      const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
+      const taskId = parseTaskIdParam(paramsOf(request)["taskId"] ?? "");
+      const { ledger } = requireOpen(source);
+      if (ledger.getInitiative(initiativeId) === null) {
+        throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
+      }
+      const chain = taskStepChain(ledger, initiativeId, taskId);
+      if (!chain.ok) throw new ApiRouteError("NOT_FOUND", "no task with that id was found in that initiative");
+      return TaskStepResponse.parse({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        initiativeId,
+        taskId,
+        ...taskStepChainBody(chain),
+      });
+    },
+    (request) => {
+      assertEmptyQuery(queryOf(request));
+      const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
+      const taskId = parseTaskIdParam(paramsOf(request)["taskId"] ?? "");
+      const { ledger } = requireOpen(source);
+      if (ledger.getInitiative(initiativeId) === null) {
+        throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
+      }
+
+      // Door one: the schema. Malformed is the caller's typing -- 400, naming the
+      // field and never its value.
+      const parsed = TaskStepLinkRequest.safeParse(request.body);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        throw new ApiRouteError(
+          "BAD_REQUEST",
+          "the task step link request did not satisfy the contract",
+          (issue?.path ?? []).map((segment) => String(segment)).join(".") || "(root)",
+        );
+      }
+      const target = resolveStepVersion(ledger, initiativeId, parsed.data.version);
+      const from = parsed.data.from === null ? null : resolveStepVersion(ledger, initiativeId, parsed.data.from.version);
+      if (!target.ok || (from !== null && !from.ok)) {
+        throw new ApiRouteError("NOT_FOUND", "no roadmap version with that number was found");
+      }
+
+      // The event id is minted here and the instant read here; the link's identity is
+      // its task and target version. The seam and the producer read no clock and no
+      // random source.
+      const outcome = recordTaskStepLink({
+        ledger,
+        initiativeId,
+        taskId,
+        version: target.version,
+        stepId: parsed.data.stepId,
+        from: from === null || parsed.data.from === null ? null : { version: from.version, stepId: parsed.data.from.stepId },
+        linkedBy: parsed.data.linkedBy,
+        recordedAt: instant(),
+        eventId: randomUUID(),
+      });
+
+      // Door two: the decision. A coherent request the recorded state refuses is a 409
+      // carrying the refusal's word and the field.
+      if (!outcome.ok) {
+        throw new ApiRouteError("WRITE_REFUSED", "the task step link was refused: " + outcome.reason, outcome.at);
+      }
+
+      return TaskStepLinkResponse.parse({
+        apiContractVersion: API_CONTRACT_VERSION,
+        ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+        initiativeId,
+        taskId,
+        version: roadmapVersionEcho(target.version),
+        stepId: outcome.link.stepId,
+        from: parsed.data.from,
         sequence: outcome.sequence,
         replayed: outcome.replayed,
       });

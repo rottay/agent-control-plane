@@ -28,6 +28,7 @@ function readyNode(overrides: Partial<ReadyInput> = {}): ReadyInput {
   return {
     graphRevisionCurrent: true,
     taskRevisionCurrent: true,
+    taskLinkCurrent: true,
     taskState: { vocabulary: "TASK_V2", value: "CLASSIFIED" },
     dependencies: [],
     stepState: "READY",
@@ -53,7 +54,9 @@ const unsat = (reason: string) => ({ verdict: "UNSATISFIED", reason });
 const unknown = (reason: string) => ({ verdict: "UNKNOWN", reason });
 
 describe("the READY reasons are two closed, sorted vocabularies (P-27 cut A)", () => {
-  it("names the eleven known blocks, sorted", () => {
+  it("names the twelve known blocks, sorted", () => {
+    // Eleven until P-27 cut C's TASK_LINK_MOVED, between STEP_NOT_ADMITTING and
+    // TASK_NOT_CLASSIFIED.
     expect([...READY_UNSATISFIED_REASONS]).toEqual([...READY_UNSATISFIED_REASONS].sort());
     expect([...READY_UNSATISFIED_REASONS]).toEqual([
       "APPROVAL_REQUIRED",
@@ -65,6 +68,7 @@ describe("the READY reasons are two closed, sorted vocabularies (P-27 cut A)", (
       "GRAPH_REVISION_SUPERSEDED",
       "INITIATIVE_NOT_ACTIVE",
       "STEP_NOT_ADMITTING",
+      "TASK_LINK_MOVED",
       "TASK_NOT_CLASSIFIED",
       "TASK_REVISION_SUPERSEDED",
     ]);
@@ -142,6 +146,9 @@ describe("each reason has one producer, and is red without it", () => {
   const PRODUCERS: readonly (readonly [string, "R1" | "R2" | "R3" | "R4", ReadyVerdict, Partial<ReadyInput>])[] = [
     ["GRAPH_REVISION_SUPERSEDED", "R1", unsat("GRAPH_REVISION_SUPERSEDED") as ReadyVerdict, { graphRevisionCurrent: false }],
     ["TASK_REVISION_SUPERSEDED", "R1", unsat("TASK_REVISION_SUPERSEDED") as ReadyVerdict, { taskRevisionCurrent: false }],
+    // P-27 cut C: the task's current link is another step (a re-link moved it), or it
+    // has none at all -- a block by definition, not an absence.
+    ["TASK_LINK_MOVED", "R1", unsat("TASK_LINK_MOVED") as ReadyVerdict, { taskLinkCurrent: false }],
     ["TASK_NOT_CLASSIFIED", "R1", unsat("TASK_NOT_CLASSIFIED") as ReadyVerdict, { taskState: { vocabulary: "TASK_V2", value: "DISCOVERED" } }],
     ["TASK_COHORT_LEGACY", "R1", unknown("TASK_COHORT_LEGACY") as ReadyVerdict, { taskState: { vocabulary: "LEGACY", value: "DT_CLASSIFIED" } }],
     ["DEPENDENCY_PENDING", "R2", unsat("DEPENDENCY_PENDING") as ReadyVerdict, { dependencies: [edge("WAIT_SUCCESS", "RUNNING")] }],
@@ -275,6 +282,21 @@ describe("the conditions' rules, beside the producers", () => {
     expect(r4.conditions.R4).toEqual(unsat("ASSIGNMENT_UNRESOLVED"));
   });
 
+  it("R1's clauses in order: graph superseded, task superseded, link moved, then the cohort (P-27 cut C)", () => {
+    const r1 = (input: Partial<ReadyInput>) => evaluateReady(readyNode(input)).conditions.R1;
+    const legacy = { vocabulary: "LEGACY", value: "DISCOVERED" } as const;
+    expect(r1({ graphRevisionCurrent: false, taskRevisionCurrent: false, taskLinkCurrent: false })).toEqual(
+      unsat("GRAPH_REVISION_SUPERSEDED"),
+    );
+    expect(r1({ taskRevisionCurrent: false, taskLinkCurrent: false })).toEqual(unsat("TASK_REVISION_SUPERSEDED"));
+    expect(r1({ taskLinkCurrent: false, taskState: { vocabulary: "TASK_V2", value: "DISCOVERED" } })).toEqual(
+      unsat("TASK_LINK_MOVED"),
+    );
+    // A known block outranks the cohort's absence: a moved legacy task reads the block.
+    expect(r1({ taskLinkCurrent: false, taskState: legacy })).toEqual(unsat("TASK_LINK_MOVED"));
+    expect(r1({ taskState: legacy })).toEqual(unknown("TASK_COHORT_LEGACY"));
+  });
+
   it("production's shape reads no node READY: legacy task, unproduced approval", () => {
     const production = evaluateReady(
       readyNode({ taskState: { vocabulary: "LEGACY", value: "DISCOVERED" }, approval: { produced: false } }),
@@ -282,6 +304,16 @@ describe("the conditions' rules, beside the producers", () => {
     expect(production).toEqual({
       ready: false,
       conditions: { R1: unknown("TASK_COHORT_LEGACY"), R2: SAT, R3: SAT, R4: unknown("APPROVAL_UNPRODUCED") },
+    });
+  });
+
+  it("production's shape of a moved node reads the block on R1, never READY (P-27 cut C)", () => {
+    const moved = evaluateReady(
+      readyNode({ taskLinkCurrent: false, taskState: { vocabulary: "LEGACY", value: "DISCOVERED" }, approval: { produced: false } }),
+    );
+    expect(moved).toEqual({
+      ready: false,
+      conditions: { R1: unsat("TASK_LINK_MOVED"), R2: SAT, R3: SAT, R4: unknown("APPROVAL_UNPRODUCED") },
     });
   });
 

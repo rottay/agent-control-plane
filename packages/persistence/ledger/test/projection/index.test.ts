@@ -16,7 +16,7 @@ import {
 import type { ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
-import { LedgerRoadmapVersionRefusedError, LedgerTaskGraphRefusedError } from "../../src/errors/index.js";
+import { LedgerRoadmapVersionRefusedError, LedgerTaskGraphRefusedError, LedgerTaskStepLinkRefusedError } from "../../src/errors/index.js";
 
 import {
   applyArtifactEventToSnapshot,
@@ -59,6 +59,9 @@ import {
   createTaskGraphFold,
   foldTaskGraph,
   taskGraphKey,
+  createTaskStepLinkFold,
+  foldTaskStepLink,
+  roadmapStepKey,
   assertRoadmapVersionUnfolded,
   createInitiativeProjectionSnapshot,
   nextRoadmapVersionProjection,
@@ -4850,5 +4853,158 @@ describe("the task graph fold counts its nodes and finds its head without a scan
     ]);
     expect(snapshot.taskGraphRevisions.get(G7)).toMatchObject({ roadmapVersionId: V1, stepId: "C", supersededBy: null });
     expect(snapshot.pendingTaskGraphs.size).toBe(0);
+  });
+});
+
+describe("the task step link fold (P-27 cut C, ADR 0116)", () => {
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+  const OTHER_INITIATIVE = "33333333-3333-4333-8333-333333333333";
+  const V1 = "11111111-1111-4111-8111-111111111111";
+  const V2 = "22222222-2222-4222-8222-222222222222";
+  const FOREIGN = "77777777-7777-4777-8777-777777777777";
+  const TASK = "66666666-6666-4666-8666-666666666661";
+  const AT = "2026-09-25T12:00:00.000Z";
+  const NUMBERS = new Map([
+    [V1, 1],
+    [V2, 2],
+  ]);
+
+  function event(payload: Record<string, unknown>, type = "TASK_STEP_LINKED", initiativeId = INITIATIVE): InitiativeEvent {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: "0000cccc-0000-4000-8000-000000000001",
+      initiativeId,
+      transitionId: "link.x",
+      idempotencyKey: initiativeId + "/1/link.x",
+      type,
+      fromStatus: "ACTIVE",
+      toStatus: "ACTIVE",
+      emittedBy: "claude/opus/coordinator/01",
+      occurredAt: AT,
+      recordedAt: AT,
+      payload,
+    } as unknown as InitiativeEvent;
+  }
+  const link = (target: readonly [string, string], from: readonly [string, string] | null) =>
+    event({ taskId: TASK, roadmapVersionId: target[0], stepId: target[1], fromRoadmapVersionId: from?.[0] ?? null, fromStepId: from?.[1] ?? null });
+
+  /** Every version of the initiative declares A and B; the history holds nothing else. */
+  const history = {
+    stepDeclared: (initiativeId: string, roadmapVersionId: string, stepId: string) =>
+      initiativeId === INITIATIVE && NUMBERS.has(roadmapVersionId) && (stepId === "A" || stepId === "B"),
+    versionNumber: (initiativeId: string, roadmapVersionId: string) => (initiativeId === INITIATIVE ? NUMBERS.get(roadmapVersionId) : undefined),
+    lastLink: () => undefined,
+    linkHeld: () => false,
+  };
+
+  function refusedBy(action: () => void): { readonly reason: string; readonly at: string } {
+    try {
+      action();
+    } catch (error: unknown) {
+      if (error instanceof LedgerTaskStepLinkRefusedError) return { reason: error.reason, at: error.at };
+      throw error;
+    }
+    throw new Error("expected a refusal");
+  }
+
+  it("folds an adoption and a re-link into rows keyed by task and version, the head the last one", () => {
+    const fold = createTaskStepLinkFold();
+    foldTaskStepLink(fold, history, link([V1, "A"], null), 10);
+    foldTaskStepLink(fold, history, link([V2, "A"], [V1, "A"]), 12);
+    expect([...fold.taskStepLinks.keys()]).toEqual([taskGraphKey(TASK, V1), taskGraphKey(TASK, V2)]);
+    expect(fold.taskStepLinkHeads.get(TASK)).toEqual({
+      taskId: TASK,
+      roadmapVersionId: V2,
+      stepId: "A",
+      initiativeId: INITIATIVE,
+      fromRoadmapVersionId: V1,
+      fromStepId: "A",
+      sequence: 12,
+      linkedAt: AT,
+    });
+  });
+
+  it("ignores every other initiative type", () => {
+    const fold = createTaskStepLinkFold();
+    foldTaskStepLink(fold, history, event({}, "INITIATIVE_STATE_CHANGED"), 3);
+    expect(fold.taskStepLinks.size).toBe(0);
+  });
+
+  /** Fold one event into `fold` (a fresh one by default), as an action a refusal is read from. */
+  const folding =
+    (candidate: InitiativeEvent, fold = createTaskStepLinkFold(), sequence = 5) =>
+    (): void => {
+      foldTaskStepLink(fold, history, candidate, sequence);
+    };
+
+  it("refuses each fold word by its one input, and a refused event consumes neither the row nor the head", () => {
+    const cases: readonly (readonly [string, () => void, { readonly reason: string; readonly at: string }])[] = [
+      ["shape", folding(event({ taskId: TASK })), { reason: "LINK_DECLARATION_INVALID", at: "link.roadmapVersionId" }],
+      ["undeclared", folding(link([V1, "Z"], null)), { reason: "LINK_STEP_UNKNOWN", at: "link.stepId" }],
+      [
+        "another initiative's step",
+        folding(event(link([V1, "A"], null).payload, "TASK_STEP_LINKED", OTHER_INITIATIVE)),
+        { reason: "LINK_STEP_UNKNOWN", at: "link.stepId" },
+      ],
+    ];
+    for (const [name, action, expected] of cases) {
+      expect({ name, refusal: refusedBy(action) }).toEqual({ name, refusal: expected });
+    }
+
+    const fold = createTaskStepLinkFold();
+    foldTaskStepLink(fold, history, link([V1, "A"], null), 10);
+    const rows = [...fold.taskStepLinks.values()];
+    const head = fold.taskStepLinkHeads.get(TASK);
+    const refusals = [
+      // A (task, version) held twice.
+      refusedBy(folding(link([V1, "A"], null), fold, 11)),
+      // from is not the last link's target.
+      refusedBy(folding(link([V2, "A"], null), fold, 11)),
+      refusedBy(folding(link([V2, "A"], [V1, "B"]), fold, 11)),
+      // Another step id is not a later version of the same step.
+      refusedBy(folding(link([V2, "B"], [V1, "A"]), fold, 11)),
+    ];
+    expect(refusals).toEqual([
+      { reason: "LINK_DECLARATION_INVALID", at: "link.roadmapVersionId" },
+      { reason: "LINK_HEAD_MISMATCH", at: "link.fromRoadmapVersionId" },
+      { reason: "LINK_HEAD_MISMATCH", at: "link.fromStepId" },
+      { reason: "LINK_TARGET_NOT_LATER", at: "link.roadmapVersionId" },
+    ]);
+    expect([...fold.taskStepLinks.values()]).toEqual(rows);
+    expect(fold.taskStepLinkHeads.get(TASK)).toEqual(head);
+  });
+
+  it("N8: a from pair naming a version the initiative's fold does not hold is LINK_TARGET_NOT_LATER", () => {
+    const notLater = { reason: "LINK_TARGET_NOT_LATER", at: "link.roadmapVersionId" };
+    expect(refusedBy(folding(link([V2, "A"], [FOREIGN, "A"])))).toEqual(notLater);
+    // An earlier version as the target, from a later one.
+    expect(refusedBy(folding(link([V1, "A"], [V2, "A"])))).toEqual(notLater);
+  });
+
+  it("asks no task-stream question: a first link's from is not checked against an intake the fold never sees", () => {
+    const fold = createTaskStepLinkFold();
+    // A re-link as the task's first link: the fold admits it; verifyIntegrity() reports it.
+    foldTaskStepLink(fold, history, link([V2, "A"], [V1, "A"]), 7);
+    expect(fold.taskStepLinks.size).toBe(1);
+  });
+
+  it("the rebuild's snapshot folds through the same function, from its own versions and steps", () => {
+    const snapshot = createInitiativeProjectionSnapshot();
+    for (const [roadmapVersionId, version] of NUMBERS) {
+      snapshot.roadmapVersions.set(roadmapVersionId, { roadmapVersionId, initiativeId: INITIATIVE, version } as never);
+      for (const stepId of ["A", "B"]) snapshot.roadmapSteps.set(roadmapStepKey(roadmapVersionId, stepId), { roadmapVersionId, stepId } as never);
+    }
+    applyInitiativeEventToSnapshot(snapshot, link([V1, "A"], null), 20);
+    applyInitiativeEventToSnapshot(snapshot, link([V2, "A"], [V1, "A"]), 21);
+    expect([...snapshot.taskStepLinks.values()].map((row) => [row.roadmapVersionId, row.sequence])).toEqual([
+      [V1, 20],
+      [V2, 21],
+    ]);
+    // The head the snapshot holds is the fold's own, never scanned for.
+    expect(() => {
+      applyInitiativeEventToSnapshot(snapshot, link([V2, "B"], [V1, "A"]), 22);
+    }).toThrow(LedgerTaskStepLinkRefusedError);
+    expect(snapshot.taskStepLinks.size).toBe(2);
+    expect(snapshot.taskStepLinkHeads.get(TASK)?.sequence).toBe(21);
   });
 });

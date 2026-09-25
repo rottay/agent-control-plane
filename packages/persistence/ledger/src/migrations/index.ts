@@ -3321,6 +3321,76 @@ FROM (
 );
 `,
   },
+  {
+    version: 27,
+    name: "task_step_link",
+    sql: `
+-- A task changes step only through a recorded link (P-27 cut C, ADR 0116; planning
+-- §5.4).
+--
+-- **One table, new and empty.** A row is one \`TASK_STEP_LINKED\`: the task, the step it
+-- is of from this link on, the initiative, and the step it was of before, both NULL
+-- for an adoption. A task's links are a chain in \`sequence\` order; its current step is
+-- the last link's target, or failing that its intake's. The target step is of the same
+-- initiative-stream cohort, so it is an immediate foreign key; the task is the task
+-- stream's, checked at the door and never a foreign key (datos §8 item 3). The key is
+-- \`(task_id, roadmap_version_id)\`: a task's link targets are strictly later versions,
+-- so one task is linked to one version at most once.
+--
+-- **The \`from\` pair is whole or absent.** The CHECK is spelled per predicate, so a
+-- NULL in one half cannot pass it vacuously: each branch names both columns.
+CREATE TABLE task_step_link_read_model (
+  task_id                 TEXT    NOT NULL,
+  roadmap_version_id      TEXT    NOT NULL,
+  step_id                 TEXT    NOT NULL,
+  initiative_id           TEXT    NOT NULL,
+  from_roadmap_version_id TEXT,
+  from_step_id            TEXT,
+  sequence                INTEGER NOT NULL,
+  linked_at               TEXT    NOT NULL,
+  CONSTRAINT pk_task_step_link_read_model PRIMARY KEY (task_id, roadmap_version_id),
+  CONSTRAINT fk_task_step_link_read_model__roadmap_step_read_model
+    FOREIGN KEY (roadmap_version_id, step_id) REFERENCES roadmap_step_read_model (roadmap_version_id, step_id),
+  CONSTRAINT ck_task_step_link_read_model__from_pair
+    CHECK (
+      (from_roadmap_version_id IS NULL AND from_step_id IS NULL)
+      OR (from_roadmap_version_id IS NOT NULL AND from_step_id IS NOT NULL)
+    ),
+  CONSTRAINT ck_task_step_link_read_model__sequence CHECK (sequence >= 1)
+) STRICT;
+
+-- "The last link by sequence" of one task, without a scan of every link.
+CREATE INDEX ix_task_step_link_read_model__task_sequence
+  ON task_step_link_read_model (task_id, sequence);
+
+-- A link is never rewritten: every update aborts, whatever column it names. The
+-- rebuild clears the table through \`DERIVED_TABLES\`, a DELETE, which this does not see.
+CREATE TRIGGER tr_task_step_link_read_model__insert_only
+BEFORE UPDATE ON task_step_link_read_model
+BEGIN
+  SELECT RAISE(ABORT, 'task_step_link_read_model is insert-only; a link is never rewritten');
+END;
+
+-- The watermark born at the initiative head, migration 26's text. No history holds a
+-- link event, so the empty fold is level with it; the instant is the head event's own,
+-- the epoch only for an empty stream.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  'task_step_link_read_model',
+  'initiative_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'initiative_head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'initiative_event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'initiative_head_event_sha256'),
+  COALESCE(
+    (SELECT recorded_at FROM initiative_events
+      WHERE sequence = CAST((SELECT value FROM ledger_meta WHERE key = 'initiative_head_sequence') AS INTEGER)),
+    '1970-01-01T00:00:00.000Z'
+  );
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -3397,6 +3467,9 @@ export const DERIVED_TABLES: readonly string[] = [
   "task_dependency_read_model",
   "task_graph_node_read_model",
   "task_graph_revision_read_model",
+  // P-27 cut C, before the steps: a link names its target step by an immediate foreign
+  // key, so a wrong order aborts the DELETE.
+  "task_step_link_read_model",
   // P-26 cut B, children first: a dependency names two steps and a step names its
   // version, by immediate foreign keys, so a wrong order aborts the DELETE.
   "roadmap_step_dependency",
@@ -3458,6 +3531,8 @@ export const INITIATIVE_PROJECTION_NAMES: readonly string[] = [
   "task_graph_revision_read_model",
   "task_graph_node_read_model",
   "task_dependency_read_model",
+  // P-27 cut C, named `TASK_STEP_LINK_PROJECTION`.
+  "task_step_link_read_model",
 ];
 
 /**
@@ -3727,6 +3802,17 @@ export const TASK_GRAPH_NODE_PROJECTION = "task_graph_node_read_model";
 export const TASK_DEPENDENCY_PROJECTION = "task_dependency_read_model";
 
 /**
+ * The migration that records a task's step links (P-27 cut C, ADR 0116).
+ *
+ * Named for `TASK_GRAPH_MIGRATION`'s reasons: the suite and the rewind fixtures hold
+ * the number against where the SQL sits.
+ */
+export const TASK_STEP_LINK_MIGRATION = 27;
+
+/** The projection that holds one row per link of a task to a declared step (P-27 cut C). */
+export const TASK_STEP_LINK_PROJECTION = "task_step_link_read_model";
+
+/**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
  * Named rather than written as a literal at the two sites that need it, because
@@ -3814,6 +3900,7 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: TASK_GRAPH_REVISION_PROJECTION, sourceStream: INITIATIVE_STREAM },
   { projectionName: TASK_GRAPH_NODE_PROJECTION, sourceStream: INITIATIVE_STREAM },
   { projectionName: TASK_DEPENDENCY_PROJECTION, sourceStream: INITIATIVE_STREAM },
+  { projectionName: TASK_STEP_LINK_PROJECTION, sourceStream: INITIATIVE_STREAM },
   { projectionName: ARTIFACT_BLOB_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ARTIFACT_REFERENCE_PROJECTION, sourceStream: REGISTRY_STREAM },
   { projectionName: ARTIFACT_PIN_PROJECTION, sourceStream: REGISTRY_STREAM },
@@ -4084,6 +4171,12 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "table", name: "task_graph_node_read_model" },
   { type: "table", name: "task_dependency_read_model" },
   { type: "index", name: "ix_task_dependency_read_model__depends_on" },
+  // P-27 cut C. The link table, its last-by-sequence lookup and its insert-only
+  // trigger: dropping the trigger leaves `schema_migrations` intact while a recorded
+  // link, and so a task's current step, quietly becomes rewritable.
+  { type: "table", name: "task_step_link_read_model" },
+  { type: "index", name: "ix_task_step_link_read_model__task_sequence" },
+  { type: "trigger", name: "tr_task_step_link_read_model__insert_only" },
 ];
 
 export interface MigrationConformance {

@@ -431,3 +431,26 @@ describe("the task graph route is api-only on both arms, under the standing reas
     }
   });
 });
+
+describe("the task step route is api-only on both arms, under the standing reasons (P-27 cut C)", () => {
+  it("records its GET with the data plane's reason and its POST with the write door's", () => {
+    const content = SURFACE_MAP.find((entry) => entry.route === "initiativeRoadmapContent");
+    const write = SURFACE_MAP.find((entry) => entry.route === "accountActions" && entry.method === "POST");
+    const rows = SURFACE_MAP.filter((entry) => entry.route === "initiativeTaskStep");
+    expect(rows.map((entry) => [entry.command, entry.route, entry.method, entry.equivalence])).toEqual([
+      [null, "initiativeTaskStep", "GET", "API_ONLY"],
+      [null, "initiativeTaskStep", "POST", "API_ONLY"],
+    ]);
+    expect(rows[0]?.because).toBe(content?.because);
+    expect(rows[1]?.because).toBe(write?.because);
+    expect(SURFACE_MAP).toHaveLength(38);
+    expect(defects()).toEqual([]);
+  });
+
+  it("names the arm when either row is dropped", () => {
+    for (const method of ["GET", "POST"]) {
+      const dropped = defects(without((entry) => entry.route === "initiativeTaskStep" && entry.method === method));
+      expect(names(dropped, "initiativeTaskStep " + method)).toBe(true);
+    }
+  });
+});

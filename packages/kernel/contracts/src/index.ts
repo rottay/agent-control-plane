@@ -132,6 +132,7 @@ export {
   DEPENDENCY_FAILURE_POLICIES,
   TaskGraphDeclaration,
   TaskGraphNodeDeclaration,
+  TaskStepLinkDeclaration,
   InitiativeEventType,
   InitiativeIdempotencyCoordinates,
   InitiativeEvent,

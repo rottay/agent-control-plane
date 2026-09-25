@@ -462,7 +462,51 @@ export const TaskGraphNodeDeclaration = z
 export type TaskGraphNodeDeclaration = z.infer<typeof TaskGraphNodeDeclaration>;
 
 /**
- * The initiative stream's vocabulary, closed at six names.
+ * A task's link to a declared step, as a `TASK_STEP_LINKED` payload records it (P-27
+ * cut C, ADR 0116; decision 200).
+ *
+ * The target pair `(roadmapVersionId, stepId)` is the step the task is of from this
+ * link on; the `from` pair is the step it was of before, both null for an adoption (a
+ * task that entered with no link) and both set for a re-link. The link's identity is
+ * its task and its target version: the producer derives the transition from them and
+ * carries no id of its own. Both step ids are the declared step's grammar,
+ * `BoundedIdentifier`: an intake's pair copies into `from` because decision 197 admits
+ * an intake step only when its version declares it, not because the intake's own
+ * grammar is narrower. What one value can prove about itself is proved here: the
+ * `from` pair is whole or absent, and the target is not the `from` pair. Whether the
+ * step is declared, whether the task exists and is of this initiative, whether `from`
+ * is the task's current link and whether the target is a later version of the same
+ * step are the ledger's, where the history is visible. Ids only.
+ */
+export const TaskStepLinkDeclaration = z
+  .strictObject({
+    taskId: Uuid,
+    roadmapVersionId: Uuid,
+    stepId: BoundedIdentifier,
+    fromRoadmapVersionId: Uuid.nullable(),
+    fromStepId: BoundedIdentifier.nullable(),
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx, { transcript: false });
+    if ((value.fromRoadmapVersionId === null) !== (value.fromStepId === null)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "the from pair is both null or both set",
+        path: [value.fromRoadmapVersionId === null ? "fromRoadmapVersionId" : "fromStepId"],
+      });
+    }
+    if (value.fromRoadmapVersionId === value.roadmapVersionId && value.fromStepId === value.stepId) {
+      ctx.addIssue({
+        code: "custom",
+        message: "a task is not linked to the step it is already of",
+        path: ["roadmapVersionId"],
+      });
+    }
+  });
+export type TaskStepLinkDeclaration = z.infer<typeof TaskStepLinkDeclaration>;
+
+/**
+ * The initiative stream's vocabulary, closed at seven names.
  *
  * `ROADMAP_VERSION_RECORDED` **is** the receipt for a recorded version, the
  * way `COMMIT_RECORDED` is the receipt for a commit. A separate receipt type
@@ -470,6 +514,8 @@ export type TaskGraphNodeDeclaration = z.infer<typeof TaskGraphNodeDeclaration>;
  * declares one step of a version, in the same all-or-none batch as the version.
  * `TASK_GRAPH_DECLARED` and `TASK_GRAPH_NODE_DECLARED` (P-27 cut A, ADR 0115) declare
  * one revision of a step's task graph and its nodes, in one all-or-none batch.
+ * `TASK_STEP_LINKED` (P-27 cut C, ADR 0116) links one task to a declared step, alone,
+ * through the single door.
  */
 export const INITIATIVE_EVENT_TYPES = [
   "INITIATIVE_REGISTERED",
@@ -478,6 +524,7 @@ export const INITIATIVE_EVENT_TYPES = [
   "ROADMAP_STEP_DECLARED",
   "TASK_GRAPH_DECLARED",
   "TASK_GRAPH_NODE_DECLARED",
+  "TASK_STEP_LINKED",
 ] as const;
 
 export const InitiativeEventType = z.enum(INITIATIVE_EVENT_TYPES);
@@ -683,8 +730,8 @@ export const InitiativeEvent = z
     }
 
     // Every type but the registration and the change is a passthrough: recording
-    // a roadmap version, declaring a step or declaring a task graph does not move
-    // the initiative's status.
+    // a roadmap version, declaring a step, declaring a task graph or linking a task
+    // to a step does not move the initiative's status.
     if (
       value.type !== "INITIATIVE_REGISTERED" &&
       value.type !== "INITIATIVE_STATE_CHANGED" &&
@@ -697,7 +744,9 @@ export const InitiativeEvent = z
             ? "recording a roadmap version does not move the initiative's status"
             : value.type === "ROADMAP_STEP_DECLARED"
               ? "declaring a roadmap step does not move the initiative's status"
-              : "declaring a task graph does not move the initiative's status",
+              : value.type === "TASK_STEP_LINKED"
+                ? "linking a task to a step does not move the initiative's status"
+                : "declaring a task graph does not move the initiative's status",
         path: ["toStatus"],
       });
     }
