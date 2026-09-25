@@ -12026,6 +12026,41 @@ const P26C_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-15, cut A3: the Claude adapter's `rate_limit_event` is keyed by what its captures
+ * show it varying on (ADR 0114, amending ADR 0112; decisions 189-192; brief v2 = brief
+ * v1, Fable pre-audit C1-C7 and N1-N9, and Fable stop-ruling 1, adopted as rulings).
+ *
+ * The S1 retry's 2.1.281 stream carried `rate_limit_event` with status `allowed` and
+ * the overage key set, which A2's per-version table refused at record 6 after spend.
+ * The admission table keeps its one frozen declaration and moves from exact keys per
+ * version to observed shapes per version, each citing its capture: `rate_limit_event`
+ * is keyed by (version, status) for its `rate_limit_info`, three observed rows, every
+ * other pair refused (ND-A2-9's pooled vocabulary reversed). Sample 4, the S1 retry's
+ * sanitized stream (sha256 21a6d56e...5749), joins the capture fixture; the port gains
+ * T-G2 with its positive control, the daemon T-D2 (D-F-7's class) and T-D3 (composed,
+ * no capture shows it). L-P15A2-1 holds unchanged; its docblock names the new keying.
+ *
+ * **Pins that move.** The ADR corpus 113 -> **114**.
+ * **Pins that do not.** `PATH_SCOPED_LAWS` (167), `CLAUDE_OBSERVED_CLI_VERSIONS`
+ * (2.1.280, 2.1.281), `ADAPTER_ERROR_CODES` (19), `PROVIDERS_PUBLIC_EXPORTS` (97),
+ * `CONTRACT_VERSION` (2.10.0), `API_CONTRACT_VERSION` (0.21.0), `MIGRATIONS` (25), the
+ * Claude usage policy's digest, and PC-D3's trail pin.
+ */
+const P15A3_WRITE_SET = [
+  "docs/architecture/0114-the-claude-adapter-keys-a-shape-by-what-its-captures-show.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "packages/edges/providers/README.md",
+  "packages/edges/providers/src/claude/index.ts",
+  "packages/edges/providers/test/claude/index.test.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/edges/providers/test/testing/claude-capture/index.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12275,6 +12310,7 @@ const WRITE_SET = [
   ...P15A2_WRITE_SET,
   ...ERRATA_WRITE_SET,
   ...P26C_WRITE_SET,
+  ...P15A3_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -26462,6 +26498,11 @@ if (tracked.status === 0) {
 // (iv) `PROTOCOL_UNSUPPORTED` appears at exactly two sites, one inside
 //     `function buildArgv(` (the pre-argv refusal) and one inside `function readInit(`
 //     (the version gate), so no later row borrows the word.
+//
+// The table the span holds is keyed by record kind, then CLI version, then observed
+// shape (P-15 cut A3, ADR 0114): `rate_limit_event` is keyed by (version, status) for
+// its `rate_limit_info`, one shape per observed pair, each citing its capture. The five
+// literals stay inside the one span however many shapes repeat them.
 //
 // Stated limit: a text-level matcher. It does not see a table split in two, a literal
 // assembled from pieces or spelled with escapes, or a regular expression literal

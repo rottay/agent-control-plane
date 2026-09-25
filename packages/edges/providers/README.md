@@ -90,9 +90,10 @@ extract every method the protocol defines and prove the tables partition it
 with nothing left over, so a regeneration that changes the surface fails the
 suite rather than leaving a stale claim standing.
 
-**What the Claude parser admits, and on what evidence (P-15 escalón A2, ADR 0112).**
-The Claude parser admits exactly what three authorized captures show: two of CLI
-2.1.280 (2026-09-22) and one of 2.1.281 (2026-09-24). Its `init` reads
+**What the Claude parser admits, and on what evidence (P-15 escalón A2, ADR 0112;
+escalón A3, ADR 0114).** The Claude parser admits exactly what four authorized
+captures show: two of CLI 2.1.280 (2026-09-22), one of 2.1.281 (2026-09-24), and the
+S1 retry's 2.1.281 stream (2026-09-24, seven records, no `result`). Its `init` reads
 `claude_code_version`:
 
 - a version outside the observed list is `PROTOCOL_UNSUPPORTED`, and the refusal names
@@ -108,10 +109,19 @@ The records that carry no signal are one table, unexported:
 
 - `system/commands_changed` (2.1.280);
 - `system/thinking_tokens` (2.1.281);
-- `rate_limit_event` (both versions).
+- `rate_limit_event` (both versions), keyed by (version, status).
 
-Each row has exact keys per version and a gate per field, and only the words the
-captures show are admitted. A key, word or record from another version is refused.
+Each row is keyed by every field the captures show its shape varying on, holds exact
+keys and a gate per field for each observed shape, and cites the capture that shows
+it; only the words the captures show are admitted. `rate_limit_event` is keyed by
+(version, status) for its `rate_limit_info`: `allowed` carries the overage pair
+(`overageStatus`, `overageDisabledReason`) on 2.1.280 and 2.1.281, `allowed_warning`
+carries the utilization pair (`utilization`, `surpassedThreshold`) on 2.1.281, and a
+(version, status) pair no capture shows is refused, whichever key set it carries. The
+window (`rateLimitType`) is pooled inside each shape: in every capture so far it moved
+together with `status`, so which of the two the shape follows is not observed, and
+an observed key set on the other window is admitted. A key, word or record no capture
+of that version shows is refused.
 
 The version and the no-signal records seen before `init` travel in the parse cursor,
 never in module state, and `init` re-judges those records against the version it

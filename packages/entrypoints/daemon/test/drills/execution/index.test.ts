@@ -5339,6 +5339,7 @@ interface CapturedStreams {
   readonly CAPTURED_AUTH_FAILURE: readonly string[];
   readonly CAPTURED_SUCCESS: readonly string[];
   readonly CAPTURED_2_1_281_SUCCESS: readonly string[];
+  readonly CAPTURED_2_1_281_ALLOWED: readonly string[];
 }
 
 async function capturedStreams(): Promise<CapturedStreams> {
@@ -5354,6 +5355,7 @@ async function capturedStreams(): Promise<CapturedStreams> {
     CAPTURED_AUTH_FAILURE: lines("CAPTURED_AUTH_FAILURE"),
     CAPTURED_SUCCESS: lines("CAPTURED_SUCCESS"),
     CAPTURED_2_1_281_SUCCESS: lines("CAPTURED_2_1_281_SUCCESS"),
+    CAPTURED_2_1_281_ALLOWED: lines("CAPTURED_2_1_281_ALLOWED"),
   };
 }
 
@@ -6248,7 +6250,16 @@ function fPadded(instruction: string): string {
   return answer;
 }
 
-type FChildMode = "ECHO" | "PADDED" | "AUTH_FAILURE" | "CAPTURED_2_1_281" | "CAPTURED_2_1_281_SANITIZED" | "ERROR_EXIT_0" | "KILLED";
+type FChildMode =
+  | "ECHO"
+  | "PADDED"
+  | "AUTH_FAILURE"
+  | "CAPTURED_2_1_281"
+  | "CAPTURED_2_1_281_SANITIZED"
+  | "S1_RETRY_2_1_281"
+  | "S1_RETRY_2_1_281_COMPOSED"
+  | "ERROR_EXIT_0"
+  | "KILLED";
 
 /**
  * A synthetic child behind the real Claude adapter's argv, on D4's echo child's
@@ -6257,7 +6268,11 @@ type FChildMode = "ECHO" | "PADDED" | "AUTH_FAILURE" | "CAPTURED_2_1_281" | "CAP
  * `CAPTURED_2_1_281` replays the 2.1.281 capture, exit 0, with the answer the
  * sanitizer emptied restored to the `"ok"` the capture's summary records (P-15/A2,
  * ADR 0112); `CAPTURED_2_1_281_SANITIZED` replays it byte for byte, answer empty;
- * `ERROR_EXIT_0` is the crossed pair, `is_error` with exit 0 and the text "boom";
+ * `S1_RETRY_2_1_281` replays the S1 retry's seven records (sample 4, P-15/A3, ADR
+ * 0114), exit 0, with its one emptied text block restored to the `"ok"` its summary
+ * records, and no `result`, as captured; `S1_RETRY_2_1_281_COMPOSED` follows the same
+ * seven records with sample 3's `result`, its `"ok"` restored — composed, no capture
+ * shows it; `ERROR_EXIT_0` is the crossed pair, `is_error` with exit 0 and the text "boom";
  * `KILLED` starts an answer and is killed before any result.
  */
 async function fChild(mode: FChildMode): Promise<{ readonly binary: string; readonly spawnLog: string }> {
@@ -6272,7 +6287,14 @@ async function fChild(mode: FChildMode): Promise<{ readonly binary: string; read
         ? streams.CAPTURED_2_1_281_SUCCESS.map((line) => line.split('"text":""').join('"text":"ok"').split('"result":""').join('"result":"ok"'))
         : mode === "CAPTURED_2_1_281_SANITIZED"
           ? streams.CAPTURED_2_1_281_SUCCESS
-          : [];
+          : mode === "S1_RETRY_2_1_281" || mode === "S1_RETRY_2_1_281_COMPOSED"
+            ? [
+                ...streams.CAPTURED_2_1_281_ALLOWED.map((line) => line.split('"text":""').join('"text":"ok"')),
+                ...(mode === "S1_RETRY_2_1_281_COMPOSED"
+                  ? streams.CAPTURED_2_1_281_SUCCESS.slice(7).map((line) => line.split('"result":""').join('"result":"ok"'))
+                  : []),
+              ]
+            : [];
   const program = [
     "#!" + realpathSync(process.execPath),
     "const fs = require('node:fs');",
@@ -6285,7 +6307,7 @@ async function fChild(mode: FChildMode): Promise<{ readonly binary: string; read
     "  const session = at >= 0 ? process.argv[at + 1] : 'session-f';",
     "  const out = (value) => process.stdout.write(JSON.stringify(value) + '\\n');",
     "  const mode = " + JSON.stringify(mode) + ";",
-    "  if (mode === 'AUTH_FAILURE' || mode === 'CAPTURED_2_1_281' || mode === 'CAPTURED_2_1_281_SANITIZED') {",
+    "  if (mode === 'AUTH_FAILURE' || mode === 'CAPTURED_2_1_281' || mode === 'CAPTURED_2_1_281_SANITIZED' || mode === 'S1_RETRY_2_1_281' || mode === 'S1_RETRY_2_1_281_COMPOSED') {",
     "    for (const line of " + JSON.stringify([...captured]) + ") process.stdout.write(line.split('00000000-0000-4000-8000-000000000001').join(session) + '\\n');",
     "    process.exit(mode === 'AUTH_FAILURE' ? 1 : 0);",
     "  }",
@@ -6704,6 +6726,64 @@ describe("P-15/F: a result is read back by reference, through both new doors, be
       name: "OperationFailedError",
       reason: "NO_OUTPUT",
     });
+  }, 300_000);
+
+  it("T-D2 (P-15/A3, ADR 0114): the S1 retry's seven records through the doors: the stream is admitted and ends with no terminal, D-F-7's class — never the refusal at record 6", async () => {
+    // The S1 retry itself ended in ExecutionEffectError{TRANSPORT_UNAVAILABLE at
+    // events.error}: the parser refused record 6. Admitted now, the stream reaches its
+    // end with no result, so the failure is the no-terminal class and the answer the
+    // collector held is the FAILED document. Not claimed: that a 2.1.281 allowed stream
+    // reaches CHECKPOINTED; no capture shows one with a result.
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true });
+    const child = await fChild("S1_RETRY_2_1_281");
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG)])).rejects.toMatchObject({
+      name: "OperationFailedError",
+    });
+    expect(readFileSync(child.spawnLog, "utf8")).toBe("spawned\n");
+    const ledger = openLedger(databasePath);
+    ledgers.push(ledger);
+    const types = d4Events(ledger, taskId).map((event) => event.type);
+    expect(types).not.toContain("USAGE_OBSERVATION_RECORDED");
+    expect(types).not.toContain("TOKEN_USAGE_RECORDED");
+    expect(types.filter((type) => /QUOTA|PRESSURE|AUTH_REQUIRED/.test(type))).toEqual([]);
+    const document = await fExpectBothDoors(databasePath, taskId, {
+      listed: { outcomeStatus: "FAILED", hasResult: true },
+      document: { state: "RESULT", outcomeStatus: "FAILED", cohort: "CURRENT" },
+    });
+    const blocks = ((document["result"] as Record<string, unknown>)["document"] as Record<string, unknown>)["blocks"] as Record<string, unknown>[];
+    expect(blocks.map((block) => block["text"])).toEqual(["ok"]);
+  }, 300_000);
+
+  it("T-D3 (P-15/A3, composed, no capture shows it): the S1 retry's seven records and sample 3's result reach CHECKPOINTED with one observation of the four classes", async () => {
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true });
+    const child = await fChild("S1_RETRY_2_1_281_COMPOSED");
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG)])).resolves.toBe(0);
+    expect(readFileSync(child.spawnLog, "utf8")).toBe("spawned\n");
+    const ledger = openLedger(databasePath);
+    ledgers.push(ledger);
+    const events = d4Events(ledger, taskId);
+    const types = events.map((event) => event.type);
+    const observations = events.filter((event) => event.type === "USAGE_OBSERVATION_RECORDED");
+    expect(observations).toHaveLength(1);
+    expect(observations[0]?.payload["usageObservation"]).toMatchObject({
+      reportKind: "CUMULATIVE",
+      isFinal: 1,
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheWriteTokens: 1,
+      cacheReadTokens: 1,
+      totalTokens: 4,
+    });
+    expect(types).not.toContain("TOKEN_USAGE_RECORDED");
+    // allowed with the overage pair is no pressure either: the rate-limit numbers carry no signal.
+    expect(types.filter((type) => /QUOTA|PRESSURE|AUTH_REQUIRED/.test(type))).toEqual([]);
+    expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
+    const document = await fExpectBothDoors(databasePath, taskId, {
+      listed: { outcomeStatus: "SUCCEEDED", hasResult: true },
+      document: { state: "RESULT", outcomeStatus: "SUCCEEDED", cohort: "CURRENT" },
+    });
+    const blocks = ((document["result"] as Record<string, unknown>)["document"] as Record<string, unknown>)["blocks"] as Record<string, unknown>[];
+    expect(blocks.map((block) => block["text"])).toEqual(["ok"]);
   }, 300_000);
 
   it("D-F-6: is_error with exit 0 is a FAILED result with its document, through both doors", async () => {

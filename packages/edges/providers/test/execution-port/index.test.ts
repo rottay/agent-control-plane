@@ -43,7 +43,12 @@ import {
   synMessagesStream,
   syntheticCanary,
 } from "../testing/index.js";
-import { CAPTURED_2_1_281_SUCCESS, CAPTURED_AUTH_FAILURE, CAPTURED_SUCCESS } from "../testing/claude-capture/index.js";
+import {
+  CAPTURED_2_1_281_ALLOWED,
+  CAPTURED_2_1_281_SUCCESS,
+  CAPTURED_AUTH_FAILURE,
+  CAPTURED_SUCCESS,
+} from "../testing/claude-capture/index.js";
 import type { FakeScript } from "../testing/index.js";
 
 /**
@@ -1894,6 +1899,44 @@ describe("the real HTTP clients through the port (P-15/E)", () => {
 // P-15/A2 — the version gate fires after spawn, at the port (T-G1, ADR 0112)
 // ---------------------------------------------------------------------------
 
+/** A port whose one child writes its pid to a file before it writes a byte of stream. */
+function pidReportingPort(lines: readonly string[], pidFile: string, lingerMs: number): ModelExecutionPort {
+  const root = drillRoot();
+  const base = scriptedAdapter(claudeAdapter, { lines, exitCode: 0, lingerMs });
+  const adapter: ProviderAdapter = {
+    ...base,
+    describe(req) {
+      const descriptor = base.describe(req);
+      const [flag, program] = descriptor.argv;
+      const announce = "require('node:fs').writeFileSync(" + JSON.stringify(pidFile) + ", String(process.pid));";
+      return { ...descriptor, argv: [flag ?? "-e", announce + "\n" + (program ?? "")] };
+    },
+  };
+  return portFor({
+    "acct-primary": {
+      adapter,
+      binary: NODE,
+      configRoot: root as AdmittedConfigRoot,
+      workdir: root as AdmittedWorkdir,
+      limits: limits(),
+    },
+  });
+}
+
+async function reaped(pid: number): Promise<boolean> {
+  for (let waited = 0; waited < 2_000; waited += 10) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await new Promise<void>((resolveWait) => {
+      setTimeout(resolveWait, 10);
+    });
+  }
+  return false;
+}
+
 describe("P-15/A2: an unobserved CLI version fails the execution after spawn, and nothing after its init is read (T-G1)", () => {
   /**
    * The 2.1.281 sample as a full success stream with a non-empty answer, its init
@@ -1911,44 +1954,6 @@ describe("P-15/A2: an unobserved CLI version fails the execution after spawn, an
       JSON.stringify(text),
       ...CAPTURED_2_1_281_SUCCESS.slice(6),
     ];
-  }
-
-  /** A port whose one child writes its pid to a file before it writes a byte of stream. */
-  function pidReportingPort(lines: readonly string[], pidFile: string, lingerMs: number): ModelExecutionPort {
-    const root = drillRoot();
-    const base = scriptedAdapter(claudeAdapter, { lines, exitCode: 0, lingerMs });
-    const adapter: ProviderAdapter = {
-      ...base,
-      describe(req) {
-        const descriptor = base.describe(req);
-        const [flag, program] = descriptor.argv;
-        const announce = "require('node:fs').writeFileSync(" + JSON.stringify(pidFile) + ", String(process.pid));";
-        return { ...descriptor, argv: [flag ?? "-e", announce + "\n" + (program ?? "")] };
-      },
-    };
-    return portFor({
-      "acct-primary": {
-        adapter,
-        binary: NODE,
-        configRoot: root as AdmittedConfigRoot,
-        workdir: root as AdmittedWorkdir,
-        limits: limits(),
-      },
-    });
-  }
-
-  async function reaped(pid: number): Promise<boolean> {
-    for (let waited = 0; waited < 2_000; waited += 10) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return true;
-      }
-      await new Promise<void>((resolveWait) => {
-        setTimeout(resolveWait, 10);
-      });
-    }
-    return false;
   }
 
   it("positive control: the same stream stamped 2.1.281 spawns, yields one usage, the output, SUCCEEDED and completed", async () => {
@@ -1997,6 +2002,51 @@ describe("P-15/A2: an unobserved CLI version fails the execution after spawn, an
       expect({ kind, present: trail.some((event) => event.kind === kind) }).toEqual({ kind, present: false });
     }
     expect(sunk).toEqual([]);
+    expect(await reaped(Number.parseInt(readFileSync(pidFile, "utf8"), 10))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-15/A3 — the S1 retry's stream through the port (T-G2, ADR 0114)
+// ---------------------------------------------------------------------------
+
+describe("P-15/A3: the S1 retry's 2.1.281 allowed stream is admitted through the port, and an unobserved status still refuses (T-G2)", () => {
+  /**
+   * Sample 4 with `"ok"` restored into its one text block by rebuilding that record's
+   * content array, as `successStream` does; `status` replaces record 6's status word when given. Sample 4 has no
+   * `result`: the child exits 0 after its seventh record.
+   */
+  function sample4(status?: string): readonly string[] {
+    const text = JSON.parse(CAPTURED_2_1_281_ALLOWED[5] ?? "{}") as Record<string, unknown>;
+    (text["message"] as Record<string, unknown>)["content"] = [{ type: "text", text: "ok" }];
+    const rate = JSON.parse(CAPTURED_2_1_281_ALLOWED[6] ?? "{}") as Record<string, unknown>;
+    if (status !== undefined) (rate["rate_limit_info"] as Record<string, unknown>)["status"] = status;
+    return [...CAPTURED_2_1_281_ALLOWED.slice(0, 5), JSON.stringify(text), JSON.stringify(rate)];
+  }
+
+  it("T-G2: started, the output \"ok\", processExited{0, null} and completed; no error, no usage, no operationResult; the child reaped", async () => {
+    const pidFile = join(drillRoot(), "child.pid");
+    const sunk: string[] = [];
+    const trail = await drain(pidReportingPort(sample4(), pidFile, 0), route(), request(), (delta) => sunk.push(delta));
+    expect(existsSync(pidFile)).toBe(true);
+    expect(trail.map((event) => event.kind)).toEqual(["started", "processExited", "completed"]);
+    expect(trail.find((event) => event.kind === "started")).toMatchObject({ resolvedModel: "claude-haiku-4-5-20251001" });
+    expect(trail.find((event) => event.kind === "processExited")).toEqual({ kind: "processExited", exitCode: 0, signal: null });
+    for (const kind of ["error", "usage", "operationResult"]) {
+      expect({ kind, present: trail.some((event) => event.kind === kind) }).toEqual({ kind, present: false });
+    }
+    expect(sunk).toEqual(["ok"]);
+    expect(await reaped(Number.parseInt(readFileSync(pidFile, "utf8"), 10))).toBe(true);
+  });
+
+  it("T-G2 positive control: record 6's status set to an unobserved word ends in error{TRANSPORT_UNAVAILABLE, UNKNOWN_EVENT}, no completed, the child reaped", async () => {
+    const pidFile = join(drillRoot(), "child.pid");
+    const trail = await drain(pidReportingPort(sample4("rejected"), pidFile, 5_000), route(), request());
+    expect(existsSync(pidFile)).toBe(true);
+    expect(trail.at(-1)).toMatchObject({ kind: "error", refusal: "TRANSPORT_UNAVAILABLE", detail: "session failed: UNKNOWN_EVENT" });
+    for (const kind of ["usage", "operationResult", "completed"]) {
+      expect({ kind, present: trail.some((event) => event.kind === kind) }).toEqual({ kind, present: false });
+    }
     expect(await reaped(Number.parseInt(readFileSync(pidFile, "utf8"), 10))).toBe(true);
   });
 });

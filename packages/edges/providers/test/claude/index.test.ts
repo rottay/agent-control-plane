@@ -26,7 +26,12 @@ import { fakeProviderArgv } from "../testing/index.js";
 import type { FakeScript } from "../testing/index.js";
 import * as claudeModule from "../../src/claude/index.js";
 import { CLAUDE_STREAM_PROTOCOL, CLAUDE_USAGE_SOURCE, claudeAdapter } from "../../src/claude/index.js";
-import { CAPTURED_2_1_281_SUCCESS, CAPTURED_AUTH_FAILURE, CAPTURED_SUCCESS } from "../testing/claude-capture/index.js";
+import {
+  CAPTURED_2_1_281_ALLOWED,
+  CAPTURED_2_1_281_SUCCESS,
+  CAPTURED_AUTH_FAILURE,
+  CAPTURED_SUCCESS,
+} from "../testing/claude-capture/index.js";
 
 const HERE = resolve(fileURLToPath(import.meta.url), "..");
 const PACKAGE_ROOT = resolve(HERE, "..", "..");
@@ -755,7 +760,7 @@ describe("P-07 C: the captured Claude streams, parsed (OBS)", () => {
     ]);
   });
 
-  it("rate_limit_event is no-signal only with an observed status word; any other is refused, never pressure", () => {
+  it("rate_limit_event is no-signal only with the status word its version was captured with; any other is refused, never pressure", () => {
     const withStatus = (status: unknown): string => {
       const value = record(CAPTURED_SUCCESS[4]);
       const info = value["rate_limit_info"] as Record<string, unknown>;
@@ -763,10 +768,11 @@ describe("P-07 C: the captured Claude streams, parsed (OBS)", () => {
       else info["status"] = status;
       return JSON.stringify(value);
     };
-    // Positive control: the observed record, and the word 2.1.281 was observed with,
-    // admitted on either version's key set (ND-A2-9, ADR 0112).
+    // Positive control: the observed record. The word 2.1.281 was captured with,
+    // `allowed_warning`, has no 2.1.280 capture and refuses on this init: ADR 0114
+    // reverses ND-A2-9's pooled vocabulary.
     expect(signalsAfterInit([CAPTURED_SUCCESS[4] ?? ""])).toEqual([]);
-    expect(signalsAfterInit([withStatus("allowed_warning")])).toEqual([]);
+    expect(signalsAfterInit([withStatus("allowed_warning")])).toEqual([{ refused: "UNKNOWN_EVENT" }]);
     for (const status of [undefined, null, 1, "rejected", "allowed_warning ", ""]) {
       expect(signalsAfterInit([withStatus(status)]), JSON.stringify(status)).toEqual([{ refused: "UNKNOWN_EVENT" }]);
     }
@@ -933,6 +939,8 @@ const COMMANDS_280 = CAPTURED_SUCCESS[0] ?? "";
 const THINKING_281 = CAPTURED_2_1_281_SUCCESS[1] ?? "";
 const RATE_280 = CAPTURED_SUCCESS[4] ?? "";
 const RATE_281 = CAPTURED_2_1_281_SUCCESS[6] ?? "";
+const INIT_281_S1 = CAPTURED_2_1_281_ALLOWED[0] ?? "";
+const RATE_281_ALLOWED = CAPTURED_2_1_281_ALLOWED[6] ?? "";
 
 /** The init of `line` naming another CLI version, or none when `version` is undefined. */
 function initNaming(line: string, version: unknown): string {
@@ -972,11 +980,33 @@ const SAMPLE_3_STEP = {
   sourceObservationId: "00000000-0000-4000-8000-000000000001/result",
 };
 
-describe("P-15/A2: the 2.1.281 capture, and both 2.1.280 captures, replay whole (T-C1)", () => {
+describe("P-15/A2, A3: both 2.1.281 captures, and both 2.1.280 captures, replay whole (T-C1)", () => {
   it("the fixture is the sanitized capture byte for byte", () => {
     const digest = createHash("sha256").update(stream(CAPTURED_2_1_281_SUCCESS), "utf8").digest("hex");
     expect(CAPTURED_2_1_281_SUCCESS).toHaveLength(8);
     expect(digest).toBe("a1bd7d8214e337aa4f111e1e5d7ef0a76f8dcd79071d0ab3027713bfd85e095a");
+  });
+
+  it("A3: sample 4 is the S1 retry's sanitized stream byte for byte, seven records and no result", () => {
+    const digest = createHash("sha256").update(stream(CAPTURED_2_1_281_ALLOWED), "utf8").digest("hex");
+    expect(CAPTURED_2_1_281_ALLOWED).toHaveLength(7);
+    expect(digest).toBe("21a6d56e4a49ed08166e4f812a78cebad662834ff7a81a719dd6c1e339f15749");
+    expect(CAPTURED_2_1_281_ALLOWED.map((line) => (record(line)["type"] as string))).toEqual([
+      "system",
+      "system",
+      "system",
+      "system",
+      "assistant",
+      "assistant",
+      "rate_limit_event",
+    ]);
+  });
+
+  it("A3: sample 4 replays whole with no refusal: started, and nothing else (no result, so no step and no verdict)", () => {
+    expect(refusalOf(CAPTURED_2_1_281_ALLOWED)).toBeNull();
+    expect(signalsOf(CAPTURED_2_1_281_ALLOWED)).toEqual([
+      { kind: "started", resolvedModel: "claude-haiku-4-5-20251001", protocolVersion: CLAUDE_STREAM_PROTOCOL },
+    ]);
   });
 
   it("sample 3 gives started, ONE step equal to the result's four classes, SUCCESS and SUCCEEDED, and no output", () => {
@@ -988,11 +1018,12 @@ describe("P-15/A2: the 2.1.281 capture, and both 2.1.280 captures, replay whole 
     ]);
   });
 
-  it("each of the three samples gives the same signals in one chunk and at every split point", () => {
+  it("each of the four samples gives the same signals in one chunk and at every split point", () => {
     for (const [name, lines] of [
       ["sample 1 (2.1.280)", CAPTURED_AUTH_FAILURE],
       ["sample 2 (2.1.280)", CAPTURED_SUCCESS],
       ["sample 3 (2.1.281)", CAPTURED_2_1_281_SUCCESS],
+      ["sample 4 (2.1.281, allowed)", CAPTURED_2_1_281_ALLOWED],
     ] as const) {
       const whole = signalsOf(lines);
       expect(whole.some((signal) => "refused" in (signal as object)), name).toBe(false);
@@ -1130,34 +1161,57 @@ describe("P-15/A2: every row refuses what the captures did not show (T-R*)", () 
     expect(after(INIT_281, withField(THINKING_281, "type", "assistant"))).toBe("MALFORMED_EVENT");
   });
 
-  it("rate_limit_event: the observed words only, each version's keys only, numbers never negative, two windows", () => {
-    expect(after(INIT_281, RATE_281)).toBeNull();
-    expect(after(INIT_280, RATE_280)).toBeNull();
-    // ND-A2-9: a status word observed in either version is admitted in both.
-    expect(after(INIT_280, withInfo(RATE_280, "status", "allowed_warning"))).toBeNull();
-    expect(after(INIT_281, withInfo(RATE_281, "status", "allowed"))).toBeNull();
-    for (const status of ["rejected", "allowed_warning ", null, undefined, 1]) {
-      expect(after(INIT_281, withInfo(RATE_281, "status", status)), JSON.stringify(status)).toBe("UNKNOWN_EVENT");
+  it("rate_limit_event: one shape per observed (version, status), each citing its capture; the other pairs refuse (C3)", () => {
+    // ADR 0114's verdict table, row by row, after each version's captured init (sample
+    // 2's for 2.1.280; sample 3's and sample 4's for 2.1.281).
+    const table: readonly (readonly [string, readonly string[], string, string | null])[] = [
+      ["2.1.280 allowed, overage set (sample 2)", [INIT_280], RATE_280, null],
+      ["2.1.280 allowed_warning, overage set: no capture (ND-A2-9 reversed)", [INIT_280], withInfo(RATE_280, "status", "allowed_warning"), "UNKNOWN_EVENT"],
+      ["2.1.280 allowed_warning, utilization set: no capture", [INIT_280], RATE_281, "UNKNOWN_EVENT"],
+      ["2.1.281 allowed, overage set (sample 4)", [INIT_281, INIT_281_S1], RATE_281_ALLOWED, null],
+      ["2.1.281 allowed, overage set: sample 2's record", [INIT_281, INIT_281_S1], RATE_280, null],
+      ["2.1.281 allowed, utilization set: cross-pair", [INIT_281, INIT_281_S1], withInfo(RATE_281, "status", "allowed"), "UNKNOWN_EVENT"],
+      ["2.1.281 allowed_warning, utilization set (sample 3)", [INIT_281, INIT_281_S1], RATE_281, null],
+      ["2.1.281 allowed_warning, overage set: cross-pair", [INIT_281, INIT_281_S1], withInfo(RATE_281_ALLOWED, "status", "allowed_warning"), "UNKNOWN_EVENT"],
+    ];
+    for (const [name, inits, line, verdict] of table) {
+      for (const init of inits) expect(after(init, line), name).toBe(verdict);
     }
-    expect(after(INIT_281, withInfo(RATE_281, "rateLimitType", "hourly"))).toBe("UNKNOWN_EVENT");
-    // ND-A2-11: overage in use is refused as any unobserved word is (C8).
-    expect(after(INIT_281, withInfo(RATE_281, "isUsingOverage", true))).toBe("UNKNOWN_EVENT");
-    expect(after(INIT_280, withInfo(RATE_280, "isUsingOverage", true))).toBe("UNKNOWN_EVENT");
-    // Keys are per version: each version's own key, seen in the other, refuses.
+    // Any other status word, missing, null or not a string, under every observed shape.
+    for (const [init, line] of [
+      [INIT_280, RATE_280],
+      [INIT_281, RATE_281],
+      [INIT_281, RATE_281_ALLOWED],
+    ] as const) {
+      for (const status of ["rejected", "allowed_warning ", "allowed ", "", null, undefined, 1]) {
+        expect(after(init, withInfo(line, "status", status)), JSON.stringify(status)).toBe("UNKNOWN_EVENT");
+      }
+      expect(after(init, withInfo(line, "rateLimitType", "hourly"))).toBe("UNKNOWN_EVENT");
+      // ND-A2-11: overage in use is refused as any unobserved word is (C8).
+      expect(after(init, withInfo(line, "isUsingOverage", true))).toBe("UNKNOWN_EVENT");
+      // A gated value of the wrong type, in an admitted shape, is malformed.
+      for (const value of [-1, "0.5", null, Number.NaN]) {
+        expect(after(init, withInfo(line, "resetsAt", value)), JSON.stringify(value)).toBe("MALFORMED_EVENT");
+      }
+      const windows = record(line);
+      const info = windows["rate_limit_info"] as Record<string, Record<string, unknown>>;
+      const unified = info["unifiedWindows"] ?? {};
+      unified["opus_weekly"] = { utilization: 1, resetsAt: 1 };
+      expect(after(init, JSON.stringify(windows))).toBe("UNKNOWN_EVENT");
+      expect(after(init, withField(line, "rate_limit_info", undefined))).toBe("UNKNOWN_EVENT");
+      expect(after(init, withField(line, "rate_limit_info", "allowed"))).toBe("MALFORMED_EVENT");
+    }
+    // A key of one status's shape added to the other's still matches no shape.
     expect(after(INIT_281, withInfo(RATE_281, "overageStatus", "rejected"))).toBe("UNKNOWN_EVENT");
     expect(after(INIT_280, withInfo(RATE_280, "utilization", 1))).toBe("UNKNOWN_EVENT");
-    expect(after(INIT_281, RATE_280)).toBe("UNKNOWN_EVENT");
-    expect(after(INIT_280, RATE_281)).toBe("UNKNOWN_EVENT");
+    expect(after(INIT_281, withInfo(RATE_281_ALLOWED, "utilization", 1))).toBe("UNKNOWN_EVENT");
     for (const value of [-1, "0.5", null, Number.NaN]) {
       expect(after(INIT_281, withInfo(RATE_281, "utilization", value)), JSON.stringify(value)).toBe("MALFORMED_EVENT");
     }
-    const windows = record(RATE_281);
-    const info = windows["rate_limit_info"] as Record<string, Record<string, unknown>>;
-    const unified = info["unifiedWindows"] ?? {};
-    unified["opus_weekly"] = { utilization: 1, resetsAt: 1 };
-    expect(after(INIT_281, JSON.stringify(windows))).toBe("UNKNOWN_EVENT");
-    expect(after(INIT_281, withField(RATE_281, "rate_limit_info", undefined))).toBe("UNKNOWN_EVENT");
-    expect(after(INIT_281, withField(RATE_281, "rate_limit_info", "allowed"))).toBe("MALFORMED_EVENT");
+    // The confound (C4): the window is pooled inside each shape, so an observed key set
+    // on the other window is admitted; no capture shows (allowed, seven_day).
+    expect(after(INIT_281, withInfo(RATE_281_ALLOWED, "rateLimitType", "seven_day"))).toBeNull();
+    expect(after(INIT_281, withInfo(RATE_281, "rateLimitType", "five_hour"))).toBeNull();
   });
 
   it("commands_changed: exact keys, and 2.1.280 only", () => {
@@ -1264,14 +1318,19 @@ describe("P-15/A2: no number the new records carry becomes usage (T-U1..U4)", ()
     expect(signals.some((signal) => (signal as { kind: string }).kind === "step")).toBe(false);
   });
 
-  it("T-U3: a rate_limit_event under either word, on either version, emits no signal of any kind", () => {
+  it("T-U3: a rate_limit_event of each observed (version, status) shape emits no signal of any kind; the other pairs refuse", () => {
     for (const [init, rate] of [
       [INIT_280, RATE_280],
       [INIT_281, RATE_281],
+      [INIT_281, RATE_281_ALLOWED],
     ] as const) {
-      for (const status of ["allowed", "allowed_warning"]) {
-        expect(signalsOf([init, withInfo(rate, "status", status)]).map((signal) => (signal as { kind: string }).kind)).toEqual(["started"]);
-      }
+      expect(signalsOf([init, rate]).map((signal) => (signal as { kind: string }).kind)).toEqual(["started"]);
+    }
+    for (const [init, line] of [
+      [INIT_280, withInfo(RATE_280, "status", "allowed_warning")],
+      [INIT_281, withInfo(RATE_281, "status", "allowed")],
+    ] as const) {
+      expect(signalsOf([init, line])).toEqual([{ refused: "UNKNOWN_EVENT" }]);
     }
   });
 

@@ -332,24 +332,51 @@ type AdmissionGate =
   | { readonly record: Readonly<Record<string, AdmissionGate>> };
 
 /**
- * One no-signal record kind: the versions it was observed in, and its exact fields in
- * each. `beforeInitIn` names the versions whose capture shows it before `init`; a row
- * without it is never read before `init`.
+ * One observed shape of a no-signal record in one version, and the capture that shows
+ * it: the exact fields and their gates. `capture` names a digest by its first 8 hex
+ * characters, a prefix of the full digest in the fixture table: a label, not a pointer.
+ */
+interface ObservedShape {
+  readonly capture: string;
+  readonly keys: Readonly<Record<string, AdmissionGate>>;
+}
+
+/**
+ * One no-signal record kind: the versions it was observed in, and the shapes observed
+ * in each. `beforeInitIn` names the versions whose capture shows it before `init`; a
+ * row without it is never read before `init`.
  */
 interface NoSignalRecordRow {
   readonly observedIn: readonly string[];
   readonly beforeInitIn?: readonly string[];
-  readonly keysByVersion: Readonly<Record<string, Readonly<Record<string, AdmissionGate>>>>;
+  readonly shapesByVersion: Readonly<Record<string, readonly ObservedShape[]>>;
 }
 
 /**
- * The records this parser admits and reads nothing from (P-15/A2, ADR 0112), measured
- * key by key against the two captures and no further.
+ * The records this parser admits and reads nothing from (P-15/A2, ADR 0112; P-15/A3,
+ * ADR 0114), measured key by key against the captures and no further.
  *
- * Keyed by `type` or `type/subtype`. Every record is held three ways: its version
- * must be one it was observed in; its keys must be exactly that version's, so a key
- * lawful in one version and seen in the other refuses; and every value must pass its
- * gate. No row emits a signal, so none of these numbers can become a step, a usage
+ * Keyed by `type` or `type/subtype`, then by CLI version, then by every field the
+ * captures show the shape varying on; each shape cites its capture. Every record is
+ * held three ways: its version must be one it was observed in; its keys must be
+ * exactly one of that version's observed shapes, so a key set no capture showed in
+ * that version refuses; and every value must pass its gate. `rate_limit_event` is
+ * keyed by (version, status): its captures show the overage pair (`overageStatus`,
+ * `overageDisabledReason`) travelling with `allowed` and the utilization pair
+ * (`utilization`, `surpassedThreshold`) with `allowed_warning`, and one version
+ * carrying both, so a status word admits only the key set it was captured with, and
+ * a (version, status) pair no capture showed has no shape. `status` and
+ * `rateLimitType` are confounded in the captures (`allowed` with `five_hour` twice,
+ * `allowed_warning` with `seven_day` once); the window is pooled inside each shape,
+ * which admits an unobserved window under an observed key set and nothing else.
+ *
+ * `admitUnder`'s fold of `MALFORMED_EVENT` over `UNKNOWN_EVENT` relies on two things
+ * about a version's nested `rate_limit_info` shapes: `status` is the first key of
+ * each, and no two shapes share a key set (today they share no status word either).
+ * A later shape keeps both, so a record carrying an unobserved status word refuses
+ * `UNKNOWN_EVENT` before any of its other values is read for type.
+ *
+ * No shape emits a signal, so none of these numbers can become a step, a usage
  * report, a pressure, a cost or a decision: `estimated_tokens` is an estimate, and
  * the rate-limit numbers are the provider's quota telemetry, whose mapping to a
  * pressure is P-19's. `isUsingOverage` admits only `false`: a `true` refuses as any
@@ -360,68 +387,112 @@ const CLAUDE_NO_SIGNAL_RECORDS: Readonly<Record<string, NoSignalRecordRow>> = Ob
   "system/commands_changed": {
     observedIn: ["2.1.280"],
     beforeInitIn: ["2.1.280"],
-    keysByVersion: {
-      "2.1.280": { type: "string", subtype: "string", commands: "array", uuid: "string", session_id: "string" },
+    shapesByVersion: {
+      "2.1.280": [
+        {
+          capture: "sample 2, sha256 01132951",
+          keys: { type: "string", subtype: "string", commands: "array", uuid: "string", session_id: "string" },
+        },
+      ],
     },
   },
   "system/thinking_tokens": {
     observedIn: ["2.1.281"],
-    keysByVersion: {
-      "2.1.281": {
-        type: "string",
-        subtype: "string",
-        estimated_tokens: "count",
-        estimated_tokens_delta: "count",
-        session_id: "string",
-        uuid: "string",
-      },
+    shapesByVersion: {
+      "2.1.281": [
+        {
+          capture: "sample 3, sha256 a1bd7d82; sample 4, sha256 21a6d56e",
+          keys: {
+            type: "string",
+            subtype: "string",
+            estimated_tokens: "count",
+            estimated_tokens_delta: "count",
+            session_id: "string",
+            uuid: "string",
+          },
+        },
+      ],
     },
   },
   rate_limit_event: {
     observedIn: ["2.1.280", "2.1.281"],
-    keysByVersion: {
-      "2.1.280": {
-        type: "string",
-        uuid: "string",
-        session_id: "string",
-        rate_limit_info: {
-          record: {
-            status: { oneOf: ["allowed", "allowed_warning"] },
-            resetsAt: "number",
-            rateLimitType: { oneOf: ["five_hour", "seven_day"] },
-            overageStatus: { oneOf: ["rejected"] },
-            overageDisabledReason: { oneOf: ["org_level_disabled"] },
-            isUsingOverage: { oneOf: [false] },
-            unifiedWindows: {
+    shapesByVersion: {
+      "2.1.280": [
+        {
+          capture: "sample 2, sha256 01132951: allowed, five_hour",
+          keys: {
+            type: "string",
+            uuid: "string",
+            session_id: "string",
+            rate_limit_info: {
               record: {
-                five_hour: { record: { utilization: "number", resetsAt: "number" } },
-                seven_day: { record: { utilization: "number", resetsAt: "number" } },
+                status: { oneOf: ["allowed"] },
+                resetsAt: "number",
+                rateLimitType: { oneOf: ["five_hour", "seven_day"] },
+                overageStatus: { oneOf: ["rejected"] },
+                overageDisabledReason: { oneOf: ["org_level_disabled"] },
+                isUsingOverage: { oneOf: [false] },
+                unifiedWindows: {
+                  record: {
+                    five_hour: { record: { utilization: "number", resetsAt: "number" } },
+                    seven_day: { record: { utilization: "number", resetsAt: "number" } },
+                  },
+                },
               },
             },
           },
         },
-      },
-      "2.1.281": {
-        type: "string",
-        uuid: "string",
-        session_id: "string",
-        rate_limit_info: {
-          record: {
-            status: { oneOf: ["allowed", "allowed_warning"] },
-            resetsAt: "number",
-            rateLimitType: { oneOf: ["five_hour", "seven_day"] },
-            utilization: "number",
-            isUsingOverage: { oneOf: [false] },
-            surpassedThreshold: "number",
-            unifiedWindows: {
+      ],
+      "2.1.281": [
+        {
+          capture: "sample 4, sha256 21a6d56e: allowed, five_hour",
+          keys: {
+            type: "string",
+            uuid: "string",
+            session_id: "string",
+            rate_limit_info: {
               record: {
-                five_hour: { record: { utilization: "number", resetsAt: "number" } },
-                seven_day: { record: { utilization: "number", resetsAt: "number" } },
+                status: { oneOf: ["allowed"] },
+                resetsAt: "number",
+                rateLimitType: { oneOf: ["five_hour", "seven_day"] },
+                overageStatus: { oneOf: ["rejected"] },
+                overageDisabledReason: { oneOf: ["org_level_disabled"] },
+                isUsingOverage: { oneOf: [false] },
+                unifiedWindows: {
+                  record: {
+                    five_hour: { record: { utilization: "number", resetsAt: "number" } },
+                    seven_day: { record: { utilization: "number", resetsAt: "number" } },
+                  },
+                },
               },
             },
           },
         },
-      },
+        {
+          capture: "sample 3, sha256 a1bd7d82: allowed_warning, seven_day",
+          keys: {
+            type: "string",
+            uuid: "string",
+            session_id: "string",
+            rate_limit_info: {
+              record: {
+                status: { oneOf: ["allowed_warning"] },
+                resetsAt: "number",
+                rateLimitType: { oneOf: ["five_hour", "seven_day"] },
+                utilization: "number",
+                isUsingOverage: { oneOf: [false] },
+                surpassedThreshold: "number",
+                unifiedWindows: {
+                  record: {
+                    five_hour: { record: { utilization: "number", resetsAt: "number" } },
+                    seven_day: { record: { utilization: "number", resetsAt: "number" } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      ],
     },
   },
 });
@@ -454,10 +525,21 @@ function admitFields(value: Record<string, unknown>, fields: Readonly<Record<str
   return "ADMITTED";
 }
 
+/**
+ * A record against one version's observed shapes: admitted if one admits it. Otherwise
+ * `MALFORMED_EVENT` if a shape found a wrong value — the key set of every level read
+ * up to that value, and every word read before it, matched, so the record is that
+ * shape as far as it was read, with a value of the wrong type — and `UNKNOWN_EVENT` if
+ * none did. A key set is checked one level at a time: a wrong-typed top-level field
+ * such as `uuid` is `MALFORMED_EVENT` before the nested `rate_limit_info` key set is
+ * read, as in ADR 0112's table.
+ */
 function admitUnder(record: Record<string, unknown>, row: NoSignalRecordRow, version: string): AdmissionVerdict {
   if (!row.observedIn.includes(version)) return "UNKNOWN_EVENT";
-  const fields = row.keysByVersion[version];
-  return fields === undefined ? "UNKNOWN_EVENT" : admitFields(record, fields);
+  const shapes = row.shapesByVersion[version] ?? [];
+  const verdicts = shapes.map((shape) => admitFields(record, shape.keys));
+  if (verdicts.includes("ADMITTED")) return "ADMITTED";
+  return verdicts.includes("MALFORMED_EVENT") ? "MALFORMED_EVENT" : "UNKNOWN_EVENT";
 }
 
 /**
