@@ -5278,13 +5278,23 @@ export function assertRoadmapStepsComplete(
  * and the live batch door writes it as the one `UPDATE` of a predecessor's
  * `superseded_by`. The rebuild's snapshot carries these maps; the batch door folds its
  * own batch through a fresh one.
+ *
+ * Two answers are held rather than scanned for (P-27 cut B, decision 199), so folding a
+ * graph event costs O(1) map operations plus its node's edges, and the fold is linear in
+ * the graph events: an open revision's entry counts the nodes folded into it (`folded`), and
+ * `taskGraphHeads` holds, per `roadmapStepKey(roadmapVersionId, stepId)`, the
+ * `graphRevisionId` of the last header folded for that pair, which is the one revision
+ * of the pair whose `supersededBy` is null. The rebuild's snapshot answers its current
+ * revision from it; the live batch door answers from the read model, and the index its
+ * fresh fold fills is read by nobody.
  */
 export interface TaskGraphFold {
   readonly taskGraphRevisions: Map<string, TaskGraphRevisionReadModel>;
   readonly taskGraphNodes: Map<string, TaskGraphNodeReadModel>;
   readonly taskDependencies: Map<string, TaskDependencyReadModel>;
-  readonly pendingTaskGraphs: Map<string, { readonly nodeCount: number; readonly edges: TaskDependencyReadModel[] }>;
+  readonly pendingTaskGraphs: Map<string, { readonly nodeCount: number; folded: number; readonly edges: TaskDependencyReadModel[] }>;
   readonly supersessions: Map<string, string>;
+  readonly taskGraphHeads: Map<string, string>;
 }
 
 export function createTaskGraphFold(): TaskGraphFold {
@@ -5292,8 +5302,9 @@ export function createTaskGraphFold(): TaskGraphFold {
     taskGraphRevisions: new Map<string, TaskGraphRevisionReadModel>(),
     taskGraphNodes: new Map<string, TaskGraphNodeReadModel>(),
     taskDependencies: new Map<string, TaskDependencyReadModel>(),
-    pendingTaskGraphs: new Map<string, { readonly nodeCount: number; readonly edges: TaskDependencyReadModel[] }>(),
+    pendingTaskGraphs: new Map<string, { readonly nodeCount: number; folded: number; readonly edges: TaskDependencyReadModel[] }>(),
     supersessions: new Map<string, string>(),
+    taskGraphHeads: new Map<string, string>(),
   };
 }
 
@@ -5323,6 +5334,14 @@ function refuseTaskGraph(reason: ConstructorParameters<typeof LedgerTaskGraphRef
  * supersession. A node must belong to an open revision of this initiative's fold, sit
  * at its next index and be new within it; when the last node is folded, every edge's
  * end must be a node of the revision, and the edges are released.
+ *
+ * The count and the head are O(1) (P-27 cut B, decision 199), and each moves only at
+ * its `set` site, after every refusal of its event: the count where the node is stored,
+ * the head where the header is, so a refused event consumes neither, and a fold that
+ * keeps folding after a caught refusal (`verifyIntegrity()`) sees what it saw when the
+ * count was a scan of the stored nodes. The count guard is reachable only after a
+ * refusal captured at close: the entry is deleted when the close finishes, not when the
+ * last node is stored, so a close refused at `node.dependsOn` leaves it open and full.
  */
 export function foldTaskGraph(
   fold: TaskGraphFold,
@@ -5361,7 +5380,8 @@ export function foldTaskGraph(
       supersededBy: null,
       sequence,
     });
-    fold.pendingTaskGraphs.set(header.graphRevisionId, { nodeCount: header.nodeCount, edges: [] });
+    fold.taskGraphHeads.set(roadmapStepKey(header.roadmapVersionId, header.stepId), header.graphRevisionId);
+    fold.pendingTaskGraphs.set(header.graphRevisionId, { nodeCount: header.nodeCount, folded: 0, edges: [] });
     return;
   }
   if (event.type !== "TASK_GRAPH_NODE_DECLARED") return;
@@ -5377,9 +5397,8 @@ export function foldTaskGraph(
   if (pending === undefined || revision === undefined) {
     refuseTaskGraph("GRAPH_DECLARATION_INVALID", "node.graphRevisionId");
   }
-  const folded = [...fold.taskGraphNodes.values()].filter((known) => known.graphRevisionId === node.graphRevisionId);
-  if (folded.length >= pending.nodeCount) refuseTaskGraph("GRAPH_NODE_COUNT_MISMATCH", "node.nodeIndex");
-  if (node.nodeIndex !== folded.length) refuseTaskGraph("GRAPH_DECLARATION_INVALID", "node.nodeIndex");
+  if (pending.folded >= pending.nodeCount) refuseTaskGraph("GRAPH_NODE_COUNT_MISMATCH", "node.nodeIndex");
+  if (node.nodeIndex !== pending.folded) refuseTaskGraph("GRAPH_DECLARATION_INVALID", "node.nodeIndex");
   const key = taskGraphKey(node.graphRevisionId, node.taskId, String(node.taskRevisionNumber));
   if (fold.taskGraphNodes.has(key)) refuseTaskGraph("GRAPH_DECLARATION_INVALID", "node.taskId");
   fold.taskGraphNodes.set(key, {
@@ -5388,6 +5407,7 @@ export function foldTaskGraph(
     taskRevisionNumber: node.taskRevisionNumber,
     sequence,
   });
+  pending.folded += 1;
   for (const edge of node.dependsOn) {
     pending.edges.push({
       graphRevisionId: node.graphRevisionId,
@@ -5400,7 +5420,7 @@ export function foldTaskGraph(
       sequence,
     });
   }
-  if (folded.length + 1 === pending.nodeCount) {
+  if (pending.folded === pending.nodeCount) {
     for (const edge of pending.edges) {
       if (!fold.taskGraphNodes.has(taskGraphKey(edge.graphRevisionId, edge.dependsOnTaskId, String(edge.dependsOnTaskRevisionNumber)))) {
         refuseTaskGraph("GRAPH_DECLARATION_INVALID", "node.dependsOn");
@@ -5529,11 +5549,10 @@ export function applyInitiativeEventToSnapshot(
       stepDeclared: (initiativeId, roadmapVersionId, stepId) =>
         snapshot.roadmapVersions.get(roadmapVersionId)?.initiativeId === initiativeId &&
         snapshot.roadmapSteps.has(roadmapStepKey(roadmapVersionId, stepId)),
-      currentRevision: (roadmapVersionId, stepId) =>
-        [...snapshot.taskGraphRevisions.values()].find(
-          (revision) =>
-            revision.roadmapVersionId === roadmapVersionId && revision.stepId === stepId && revision.supersededBy === null,
-        ),
+      currentRevision: (roadmapVersionId, stepId) => {
+        const head = snapshot.taskGraphHeads.get(roadmapStepKey(roadmapVersionId, stepId));
+        return head === undefined ? undefined : snapshot.taskGraphRevisions.get(head);
+      },
       revisionHeld: () => false,
     },
     event,

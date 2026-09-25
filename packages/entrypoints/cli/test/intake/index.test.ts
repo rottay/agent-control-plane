@@ -1,17 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import {
+  GENESIS_SHA256,
   artifactBlobLeaseStorePath,
   artifactPlaneRootFor,
   canonicalJsonStringify,
+  chainDigest,
   envelopeSha256,
   openArtifactBlobLeaseStore,
   openArtifactPlane,
   openLedger,
+  recordRoadmapRevision,
   sha256Hex,
 } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
@@ -421,5 +424,221 @@ describe("acp intake refuses by the exit code the refusal earns", () => {
     expect(result.exitCode).toBe(EXIT_UNAVAILABLE);
     expect(errorOf(result).code).toBe("LEDGER_UNAVAILABLE");
     expect(existsSync(absent)).toBe(false);
+  });
+});
+
+/**
+ * The CLI is the second producer of the intake's refusal text (P-27 cut B, decision 199;
+ * Fable P-26/ACCEPT v3 N1): `acp intake` names both step words the way the gateway does,
+ * through the real door, and appends nothing when it refuses.
+ */
+describe("acp intake names a step its version does not declare, and a version that declares none knowably (P-27 cut B)", () => {
+  const VERSION = "66666666-6666-4666-8666-666666666601";
+
+  /** A version declaring `stepIds`, through the ledger's one producer and a plane over the fixture's lease store. */
+  function recordVersionWithSteps(database: string, stepIds: readonly string[]): void {
+    const ledger = openLedger(database);
+    const leaseStore = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(database), {
+      incarnationId: randomUUID(),
+      createdAt: FIXED_NOW,
+    });
+    try {
+      const plane = openArtifactPlane({ ledger, leaseStore, ledgerPath: database });
+      const outcome = recordRoadmapRevision({
+        reader: ledger,
+        writable: ledger,
+        plane,
+        initiativeId: INITIATIVE,
+        request: {
+          content: "# Roadmap\n",
+          expectedHeadDigest: null,
+          kind: "EDIT",
+          restoresVersionId: null,
+          recordedBy: COORDINATOR,
+          steps: {
+            manifestContractVersion: 1,
+            steps: stepIds.map((stepId) => ({
+              stepId,
+              title: "Step " + stepId,
+              objective: "The objective of " + stepId + ".",
+              acceptance: "The acceptance of " + stepId + ".",
+              expectedWriteSet: ["docs/" + stepId + ".md"],
+              dependsOn: [],
+            })),
+          },
+        },
+        recordedAt: AT,
+        roadmapVersionId: VERSION,
+        eventId: randomUUID(),
+        holderPid: process.pid,
+        stepIdentities: {
+          stepEventIds: stepIds.map(() => randomUUID()),
+          commandId: randomUUID(),
+          artifactPinId: randomUUID(),
+          artifactReferenceId: randomUUID(),
+          intentionEventId: randomUUID(),
+          terminalEventId: randomUUID(),
+        },
+      });
+      if (!outcome.ok) throw new Error("the fixture's roadmap version was refused: " + outcome.reason + " at " + outcome.at);
+    } finally {
+      leaseStore.close();
+      ledger.close();
+    }
+  }
+
+  /** A 2.10.0 version declaring no step, through the single door, in this suite's own mould. */
+  function recordVersionWithNoStep(database: string): void {
+    const transitionId = "roadmap." + VERSION;
+    const ledger = openLedger(database);
+    try {
+      ledger.appendInitiativeEvent({
+        contractVersion: LEDGER_CONTRACT_VERSION,
+        eventId: randomUUID(),
+        initiativeId: INITIATIVE,
+        transitionId,
+        idempotencyKey: INITIATIVE + "/1/" + transitionId,
+        type: "ROADMAP_VERSION_RECORDED",
+        fromStatus: "ACTIVE",
+        toStatus: "ACTIVE",
+        emittedBy: COORDINATOR,
+        occurredAt: AT,
+        recordedAt: AT,
+        payload: {
+          contractVersion: LEDGER_CONTRACT_VERSION,
+          roadmapVersionId: VERSION,
+          initiativeId: INITIATIVE,
+          version: 1,
+          contentDigest: "a".repeat(64),
+          parentVersionId: null,
+          expectedHeadDigest: null,
+          kind: "EDIT",
+          restoresVersionId: null,
+          recordedBy: COORDINATOR,
+          recordedAt: AT,
+          stepCount: 0,
+          stepManifestArtifactReferenceId: null,
+          stepManifestSha256: null,
+        },
+      });
+    } finally {
+      ledger.close();
+    }
+  }
+
+  /**
+   * The history as a build before P-26 cut B wrote it (ND-6 (b)): every initiative event,
+   * and the version's payload, at 2.9.0 with no step field, the chain, the head and the
+   * stream's watermarks recomputed; then this build's own rebuild at migration 26. No
+   * migration is undone and no table dropped.
+   */
+  function rewriteToCohortBeforeSteps(database: string): void {
+    const raw = new DatabaseSync(database);
+    try {
+      const triggers = raw
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name IN ('initiative_events_deny_update', 'initiative_events_deny_delete')")
+        .all() as { readonly sql: string }[];
+      expect(triggers).toHaveLength(2);
+      raw.exec("DROP TRIGGER initiative_events_deny_update; DROP TRIGGER initiative_events_deny_delete;");
+      let previous = GENESIS_SHA256;
+      for (const row of raw.prepare("SELECT sequence, event_json FROM initiative_events ORDER BY sequence").all() as {
+        readonly sequence: number;
+        readonly event_json: string;
+      }[]) {
+        const decoded = JSON.parse(row.event_json) as Record<string, unknown>;
+        decoded["contractVersion"] = "2.9.0";
+        if (decoded["type"] === "ROADMAP_VERSION_RECORDED") {
+          const cohort = new Set(["stepCount", "stepManifestArtifactReferenceId", "stepManifestSha256"]);
+          decoded["payload"] = {
+            ...Object.fromEntries(Object.entries(decoded["payload"] as Record<string, unknown>).filter(([key]) => !cohort.has(key))),
+            contractVersion: "2.9.0",
+          };
+        }
+        const rewritten = canonicalJsonStringify(decoded);
+        const digest = chainDigest(previous, rewritten);
+        raw
+          .prepare("UPDATE initiative_events SET event_json = ?, contract_version = ?, previous_sha256 = ?, event_sha256 = ? WHERE sequence = ?")
+          .run(rewritten, "2.9.0", previous, digest, row.sequence);
+        previous = digest;
+      }
+      raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = 'initiative_head_event_sha256'").run(previous);
+      raw.prepare("UPDATE projection_watermark SET source_head_sha256 = ? WHERE source_stream = 'initiative_events'").run(previous);
+      for (const trigger of triggers) raw.exec(trigger.sql);
+    } finally {
+      raw.close();
+    }
+    const ledger = openLedger(database);
+    try {
+      ledger.rebuildReadModel();
+      expect(ledger.listRoadmapVersions(INITIATIVE).map((row) => [row.recordingContractVersion, row.stepCount])).toEqual([["2.9.0", null]]);
+      expect(ledger.verifyIntegrity().problems).toEqual([]);
+    } finally {
+      ledger.close();
+    }
+  }
+
+  /**
+   * The files the private plane holds. The command opens the plane before it decides,
+   * so a refusal may leave its root; what it must not leave is a published file.
+   */
+  function planeFiles(database: string): readonly string[] {
+    const plane = artifactPlaneRootFor(database);
+    if (!existsSync(plane)) return [];
+    return readdirSync(plane, { recursive: true, encoding: "utf8" })
+      .filter((entry) => lstatSync(join(plane, entry)).isFile())
+      .sort();
+  }
+
+  /** Invoke `acp intake` on `link` and hold that a refusal appended nothing and published nothing. */
+  async function refusedIntake(f: Fixture, link: Record<string, unknown>): Promise<{ readonly code: string; readonly message: string; readonly detail: string | null }> {
+    const rows = taskRows(f.database);
+    const files = planeFiles(f.database);
+    const result = await invoke(["intake", "--database", f.database, "--format", "json", "--request", f.request(link)]);
+    expect(result.exitCode).toBe(EXIT_INTEGRITY);
+    expect(taskRows(f.database)).toEqual(rows);
+    expect(planeFiles(f.database)).toEqual(files);
+    return errorOf(result);
+  }
+
+  it("T-C1: a step the version does not declare is WRITE_REFUSED naming ROADMAP_STEP_UNKNOWN, and a declared step enters", async () => {
+    const f = fixture();
+    recordVersionWithSteps(f.database, ["A"]);
+    expect(planeFiles(f.database)).not.toEqual([]);
+    const error = await refusedIntake(f, { roadmapVersionId: VERSION, stepId: "Z" });
+    expect(error).toMatchObject({ code: "WRITE_REFUSED", detail: "stepId" });
+    expect(error.message).toContain("REQUEST_INVALID ROADMAP_STEP_UNKNOWN");
+
+    const before = taskRows(f.database).length;
+    const entered = await invoke(["intake", "--database", f.database, "--request", f.request({ roadmapVersionId: VERSION, stepId: "A" })]);
+    expect(entered.exitCode).toBe(EXIT_OK);
+    const document = TaskIntakeResponse.parse(JSON.parse(entered.stdout));
+    expect(document.replayed).toBe(false);
+    expect(taskRows(f.database)).toHaveLength(before + 1);
+  });
+
+  it("T-C2: a version that declares zero steps refuses every step as unknown, never as undeclared", async () => {
+    const f = fixture();
+    recordVersionWithNoStep(f.database);
+    const error = await refusedIntake(f, { roadmapVersionId: VERSION, stepId: "A" });
+    expect(error).toMatchObject({ code: "WRITE_REFUSED", detail: "stepId" });
+    expect(error.message).toContain("REQUEST_INVALID ROADMAP_STEP_UNKNOWN");
+    expect(error.message).not.toContain("ROADMAP_STEPS_UNDECLARED");
+    expect(taskRows(f.database)).toHaveLength(0);
+    expect(planeFiles(f.database)).toEqual([]);
+  });
+
+  it("T-C3: a version of the cohort before steps, reached by a real rewrite and rebuild, is ROADMAP_STEPS_UNDECLARED, and an unlinked task still enters", async () => {
+    const f = fixture();
+    recordVersionWithNoStep(f.database);
+    rewriteToCohortBeforeSteps(f.database);
+    const error = await refusedIntake(f, { roadmapVersionId: VERSION, stepId: "A" });
+    expect(error).toMatchObject({ code: "WRITE_REFUSED", detail: "stepId" });
+    expect(error.message).toContain("REQUEST_INVALID ROADMAP_STEPS_UNDECLARED");
+    expect(taskRows(f.database)).toHaveLength(0);
+    expect(planeFiles(f.database)).toEqual([]);
+
+    const outside = await invoke(["intake", "--database", f.database, "--request", f.request()]);
+    expect(outside.exitCode).toBe(EXIT_OK);
+    expect(taskRows(f.database)).toHaveLength(1);
   });
 });

@@ -12153,6 +12153,38 @@ const P27A_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-27, cut B: the task graph fold counts its nodes and finds its head without a scan
+ * (decision 199; no ADR; brief v1 and Fable pre-audit B1-B4 and N1-N10, adopted as
+ * rulings).
+ *
+ * ADR 0115's first residual is paid: an open revision's pending entry counts its folded
+ * nodes, and the fold holds a head index per `(roadmapVersionId, stepId)` that the
+ * rebuild's snapshot reads instead of scanning every revision, so the fold is linear in
+ * the graph events. Both move only at their `set` sites, after every refusal; the `>=`
+ * count guard is kept, reachable after a refusal captured at close. The CLI's intake
+ * suite names `ROADMAP_STEP_UNKNOWN` and `ROADMAP_STEPS_UNDECLARED` through the real
+ * door. The P-27 row is restamped (cut A committed `83952f1`, cut B, the three sibling
+ * scans) and the P-36 row receives (h). No fence law is added or changed: the linearity
+ * is pinned by a behavioural test, not by a spelling matcher (ND-5).
+ *
+ * **Pins that move: none.**
+ * **Pins that do not.** `CONTRACT_VERSION` (2.10.0), `API_CONTRACT_VERSION` (0.22.0),
+ * `MIGRATIONS` (26), `PATH_SCOPED_LAWS` (169), the ADR corpus (115),
+ * `TASK_INTAKE_CODES` (12). Two computed counts move, pinned by no doc: this constant is
+ * one more epoch-frozen record (240 -> 241), holding four more package-path literals
+ * (3273 -> 3277); the live law literals stay 485.
+ */
+const P27B_WRITE_SET = [
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "packages/entrypoints/cli/test/intake/index.test.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12404,6 +12436,7 @@ const WRITE_SET = [
   ...P26C_WRITE_SET,
   ...P15A3_WRITE_SET,
   ...P27A_WRITE_SET,
+  ...P27B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

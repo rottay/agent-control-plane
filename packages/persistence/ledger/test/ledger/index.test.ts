@@ -19145,14 +19145,20 @@ describe("a task graph is declared through the batch door, all or none (P-27 cut
   const AT_GRAPH = "2026-09-25T12:00:00.000Z";
   const DECLARER = "claude/opus/coordinator/01";
 
-  function stepEvent(stepId: string, stepIndex: number, dependsOn: readonly string[], rank: number): Record<string, unknown> {
+  function stepEvent(
+    stepId: string,
+    stepIndex: number,
+    dependsOn: readonly string[],
+    rank: number,
+    version: { readonly roadmapVersionId: string; readonly transitionId: string } = { roadmapVersionId: VERSION_ONE_ID, transitionId: "roadmap.v1" },
+  ): Record<string, unknown> {
     return makeInitiativeEvent({
-      transitionId: "roadmap.v1.step." + String(stepIndex),
+      transitionId: version.transitionId + ".step." + String(stepIndex),
       type: "ROADMAP_STEP_DECLARED",
       fromStatus: "ACTIVE",
       toStatus: "ACTIVE",
       payload: {
-        roadmapVersionId: VERSION_ONE_ID,
+        roadmapVersionId: version.roadmapVersionId,
         stepId,
         stepIndex,
         title: "Step " + stepId,
@@ -19206,13 +19212,18 @@ describe("a task graph is declared through the batch door, all or none (P-27 cut
     ledger: Ledger,
     graphRevisionId: string,
     nodes: readonly Node[],
-    options: { readonly supersedes?: string | null; readonly stepId?: string; readonly policy?: "WAIT_SUCCESS" | "ALLOW_FAILURE" | "REQUIRE_TERMINAL" } = {},
+    options: {
+      readonly supersedes?: string | null;
+      readonly stepId?: string;
+      readonly roadmapVersionId?: string;
+      readonly policy?: "WAIT_SUCCESS" | "ALLOW_FAILURE" | "REQUIRE_TERMINAL";
+    } = {},
   ) {
     return declareTaskGraph({
       reader: ledger,
       writable: ledger,
       initiativeId: INITIATIVE_A,
-      roadmapVersionId: VERSION_ONE_ID,
+      roadmapVersionId: options.roadmapVersionId ?? VERSION_ONE_ID,
       stepId: options.stepId ?? "B",
       request: {
         graphRevisionId,
@@ -19520,5 +19531,73 @@ describe("a task graph is declared through the batch door, all or none (P-27 cut
     const reopened = open(orphan.path);
     expect(graphRefusal(() => reopened.rebuildReadModel())).toEqual({ reason: "GRAPH_DECLARATION_INVALID", at: "node.graphRevisionId" });
     expect(detailsOf(reopened.verifyIntegrity().problems)).toContain("records a task graph the fold refuses: GRAPH_DECLARATION_INVALID");
+  });
+
+  it("T-B6b: refuses by name a rebuild over a close refused at an edge to no node, and a check that keeps folding counts the next node out (P-27 cut B)", () => {
+    const { path, ledger, tasks } = graphLedger();
+    ledger.close();
+    const [n1, n2, n3] = tasks as [string, string, string];
+    // A header counting two nodes, the second's edge naming a task with no node, and a third node.
+    for (const event of batch(GRAPH_ONE, [{ taskId: n1, dependsOn: [] }, { taskId: n2, dependsOn: [randomUUID()] }, { taskId: n3, dependsOn: [] }], { nodeCount: 2 })) {
+      plantInitiativeEvent(path, event);
+    }
+    const planted = open(path);
+    expect(graphRefusal(() => planted.rebuildReadModel())).toEqual({ reason: "GRAPH_DECLARATION_INVALID", at: "node.dependsOn" });
+    const refusals = planted
+      .verifyIntegrity()
+      .problems.map((problem) => problem.detail)
+      .filter((detail) => detail.includes("task graph the fold refuses"))
+      .map((detail) => detail.slice(detail.indexOf("refuses: ") + "refuses: ".length));
+    expect(refusals).toEqual([
+      "GRAPH_DECLARATION_INVALID at node.dependsOn",
+      "GRAPH_NODE_COUNT_MISMATCH at node.nodeIndex",
+      "GRAPH_NODE_COUNT_MISMATCH at header.nodeCount",
+    ]);
+    planted.close();
+  });
+
+  it("T-B6: the rebuild folds three revisions of V1's B and V2's B by their own heads, to the live rows, twice (P-27 cut B)", () => {
+    const { path, ledger, tasks } = graphLedger();
+    ledger.close();
+    plantInitiativeEvent(
+      path,
+      roadmapEvent("roadmap.v2", { ...VERSION_TWO, stepCount: 1, stepManifestArtifactReferenceId: "ref-manifest-2", stepManifestSha256: DIGEST_ONE }),
+    );
+    plantInitiativeEvent(path, stepEvent("B", 0, [], 0, { roadmapVersionId: VERSION_TWO_ID, transitionId: "roadmap.v2" }));
+    const reopened = open(path);
+    reopened.rebuildReadModel();
+    const [n1, n2, n3] = tasks as [string, string, string];
+    // A V1 task is not a node of V2's B: the door's scope is the exact pair.
+    const [m1, m2] = [randomUUID(), randomUUID()].map((taskId) => intakeOn(reopened, taskId, { roadmapVersionId: VERSION_TWO_ID, stepId: "B" })) as [
+      string,
+      string,
+    ];
+    const third = "77777777-7777-4777-8777-777777777703";
+    const onTwo = "77777777-7777-4777-8777-777777777704";
+    expect(declare(reopened, GRAPH_ONE, [{ taskId: n1, dependsOn: [] }]).ok).toBe(true);
+    expect(declare(reopened, GRAPH_TWO, [{ taskId: n1, dependsOn: [n2] }, { taskId: n2, dependsOn: [] }], { supersedes: GRAPH_ONE }).ok).toBe(true);
+    // V2's B has no head while V1's B holds GRAPH_TWO.
+    expect(declare(reopened, onTwo, [{ taskId: m1, dependsOn: [] }, { taskId: m2, dependsOn: [m1] }], { roadmapVersionId: VERSION_TWO_ID }).ok).toBe(true);
+    expect(
+      declare(reopened, third, [{ taskId: n1, dependsOn: [] }, { taskId: n2, dependsOn: [n1] }, { taskId: n3, dependsOn: [n2] }], { supersedes: GRAPH_TWO }).ok,
+    ).toBe(true);
+
+    const tables = ["task_graph_revision_read_model", "task_graph_node_read_model", "task_dependency_read_model"];
+    const live = tables.map((table) => tableRows(path, table));
+    expect(live.map((rows) => rows.length)).toEqual([4, 1 + 2 + 2 + 3, 1 + 1 + 2]);
+    reopened.rebuildReadModel();
+    expect(tables.map((table) => tableRows(path, table))).toEqual(live);
+    reopened.rebuildReadModel();
+    expect(tables.map((table) => tableRows(path, table))).toEqual(live);
+    expect(reopened.verifyIntegrity().problems).toEqual([]);
+    expect(reopened.listTaskGraphRevisions(VERSION_ONE_ID, "B").map((revision) => [revision.graphRevisionId, revision.supersededBy])).toEqual([
+      [GRAPH_ONE, GRAPH_TWO],
+      [GRAPH_TWO, third],
+      [third, null],
+    ]);
+    expect(reopened.listTaskGraphRevisions(VERSION_TWO_ID, "B").map((revision) => [revision.graphRevisionId, revision.supersededBy])).toEqual([
+      [onTwo, null],
+    ]);
+    reopened.close();
   });
 });

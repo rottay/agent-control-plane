@@ -9,6 +9,7 @@ import {
   EXECUTION_EFFECT_IDEMPOTENCY_PREIMAGE_PREFIX_V1,
   INITIATIVE_EVENT_TYPES,
   OUTBOX_COMMAND_ID_PREIMAGE_PREFIX_V1,
+  TASK_GRAPH_NODES_MAX,
   buildIdempotencyKey,
   buildV2IdempotencyKey,
 } from "@acp/contracts";
@@ -125,7 +126,13 @@ import {
   TASK_INTAKE_PAYLOAD_KEYS,
   TASK_INTAKE_TRANSITION_ID,
 } from "../../src/types/index.js";
-import type { PriceTableModelVersion, RegistryDocument, TaskReadModel } from "../../src/types/index.js";
+import type {
+  PriceTableModelVersion,
+  RegistryDocument,
+  TaskGraphNodeReadModel,
+  TaskGraphRevisionReadModel,
+  TaskReadModel,
+} from "../../src/types/index.js";
 import { forAll, intBetween, pick } from "../canonical-json/helpers/index.js";
 
 /**
@@ -4506,14 +4513,342 @@ describe("the task graph fold (P-27 cut A)", () => {
     const over = createTaskGraphFold();
     foldTaskGraph(over, history(over), header(G1, null, 1), 10);
     foldTaskGraph(over, history(over), node(G1, T1, 0), 11);
+    // After a clean close the entry is gone: a node of more is a node of no open revision.
     expect(refusedBy(() => {
       foldTaskGraph(over, history(over), node(G1, T2, 1), 12);
-    }).reason).toBe("GRAPH_DECLARATION_INVALID");
+    })).toEqual({ reason: "GRAPH_DECLARATION_INVALID", at: "node.graphRevisionId" });
+  });
+
+  it("T-B5b: after a refusal captured at close the revision stays open, and a node of more is counted out by the guard, never stored (P-27 cut B)", () => {
+    const fold = createTaskGraphFold();
+    const T3 = "66666666-6666-4666-8666-666666666663";
+    foldTaskGraph(fold, history(fold), header(G1, null, 2), 10);
+    foldTaskGraph(fold, history(fold), node(G1, T1, 0), 11);
+    expect(refusedBy(() => {
+      foldTaskGraph(fold, history(fold), node(G1, T2, 1, ["77777777-7777-4777-8777-777777777777"]), 12);
+    })).toEqual({ reason: "GRAPH_DECLARATION_INVALID", at: "node.dependsOn" });
+    expect(fold.pendingTaskGraphs.has(G1)).toBe(true);
+    expect(fold.taskGraphNodes.size).toBe(2);
+    // The fold a check keeps folding into after the refusal (`verifyIntegrity()`).
+    expect(refusedBy(() => {
+      foldTaskGraph(fold, history(fold), node(G1, T3, 2), 13);
+    })).toEqual({ reason: "GRAPH_NODE_COUNT_MISMATCH", at: "node.nodeIndex" });
+    expect(fold.taskGraphNodes.size).toBe(2);
+    expect(refusedBy(() => {
+      assertTaskGraphsComplete(fold);
+    })).toEqual({ reason: "GRAPH_NODE_COUNT_MISMATCH", at: "header.nodeCount" });
   });
 
   it("folds every other initiative type to no graph row", () => {
     const snapshot = createInitiativeProjectionSnapshot();
     applyInitiativeEventToSnapshot(snapshot, event("INITIATIVE_STATE_CHANGED", {}), 1);
     expect([snapshot.taskGraphRevisions.size, snapshot.taskGraphNodes.size, snapshot.taskDependencies.size]).toEqual([0, 0, 0]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-27 cut B: the task graph fold counts its nodes and finds its head without a scan
+// (decision 199; ADR 0115, residuals)
+// ---------------------------------------------------------------------------
+
+/**
+ * A map that counts every enumeration made through its own methods: a spread,
+ * `Array.from`, `for..of`, `values`, `keys`, `entries` and `forEach`. The iterator and
+ * `entries` are overridden apart, because overriding one does not intercept the other.
+ * `get`, `has`, `set`, `delete` and `size` are not enumerations. Declared limit: a scan
+ * that calls `Map.prototype`'s methods on the map (`Map.prototype.values.call(map)`,
+ * likewise `keys`, `entries`, `forEach` and `[Symbol.iterator]`) skips the overrides and
+ * is not counted; nor is a scan of a private copy of the data or of another structure.
+ */
+class EnumerationCountingMap<K, V> extends Map<K, V> {
+  enumerations = 0;
+
+  override values(): MapIterator<V> {
+    this.enumerations += 1;
+    return super.values();
+  }
+
+  override keys(): MapIterator<K> {
+    this.enumerations += 1;
+    return super.keys();
+  }
+
+  override entries(): MapIterator<[K, V]> {
+    this.enumerations += 1;
+    return super.entries();
+  }
+
+  override forEach(callback: (value: V, key: K, map: Map<K, V>) => void, thisArg?: unknown): void {
+    this.enumerations += 1;
+    super.forEach(callback, thisArg);
+  }
+
+  override [Symbol.iterator](): MapIterator<[K, V]> {
+    this.enumerations += 1;
+    return super[Symbol.iterator]();
+  }
+}
+
+describe("the task graph fold counts its nodes and finds its head without a scan (P-27 cut B)", () => {
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+  const V1 = "11111111-1111-4111-8111-111111111111";
+  const V2 = "11111111-1111-4111-8111-111111111112";
+  const G1 = "55555555-5555-4555-8555-555555555551";
+  const G2 = "55555555-5555-4555-8555-555555555552";
+  const G3 = "55555555-5555-4555-8555-555555555553";
+  const G4 = "55555555-5555-4555-8555-555555555554";
+  const G5 = "55555555-5555-4555-8555-555555555555";
+  const G6 = "55555555-5555-4555-8555-555555555556";
+  const G7 = "55555555-5555-4555-8555-555555555557";
+  const AT = "2026-09-25T12:00:00.000Z";
+  const EMITTED_BY = "claude/opus/coordinator/01";
+  const DIGEST = "c".repeat(64);
+
+  const task = (n: number): string => "66666666-6666-4666-8666-" + String(n).padStart(12, "0");
+
+  function event(type: string, transitionId: string, payload: Record<string, unknown>): InitiativeEvent {
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: "0000cccc-0000-4000-8000-000000000001",
+      initiativeId: INITIATIVE,
+      transitionId,
+      idempotencyKey: INITIATIVE + "/1/" + transitionId,
+      type,
+      fromStatus: "ACTIVE",
+      toStatus: "ACTIVE",
+      emittedBy: EMITTED_BY,
+      occurredAt: AT,
+      recordedAt: AT,
+      payload,
+    } as unknown as InitiativeEvent;
+  }
+
+  /** A 2.10.0 version declaring two steps, `B` and `C`, and those steps. */
+  function versionEvents(roadmapVersionId: string, version: number, parentVersionId: string | null): readonly InitiativeEvent[] {
+    return [
+      event("ROADMAP_VERSION_RECORDED", "roadmap.v" + String(version), {
+        contractVersion: CONTRACT_VERSION,
+        roadmapVersionId,
+        initiativeId: INITIATIVE,
+        version,
+        contentDigest: String(version).repeat(64),
+        parentVersionId,
+        expectedHeadDigest: parentVersionId === null ? null : String(version - 1).repeat(64),
+        kind: "EDIT",
+        restoresVersionId: null,
+        recordedBy: EMITTED_BY,
+        recordedAt: AT,
+        stepCount: 2,
+        stepManifestArtifactReferenceId: "ref-manifest-" + String(version),
+        stepManifestSha256: DIGEST,
+      }),
+      ...["B", "C"].map((stepId, stepIndex) =>
+        event("ROADMAP_STEP_DECLARED", "roadmap.v" + String(version) + ".step." + String(stepIndex), {
+          roadmapVersionId,
+          stepId,
+          stepIndex,
+          title: "Step " + stepId,
+          objectiveSha256: DIGEST,
+          acceptanceSha256: DIGEST,
+          expectedWriteSetSha256: DIGEST,
+          dependsOn: [],
+          dependencyRank: 0,
+        }),
+      ),
+    ];
+  }
+
+  const header = (graphRevisionId: string, roadmapVersionId: string, supersedes: string | null, nodeCount: number, stepId = "B") =>
+    event("TASK_GRAPH_DECLARED", "graph." + graphRevisionId, {
+      graphRevisionId,
+      roadmapVersionId,
+      stepId,
+      supersedesGraphRevisionId: supersedes,
+      nodeCount,
+    });
+  const node = (graphRevisionId: string, taskId: string, nodeIndex: number, dependsOn: readonly string[] = []) =>
+    event("TASK_GRAPH_NODE_DECLARED", "graph." + graphRevisionId + ".node." + String(nodeIndex), {
+      graphRevisionId,
+      taskId,
+      taskRevisionNumber: 1,
+      nodeIndex,
+      dependsOn: dependsOn.map((id) => ({ taskId: id, taskRevisionNumber: 1, failPolicy: "REQUIRE_TERMINAL" })),
+    });
+
+  /** A snapshot holding versions 1 and 2 of one initiative, each declaring steps `B` and `C`. */
+  function seeded(snapshot: ReturnType<typeof createInitiativeProjectionSnapshot> = createInitiativeProjectionSnapshot()) {
+    let sequence = 0;
+    const apply = (value: InitiativeEvent): number => {
+      sequence += 1;
+      applyInitiativeEventToSnapshot(snapshot, value, sequence);
+      return sequence;
+    };
+    for (const value of [...versionEvents(V1, 1, null), ...versionEvents(V2, 2, V1)]) apply(value);
+    return { snapshot, apply };
+  }
+
+  function refusedBy(action: () => unknown): { readonly reason: string; readonly at: string } {
+    try {
+      action();
+    } catch (error: unknown) {
+      if (error instanceof LedgerTaskGraphRefusedError) return { reason: error.reason, at: error.at };
+      throw error;
+    }
+    throw new Error("expected a refusal");
+  }
+
+  const heads = (snapshot: ReturnType<typeof createInitiativeProjectionSnapshot>) =>
+    [...snapshot.taskGraphRevisions.values()].map((revision) => [revision.graphRevisionId, revision.roadmapVersionId, revision.supersededBy]);
+
+  it("T-B1: folds three superseding revisions, one of 200 nodes, and a second version's, enumerating neither graph map", () => {
+    const nodes = new EnumerationCountingMap<string, TaskGraphNodeReadModel>();
+    const revisions = new EnumerationCountingMap<string, TaskGraphRevisionReadModel>();
+    const { snapshot, apply } = seeded({ ...createInitiativeProjectionSnapshot(), taskGraphNodes: nodes, taskGraphRevisions: revisions });
+
+    const g1 = apply(header(G1, V1, null, TASK_GRAPH_NODES_MAX));
+    for (let index = 0; index < TASK_GRAPH_NODES_MAX; index += 1) {
+      apply(node(G1, task(index), index, index + 1 < TASK_GRAPH_NODES_MAX ? [task(index + 1)] : []));
+    }
+    const g2 = apply(header(G2, V1, G1, 2));
+    apply(node(G2, task(0), 0, [task(1)]));
+    apply(node(G2, task(1), 1));
+    const g3 = apply(header(G3, V1, G2, 1));
+    apply(node(G3, task(0), 0));
+    const g4 = apply(header(G4, V2, null, 1));
+    apply(node(G4, task(500), 0));
+
+    const counted = [nodes.enumerations, revisions.enumerations];
+    expect(counted).toEqual([0, 0]);
+    expect(snapshot.taskGraphRevisions.get(G1)).toEqual({
+      graphRevisionId: G1,
+      roadmapVersionId: V1,
+      stepId: "B",
+      declaredAt: AT,
+      supersededBy: G2,
+      sequence: g1,
+    });
+    expect(snapshot.taskGraphRevisions.get(G2)).toMatchObject({ roadmapVersionId: V1, supersededBy: G3, sequence: g2 });
+    expect(snapshot.taskGraphRevisions.get(G3)).toMatchObject({ roadmapVersionId: V1, supersededBy: null, sequence: g3 });
+    expect(snapshot.taskGraphRevisions.get(G4)).toMatchObject({ roadmapVersionId: V2, stepId: "B", supersededBy: null, sequence: g4 });
+    expect([...snapshot.supersessions]).toEqual([
+      [G1, G2],
+      [G2, G3],
+    ]);
+    expect([snapshot.taskGraphRevisions.size, snapshot.taskGraphNodes.size, snapshot.taskDependencies.size]).toEqual([
+      4,
+      TASK_GRAPH_NODES_MAX + 2 + 1 + 1,
+      TASK_GRAPH_NODES_MAX - 1 + 1,
+    ]);
+    expect(snapshot.taskDependencies.get(taskGraphKey(G1, task(198), "1", task(199), "1"))).toMatchObject({ stepId: "B", failPolicy: "REQUIRE_TERMINAL" });
+    expect(snapshot.pendingTaskGraphs.size).toBe(0);
+    expect(() => {
+      assertTaskGraphsComplete(snapshot);
+    }).not.toThrow();
+  });
+
+  it("T-B2: a revision of one node closes at once; one of 200 closes exactly at index 199, and no refusal consumes the count", () => {
+    const { snapshot, apply } = seeded();
+    apply(header(G1, V1, null, 1));
+    apply(node(G1, task(0), 0));
+    expect(snapshot.pendingTaskGraphs.has(G1)).toBe(false);
+
+    apply(header(G2, V1, G1, TASK_GRAPH_NODES_MAX));
+    // Out of order at 0; the right node then enters the same fold.
+    expect(refusedBy(() => apply(node(G2, task(1), 1)))).toEqual({ reason: "GRAPH_DECLARATION_INVALID", at: "node.nodeIndex" });
+    for (let index = 0; index < TASK_GRAPH_NODES_MAX - 1; index += 1) {
+      apply(node(G2, task(index), index, index + 1 < TASK_GRAPH_NODES_MAX ? [task(index + 1)] : []));
+    }
+    // Out of order at 199, after 198.
+    expect(refusedBy(() => apply(node(G2, task(900), TASK_GRAPH_NODES_MAX - 2)))).toEqual({
+      reason: "GRAPH_DECLARATION_INVALID",
+      at: "node.nodeIndex",
+    });
+    // A duplicate at the last index.
+    expect(refusedBy(() => apply(node(G2, task(0), TASK_GRAPH_NODES_MAX - 1)))).toEqual({
+      reason: "GRAPH_DECLARATION_INVALID",
+      at: "node.taskId",
+    });
+    expect(snapshot.taskDependencies.size).toBe(0);
+    expect(snapshot.pendingTaskGraphs.has(G2)).toBe(true);
+    apply(node(G2, task(TASK_GRAPH_NODES_MAX - 1), TASK_GRAPH_NODES_MAX - 1));
+    expect(snapshot.taskDependencies.size).toBe(TASK_GRAPH_NODES_MAX - 1);
+    expect(snapshot.pendingTaskGraphs.has(G2)).toBe(false);
+    expect(snapshot.taskGraphNodes.size).toBe(1 + TASK_GRAPH_NODES_MAX);
+  });
+
+  it("T-B2: two open revisions of two steps, their nodes interleaved, each close on their own count", () => {
+    const { snapshot, apply } = seeded();
+    apply(header(G5, V1, null, 2));
+    apply(header(G6, V2, null, 2));
+    apply(node(G5, task(0), 0, [task(1)]));
+    apply(node(G6, task(10), 0, [task(11)]));
+    expect(snapshot.taskDependencies.size).toBe(0);
+    apply(node(G5, task(1), 1));
+    expect([snapshot.pendingTaskGraphs.has(G5), snapshot.pendingTaskGraphs.has(G6), snapshot.taskDependencies.size]).toEqual([false, true, 1]);
+    // The next index of G6 is 1, not 2: G5's nodes are not G6's.
+    expect(refusedBy(() => apply(node(G6, task(12), 2)))).toEqual({ reason: "GRAPH_DECLARATION_INVALID", at: "node.nodeIndex" });
+    apply(node(G6, task(11), 1));
+    expect([snapshot.pendingTaskGraphs.size, snapshot.taskDependencies.size]).toEqual([0, 2]);
+  });
+
+  it("T-B3: the head is the last header folded for (version, step), and no refused header moves it", () => {
+    const { snapshot, apply } = seeded();
+    apply(header(G1, V1, null, 1));
+    apply(node(G1, task(0), 0));
+    apply(header(G2, V1, G1, 1));
+    apply(node(G2, task(0), 0));
+    apply(header(G3, V1, G2, 1));
+    apply(node(G3, task(0), 0));
+    expect(heads(snapshot)).toEqual([
+      [G1, V1, G2],
+      [G2, V1, G3],
+      [G3, V1, null],
+    ]);
+
+    // Stale, and null, on (V1, B).
+    for (const supersedes of [G1, null]) {
+      expect(refusedBy(() => apply(header(G4, V1, supersedes, 1)))).toEqual({
+        reason: "GRAPH_HEAD_MISMATCH",
+        at: "header.supersedesGraphRevisionId",
+      });
+    }
+    // The key holds the version: V2's B has no head while V1's B holds G3.
+    expect(refusedBy(() => apply(header(G4, V2, G3, 1)))).toEqual({
+      reason: "GRAPH_HEAD_MISMATCH",
+      at: "header.supersedesGraphRevisionId",
+    });
+    apply(header(G4, V2, null, 1));
+    apply(node(G4, task(1), 0));
+    expect(refusedBy(() => apply(header(G5, V2, G3, 1)))).toEqual({
+      reason: "GRAPH_HEAD_MISMATCH",
+      at: "header.supersedesGraphRevisionId",
+    });
+    // The key holds the step: V1's C has no head while V1's B holds G3.
+    expect(refusedBy(() => apply(header(G7, V1, G3, 1, "C")))).toEqual({
+      reason: "GRAPH_HEAD_MISMATCH",
+      at: "header.supersedesGraphRevisionId",
+    });
+    apply(header(G7, V1, null, 1, "C"));
+    apply(node(G7, task(2), 0));
+    // A reused id, and an undeclared step, even naming the true head.
+    expect(refusedBy(() => apply(header(G1, V1, G3, 1)))).toEqual({ reason: "GRAPH_DECLARATION_INVALID", at: "header.graphRevisionId" });
+    expect(refusedBy(() => apply(header(G5, V1, null, 1, "Z")))).toEqual({ reason: "GRAPH_STEP_UNKNOWN", at: "header.stepId" });
+
+    // After every refusal the true heads still answer.
+    apply(header(G5, V1, G3, 1));
+    apply(node(G5, task(0), 0));
+    apply(header(G6, V2, G4, 1));
+    apply(node(G6, task(1), 0));
+    expect(heads(snapshot)).toEqual([
+      [G1, V1, G2],
+      [G2, V1, G3],
+      [G3, V1, G5],
+      [G4, V2, G6],
+      [G7, V1, null],
+      [G5, V1, null],
+      [G6, V2, null],
+    ]);
+    expect(snapshot.taskGraphRevisions.get(G7)).toMatchObject({ roadmapVersionId: V1, stepId: "C", supersededBy: null });
+    expect(snapshot.pendingTaskGraphs.size).toBe(0);
   });
 });
