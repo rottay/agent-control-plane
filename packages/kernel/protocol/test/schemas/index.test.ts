@@ -2306,7 +2306,7 @@ describe("the initiative registration's wire contract (P-14/B)", () => {
 
   it("N-P14B-14: moves the API version and the write table, and adds no error code", () => {
     // `0.16.0` when it landed; P-14/C's sixth write door moved it again.
-    expect(API_CONTRACT_VERSION).toBe("0.20.0");
+    expect(API_CONTRACT_VERSION).toBe("0.21.0");
     expect(isWriteRoute("initiatives")).toBe(true);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(16);
@@ -2463,7 +2463,7 @@ describe("the task intake's wire contract (P-14/C)", () => {
   });
 
   it("N-P14C-23: moves the API version and the write table, and adds no method and no error code", () => {
-    expect(API_CONTRACT_VERSION).toBe("0.20.0");
+    expect(API_CONTRACT_VERSION).toBe("0.21.0");
     expect(isWriteRoute("tasks")).toBe(true);
     expect(API_WRITE_ROUTES).toHaveLength(6);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
@@ -2596,7 +2596,7 @@ describe("the registry publication's request (P-15/R, ADR 0104)", () => {
       RegistryPublicationResponse.safeParse({ ...response, document: { ...response.document, documentKind: "CAPABILITY_POLICY" } }).success,
     ).toBe(false);
     // No route parses it: the API contract version and the write table do not move.
-    expect(API_CONTRACT_VERSION).toBe("0.20.0");
+    expect(API_CONTRACT_VERSION).toBe("0.21.0");
     expect(API_WRITE_ROUTES).toHaveLength(6);
   });
 });
@@ -3088,7 +3088,7 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.20.0");
+    expect(API_CONTRACT_VERSION).toBe("0.21.0");
   });
 
   it("names the thirteenth error code, and the version the surface now stands at", () => {
@@ -3105,7 +3105,7 @@ describe("the tool call's wire contract", () => {
     // that did not move with it is exactly the point — the version tracks the
     // whole surface, not one list. The number stays a literal so it is asserted
     // rather than echoed.
-    expect(API_CONTRACT_VERSION).toBe("0.20.0");
+    expect(API_CONTRACT_VERSION).toBe("0.21.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
@@ -3118,7 +3118,7 @@ describe("the tool call's wire contract", () => {
     expect(API_ERROR_CODES).toContain("CAPABILITY_UNSUPPORTED");
     expect(API_ERROR_CODES).toContain("SCENARIO_UNCONFIGURED");
     expect(API_ERROR_CODES).toHaveLength(16);
-    expect(API_CONTRACT_VERSION).toBe("0.20.0");
+    expect(API_CONTRACT_VERSION).toBe("0.21.0");
 
     // The distinction is the reason both exist. `SCENARIO_UNCONFIGURED` is an
     // operator problem a restart fixes, on the shape
@@ -3403,7 +3403,7 @@ describe("P-15/F: the effect reads on the wire (ADR 0107)", () => {
   it("names the private read's unconfigured server apart from the write door's", () => {
     expect(API_ERROR_CODES).toContain("PRIVATE_READ_UNCONFIGURED");
     expect(API_ERROR_CODES).toContain("WRITE_BEARER_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.20.0");
+    expect(API_CONTRACT_VERSION).toBe("0.21.0");
   });
 });
 
@@ -3512,5 +3512,125 @@ describe("the protocol reads contracts' sha-256 grammar and declares none (P-37)
 
   it("one response fixture per family still parses: the effect id on the effect-result route", () => {
     digestFamily((digest) => EffectIdParam.safeParse(digest), "");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-26 cut C: a version's steps, and the diff between two versions (ADR 0113)
+// ---------------------------------------------------------------------------
+
+describe("the steps and diff reads' schemas (P-26 cut C)", () => {
+  const {
+    RoadmapDiffQuery,
+    RoadmapDiffResponse,
+    RoadmapStepsQuery,
+    RoadmapStepsResponse,
+    RoadmapContentQuery,
+    LEDGER_CONTRACT_VERSION,
+  } = protocolBarrel;
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+  const VERSION_ID = "11111111-1111-4111-8111-111111111111";
+  const echo = { version: 1, roadmapVersionId: VERSION_ID, kind: "EDIT", stepCount: 1 };
+  const stepItem = { stepId: "A", stepIndex: 0, title: "Step A", dependencyRank: 0, state: "DECLARED", dependsOn: [] as string[] };
+
+  function stepsBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId: INITIATIVE,
+      version: echo,
+      steps: [stepItem],
+      ...overrides,
+    };
+  }
+
+  function diffBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId: INITIATIVE,
+      from: echo,
+      to: { ...echo, version: 2, roadmapVersionId: "22222222-2222-4222-8222-222222222222" },
+      added: ["D"],
+      removed: [],
+      changed: [{ stepId: "A", fields: ["objectiveSha256", "dependencyRank"] }],
+      dependencies: { added: [{ stepId: "D", dependsOnStepId: "A" }], removed: [] },
+      contentChanged: true,
+      restores: null,
+      roles: "STEP_ASSIGNMENTS_UNPRODUCED",
+      ...overrides,
+    };
+  }
+
+  it("selects by version number exactly as the content read does, strict, at the field", () => {
+    for (const value of ["1", "1000000", 1, 1_000_000]) {
+      expect(RoadmapStepsQuery.safeParse({ version: value }).success).toBe(true);
+      expect(RoadmapContentQuery.safeParse({ version: value }).success).toBe(true);
+    }
+    for (const value of ["0", "1000001", "abc", "-1", "1e3", 0]) {
+      expect(RoadmapStepsQuery.safeParse({ version: value }).success).toBe(false);
+      expect(RoadmapContentQuery.safeParse({ version: value }).success).toBe(false);
+    }
+    expect(RoadmapStepsQuery.safeParse({ version: "1", digest: "a".repeat(64) }).success).toBe(false);
+
+    expect(RoadmapDiffQuery.parse({ from: "1", to: "2" })).toEqual({ from: 1, to: 2 });
+    for (const [query, field] of [
+      [{ from: "abc", to: "1" }, "from"],
+      [{ from: "1", to: "0" }, "to"],
+      [{ from: "1" }, "to"],
+    ] as const) {
+      const parsed = RoadmapDiffQuery.safeParse(query);
+      expect(parsed.success).toBe(false);
+      expect(parsed.error?.issues[0]?.path).toEqual([field]);
+    }
+    expect(RoadmapDiffQuery.safeParse({ from: "1", to: "1", version: "1" }).success).toBe(false);
+  });
+
+  it("the steps body parses, and carries no digest key: a planted one fails the strict parse", () => {
+    expect(RoadmapStepsResponse.safeParse(stepsBody()).success).toBe(true);
+    expect(RoadmapStepsResponse.safeParse(stepsBody({ steps: [{ ...stepItem, objectiveSha256: "a".repeat(64) }] })).success).toBe(false);
+    expect(RoadmapStepsResponse.safeParse(stepsBody({ version: { ...echo, stepManifestSha256: "a".repeat(64) } })).success).toBe(false);
+    expect(RoadmapStepsResponse.safeParse(stepsBody({ stepManifestArtifactReferenceId: VERSION_ID })).success).toBe(false);
+    expect(RoadmapStepsResponse.safeParse(stepsBody({ steps: [{ ...stepItem, objective: "a private objective" }] })).success).toBe(false);
+  });
+
+  it("the steps body tells a pre-cohort version from an empty one", () => {
+    expect(RoadmapStepsResponse.parse(stepsBody({ version: { ...echo, stepCount: null }, steps: [] })).version.stepCount).toBeNull();
+    expect(RoadmapStepsResponse.parse(stepsBody({ version: { ...echo, stepCount: 0 }, steps: [] })).version.stepCount).toBe(0);
+    expect(RoadmapStepsResponse.safeParse(stepsBody({ version: { ...echo, stepCount: -1 } })).success).toBe(false);
+  });
+
+  it("bounds the steps at ROADMAP_STEPS_MAX and a step's dependencies at 32", () => {
+    const at = Array.from({ length: 200 }, (_, index) => ({ ...stepItem, stepId: "S" + String(index), stepIndex: index }));
+    expect(RoadmapStepsResponse.safeParse(stepsBody({ version: { ...echo, stepCount: 200 }, steps: at })).success).toBe(true);
+    expect(RoadmapStepsResponse.safeParse(stepsBody({ steps: [...at, { ...stepItem, stepId: "S200", stepIndex: 199 }] })).success).toBe(false);
+    const deps = (count: number) => Array.from({ length: count }, (_, index) => "D" + String(index));
+    expect(RoadmapStepsResponse.safeParse(stepsBody({ steps: [{ ...stepItem, dependsOn: deps(32) }] })).success).toBe(true);
+    expect(RoadmapStepsResponse.safeParse(stepsBody({ steps: [{ ...stepItem, dependsOn: deps(33) }] })).success).toBe(false);
+    expect(RoadmapStepsResponse.safeParse(stepsBody({ steps: [{ ...stepItem, state: "UNKNOWN" }] })).success).toBe(false);
+  });
+
+  it("the guards run on the way out: a credential-shaped title does not leave", () => {
+    const planted = "sk-ant-api03-" + "B".repeat(80);
+    expect(RoadmapStepsResponse.safeParse(stepsBody({ steps: [{ ...stepItem, title: planted }] })).success).toBe(false);
+  });
+
+  it("the diff body parses, names fields as values only, and refuses a planted digest key", () => {
+    expect(RoadmapDiffResponse.safeParse(diffBody()).success).toBe(true);
+    expect(RoadmapDiffResponse.safeParse(diffBody({ objectiveSha256: "a".repeat(64) })).success).toBe(false);
+    expect(
+      RoadmapDiffResponse.safeParse(diffBody({ changed: [{ stepId: "A", fields: ["objectiveSha256"], objectiveSha256: "a".repeat(64) }] })).success,
+    ).toBe(false);
+    expect(RoadmapDiffResponse.safeParse(diffBody({ from: { ...echo, contentDigest: "a".repeat(64) } })).success).toBe(false);
+    expect(RoadmapDiffResponse.safeParse(diffBody({ changed: [{ stepId: "A", fields: [] }] })).success).toBe(false);
+    expect(RoadmapDiffResponse.safeParse(diffBody({ changed: [{ stepId: "A", fields: ["state"] }] })).success).toBe(false);
+  });
+
+  it("roles is exactly the named absence, and restores is number and id or null", () => {
+    expect(RoadmapDiffResponse.safeParse(diffBody({ roles: "NONE" })).success).toBe(false);
+    expect(RoadmapDiffResponse.safeParse(diffBody({ roles: null })).success).toBe(false);
+    expect(RoadmapDiffResponse.safeParse(diffBody({ restores: { version: 1, roadmapVersionId: VERSION_ID } })).success).toBe(true);
+    expect(RoadmapDiffResponse.safeParse(diffBody({ restores: { roadmapVersionId: VERSION_ID } })).success).toBe(false);
+    expect(RoadmapDiffResponse.safeParse(diffBody({ restores: VERSION_ID })).success).toBe(false);
   });
 });

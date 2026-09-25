@@ -11972,6 +11972,60 @@ const ERRATA_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-26, cut C: two roadmap versions diff by step, read by number (ADR 0113; decisions
+ * 185-188; map v3 and Fable pre-audit C1-C8, adopted).
+ *
+ * Requirement A10's semantic diff: the ledger gains the pure `diffRoadmapVersions`
+ * over read-model rows (concept `roadmap-diff`, no new ledger read); the protocol
+ * gains two API_ONLY reads selected by version number, `initiativeRoadmapSteps` and
+ * `initiativeRoadmapDiff`, their queries, responses, builders, surface-map rows and
+ * parity bindings; the gateway resolves both numbers inside the initiative and maps
+ * the diff. `roles` answers `STEP_ASSIGNMENTS_UNPRODUCED`, derived from the step rows.
+ * L-P26C-1 keeps both response declarations free of digests, references and text but
+ * the title.
+ *
+ * **Pins that move.** `API_CONTRACT_VERSION` 0.20.0 -> **0.21.0** (eleven literal
+ * sites restamped: two CLI suites, the gateway tool-calls suite, seven protocol
+ * schema pins and the constant); `API_ROUTES` 22 -> **24**; `SURFACE_MAP` 32 ->
+ * **34**; `PARITY_ROUTES` +2; the ledger barrel +1 function (+ types);
+ * `PATH_SCOPED_LAWS` 166 -> **167**; the ADR corpus 112 -> 113.
+ * **Pins that do not.** `CONTRACT_VERSION` (2.10.0), `MIGRATIONS` (25),
+ * `CONTRACTS_SCHEMA_EXPORTS` (178), `API_WRITE_ROUTES` (6), `API_PRIVATE_READ_ROUTES`
+ * (1), `API_ERROR_CODES` (16).
+ */
+const P26C_WRITE_SET = [
+  "docs/api-reference.md",
+  "docs/architecture/0113-two-roadmap-versions-diff-by-step.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/gateway/src/initiatives/index.ts",
+  "packages/entrypoints/gateway/src/mappers/index.ts",
+  "packages/entrypoints/gateway/src/routes/index.ts",
+  "packages/entrypoints/gateway/test/initiatives/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/kernel/protocol/README.md",
+  "packages/kernel/protocol/src/index.ts",
+  "packages/kernel/protocol/src/parity/index.ts",
+  "packages/kernel/protocol/src/routes/index.ts",
+  "packages/kernel/protocol/src/schemas/index.ts",
+  "packages/kernel/protocol/src/surface-map/index.ts",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/test/parity/index.test.ts",
+  "packages/kernel/protocol/test/routes/index.test.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/surface-map/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/src/roadmap-diff/index.ts",
+  "packages/persistence/ledger/src/roadmap-diff/types/index.ts",
+  "packages/persistence/ledger/test/roadmap-diff/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12220,6 +12274,7 @@ const WRITE_SET = [
   ...P26B_WRITE_SET,
   ...P15A2_WRITE_SET,
   ...ERRATA_WRITE_SET,
+  ...P26C_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13757,6 +13812,12 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the Claude adapter's new numbers stay in its admission table, and its version lives in the cursor",
     scope: "packages/edges/providers/src/claude/index.ts",
+  },
+  // P-26 cut C. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 166 -> 167 for L-P26C-1.
+  {
+    law: "the roadmap steps and diff reads carry no digest, no reference and no text but the title",
+    scope: "packages/kernel/protocol/src/schemas/index.ts",
   },
 ];
 
@@ -26527,6 +26588,140 @@ if (tracked.status === 0) {
   notes.push("the Claude adapter's new numbers stay in its admission table, and its version lives in the cursor");
 }
 
+// L-P26C-1 -- the roadmap steps and diff reads carry no digest, no reference and no
+// text but the title (P-26 cut C, ADR 0113; decision 187; Fable C5).
+//
+// Over the comment-stripped `protocol/src/schemas/index.ts`, identifier escapes
+// (`S`, `\u{53}`) decoded: the declarations of `RoadmapStepsResponse` and
+// `RoadmapDiffResponse`, and every top-level `const`, `let` or `var` of the same file
+// either one names, followed transitively (so a sub-schema declared apart and
+// referenced by name is read too), contain no `Sha256Hex` and no other hex-digest
+// grammar (zod's own `z.hash(` or `z.hex(`; a quantifier starting at 64 -- `{64}`,
+// `{64,}`, `{64,64}`; a `.length(64)`; a `.min(64)` and a `.max(64)` in one
+// declaration; 64 spelled decimal, hex, octal or binary); no key whose name ends, in
+// any case, in `sha256`, `reference`, `referenceId`, `digest` or `hash`, bare, quoted
+// or shorthand (`{ objectiveSha256, ... }`); and no key named `objective`,
+// `acceptance`, `expectedWriteSet` or `content`, in any of those three spellings. A
+// declaration's span runs from its head to the `;` that closes it at bracket depth
+// zero (strings, templates and regex literals skipped), so a column-0 keyword inside
+// it does not cut it short; a read span that does not close is refused, not read
+// short. The diff carries the digest field NAMES as string values of
+// `changed[].fields`, never as keys, and a value is not a key here.
+//
+// Stated limit: a text-level matcher over one file. A schema imported from another
+// module or returned by a function is not followed, nor one bound other than to a
+// single name at the top level (a destructuring, a `class`, a namespace); a computed
+// key (`[name]:`), a key assembled from pieces, a text field under another name, and
+// a digest under a name the suffixes miss whose value is checked by other means (a
+// `.refine`, an imported validator, a hex class without a quantifier starting at 64,
+// a 64 held in a named constant or an expression) are not seen. The strict parse (a
+// planted `objectiveSha256` or `contentDigest` key fails it) is the behaviour, with
+// the gateway's sentinel sweeps over the bodies its suite builds (no 64-hex value in
+// those fixtures; a legal 64-hex `stepId` is an identifier, not a digest, and would
+// cross).
+{
+  const LAW = "the roadmap steps and diff reads carry no digest, no reference and no text but the title";
+  const SITE = "packages/kernel/protocol/src/schemas/index.ts";
+  const ROOTS = ["RoadmapStepsResponse", "RoadmapDiffResponse"];
+  let scanned = 0;
+  const source = readIfPresent(SITE);
+  if (source !== null) {
+    scanned += 1;
+    const code = stripComments(source).replace(
+      /\\u\{([0-9a-fA-F]{1,6})\}|\\u([0-9a-fA-F]{4})/g,
+      (escape, braced, plain) => {
+        const char = String.fromCodePoint(Number.parseInt(braced ?? plain, 16));
+        return /^[\w$]$/.test(char) ? char : escape;
+      },
+    );
+    const statementEnd = (start) => {
+      let depth = 0;
+      let last = "";
+      for (let at = start; at < code.length; at += 1) {
+        const char = code[at];
+        if (char === '"' || char === "'" || char === "`") {
+          at += 1;
+          while (at < code.length && code[at] !== char) at += code[at] === "\\" ? 2 : 1;
+          last = char;
+          continue;
+        }
+        if (char === "/" && (last === "" || "(,=:[!&|?{};+-*%<>~^".includes(last))) {
+          let inClass = false;
+          at += 1;
+          while (at < code.length && (inClass || code[at] !== "/") && code[at] !== "\n") {
+            if (code[at] === "\\") at += 1;
+            else if (code[at] === "[") inClass = true;
+            else if (code[at] === "]") inClass = false;
+            at += 1;
+          }
+          last = "/";
+          continue;
+        }
+        if ("([{".includes(char)) depth += 1;
+        else if (")]}".includes(char)) depth -= 1;
+        if (depth < 0) return null;
+        if (depth === 0 && char === ";") return at + 1;
+        if (!/\s/.test(char)) last = char;
+      }
+      return null;
+    };
+    const spans = new Map();
+    for (const head of code.matchAll(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b/gm)) {
+      const start = head.index ?? 0;
+      const end = statementEnd(start);
+      spans.set(head[1], end === null ? null : code.slice(start, end));
+    }
+    const read = new Set();
+    const queue = [];
+    for (const root of ROOTS) {
+      if (!spans.has(root)) fail(SITE + " no longer declares " + root + " as a top-level const, let or var (L-P26C-1)");
+      else queue.push(root);
+    }
+    while (queue.length > 0) {
+      const name = queue.shift();
+      if (read.has(name)) continue;
+      read.add(name);
+      for (const word of (spans.get(name) ?? "").matchAll(/\b[A-Za-z_$][\w$]*\b/g)) {
+        if (spans.has(word[0]) && !read.has(word[0])) queue.push(word[0]);
+      }
+    }
+    const SIXTY_FOUR = "(?:64(?:\\.0*)?|0[xX]0*40|0[oO]0*100|0[bB]0*1000000)";
+    const bound = (method) => new RegExp("\\." + method + "\\(\\s*" + SIXTY_FOUR + "\\s*\\)");
+    for (const name of [...read].sort()) {
+      const span = spans.get(name);
+      if (span === null || span === undefined) {
+        fail(SITE + " " + name + " has no span that closes at bracket depth zero; L-P26C-1 refuses to read it short");
+        continue;
+      }
+      if (/\bSha256Hex\b/.test(span)) {
+        fail(SITE + " " + name + " names Sha256Hex; the steps and diff reads carry no digest (L-P26C-1)");
+      }
+      if (
+        /\bz\s*\.\s*(?:hash|hex)\s*\(|\{\s*64\s*(?:,\s*\d*\s*)?\}/.test(span) ||
+        bound("length").test(span) ||
+        (bound("min").test(span) && bound("max").test(span))
+      ) {
+        fail(SITE + " " + name + " declares a hex-digest grammar; the steps and diff reads carry no digest (L-P26C-1)");
+      }
+      const keys = [
+        ...[...span.matchAll(/(?:^|[{,(\s])(["'`]?)([A-Za-z_$][\w$]*)\1\s*:/g)].map((key) => key[2] ?? ""),
+        ...[...span.matchAll(/[{,]\s*([A-Za-z_$][\w$]*)\s*(?=[,}])/g)].map((key) => key[1] ?? ""),
+      ];
+      for (const field of keys) {
+        if (/(?:sha256|reference|referenceid|digest|hash)$/i.test(field)) {
+          fail(SITE + " " + name + " declares the key " + field + "; the steps and diff reads carry no digest and no reference (L-P26C-1)");
+        }
+        if (["objective", "acceptance", "expectedWriteSet", "content"].includes(field)) {
+          fail(SITE + " " + name + " declares the key " + field + "; the steps and diff reads carry no text but the title (L-P26C-1)");
+        }
+      }
+    }
+    if (read.size < ROOTS.length) fail(SITE + " L-P26C-1 read fewer declarations than its roots; it would pass vacuously");
+    notes.push("the roadmap steps and diff reads carry no digest, no reference and no text but the title (" + String(read.size) + " declarations read)");
+  }
+  requireScope(LAW, scanned);
+}
+
 // --- 21c. V2-B5/R11: the telemetry export edge ------------------------------
 //
 // Five path-scoped laws over one new package, plus a barrel pin and a record
@@ -31599,9 +31794,9 @@ if (securityDoc === null) {
 // without documentation nor a documented route that no longer exists can pass.
 //
 // The parity suite stays the behavioral authority where it reaches, which is
-// eleven of the twenty-six arms in full and `eventStream` GET in part; the
-// eleven arms of the initiative and account routes and `tasks` POST have no
-// CLI-side parity comparison — `initiatives` POST and `tasks` POST are each
+// thirteen of the thirty arms in full and `eventStream` GET in part; the
+// thirteen arms of the ten initiative and account routes, `taskLifecycle` GET
+// and `tasks` POST have no CLI-side parity comparison — `initiatives` POST and `tasks` POST are each
 // compared by their own suites, through the one orchestration both doors call,
 // not by the parity suite — and
 // `health` has no ledger content to build one from. This law proves something

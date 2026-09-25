@@ -388,3 +388,24 @@ describe("the effect reads are paired with their two verbs (P-15/F)", () => {
     expect(surfaceDefects({ entries: SURFACE_MAP, routes: API_ROUTES, writeRoutes: API_WRITE_ROUTES, commands: null })).toEqual([]);
   });
 });
+
+describe("the steps and diff reads are api-only under the standing reason (P-26 cut C)", () => {
+  it("records both GETs API_ONLY with no command, and the content read's reason verbatim", () => {
+    const content = SURFACE_MAP.find((entry) => entry.route === "initiativeRoadmapContent");
+    const rows = SURFACE_MAP.filter(
+      (entry) => entry.route === "initiativeRoadmapSteps" || entry.route === "initiativeRoadmapDiff",
+    );
+    expect(rows.map((entry) => [entry.command, entry.route, entry.method, entry.equivalence])).toEqual([
+      [null, "initiativeRoadmapSteps", "GET", "API_ONLY"],
+      [null, "initiativeRoadmapDiff", "GET", "API_ONLY"],
+    ]);
+    for (const entry of rows) expect(entry.because).toBe(content?.because);
+    expect(defects()).toEqual([]);
+  });
+
+  it("names the arm when either row is dropped", () => {
+    for (const route of ["initiativeRoadmapSteps", "initiativeRoadmapDiff"]) {
+      expect(names(defects(without((entry) => entry.route === route)), route + " GET")).toBe(true);
+    }
+  });
+});

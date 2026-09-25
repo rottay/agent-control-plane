@@ -316,6 +316,23 @@ export type {
   RoadmapStepDigestOutcome,
 } from "./roadmap-steps/index.js";
 
+// P-26 cut C (ADR 0113): the semantic diff between two roadmap versions, pure over
+// read-model rows the caller resolved; it adds no ledger read.
+export { diffRoadmapVersions } from "./roadmap-diff/index.js";
+
+export type {
+  RoadmapDiff,
+  RoadmapDiffChange,
+  RoadmapDiffDependency,
+  RoadmapDiffField,
+  RoadmapDiffInput,
+  RoadmapDiffOutcome,
+  RoadmapDiffRefusal,
+  RoadmapDiffRoles,
+  RoadmapDiffSide,
+  RoadmapDiffVersion,
+} from "./roadmap-diff/index.js";
+
 /**
  * P-32/captura escalón A: the usage settlement fold and the stream identity.
  *

@@ -1,4 +1,4 @@
-import { readArtifact, readInitiativeObjective } from "@acp/ledger";
+import { diffRoadmapVersions, readArtifact, readInitiativeObjective } from "@acp/ledger";
 import { UNSCOPED_INITIATIVE, computeTokenRollups } from "@acp/observation";
 import type { TaskTokenRollup, TokenRollups } from "@acp/observation";
 import type {
@@ -6,6 +6,10 @@ import type {
   InitiativeReadModel,
   Ledger,
   LedgerEventRecord,
+  RoadmapDiff,
+  RoadmapDiffRefusal,
+  RoadmapStepDependencyReadModel,
+  RoadmapStepReadModel,
   RoadmapVersionReadModel,
   TaskReadModel,
 } from "@acp/ledger";
@@ -281,6 +285,72 @@ export function roadmapContent(
   if (!stored.ok) return Object.freeze({ ok: false as const, reason: "CONTENT_MISSING" as const });
 
   return Object.freeze({ ok: true as const, version: recorded, content: stored.content });
+}
+
+/**
+ * One version's declared steps, resolved through the initiative's own fold (P-26
+ * cut C, ADR 0113) — `roadmapContent`'s mould: the lookup starts from a version
+ * number inside this initiative's history, so a caller never names a version of
+ * another. The read model only, never the plane: the steps' texts stay in the
+ * private manifest.
+ */
+export type RoadmapStepsOutcome =
+  | {
+      readonly ok: true;
+      readonly version: RoadmapVersionReadModel;
+      readonly steps: readonly RoadmapStepReadModel[];
+      readonly dependencies: readonly RoadmapStepDependencyReadModel[];
+    }
+  | { readonly ok: false; readonly reason: "UNKNOWN_VERSION" };
+
+export function roadmapSteps(ledger: Ledger, initiativeId: string, version: number): RoadmapStepsOutcome {
+  const recorded = ledger
+    .listRoadmapVersions(initiativeId)
+    .find((entry) => entry.version === version);
+  if (recorded === undefined) return Object.freeze({ ok: false as const, reason: "UNKNOWN_VERSION" as const });
+  return Object.freeze({
+    ok: true as const,
+    version: recorded,
+    steps: ledger.listRoadmapSteps(recorded.roadmapVersionId),
+    dependencies: ledger.listRoadmapStepDependencies(recorded.roadmapVersionId),
+  });
+}
+
+/**
+ * The semantic diff between two versions of one initiative (P-26 cut C, A10).
+ *
+ * Both numbers, and the version a rollback restores, are resolved inside one read
+ * of the initiative's history; the diff itself is the ledger's pure
+ * `diffRoadmapVersions` over the rows read here. Two absences, not one: a number
+ * this history does not hold is `UNKNOWN_VERSION`, the caller's; a refusal of the
+ * diff is rows the resolution cannot produce, an integrity failure.
+ */
+export type RoadmapDiffReadOutcome =
+  | { readonly ok: true; readonly diff: RoadmapDiff }
+  | { readonly ok: false; readonly reason: "UNKNOWN_VERSION" }
+  | { readonly ok: false; readonly reason: "DIFF_REFUSED"; readonly refusal: RoadmapDiffRefusal };
+
+export function roadmapDiff(ledger: Ledger, initiativeId: string, from: number, to: number): RoadmapDiffReadOutcome {
+  const history = ledger.listRoadmapVersions(initiativeId);
+  const left = history.find((entry) => entry.version === from);
+  const right = history.find((entry) => entry.version === to);
+  if (left === undefined || right === undefined) {
+    return Object.freeze({ ok: false as const, reason: "UNKNOWN_VERSION" as const });
+  }
+  const side = (version: RoadmapVersionReadModel) => ({
+    version,
+    steps: ledger.listRoadmapSteps(version.roadmapVersionId),
+    dependencies: ledger.listRoadmapStepDependencies(version.roadmapVersionId),
+  });
+  const restored =
+    right.restoresVersionId === null
+      ? null
+      : (history.find((entry) => entry.roadmapVersionId === right.restoresVersionId) ?? null);
+  const outcome = diffRoadmapVersions({ from: side(left), to: side(right), restored });
+  if (!outcome.ok) {
+    return Object.freeze({ ok: false as const, reason: "DIFF_REFUSED" as const, refusal: outcome.reason });
+  }
+  return Object.freeze({ ok: true as const, diff: outcome.diff });
 }
 
 /** The roadmap history alone, newest first, with the head marked. */

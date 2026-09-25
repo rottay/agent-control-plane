@@ -242,6 +242,38 @@ export const PARITY_BINDINGS: Readonly<Record<ApiRouteName, readonly FieldBindin
       bind("count", "LEDGER"),
     ]),
     /**
+     * A version's steps and the diff between two versions (P-26 cut C, ADR 0113).
+     *
+     * Both are folds of the read model and nothing else, so every field is
+     * `LEDGER`. That includes the diff's `roles`: the word is not a constant of
+     * this contract but a measurement over the step rows — it is answered only
+     * when no step row of either side carries a routing assignment, and a row
+     * that carries one is refused — so two clients folding the same rows agree
+     * on it, and a producer of STEP assignments would change it by changing the
+     * rows.
+     */
+    initiativeRoadmapSteps: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("initiativeId", "LEDGER"),
+      bind("version", "LEDGER"),
+      bind("steps", "LEDGER"),
+    ]),
+    initiativeRoadmapDiff: Object.freeze([
+      bind("apiContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("ledgerContractVersion", "CONTRACT_VERSION", "a frozen constant of the contract package"),
+      bind("initiativeId", "LEDGER"),
+      bind("from", "LEDGER"),
+      bind("to", "LEDGER"),
+      bind("added", "LEDGER"),
+      bind("removed", "LEDGER"),
+      bind("changed", "LEDGER"),
+      bind("dependencies", "LEDGER"),
+      bind("contentChanged", "LEDGER"),
+      bind("restores", "LEDGER"),
+      bind("roles", "LEDGER"),
+    ]),
+    /**
      * The merged timeline (P8-8E-pre, C2).
      *
      * `items` binds to `LEDGER` in the strong sense: every field of every entry

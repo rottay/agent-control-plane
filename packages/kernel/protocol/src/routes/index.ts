@@ -84,6 +84,12 @@ export const API_ROUTES = Object.freeze({
   // of this plane that is NOT free: it answers model output, so it is named in
   // `API_PRIVATE_READ_ROUTES` below and registered behind the bearer.
   taskEffectResult: "/api/v1/tasks/:taskId/effects/:effectId/result",
+  // P-26 cut C: a version's declared steps, and the semantic diff between two
+  // versions (A10). Plain reads beside `content`, at the same depth and on the same
+  // selector class — a version number resolved inside the initiative, `?version=`
+  // and `?from=&to=` — so a version of another initiative is unrepresentable.
+  initiativeRoadmapSteps: "/api/v1/initiatives/:initiativeId/roadmap/steps",
+  initiativeRoadmapDiff: "/api/v1/initiatives/:initiativeId/roadmap/diff",
 } as const);
 
 export type ApiRouteName = keyof typeof API_ROUTES;
@@ -263,6 +269,25 @@ export function initiativeAgentsPath(initiativeId: string): string {
 /** Build the content path for a single initiative's roadmap. */
 export function initiativeRoadmapContentPath(initiativeId: string): string {
   return initiativeRoadmapPath(initiativeId) + "/content";
+}
+
+/**
+ * Build the steps path for a single initiative's roadmap (P-26 cut C).
+ *
+ * The path only, validated then encoded, exactly as `initiativeRoadmapContentPath`:
+ * the `?version=` query is the caller's, built with `URLSearchParams`.
+ */
+export function initiativeRoadmapStepsPath(initiativeId: string): string {
+  return initiativeRoadmapPath(initiativeId) + "/steps";
+}
+
+/**
+ * Build the diff path for a single initiative's roadmap (P-26 cut C).
+ *
+ * The path only, as above: the `?from=&to=` query is the caller's.
+ */
+export function initiativeRoadmapDiffPath(initiativeId: string): string {
+  return initiativeRoadmapPath(initiativeId) + "/diff";
 }
 
 /**

@@ -87,6 +87,21 @@ than trusting this table.
   `ROADMAP_STEP_DECLARED`, and the write route's transport limit grows by
   `ROADMAP_STEP_MANIFEST_MAX_BYTES`, re-exported beside `ROADMAP_CONTENT_MAX_BYTES`.
   No route, method or error word moves.
+- **A version's steps, and the diff between two versions.** P-26 cut C moved
+  `API_CONTRACT_VERSION` to `0.21.0` with two reads beside the content read, on
+  its selector class — a version number resolved inside the initiative:
+  `initiativeRoadmapSteps` (`?version=`, `RoadmapStepsQuery`,
+  `RoadmapStepsResponse`) lists one version's steps with their titles, positions,
+  ranks, states and dependencies, never a digest or a reference; and
+  `initiativeRoadmapDiff` (`?from=&to=`, `RoadmapDiffQuery`, `RoadmapDiffResponse`)
+  answers requirement A10's semantic diff by `stepId` — added, removed, changed
+  (the fields by name), the dependency pairs, whether the content changed, the
+  version a rollback restores, and `roles` as `STEP_ASSIGNMENTS_UNPRODUCED`, a
+  named absence derived from the rows until P-28 produces STEP assignments. The
+  builders `initiativeRoadmapStepsPath` and `initiativeRoadmapDiffPath` return the
+  path only. Both are API_ONLY in `SURFACE_MAP` under the initiative plane's
+  standing reason. `API_WRITE_ROUTES` and `API_PRIVATE_READ_ROUTES` do not move,
+  and no error word moves.
 - **Every read is free but one, and that one is named.** P-15/F added two reads
   and moved `API_CONTRACT_VERSION` to `0.19.0`: `taskEffects`, a plain read of a
   task's effect ids, coordinates and outcome words, and `taskEffectResult`, one

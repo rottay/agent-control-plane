@@ -2,6 +2,8 @@ import type {
   InitiativeDetail,
   InitiativeSummary,
   InitiativeTaskDto,
+  RoadmapDiffResponse,
+  RoadmapStepsResponse,
   RoadmapVersionDto,
   TaskDetail,
   TaskSummary,
@@ -9,7 +11,15 @@ import type {
   WorkerDetail,
   WorkerSummary,
 } from "@acp/protocol";
-import type { LedgerEventRecord, RoadmapVersionReadModel, TaskReadModel, WorkerReadModel } from "@acp/ledger";
+import type {
+  LedgerEventRecord,
+  RoadmapDiff,
+  RoadmapStepDependencyReadModel,
+  RoadmapStepReadModel,
+  RoadmapVersionReadModel,
+  TaskReadModel,
+  WorkerReadModel,
+} from "@acp/ledger";
 import { payloadKeys } from "@acp/observation";
 
 import type { InitiativeDetailModel, InitiativePortfolioRow } from "../initiatives/index.js";
@@ -158,6 +168,67 @@ export function roadmapVersion(version: RoadmapVersionReadModel, head: boolean):
     // text (P-26 cut B, 0.20.0).
     stepCount: version.stepCount,
     stepManifestSha256: version.stepManifestSha256,
+  };
+}
+
+/** A version as the steps and diff reads echo it (P-26 cut C): never a digest. */
+export function roadmapVersionEcho(
+  version: Pick<RoadmapVersionReadModel, "version" | "roadmapVersionId" | "kind" | "stepCount">,
+): RoadmapStepsResponse["version"] {
+  return {
+    version: version.version,
+    roadmapVersionId: version.roadmapVersionId,
+    kind: version.kind,
+    stepCount: version.stepCount,
+  };
+}
+
+/**
+ * One version's steps in index order, each with its dependencies (P-26 cut C). The
+ * title, position, rank and state; never a digest and never the routing column.
+ */
+export function roadmapStepItems(
+  steps: readonly RoadmapStepReadModel[],
+  dependencies: readonly RoadmapStepDependencyReadModel[],
+): RoadmapStepsResponse["steps"] {
+  return [...steps]
+    .sort((left, right) => left.stepIndex - right.stepIndex)
+    .map((step) => ({
+      stepId: step.stepId,
+      stepIndex: step.stepIndex,
+      title: step.title,
+      dependencyRank: step.dependencyRank,
+      state: step.state,
+      dependsOn: dependencies
+        .filter((dependency) => dependency.stepId === step.stepId)
+        .map((dependency) => dependency.dependsOnStepId),
+    }));
+}
+
+/** The ledger's diff, field by field, for the diff read (P-26 cut C). */
+export function roadmapDiffBody(
+  diff: RoadmapDiff,
+): Omit<RoadmapDiffResponse, "apiContractVersion" | "ledgerContractVersion" | "initiativeId"> {
+  const pair = (entry: { readonly stepId: string; readonly dependsOnStepId: string }) => ({
+    stepId: entry.stepId,
+    dependsOnStepId: entry.dependsOnStepId,
+  });
+  return {
+    from: roadmapVersionEcho(diff.from),
+    to: roadmapVersionEcho(diff.to),
+    added: [...diff.added],
+    removed: [...diff.removed],
+    changed: diff.changed.map((change) => ({ stepId: change.stepId, fields: [...change.fields] })),
+    dependencies: {
+      added: diff.dependencies.added.map(pair),
+      removed: diff.dependencies.removed.map(pair),
+    },
+    contentChanged: diff.contentChanged,
+    restores:
+      diff.restores === null
+        ? null
+        : { version: diff.restores.version, roadmapVersionId: diff.restores.roadmapVersionId },
+    roles: diff.roles,
   };
 }
 

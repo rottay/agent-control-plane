@@ -10,13 +10,13 @@ table that this document omits fails. It also asserts that every response and
 query schema named below is exported by `@acp/protocol`.
 
 The parity suite is the behavioral authority **where it reaches**, and it does
-not reach every route. Thirteen of the twenty-eight arms below are compared in full
+not reach every route. Thirteen of the thirty arms below are compared in full
 against an independently built CLI-side producer, including ordering,
 pagination, cursors and redaction; `eventStream` GET is compared in part, on one
 frame's item; `health` has no ledger content and so has no CLI build to compare
 against, and is checked as the contract's declared non-ledger exception instead.
-The remaining thirteen arms — `taskLifecycle` GET, `tasks` POST, and the eleven
-belonging to the eight initiative and account routes — have no CLI-side parity
+The remaining fifteen arms — `taskLifecycle` GET, `tasks` POST, and the thirteen
+belonging to the ten initiative and account routes — have no CLI-side parity
 comparison. `initiatives` POST and `tasks` POST are the two of them a command
 answers, and each pair of doors is compared by its own suites through the one
 orchestration both call, not by the parity suite. The
@@ -61,6 +61,8 @@ arm is not by itself a claim that a behavioral comparison exists for it.
 | `initiativeById` | GET | `/api/v1/initiatives/:initiativeId` | `initiativeId` (uuid) | none | `InitiativeDetailResponse` | — |
 | `initiativeRoadmap` | GET, POST | `/api/v1/initiatives/:initiativeId/roadmap` | `initiativeId` (uuid) | none | `InitiativeRoadmapResponse` / `RoadmapVersionWriteResponse` | — |
 | `initiativeRoadmapContent` | GET | `/api/v1/initiatives/:initiativeId/roadmap/content` | `initiativeId` (uuid) | `RoadmapContentQuery` | `RoadmapContentResponse` | — |
+| `initiativeRoadmapSteps` | GET | `/api/v1/initiatives/:initiativeId/roadmap/steps` | `initiativeId` (uuid) | `RoadmapStepsQuery` | `RoadmapStepsResponse` | — |
+| `initiativeRoadmapDiff` | GET | `/api/v1/initiatives/:initiativeId/roadmap/diff` | `initiativeId` (uuid) | `RoadmapDiffQuery` | `RoadmapDiffResponse` | — |
 | `initiativeEvents` | GET | `/api/v1/initiatives/:initiativeId/events` | `initiativeId` (uuid) | none | `InitiativeTimelineResponse` | — |
 | `initiativeAgents` | GET | `/api/v1/initiatives/:initiativeId/agents` | `initiativeId` (uuid) | none | `InitiativeAgentsResponse` | — |
 | `accounts` | GET | `/api/v1/accounts` | — | none | `AccountsResponse` | — |
@@ -349,8 +351,11 @@ it identically. ADR 0065 carries the reasoning.
 
 Route helpers (`taskPath`, `workerPath`, `initiativePath`,
 `initiativeRoadmapPath`, `initiativeRoadmapContentPath`,
+`initiativeRoadmapStepsPath`, `initiativeRoadmapDiffPath`,
 `initiativeEventsPath`, `initiativeAgentsPath`, `accountActionsPath`) validate
-before they encode. Do not build these paths by string concatenation.
+before they encode. Do not build these paths by string concatenation. The three
+roadmap reads return the path only: the version selector (`?version=`, or
+`?from=&to=` on the diff) is the caller's query, built with `URLSearchParams`.
 
 ## What no response carries
 

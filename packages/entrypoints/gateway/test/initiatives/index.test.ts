@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import {
   API_CONTRACT_VERSION,
@@ -13,10 +14,17 @@ import {
   InitiativeTimelineResponse,
   LEDGER_CONTRACT_VERSION,
   RoadmapContentResponse,
+  RoadmapDiffResponse,
+  RoadmapStepsResponse,
   RoadmapVersionWriteResponse,
+  initiativeRoadmapDiffPath,
+  initiativeRoadmapStepsPath,
 } from "@acp/protocol";
 import {
+  GENESIS_SHA256,
   LedgerIntegrityError,
+  canonicalJsonStringify,
+  chainDigest,
   artifactBlobLeaseStorePath,
   artifactPlaneRootFor,
   openArtifactBlobLeaseStore,
@@ -749,7 +757,12 @@ describe("the initiative plane mutates nothing", () => {
     // list at P-14/B, and the test below says what it answers instead.
     const { path, alpha } = seed();
     const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
-    const readOnlyPaths = ["/api/v1/initiatives/" + alpha];
+    const readOnlyPaths = [
+      "/api/v1/initiatives/" + alpha,
+      // P-26 cut C: the steps and diff reads are reads like the content read.
+      initiativeRoadmapStepsPath(alpha) + "?version=1",
+      initiativeRoadmapDiffPath(alpha) + "?from=1&to=2",
+    ];
 
     for (const url of readOnlyPaths) {
       for (const method of ["POST", "PUT", "PATCH", "DELETE"] as const) {
@@ -1160,3 +1173,400 @@ describe("the registration detail reads the objective from where the registratio
     expect(thrown).toBeInstanceOf(LedgerIntegrityError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// P-26 cut C: a version's steps, and the diff between two versions (ADR 0113)
+// ---------------------------------------------------------------------------
+
+describe("P-26/C: the steps read and the diff read, through the real routes over a real ledger", () => {
+  /** A manifest step whose private texts carry a sentinel the sweeps look for. */
+  function manifestStep(stepId: string, dependsOn: readonly string[] = [], objective?: string): Record<string, unknown> {
+    return {
+      stepId,
+      title: "Step " + stepId,
+      objective: objective ?? "SENTINEL-OBJECTIVE of " + stepId + ".",
+      acceptance: "SENTINEL-ACCEPTANCE of " + stepId + ".",
+      expectedWriteSet: ["sentinel-path/" + stepId + "/index.ts"],
+      dependsOn: [...dependsOn],
+    };
+  }
+
+  function manifest(entries: readonly Record<string, unknown>[]): Record<string, unknown> {
+    return { manifestContractVersion: 1, steps: entries };
+  }
+
+  const V1_STEPS = [manifestStep("A"), manifestStep("B", ["A"]), manifestStep("C", ["A"])];
+  const V2_STEPS = [manifestStep("A"), manifestStep("B", ["A"], "SENTINEL-OBJECTIVE of B, rewritten."), manifestStep("D", ["B"])];
+
+  function registered(): string {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    const initiativeId = randomUUID();
+    ledger.appendInitiativeEvent(makeInitiativeEvent(initiativeId, "initiative.registered"));
+    ledger.close();
+    return path + "\n" + initiativeId;
+  }
+
+  async function post(
+    app: ReturnType<typeof buildServer>,
+    initiativeId: string,
+    payload: Record<string, unknown>,
+  ): Promise<RoadmapVersionWriteResponse> {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/initiatives/" + initiativeId + "/roadmap",
+      payload,
+      headers: WRITE_AUTH,
+    });
+    if (response.statusCode !== 200) throw new Error("write failed: " + String(response.statusCode) + " " + response.body);
+    return RoadmapVersionWriteResponse.parse(response.json());
+  }
+
+  function edit(content: string, head: RoadmapVersionWriteResponse | null, steps?: readonly Record<string, unknown>[]) {
+    return {
+      content,
+      expectedHeadDigest: head === null ? null : head.version.contentDigest,
+      kind: "EDIT",
+      restoresVersionId: null,
+      recordedBy: COORDINATOR,
+      ...(steps === undefined ? {} : { steps: manifest(steps) }),
+    };
+  }
+
+  /** v1 = A, B(A), C(A); v2 = A, B(A) re-objectived, D(B); v3 = ROLLBACK to v1. */
+  async function history() {
+    const [path = "", initiativeId = ""] = registered().split("\n");
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
+    const v1 = await post(app, initiativeId, edit("# one\n", null, V1_STEPS));
+    const v2 = await post(app, initiativeId, edit("# two\n", v1, V2_STEPS));
+    const v3 = await post(app, initiativeId, {
+      content: "# one\n",
+      expectedHeadDigest: v2.version.contentDigest,
+      kind: "ROLLBACK",
+      restoresVersionId: v1.version.roadmapVersionId,
+      recordedBy: COORDINATOR,
+      steps: manifest(V1_STEPS),
+    });
+    return { path, app, initiativeId, v1, v2, v3 };
+  }
+
+  function diffUrl(initiativeId: string, from: number | string, to: number | string): string {
+    return initiativeRoadmapDiffPath(initiativeId) + "?" + new URLSearchParams({ from: String(from), to: String(to) }).toString();
+  }
+
+  function stepsUrl(initiativeId: string, version: number | string): string {
+    return initiativeRoadmapStepsPath(initiativeId) + "?" + new URLSearchParams({ version: String(version) }).toString();
+  }
+
+  async function getDiff(app: ReturnType<typeof buildServer>, initiativeId: string, from: number, to: number) {
+    const response = await app.inject({ method: "GET", url: diffUrl(initiativeId, from, to) });
+    expect(response.statusCode).toBe(200);
+    return { body: RoadmapDiffResponse.parse(response.json()), raw: response.body };
+  }
+
+  /** §8.1's sentinel sweep: no private text, no digest value, no digest or reference key. */
+  function sweep(raw: string): void {
+    expect(raw).not.toContain("SENTINEL");
+    expect(raw).not.toContain("sentinel-path");
+    expect(raw).not.toMatch(/[0-9a-f]{64}/);
+    expect(raw).not.toMatch(/"[A-Za-z]*(Sha256|Reference|ReferenceId)"\s*:/);
+  }
+
+  it("D1: added, removed, changed by field name, pairs, content and roles, with both sides echoed and nothing private", async () => {
+    const { app, initiativeId, v1, v2 } = await history();
+    const { body, raw } = await getDiff(app, initiativeId, 1, 2);
+    expect(body).toEqual({
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId,
+      from: { version: 1, roadmapVersionId: v1.version.roadmapVersionId, kind: "EDIT", stepCount: 3 },
+      to: { version: 2, roadmapVersionId: v2.version.roadmapVersionId, kind: "EDIT", stepCount: 3 },
+      added: ["D"],
+      removed: ["C"],
+      changed: [{ stepId: "B", fields: ["objectiveSha256"] }],
+      dependencies: {
+        added: [{ stepId: "D", dependsOnStepId: "B" }],
+        removed: [{ stepId: "C", dependsOnStepId: "A" }],
+      },
+      contentChanged: true,
+      restores: null,
+      roles: "STEP_ASSIGNMENTS_UNPRODUCED",
+    });
+    sweep(raw);
+    expect(raw).not.toContain("Step ");
+    await app.close();
+  });
+
+  it("D1b: a forward reference is order-free — a reorder moves positions and no pair", async () => {
+    const { app, initiativeId, v3 } = await history();
+    const v4 = await post(app, initiativeId, edit("# two\n", v3, [V2_STEPS[0] ?? {}, V2_STEPS[2] ?? {}, V2_STEPS[1] ?? {}]));
+    expect(v4.version.version).toBe(4);
+    const { body } = await getDiff(app, initiativeId, 2, 4);
+    expect([body.added, body.removed, body.dependencies, body.contentChanged]).toEqual([
+      [],
+      [],
+      { added: [], removed: [] },
+      false,
+    ]);
+    expect(body.changed).toEqual([
+      { stepId: "B", fields: ["stepIndex"] },
+      { stepId: "D", fields: ["stepIndex"] },
+    ]);
+    await app.close();
+  });
+
+  it("D2: a rollback is a new, traceable revision — v2 -> v3 inverts D1 and names v1 by number and id; v1 -> v3 is empty", async () => {
+    const { app, initiativeId, v1, v3 } = await history();
+    const back = (await getDiff(app, initiativeId, 2, 3)).body;
+    expect(back.to).toEqual({ version: 3, roadmapVersionId: v3.version.roadmapVersionId, kind: "ROLLBACK", stepCount: 3 });
+    expect([back.added, back.removed, back.changed]).toEqual([["C"], ["D"], [{ stepId: "B", fields: ["objectiveSha256"] }]]);
+    expect(back.dependencies).toEqual({
+      added: [{ stepId: "C", dependsOnStepId: "A" }],
+      removed: [{ stepId: "D", dependsOnStepId: "B" }],
+    });
+    expect([back.contentChanged, back.restores]).toEqual([true, { version: 1, roadmapVersionId: v1.version.roadmapVersionId }]);
+
+    const same = (await getDiff(app, initiativeId, 1, 3)).body;
+    expect([same.added, same.removed, same.changed, same.dependencies, same.contentChanged]).toEqual([
+      [],
+      [],
+      [],
+      { added: [], removed: [] },
+      false,
+    ]);
+    expect(same.restores).toEqual({ version: 1, roadmapVersionId: v1.version.roadmapVersionId });
+    await app.close();
+  });
+
+  it("D3: from == to is the empty diff, 200, content unchanged, restores null — a rollback included", async () => {
+    const { app, initiativeId } = await history();
+    for (const version of [2, 3]) {
+      const { body } = await getDiff(app, initiativeId, version, version);
+      expect(body).toMatchObject({
+        added: [],
+        removed: [],
+        changed: [],
+        dependencies: { added: [], removed: [] },
+        contentChanged: false,
+        restores: null,
+        roles: "STEP_ASSIGNMENTS_UNPRODUCED",
+      });
+    }
+    await app.close();
+  });
+
+  it("D4: an unknown number or initiative is 404 with the existing words; a malformed selector is 400 at the field, never echoed", async () => {
+    const { app, initiativeId } = await history();
+    for (const [url, message] of [
+      [diffUrl(initiativeId, 99, 1), "no roadmap version with that number was found"],
+      [diffUrl(initiativeId, 1, 99), "no roadmap version with that number was found"],
+      [diffUrl(randomUUID(), 1, 2), "no initiative with that id was found"],
+      [stepsUrl(initiativeId, 99), "no roadmap version with that number was found"],
+      [stepsUrl(randomUUID(), 1), "no initiative with that id was found"],
+    ] as const) {
+      const response = await app.inject({ method: "GET", url });
+      expect({ url, status: response.statusCode }).toEqual({ url, status: 404 });
+      const envelope = ApiError.parse(response.json());
+      expect([envelope.error.code, envelope.error.message]).toEqual(["NOT_FOUND", message]);
+    }
+    for (const [query, detail] of [
+      ["?from=abcSENTINEL&to=1", "invalid: from"],
+      ["?from=1&to=0", "invalid: to"],
+      ["?from=1", "invalid: to"],
+      ["?from=1&to=2&version=1", "rejected parameters: 1"],
+    ] as const) {
+      const response = await app.inject({ method: "GET", url: initiativeRoadmapDiffPath(initiativeId) + query });
+      expect({ query, status: response.statusCode }).toEqual({ query, status: 400 });
+      const envelope = ApiError.parse(response.json());
+      expect([envelope.error.code, envelope.error.detail]).toEqual(["BAD_REQUEST", detail]);
+      expect(response.body).not.toContain("SENTINEL");
+    }
+    for (const query of ["", "?version=0", "?version=abcSENTINEL", "?digest=" + "a".repeat(64)]) {
+      const response = await app.inject({ method: "GET", url: initiativeRoadmapStepsPath(initiativeId) + query });
+      expect({ query, status: response.statusCode }).toEqual({ query, status: 400 });
+      expect(response.body).not.toContain("SENTINEL");
+      expect(response.body).not.toMatch(/[0-9a-f]{64}/);
+    }
+    await app.close();
+  });
+
+  it("D5: the steps of v1 in index order, ranks 0/1/1, dependencies, DECLARED; titles present and nothing private", async () => {
+    const { app, initiativeId, v1 } = await history();
+    const response = await app.inject({ method: "GET", url: stepsUrl(initiativeId, 1) });
+    expect(response.statusCode).toBe(200);
+    const body = RoadmapStepsResponse.parse(response.json());
+    expect(body).toEqual({
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId,
+      version: { version: 1, roadmapVersionId: v1.version.roadmapVersionId, kind: "EDIT", stepCount: 3 },
+      steps: [
+        { stepId: "A", stepIndex: 0, title: "Step A", dependencyRank: 0, state: "DECLARED", dependsOn: [] },
+        { stepId: "B", stepIndex: 1, title: "Step B", dependencyRank: 1, state: "DECLARED", dependsOn: ["A"] },
+        { stepId: "C", stepIndex: 2, title: "Step C", dependencyRank: 1, state: "DECLARED", dependsOn: ["A"] },
+      ],
+    });
+    sweep(response.body);
+    for (const title of ["Step A", "Step B", "Step C"]) expect(response.body).toContain(title);
+    expect(response.body).not.toContain("routingAssignment");
+    await app.close();
+  });
+
+  it("D6a: a stepless version echoes stepCount 0 and no steps, and diffs as nothing against everything", async () => {
+    const [path = "", initiativeId = ""] = registered().split("\n");
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
+    const bare = await post(app, initiativeId, edit("# bare\n", null));
+    await post(app, initiativeId, edit("# one\n", bare, V1_STEPS));
+    const steps = RoadmapStepsResponse.parse((await app.inject({ method: "GET", url: stepsUrl(initiativeId, 1) })).json());
+    expect([steps.version.stepCount, steps.steps]).toEqual([0, []]);
+    const { body } = await getDiff(app, initiativeId, 1, 2);
+    expect([body.from.stepCount, body.added, body.removed, body.dependencies.added.length]).toEqual([0, ["A", "B", "C"], [], 2]);
+    await app.close();
+  });
+
+  it("D6b: a pre-cohort version echoes stepCount null, which the body tells apart from 0", async () => {
+    const path = temporaryDatabase();
+    const ledger = openLedger(path);
+    const initiativeId = randomUUID();
+    ledger.appendInitiativeEvent(makeInitiativeEvent(initiativeId, "initiative.registered"));
+    ledger.appendInitiativeEvent(
+      makeInitiativeEvent(initiativeId, "roadmap.v1", {
+        type: "ROADMAP_VERSION_RECORDED",
+        fromStatus: "ACTIVE",
+        toStatus: "ACTIVE",
+        payload: {
+          contractVersion: LEDGER_CONTRACT_VERSION,
+          roadmapVersionId: randomUUID(),
+          initiativeId,
+          version: 1,
+          contentDigest: DIGEST_ONE,
+          parentVersionId: null,
+          expectedHeadDigest: null,
+          kind: "EDIT",
+          restoresVersionId: null,
+          recordedBy: COORDINATOR,
+          recordedAt: AT,
+          stepCount: 0,
+          stepManifestArtifactReferenceId: null,
+          stepManifestSha256: null,
+        },
+      }),
+    );
+    ledger.close();
+    restampInitiativeHistory(path, "2.9.0");
+    const rebuilt = openLedger(path);
+    rebuilt.rebuildReadModel();
+    expect(rebuilt.listRoadmapVersions(initiativeId).map((version) => version.stepCount)).toEqual([null]);
+    rebuilt.close();
+
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
+    const history = InitiativeRoadmapResponse.parse(
+      (await app.inject({ method: "GET", url: "/api/v1/initiatives/" + initiativeId + "/roadmap" })).json(),
+    );
+    const head = history.items[0];
+    if (head === undefined) throw new Error("expected the pre-cohort version");
+    await post(app, initiativeId, edit("# one\n", { version: head } as RoadmapVersionWriteResponse, V1_STEPS));
+
+    const steps = RoadmapStepsResponse.parse((await app.inject({ method: "GET", url: stepsUrl(initiativeId, 1) })).json());
+    expect([steps.version.stepCount, steps.steps]).toEqual([null, []]);
+    const { body } = await getDiff(app, initiativeId, 1, 2);
+    expect([body.from.stepCount, body.to.stepCount, body.added, body.removed]).toEqual([null, 3, ["A", "B", "C"], []]);
+    const inverse = (await getDiff(app, initiativeId, 2, 1)).body;
+    expect([inverse.to.stepCount, inverse.added, inverse.removed]).toEqual([null, [], ["A", "B", "C"]]);
+    await app.close();
+  });
+
+  it("D7: a planted step assignment is refused as an integrity failure, 500 INTERNAL, naming no row — the word is measured", async () => {
+    const { path, app, initiativeId, v2 } = await history();
+    const control = await app.inject({ method: "GET", url: diffUrl(initiativeId, 1, 2) });
+    expect(control.statusCode).toBe(200);
+    await app.close();
+
+    const raw = new DatabaseSync(path);
+    const planted = raw
+      .prepare("UPDATE roadmap_step_read_model SET routing_assignment_version = 1 WHERE roadmap_version_id = ? AND step_id = ?")
+      .run(v2.version.roadmapVersionId, "D");
+    raw.close();
+    expect(planted.changes).toBe(1);
+
+    const reopened = buildServer({ ledgerPath: path });
+    for (const [from, to] of [
+      [1, 2],
+      [2, 3],
+      [2, 2],
+    ] as const) {
+      const response = await reopened.inject({ method: "GET", url: diffUrl(initiativeId, from, to) });
+      expect({ from, to, status: response.statusCode }).toEqual({ from, to, status: 500 });
+      const envelope = ApiError.parse(response.json());
+      expect([envelope.error.code, envelope.error.detail]).toEqual(["INTERNAL", "STEP_ASSIGNMENT_PRESENT"]);
+      expect(response.body).not.toContain("Step D");
+      expect(response.body).not.toContain('"D"');
+      sweep(response.body);
+    }
+    // A diff that reads neither side of the planted row still answers.
+    expect((await reopened.inject({ method: "GET", url: diffUrl(initiativeId, 1, 3) })).statusCode).toBe(200);
+    await reopened.close();
+  });
+
+  it("D8: a version at ROADMAP_STEPS_MAX steps is one bounded steps body, ranks up to the bound", async () => {
+    const [path = "", initiativeId = ""] = registered().split("\n");
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerTokenFile() });
+    const chain = Array.from({ length: 200 }, (_, index) =>
+      manifestStep("S" + String(index).padStart(3, "0"), index === 0 ? [] : ["S" + String(index - 1).padStart(3, "0")]),
+    );
+    await post(app, initiativeId, edit("# many\n", null, chain));
+    const response = await app.inject({ method: "GET", url: stepsUrl(initiativeId, 1) });
+    expect(response.statusCode).toBe(200);
+    const body = RoadmapStepsResponse.parse(response.json());
+    expect([body.version.stepCount, body.steps.length]).toEqual([200, 200]);
+    expect(body.steps.at(-1)).toMatchObject({ stepId: "S199", stepIndex: 199, dependencyRank: 199, dependsOn: ["S198"] });
+    const { body: empty } = await getDiff(app, initiativeId, 1, 1);
+    expect(empty.changed).toEqual([]);
+    await app.close();
+  });
+});
+
+/**
+ * Restamp an initiative history as a build before steps would have written it: B's
+ * `restampInitiativeHistory` mould (ledger suite), for D6b. Every event's version,
+ * every roadmap payload's version, and no step field on a version — chain, head and
+ * watermark recomputed; the append-only triggers taken out and put back verbatim.
+ */
+function restampInitiativeHistory(path: string, version: string): void {
+  const raw = new DatabaseSync(path);
+  try {
+    const triggers = raw
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name IN (?, ?)")
+      .all("initiative_events_deny_update", "initiative_events_deny_delete") as unknown as { readonly sql: string }[];
+    expect(triggers).toHaveLength(2);
+    raw.exec("DROP TRIGGER initiative_events_deny_update; DROP TRIGGER initiative_events_deny_delete;");
+    const rows = raw
+      .prepare("SELECT sequence, event_json FROM initiative_events ORDER BY sequence")
+      .all() as unknown as { readonly sequence: number; readonly event_json: string }[];
+    const rewrite = raw.prepare(
+      "UPDATE initiative_events SET event_json = ?, contract_version = ?, previous_sha256 = ?, event_sha256 = ? WHERE sequence = ?",
+    );
+    let previous = GENESIS_SHA256;
+    for (const row of rows) {
+      const decoded = JSON.parse(row.event_json) as Record<string, unknown>;
+      decoded["contractVersion"] = version;
+      if (decoded["type"] === "ROADMAP_VERSION_RECORDED") {
+        const payload = { ...(decoded["payload"] as Record<string, unknown>) };
+        payload["contractVersion"] = version;
+        delete payload["stepCount"];
+        delete payload["stepManifestArtifactReferenceId"];
+        delete payload["stepManifestSha256"];
+        decoded["payload"] = payload;
+      }
+      const rewritten = canonicalJsonStringify(decoded);
+      const digest = chainDigest(previous, rewritten);
+      rewrite.run(rewritten, version, previous, digest, row.sequence);
+      previous = digest;
+    }
+    raw.prepare("UPDATE ledger_meta SET value = ? WHERE key = 'initiative_head_event_sha256'").run(previous);
+    raw.prepare("UPDATE projection_watermark SET source_head_sha256 = ? WHERE source_stream = ?").run(previous, "initiative_events");
+    for (const trigger of triggers) raw.exec(trigger.sql);
+  } finally {
+    raw.close();
+  }
+}

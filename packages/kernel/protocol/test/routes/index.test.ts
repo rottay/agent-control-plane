@@ -15,7 +15,9 @@ import {
   initiativeEventsPath,
   initiativePath,
   initiativeRoadmapContentPath,
+  initiativeRoadmapDiffPath,
   initiativeRoadmapPath,
+  initiativeRoadmapStepsPath,
   taskPath,
   workerPath,
 } from "../../src/routes/index.js";
@@ -97,6 +99,8 @@ describe("the route grammar round-trips every identifier it accepts (G9)", () =>
       expect(segmentBefore(initiativeEventsPath(id), "/events")).toBe(id);
       expect(segmentBefore(initiativeAgentsPath(id), "/agents")).toBe(id);
       expect(segmentBefore(initiativeRoadmapContentPath(id), "/roadmap/content")).toBe(id);
+      expect(segmentBefore(initiativeRoadmapStepsPath(id), "/roadmap/steps")).toBe(id);
+      expect(segmentBefore(initiativeRoadmapDiffPath(id), "/roadmap/diff")).toBe(id);
     });
   });
 
@@ -123,6 +127,8 @@ describe("the route grammar refuses every identifier outside it (G9)", () => {
     forAll("taskPath refuses outside-grammar", 0x5eed_0011, ITERATIONS, outsideUuid, (badCase) => {
       expect(() => taskPath(badCase.value), badCase.violation).toThrow();
       expect(() => initiativePath(badCase.value), badCase.violation).toThrow();
+      expect(() => initiativeRoadmapStepsPath(badCase.value), badCase.violation).toThrow();
+      expect(() => initiativeRoadmapDiffPath(badCase.value), badCase.violation).toThrow();
     });
   });
 
@@ -236,7 +242,8 @@ describe("the effect reads, and the one private read (P-15/F)", () => {
   it("adds two reads and no write: the method list and the write table do not move", () => {
     expect(API_ROUTES.taskEffects).toBe("/api/v1/tasks/:taskId/effects");
     expect(API_ROUTES.taskEffectResult).toBe("/api/v1/tasks/:taskId/effects/:effectId/result");
-    expect(Object.keys(API_ROUTES)).toHaveLength(22);
+    // 22 when it landed; P-26 cut C's two reads moved it again.
+    expect(Object.keys(API_ROUTES)).toHaveLength(24);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_WRITE_ROUTES).toHaveLength(6);
     expect(isWriteRoute("taskEffects")).toBe(false);
@@ -264,5 +271,34 @@ describe("the effect reads, and the one private read (P-15/F)", () => {
       expect(() => taskEffectResultPath(TASK, bad)).toThrow();
     }
     expect(() => taskEffectResultPath("not-a-uuid", EFFECT)).toThrow();
+  });
+});
+
+describe("the steps and diff reads (P-26 cut C)", () => {
+  const INITIATIVE = "44444444-4444-4444-8444-444444444444";
+
+  it("adds two reads beside content, at one depth, and no write or private read", () => {
+    expect(API_ROUTES.initiativeRoadmapSteps).toBe("/api/v1/initiatives/:initiativeId/roadmap/steps");
+    expect(API_ROUTES.initiativeRoadmapDiff).toBe("/api/v1/initiatives/:initiativeId/roadmap/diff");
+    for (const route of ["initiativeRoadmapSteps", "initiativeRoadmapDiff"] as const) {
+      expect(API_ROUTES[route].split("/").length).toBe(API_ROUTES.initiativeRoadmapContent.split("/").length);
+      expect(isWriteRoute(route)).toBe(false);
+      expect(isPrivateReadRoute(route)).toBe(false);
+    }
+    expect(Object.keys(API_ROUTES)).toHaveLength(24);
+    expect(API_WRITE_ROUTES).toHaveLength(6);
+    expect([...API_PRIVATE_READ_ROUTES]).toEqual(["taskEffectResult"]);
+    expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
+  });
+
+  it("builds the path only, validated then encoded; the query is the caller's", () => {
+    expect(initiativeRoadmapStepsPath(INITIATIVE)).toBe("/api/v1/initiatives/" + INITIATIVE + "/roadmap/steps");
+    expect(initiativeRoadmapDiffPath(INITIATIVE)).toBe("/api/v1/initiatives/" + INITIATIVE + "/roadmap/diff");
+    expect(initiativeRoadmapStepsPath(INITIATIVE)).not.toContain("?");
+    expect(initiativeRoadmapDiffPath(INITIATIVE)).not.toContain("?");
+    for (const bad of ["../../etc/passwd", INITIATIVE + "?version=1", ""]) {
+      expect(() => initiativeRoadmapStepsPath(bad)).toThrow();
+      expect(() => initiativeRoadmapDiffPath(bad)).toThrow();
+    }
   });
 });

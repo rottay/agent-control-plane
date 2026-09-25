@@ -227,8 +227,22 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * surface is unchanged and no existing field changes meaning. `CONTRACT_VERSION`
  * moves too, 2.9.0 → 2.10.0, so `LEDGER_CONTRACT_VERSION` follows by derivation.
  * ADR 0111 carries the reasoning.
+ *
+ * `0.20.0` → `0.21.0` at P-26 cut C: two reads, the semantic diff of requirement
+ * A10. `initiativeRoadmapSteps` lists one version's declared steps — title,
+ * position, rank, state and dependencies, never a digest or a reference — and
+ * `initiativeRoadmapDiff` answers the diff between two versions of one initiative
+ * by `stepId`, with the changed fields by name, the dependency pairs, whether the
+ * content changed, the version a rollback restores, and `roles` as a named absence
+ * derived from the rows. Both select by version number, as the content read does.
+ * Four schemas arrive with them (`RoadmapStepsQuery`, `RoadmapStepsResponse`,
+ * `RoadmapDiffQuery`, `RoadmapDiffResponse`). Minor for the reason `0.13.0` gave
+ * first: the route surface moves. `API_ALLOWED_METHODS`, `API_WRITE_ROUTES` and
+ * `API_PRIVATE_READ_ROUTES` do not, and no error word moves. `CONTRACT_VERSION` and
+ * `LEDGER_CONTRACT_VERSION` do not move: a read adds no recorded shape. ADR 0113
+ * carries the reasoning.
  */
-export const API_CONTRACT_VERSION = "0.20.0" as const;
+export const API_CONTRACT_VERSION = "0.21.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

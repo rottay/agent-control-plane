@@ -40,7 +40,9 @@ export {
   initiativeAgentsPath,
   initiativeEventsPath,
   initiativeRoadmapContentPath,
+  initiativeRoadmapDiffPath,
   initiativeRoadmapPath,
+  initiativeRoadmapStepsPath,
   taskPath,
   toolCallsPath,
   lifecyclePath,
@@ -187,6 +189,12 @@ export {
   StreamQuery,
   StreamResyncReason,
   RoadmapContentResponse,
+  // P-26 cut C: a version's steps and the diff between two versions, both read by
+  // version number.
+  RoadmapDiffQuery,
+  RoadmapDiffResponse,
+  RoadmapStepsQuery,
+  RoadmapStepsResponse,
   RoadmapVersionDto,
   RoadmapVersionKindDto,
   RoadmapVersionWriteRequest,

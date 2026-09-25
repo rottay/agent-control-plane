@@ -35,6 +35,8 @@ import {
   InitiativeAgentsResponse,
   InitiativeTimelineResponse,
   RoadmapContentResponse,
+  RoadmapDiffResponse,
+  RoadmapStepsResponse,
   StreamFrame,
   ToolCallPageResponse,
   TaskLifecycleResponse,
@@ -128,6 +130,10 @@ describe("the binding table matches the schemas it claims to bind", () => {
     initiativeById: InitiativeDetailResponse,
     initiativeRoadmap: InitiativeRoadmapResponse,
     initiativeRoadmapContent: RoadmapContentResponse,
+    // P-26 cut C. Both folds of the read model; the diff's `roles` binds to the
+    // rows it is measured over, not to a constant.
+    initiativeRoadmapSteps: RoadmapStepsResponse,
+    initiativeRoadmapDiff: RoadmapDiffResponse,
     initiativeEvents: InitiativeTimelineResponse,
     initiativeAgents: InitiativeAgentsResponse,
     accounts: AccountsResponse,
@@ -370,5 +376,18 @@ describe("redaction is absence, checked with the one privacy vocabulary", () => 
     expect(hasObservationPrivacyViolation(canonicalize({ items: [{ id: "t", state: "OPEN" }] }))).toBe(
       false,
     );
+  });
+});
+
+describe("the steps and diff reads fold the ledger and nothing else (P-26 cut C)", () => {
+  it("binds every field LEDGER or CONTRACT_VERSION, the two version lines are the only exceptions, and roles binds to the rows", () => {
+    for (const route of ["initiativeRoadmapSteps", "initiativeRoadmapDiff"] as const) {
+      expect(declaredExceptions(route).map((binding) => binding.field)).toEqual(["apiContractVersion", "ledgerContractVersion"]);
+      for (const binding of PARITY_BINDINGS[route]) {
+        expect(["LEDGER", "CONTRACT_VERSION"]).toContain(binding.source);
+      }
+    }
+    expect(PARITY_BINDINGS.initiativeRoadmapDiff.find((binding) => binding.field === "roles")?.source).toBe("LEDGER");
+    expect(comparableFields("initiativeRoadmapDiff")).toContain("restores");
   });
 });

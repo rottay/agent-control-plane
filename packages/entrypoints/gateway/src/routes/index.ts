@@ -22,6 +22,10 @@ import {
   MAX_SCOPED_TIMELINE_ITEMS,
   RoadmapContentQuery,
   RoadmapContentResponse,
+  RoadmapDiffQuery,
+  RoadmapDiffResponse,
+  RoadmapStepsQuery,
+  RoadmapStepsResponse,
   StreamQuery,
   RoadmapVersionWriteRequest,
   RoadmapVersionWriteResponse,
@@ -68,7 +72,9 @@ import {
   initiativeDetail,
   portfolio,
   roadmapContent,
+  roadmapDiff,
   roadmapHistory,
+  roadmapSteps,
   scopedAgents,
   scopedTimeline,
 } from "../initiatives/index.js";
@@ -83,7 +89,10 @@ import { effectResult, parseEffectIdParam, taskEffects } from "../effect-result/
 import {
   initiativeDetailDto,
   initiativeSummary,
+  roadmapDiffBody,
+  roadmapStepItems,
   roadmapVersion,
+  roadmapVersionEcho,
   taskDetail,
   taskSummary,
   timelineItem,
@@ -814,6 +823,60 @@ export function registerRoutes(
       contentDigest: outcome.version.contentDigest,
       kind: outcome.version.kind,
       content: outcome.content,
+    });
+  });
+
+  // A version's declared steps (P-26 cut C). A read, through `registerGet` like
+  // every initiative read: the read model only, never the plane, and no bearer —
+  // the one text it carries is each step's title, decision 76's class.
+  registerGet(app, API_ROUTES.initiativeRoadmapSteps, (request) => {
+    const query = parseQuery(RoadmapStepsQuery, queryOf(request));
+    const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
+    const { ledger } = requireOpen(source);
+
+    if (ledger.getInitiative(initiativeId) === null) {
+      throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
+    }
+    const outcome = roadmapSteps(ledger, initiativeId, query.version);
+    if (!outcome.ok) {
+      throw new ApiRouteError("NOT_FOUND", "no roadmap version with that number was found");
+    }
+
+    return RoadmapStepsResponse.parse({
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId,
+      version: roadmapVersionEcho(outcome.version),
+      steps: roadmapStepItems(outcome.steps, outcome.dependencies),
+    });
+  });
+
+  // The semantic diff between two versions (P-26 cut C, A10). A read, through
+  // `registerGet`: both numbers resolved inside the initiative, as the content read
+  // resolves one.
+  registerGet(app, API_ROUTES.initiativeRoadmapDiff, (request) => {
+    const query = parseQuery(RoadmapDiffQuery, queryOf(request));
+    const initiativeId = parseInitiativeIdParam(paramsOf(request)["initiativeId"] ?? "");
+    const { ledger } = requireOpen(source);
+
+    if (ledger.getInitiative(initiativeId) === null) {
+      throw new ApiRouteError("NOT_FOUND", "no initiative with that id was found");
+    }
+    const outcome = roadmapDiff(ledger, initiativeId, query.from, query.to);
+    if (!outcome.ok) {
+      if (outcome.reason === "UNKNOWN_VERSION") {
+        throw new ApiRouteError("NOT_FOUND", "no roadmap version with that number was found");
+      }
+      // Rows the resolution above cannot produce: an integrity failure, answered
+      // without a byte of the rows. No error word moves for it.
+      throw new ApiRouteError("INTERNAL", "the roadmap versions could not be diffed", outcome.refusal);
+    }
+
+    return RoadmapDiffResponse.parse({
+      apiContractVersion: API_CONTRACT_VERSION,
+      ledgerContractVersion: LEDGER_CONTRACT_VERSION,
+      initiativeId,
+      ...roadmapDiffBody(outcome.diff),
     });
   });
 

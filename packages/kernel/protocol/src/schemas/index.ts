@@ -7,6 +7,8 @@ import {
   ConfidenceLevel,
   ControlPlaneEventType,
   ROADMAP_CONTENT_MAX_BYTES,
+  ROADMAP_STEPS_MAX,
+  ROADMAP_STEP_DEPENDS_ON_MAX,
   utf8ByteLength,
   EXCEPTIONAL_STATES,
   INITIATIVE_EVENT_TYPES,
@@ -2646,8 +2648,16 @@ export const AccountsResponse = z
   .superRefine(attachGuards);
 export type AccountsResponse = z.infer<typeof AccountsResponse>;
 
+/**
+ * A roadmap version selected by its **number**, resolved inside the initiative's own
+ * history (P8-8D-c2). The one selector class of the `content`/`steps`/`diff` trio
+ * (P-26 cut C): a caller never names a global identifier, so a version of another
+ * initiative is unrepresentable.
+ */
+const RoadmapVersionNumber = DecimalNonNegativeInteger.pipe(z.number().int().positive().max(1_000_000));
+
 export const RoadmapContentQuery = z.strictObject({
-  version: DecimalNonNegativeInteger.pipe(z.number().int().positive().max(1_000_000)),
+  version: RoadmapVersionNumber,
 });
 export type RoadmapContentQuery = z.infer<typeof RoadmapContentQuery>;
 
@@ -2690,6 +2700,137 @@ export const RoadmapContentResponse = z
   })
   .superRefine(attachGuards);
 export type RoadmapContentResponse = z.infer<typeof RoadmapContentResponse>;
+
+// ---------------------------------------------------------------------------
+// A version's steps, and the semantic diff between two versions (P-26 cut C)
+// ---------------------------------------------------------------------------
+
+/**
+ * The steps read's selector: `RoadmapContentQuery`'s, field for field (P-26 cut C,
+ * ADR 0113).
+ */
+export const RoadmapStepsQuery = z.strictObject({
+  version: RoadmapVersionNumber,
+});
+export type RoadmapStepsQuery = z.infer<typeof RoadmapStepsQuery>;
+
+/** The diff read's selectors: two version numbers of the same initiative, both required. */
+export const RoadmapDiffQuery = z.strictObject({
+  from: RoadmapVersionNumber,
+  to: RoadmapVersionNumber,
+});
+export type RoadmapDiffQuery = z.infer<typeof RoadmapDiffQuery>;
+
+/**
+ * A declared step's lifecycle (planning §3), the ledger's `ROADMAP_STEP_STATES`
+ * spelled for the wire. A declaration writes `DECLARED` and nothing in this build
+ * writes another; the transitions are P-27's.
+ */
+const RoadmapStepStateDto = z.enum(["DECLARED", "READY", "RUNNING", "PAUSED", "DONE", "CANCELLED"]);
+
+/**
+ * The fields of a step the diff compares, by name. They travel as values of
+ * `changed[].fields`, never as keys: the diff says which digest moved, never what
+ * it is.
+ */
+const ROADMAP_DIFF_FIELDS = [
+  "stepIndex",
+  "title",
+  "objectiveSha256",
+  "acceptanceSha256",
+  "expectedWriteSetSha256",
+  "dependencyRank",
+] as const;
+
+/**
+ * A version as both reads echo it. `stepCount` with `RoadmapVersionDto`'s meaning:
+ * null for a version recorded before steps existed, which declared nothing; 0 for
+ * one that declared none. Bounded by `ROADMAP_STEPS_MAX` where the Dto is unbounded:
+ * the door refuses a version of more steps, so no recorded row exceeds it.
+ */
+const RoadmapVersionEcho = z.strictObject({
+  version: z.number().int().positive(),
+  roadmapVersionId: z.uuid(),
+  kind: RoadmapVersionKindDto,
+  stepCount: z.number().int().min(0).max(ROADMAP_STEPS_MAX).nullable(),
+});
+
+/**
+ * One version's declared steps, in index order (P-26 cut C, ADR 0113).
+ *
+ * Each step's title — the one text the stream persists, decision 76's class — its
+ * position, rank, state and dependencies. **No digest and no reference** (L-P26C-1):
+ * a choice, not a law of §8.1, whose precedent is the effects listing ("ni digest, ni
+ * referencia, ni bytes"). The objective, acceptance and paths live in the private
+ * manifest and are never read here; the route reads the read model, never the plane.
+ */
+export const RoadmapStepsResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    initiativeId: z.uuid(),
+    version: RoadmapVersionEcho,
+    steps: z
+      .array(
+        z.strictObject({
+          stepId: BoundedIdentifier,
+          stepIndex: z.number().int().min(0).max(ROADMAP_STEPS_MAX - 1),
+          title: z.string().min(1).max(200),
+          dependencyRank: z.number().int().min(0).max(ROADMAP_STEPS_MAX - 1),
+          state: RoadmapStepStateDto,
+          dependsOn: z.array(BoundedIdentifier).max(ROADMAP_STEP_DEPENDS_ON_MAX),
+        }),
+      )
+      .max(ROADMAP_STEPS_MAX),
+  })
+  .superRefine(attachGuards);
+export type RoadmapStepsResponse = z.infer<typeof RoadmapStepsResponse>;
+
+/**
+ * The semantic diff between two versions of one initiative (P-26 cut C, requirement
+ * A10, ADR 0113).
+ *
+ * Steps keyed by `stepId`: `added` and `removed`, and `changed` with the compared
+ * fields that differ, by name. `dependencies` is the pair sets' difference.
+ * `contentChanged` is whether the two versions name different document bytes; a
+ * text diff of the document is the client's, from two content reads. `restores` is
+ * the version a rollback `to` restores, by number and id. `roles` is a named absence
+ * derived from the rows: the STEP scope has no producer in this build (planning §6
+ * resolves STEP > INITIATIVE > GLOBAL, and only GLOBAL is published), which is not
+ * a claim that the steps have no roles; P-28 replaces it with the per-step diff of
+ * assignments. No digest, no reference, no text (L-P26C-1).
+ */
+export const RoadmapDiffResponse = z
+  .strictObject({
+    apiContractVersion: ApiContractVersion,
+    ledgerContractVersion: LedgerContractVersion,
+    initiativeId: z.uuid(),
+    from: RoadmapVersionEcho,
+    to: RoadmapVersionEcho,
+    added: z.array(BoundedIdentifier).max(ROADMAP_STEPS_MAX),
+    removed: z.array(BoundedIdentifier).max(ROADMAP_STEPS_MAX),
+    changed: z
+      .array(
+        z.strictObject({
+          stepId: BoundedIdentifier,
+          fields: z.array(z.enum(ROADMAP_DIFF_FIELDS)).min(1).max(ROADMAP_DIFF_FIELDS.length),
+        }),
+      )
+      .max(ROADMAP_STEPS_MAX),
+    dependencies: z.strictObject({
+      added: z
+        .array(z.strictObject({ stepId: BoundedIdentifier, dependsOnStepId: BoundedIdentifier }))
+        .max(ROADMAP_STEPS_MAX * ROADMAP_STEP_DEPENDS_ON_MAX),
+      removed: z
+        .array(z.strictObject({ stepId: BoundedIdentifier, dependsOnStepId: BoundedIdentifier }))
+        .max(ROADMAP_STEPS_MAX * ROADMAP_STEP_DEPENDS_ON_MAX),
+    }),
+    contentChanged: z.boolean(),
+    restores: z.strictObject({ version: z.number().int().positive(), roadmapVersionId: z.uuid() }).nullable(),
+    roles: z.literal("STEP_ASSIGNMENTS_UNPRODUCED"),
+  })
+  .superRefine(attachGuards);
+export type RoadmapDiffResponse = z.infer<typeof RoadmapDiffResponse>;
 
 // ---------------------------------------------------------------------------
 // The explicit tool call (V2-B4b stage 3C)
