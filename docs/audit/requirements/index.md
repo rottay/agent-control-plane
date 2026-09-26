@@ -6,8 +6,9 @@ la cadena `requisito → dueño → contrato o caso → entrega → puerta de ac
 [Índice](../README.md) · [Arquitectura](../architecture/index.md) · [Contratos](../architecture/contracts/index.md) · [Datos](../architecture/database/index.md) · [Roadmap](../roadmap/index.md) · [Calidad](../quality/index.md) · [Packets](../implementation/packets/index.md)
 
 Estado: **especificación**. Cobertura de planificación, **no** progreso de
-implementación. Ninguna fila afirma que algo esté implementado; la columna
-*Situación* describe lo que se leyó en `a92756b`.
+implementación. Ninguna fila afirma que algo esté implementado, salvo las
+cerradas por decisión, que nombran su hito y su decisión; en las demás, la
+columna *Situación* describe lo que se leyó en `a92756b`.
 
 ---
 
@@ -20,7 +21,7 @@ implementación. Ninguna fila afirma que algo esté implementado; la columna
 | Dueño | el contexto que posee la capacidad ([arquitectura §3](../architecture/index.md)) |
 | Contrato / datos | el eslabón de [contratos](../architecture/contracts/index.md) y la hoja de [datos](../architecture/database/index.md) que lo sostienen |
 | Entrega | hitos de construcción de [roadmap](../roadmap/index.md); el único hito de cierre por ID está en la [correspondencia de packets](../implementation/packets/requirements/index.md) |
-| Situación | base reutilizable · defecto observado · planificado · pendiente de prueba · diferido |
+| Situación | base reutilizable · defecto observado · planificado · pendiente de prueba · diferido · cerrado para <hito> (decisión N) |
 | Aceptación | la prueba que cierra el requisito, escrita como un hecho falsable |
 
 **La situación no es un porcentaje.** No se publica un número global: esta ronda no
@@ -61,7 +62,7 @@ antes de iniciar efectos.
 | B2 | Elegir la ruta | runtime + accounts | admisión §5 · execution | M5/M7 | base parcial | Selección justificada por política, capacidades y cuenta; un requisito desconocido rechaza antes de gastar |
 | B3 | Reservar cuenta y worktree | accounts + runtime | reserva §6 · [coordination](../architecture/database/coordination/index.md) | M4/M5 | base parcial | Reserva concurrente atómica; tras recuperación, cada reserva queda conservada o liberada de forma consistente en ambas bases |
 | B4 | Verificar el prestate | runtime | dispatch §7 · execution | M3/M4 | base parcial | El prestate se lee de verdad antes del efecto; una diferencia rechaza sin mutar el workspace |
-| B5 | Abrir la sesión con la instrucción | runtime + providers | contenido §4 · execution | M1/M2 | defecto N02 | El prompt exacto llega por CLI, API y local admitidos; un handshake rechazado **no** cuenta como soporte |
+| B5 | Abrir la sesión con la instrucción | runtime + providers | contenido §4 · execution | M1/M2 | **cerrado para M2** (P-15, decisión 218): CLI por el smoke S1 intento 4; API y local por las patas de P-06 (ADR 0096) y los drills D-F-4 y D-F-5 por puertas reales (decisión 159), sin smoke real | El prompt exacto llega por CLI, API y local admitidos; un handshake rechazado **no** cuenta como soporte |
 | B6 | Seguir la ejecución en vivo | observation | resultado §10 · streams | M10 | base parcial | El stream muestra ejecución real, reconecta sin huecos ni duplicados y distingue silencio de desconexión |
 | B7 | Ejecutar herramientas acotadas | runtime + tools | dispatch §7 · execution | M8 | defecto N07 | Permiso, schema y herramienta ligados; un error de herramienta nunca produce un receipt exitoso |
 | B8 | Verificar conformance del write-set | runtime | conformance §13 · execution | M3/M8 | base parcial | La conformance se calcula sobre efectos reales; una salida fuera del set impide la aprobación y conserva la evidencia |
@@ -71,7 +72,7 @@ antes de iniciar efectos.
 | B12 | Ejecutar tareas en paralelo | runtime | reserva §6 · coordination | M5/M6/M9 | base parcial | Dos tareas independientes avanzan a la vez sin doble lease ni exceso de presupuesto |
 | B13 | Correr en modo sólo lectura | runtime | commit §12 · execution | M2/M3/M8 | defecto N03 | `NO_COMMIT` omite autorización y commit pero permite editar dentro del write-set; `READ_ONLY` impide mutar workspace y herramientas y permite estado interno. Ninguno produce confirmaciones ficticias |
 | B14 | Reintentar con otra ruta | runtime | handoff §8 · execution | M4/M5/M7 | base parcial | La ruta nueva conserva revisión, autoridad y checkpoint compatible; una ruta no capaz rechaza |
-| B15 | Registrar el resultado | runtime | resultado §10 · execution | M1/M2 | defecto — marcador P-15/F (ADR 0107, decisión 154): aceptación de **código** por las puertas reales en ambos sentidos con hijos sintéticos; la fila cambia en M2 sólo con el smoke autorizado G/S1 o un fallo explícito del DT | El resultado es recuperable por referencia y digest, y el terminal es correcto; un conteo de tokens no es un resultado |
+| B15 | Registrar el resultado | runtime | resultado §10 · execution | M1/M2 | **cerrado para M2** (P-15, decisión 218): código por las puertas reales en ambos sentidos (P-15/F, decisión 154; E, decisión 159) y el smoke S1 intento 4, leído por `acp result` como `RESULT` `SUCCEEDED` | El resultado es recuperable por referencia y digest, y el terminal es correcto; un conteo de tokens no es un resultado |
 | B16 | Escalera de reintento | runtime | dispatch §7 · execution | M4/M5 | planificado | Retry, backoff y escalado acotados por presupuesto; `OUTCOME_UNKNOWN` no se reintenta ciegamente |
 | B17 | Duelo de modelos | planning | admisión §5 · planning | M9/M11 | planificado | El duelo sólo sobre tareas sin conflicto de escritura; árbitro independiente y costo de ambos visible |
 | B18 | Límites de tiempo | runtime | dispatch §7 · execution | M6/M8 | planificado | El deadline alcanza a hijos y herramientas y distingue solicitud cancelada de proceso realmente terminado |
