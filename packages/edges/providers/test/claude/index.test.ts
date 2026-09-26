@@ -28,6 +28,7 @@ import * as claudeModule from "../../src/claude/index.js";
 import { CLAUDE_STREAM_PROTOCOL, CLAUDE_USAGE_SOURCE, claudeAdapter } from "../../src/claude/index.js";
 import {
   CAPTURED_2_1_281_ALLOWED,
+  CAPTURED_2_1_281_PLAN_WRITE,
   CAPTURED_2_1_281_SUCCESS,
   CAPTURED_AUTH_FAILURE,
   CAPTURED_SUCCESS,
@@ -243,7 +244,7 @@ describe("the descriptor is exactly what was authorized", () => {
     }
   });
 
-  it("adds the native read-only layer for a reviewer, with the tool allowlist, and still passes the structural scan", () => {
+  it("P-1 (P-15/A4, ADR 0119): a reviewer is started with the tool allowlist and no permission mode, and still passes the structural scan", () => {
     const descriptor = claudeAdapter.describe(request(REVIEWER));
     expect([...descriptor.argv]).toEqual([
       "-p",
@@ -258,15 +259,56 @@ describe("the descriptor is exactly what was authorized", () => {
       "--strict-mcp-config",
       "--mcp-config",
       '{"mcpServers":{}}',
-      "--permission-mode",
-      "plan",
       "--restricted",
       "--tools",
       "Glob,Grep,Read,WebFetch,WebSearch",
     ]);
-    // The polite layer must never itself trip the load-bearing one, including
-    // in the two-token spelling it uses.
+    // The polite layer must never itself trip the load-bearing one.
     expect(descriptorEnablesWrites(descriptor.argv)).toBe(false);
+  });
+
+  it("N-1 (P-15/A4, ADR 0119): no reviewer argv names a permission mode, plan, a tool denylist or a prompt policy", () => {
+    // Every reviewer request shape this suite builds: both attempts, and the resume
+    // of the attempt's own name. ND-1 and ND-2 were not adopted, so neither
+    // `--disallowedTools` nor `--permission-prompts` may appear in their place.
+    const own = claudeSessionId(TASK, 1);
+    for (const shape of [request(REVIEWER), request(REVIEWER, { attempt: 2 }), request(REVIEWER, { resumeSessionId: own })]) {
+      const argv = [...claudeAdapter.describe(shape).argv];
+      for (const element of argv) {
+        const named =
+          element === "plan" ||
+          element === "--permission-mode" ||
+          element.startsWith("--permission-mode=") ||
+          element === "--disallowedTools" ||
+          element === "--disallowed-tools" ||
+          element === "--permission-prompts";
+        expect({ element, named }).toEqual({ element, named: false });
+      }
+      expect(argv.slice(-3)).toEqual(["--restricted", "--tools", "Glob,Grep,Read,WebFetch,WebSearch"]);
+      expect(descriptorEnablesWrites(argv)).toBe(false);
+    }
+  });
+
+  it("B-1 (P-15/A4): the change is role-scoped: the implementer argv is the pinned list, and the reviewer's is it plus exactly the three allowlist tokens", () => {
+    const implementer = [...claudeAdapter.describe(request(IMPLEMENTER)).argv];
+    expect(implementer).toEqual([
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--model",
+      "opus",
+      "--session-id",
+      "39de475b-2696-5df6-b64b-88336de7d72c",
+      "--no-session-persistence",
+      "--strict-mcp-config",
+      "--mcp-config",
+      '{"mcpServers":{}}',
+    ]);
+    // `READ_ONLY_TOOL_ALLOWLIST` is module-private (the export surface pins three
+    // names), so the list the kill reads is pinned here as its literal.
+    const reviewer = [...claudeAdapter.describe(request(REVIEWER)).argv];
+    expect(reviewer).toEqual([...implementer, "--restricted", "--tools", "Glob,Grep,Read,WebFetch,WebSearch"]);
   });
 
   it("adds no read-only flags for a non-reviewer identity", () => {
@@ -980,7 +1022,7 @@ const SAMPLE_3_STEP = {
   sourceObservationId: "00000000-0000-4000-8000-000000000001/result",
 };
 
-describe("P-15/A2, A3: both 2.1.281 captures, and both 2.1.280 captures, replay whole (T-C1)", () => {
+describe("P-15/A2, A3, A4: the three 2.1.281 captures, and both 2.1.280 captures, replay whole (T-C1)", () => {
   it("the fixture is the sanitized capture byte for byte", () => {
     const digest = createHash("sha256").update(stream(CAPTURED_2_1_281_SUCCESS), "utf8").digest("hex");
     expect(CAPTURED_2_1_281_SUCCESS).toHaveLength(8);
@@ -1002,6 +1044,29 @@ describe("P-15/A2, A3: both 2.1.281 captures, and both 2.1.280 captures, replay 
     ]);
   });
 
+  it("A4: sample 5 is S1 attempt 3's sanitized stream byte for byte, eleven records and no result", () => {
+    const digest = createHash("sha256").update(stream(CAPTURED_2_1_281_PLAN_WRITE), "utf8").digest("hex");
+    expect(CAPTURED_2_1_281_PLAN_WRITE).toHaveLength(11);
+    expect(digest).toBe("476aba4fbbbdd0146e6fce90ef29bba19ab06f6ed4b20ea5f8b4a4674d65e0a5");
+    expect(CAPTURED_2_1_281_PLAN_WRITE.map((line) => (record(line)["type"] as string))).toEqual([
+      "system",
+      ...Array<string>(7).fill("system"),
+      "assistant",
+      "assistant",
+      "assistant",
+    ]);
+  });
+
+  it("A4: sample 5 replays whole with no refusal: started, then write{Write} — a write is a signal, never a parse refusal", () => {
+    // The sanitized text block is "" and an empty text yields no output signal, so
+    // the trail is the start and the write; the thinking block is never output.
+    expect(refusalOf(CAPTURED_2_1_281_PLAN_WRITE)).toBeNull();
+    expect(signalsOf(CAPTURED_2_1_281_PLAN_WRITE)).toEqual([
+      { kind: "started", resolvedModel: "claude-haiku-4-5-20251001", protocolVersion: CLAUDE_STREAM_PROTOCOL },
+      { kind: "write", target: "Write" },
+    ]);
+  });
+
   it("A3: sample 4 replays whole with no refusal: started, and nothing else (no result, so no step and no verdict)", () => {
     expect(refusalOf(CAPTURED_2_1_281_ALLOWED)).toBeNull();
     expect(signalsOf(CAPTURED_2_1_281_ALLOWED)).toEqual([
@@ -1018,12 +1083,13 @@ describe("P-15/A2, A3: both 2.1.281 captures, and both 2.1.280 captures, replay 
     ]);
   });
 
-  it("each of the four samples gives the same signals in one chunk and at every split point", () => {
+  it("each of the five samples gives the same signals in one chunk and at every split point", () => {
     for (const [name, lines] of [
       ["sample 1 (2.1.280)", CAPTURED_AUTH_FAILURE],
       ["sample 2 (2.1.280)", CAPTURED_SUCCESS],
       ["sample 3 (2.1.281)", CAPTURED_2_1_281_SUCCESS],
       ["sample 4 (2.1.281, allowed)", CAPTURED_2_1_281_ALLOWED],
+      ["sample 5 (2.1.281, plan-file write)", CAPTURED_2_1_281_PLAN_WRITE],
     ] as const) {
       const whole = signalsOf(lines);
       expect(whole.some((signal) => "refused" in (signal as object)), name).toBe(false);

@@ -12478,6 +12478,55 @@ const P37S2_WRITE_SET = [
   "docs/audit/implementation/packets/index.md",
 ];
 
+/**
+ * P-15, cut A4: a Claude reviewer is not started in plan mode (ADR 0119, amending ADR
+ * 0101; decisions 214-216; brief v1 with the Kimi K3 pre-audit's corrections and the
+ * rulings on ND-1 to ND-8, adopted).
+ *
+ * S1 attempt 3 failed closed: its reviewer, started with `--permission-mode plan
+ * --restricted --tools <allowlist>`, emitted a `Write` of the CLI's plan file, a tool
+ * outside the allowlist and absent from its own `init.tools`, and the session's
+ * read-only layer killed it (`READ_ONLY_VIOLATION`). The reviewer argv drops
+ * `--permission-mode plan` and keeps `--restricted --tools <allowlist>`; nothing else in
+ * the argv moves. Layer 1 (`descriptorEnablesWrites`, `PAIR_FLAG_SAFE_VALUES`) and layer
+ * 2 (`READ_ONLY_VIOLATION`) are byte-unchanged: `src/session/index.ts` is outside this
+ * 11-path write-set, and AC-2 is held by the DT's and the verifier's diff-path check
+ * against this constant plus the unchanged tests (T-G3 with controls A/B, the session
+ * pair matrix, the fail-closed `descriptorEnablesWrites`). This fence does not hold it:
+ * write-set conformance below is union membership, and `session/index.ts` is already
+ * admitted by P4A, V2B1C, P06C and P07C, so an in-place edit cannot be refused under this
+ * cut (bite-r1.log: control GREEN, one-byte edit GREEN, `dontAsk` in
+ * `PAIR_FLAG_SAFE_VALUES` GREEN, positive control RED). Sample 5, attempt 3's sanitized stream
+ * (sha256 476aba4f...e0a5), joins the capture fixture; the port gains T-G3 with its role
+ * and tool-name controls and T-V1, the closed verdict table over every capture and both
+ * roles; the daemon T-D4 (attempt 3's class, reproduced as a reviewer) and T-D5
+ * (composed, no capture shows it), both reading the argv the child received. No new
+ * law (ND-6); L-P15A2-1 holds unchanged.
+ *
+ * **Pins that move.** The ADR corpus 118 -> **119**. Computed and pinned by no doc: this
+ * constant is one more epoch-frozen record, whose 11 paths hold 6 more package-path
+ * literals.
+ * **Pins that do not.** `PATH_SCOPED_LAWS` (174), `CLAUDE_OBSERVED_CLI_VERSIONS`
+ * (2.1.280, 2.1.281), `ADAPTER_ERROR_CODES` (19), `PROVIDERS_PUBLIC_EXPORTS` (97),
+ * `CONTRACT_VERSION` (2.10.0), `API_CONTRACT_VERSION` (0.24.0), `MIGRATIONS` (27), the
+ * Claude usage policy's digest, and D4's trail pin.
+ *
+ * **Eleven paths; one is new**: the ADR.
+ */
+const P15A4_WRITE_SET = [
+  "docs/architecture/0119-a-claude-reviewer-is-not-started-in-plan-mode.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "packages/edges/providers/README.md",
+  "packages/edges/providers/src/claude/index.ts",
+  "packages/edges/providers/test/claude/index.test.ts",
+  "packages/edges/providers/test/execution-port/index.test.ts",
+  "packages/edges/providers/test/testing/claude-capture/index.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "scripts/check-architecture.mjs",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12734,6 +12783,7 @@ const WRITE_SET = [
   ...P24B_WRITE_SET,
   ...P24BA_WRITE_SET,
   ...P37S2_WRITE_SET,
+  ...P15A4_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 

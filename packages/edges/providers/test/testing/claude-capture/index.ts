@@ -1,6 +1,6 @@
 /**
  * The captured Claude CLI streams, sanitized (P-07 escalón C, ADR 0099; P-15/A2,
- * ADR 0112; P-15/A3, ADR 0114).
+ * ADR 0112; P-15/A3, ADR 0114; P-15/A4, ADR 0119).
  *
  * **Provenance.** Two runs the owner authorized on 2026-09-22, each run once:
  * Claude CLI `2.1.280`, `--model haiku`, the adapter-shaped environment, the
@@ -8,7 +8,10 @@
  * Claude CLI `2.1.281` after its auto-update, tools disabled, one turn; and the S1
  * retry the owner authorized on 2026-09-24, run once, of the pinned private 2.1.281
  * binary through the daemon, whose stream the adapter refused at its seventh record
- * (P-15/G, the defect ADR 0114 corrects). Kept here
+ * (P-15/G, the defect ADR 0114 corrects); and S1 attempt 3, which the owner authorized
+ * on 2026-09-25, run once, of the same binary through the daemon as a reviewer, whose
+ * session the read-only layer killed at its eleventh record (P-15/G, the argv ADR 0119
+ * corrects). Kept here
  * as string literals because every fixture in this repository is a TypeScript
  * literal; the sanitized files they were copied from are evidence outside the
  * tree, identified by digest:
@@ -19,6 +22,7 @@
  * | 2, a success | `CAPTURED_SUCCESS` | 2.1.280 | 0 | `01132951fe2a7b0e6062b0f5997b033d0276822230f3c3c72ff3f0c2a398d312` |
  * | 3, a success | `CAPTURED_2_1_281_SUCCESS` | 2.1.281 | 0 | `a1bd7d8214e337aa4f111e1e5d7ef0a76f8dcd79071d0ab3027713bfd85e095a` |
  * | 4, seven records, no `result` | `CAPTURED_2_1_281_ALLOWED` | 2.1.281 | none observed | `21a6d56e4a49ed08166e4f812a78cebad662834ff7a81a719dd6c1e339f15749` |
+ * | 5, eleven records, a reviewer's plan-file `Write`, no `result` | `CAPTURED_2_1_281_PLAN_WRITE` | 2.1.281 | none observed (killed by the session) | `476aba4fbbbdd0146e6fce90ef29bba19ab06f6ed4b20ea5f8b4a4674d65e0a5` |
  *
  * Sample 3's literals are the sanitized file's eight lines byte for byte, and sample
  * 4's the sanitized file's seven: joined by `\n` with a trailing `\n`, each hashes to
@@ -26,7 +30,9 @@
  * the session down after its seventh record, so the "Exit" column records none, never
  * 0 or 1. Its `init` carries `tools` with five names (samples 1-3 carry `[]`): they
  * are the argv's tool list, not identity, and `init` reads them leniently; do not
- * normalize them to `[]`.
+ * normalize them to `[]`. Sample 5's literals are its sanitized file's eleven lines
+ * byte for byte, hashed the same way; it has no `result` and no exit of its own either:
+ * the session killed the child on its eleventh record, a reviewer's write.
  *
  * **What was replaced.** Every record type and field name is kept; only values
  * changed. Sample 1: `session_id`, every `uuid`, `assistant.message.id` and the
@@ -47,7 +53,15 @@
  * `sanitize.log`) under sample 3's rules exactly — the five inventories emptied,
  * `capabilities` and `tools` kept, the ids renumbered in order of first appearance,
  * **every number** by `1`, the thinking and the one text block emptied (its summary
- * records `assistantTextEqualsOk: true`), no `result` to empty.
+ * records `assistantTextEqualsOk: true`), no `result` to empty. Sample 5: produced
+ * once by a recorded script (evidence `p15/A4/sanitize-s1a3.mjs.txt`, `sanitize.log`)
+ * under sample 4's rules exactly, plus the `tool_use` block's: its `id` renumbered on
+ * the same counter (`toolu_fixture_…`), its `name` and `caller.type` kept (`"Write"` is
+ * the fact under test), `input.file_path` by `/fixture/config-root/plans/fixture-plan.md`
+ * and `input.contents` emptied; record 11's top-level `wire_tool_inputs`, keyed by that
+ * id and mirroring that input, takes the same fixture id as its key and the same two
+ * replacements. The one text block is emptied and NOT restored anywhere: the capture's
+ * text was 53 characters, not `"ok"` (its summary records `assistantTextChars: 53`).
  *
  * **What they prove, and what they do not.** Sample 1: a `result` carries a
  * boolean `is_error` and a string `result`, `is_error: true` coincided with exit
@@ -67,7 +81,13 @@
  * shape moved with `status` inside one version. What it does not show: a 2.1.281
  * `allowed` stream that ends in a `result`. The daemon drill that follows sample 4
  * with sample 3's `result` is a composition, named "composed, no capture shows it"
- * where it is built. Not observed: `is_error: true` with
+ * where it is built. Sample 5: a reviewer started in `--permission-mode plan` can emit,
+ * in one assistant message, a `tool_use` named `Write` — a tool outside the read-only
+ * allowlist and absent from its own `init.tools` — aimed at the CLI's plan file; the
+ * parser admits every record, and the write is a signal, never a parse refusal. What it
+ * does not show: that an argv without plan mode prevents such a `tool_use` (ADR 0119
+ * names that unproven), or anything about a 2.1.281 stream that ends in a `result`.
+ * Not observed: `is_error: true` with
  * exit 0, `is_error: false` with a non-zero exit, a signal exit, any other CLI
  * version.
  */
@@ -113,4 +133,23 @@ export const CAPTURED_2_1_281_ALLOWED: readonly string[] = [
   "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"id\":\"msg_fixture_000000000006\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"fixture-signature\"}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":1,\"cache_read_input_tokens\":1,\"cache_creation\":{\"ephemeral_5m_input_tokens\":1,\"ephemeral_1h_input_tokens\":1},\"output_tokens\":1,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"input_transformations\":[],\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000007\",\"timestamp\":\"1970-01-01T00:00:00.000Z\",\"request_id\":\"req_fixture_000000000008\"}",
   "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"id\":\"msg_fixture_000000000006\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"\"}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":1,\"cache_read_input_tokens\":1,\"cache_creation\":{\"ephemeral_5m_input_tokens\":1,\"ephemeral_1h_input_tokens\":1},\"output_tokens\":1,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"input_transformations\":[],\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000009\",\"timestamp\":\"1970-01-01T00:00:00.000Z\",\"request_id\":\"req_fixture_000000000008\"}",
   "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\",\"resetsAt\":1,\"rateLimitType\":\"five_hour\",\"overageStatus\":\"rejected\",\"overageDisabledReason\":\"org_level_disabled\",\"isUsingOverage\":false,\"unifiedWindows\":{\"five_hour\":{\"utilization\":1,\"resetsAt\":1},\"seven_day\":{\"utilization\":1,\"resetsAt\":1}}},\"uuid\":\"00000000-0000-4000-8000-100000000010\",\"session_id\":\"00000000-0000-4000-8000-000000000001\"}",
+];
+
+/**
+ * Sample 5, eleven records: S1 attempt 3's CLI 2.1.281 stream, a reviewer in plan mode
+ * whose one assistant message ends in a `Write` `tool_use` of the CLI's plan file, no
+ * `result` and no exit of its own observed (the session killed the child).
+ */
+export const CAPTURED_2_1_281_PLAN_WRITE: readonly string[] = [
+  "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"/fixture/cwd\",\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"tools\":[\"Glob\",\"Grep\",\"Read\",\"WebFetch\",\"WebSearch\"],\"mcp_servers\":[],\"model\":\"claude-haiku-4-5-20251001\",\"permissionMode\":\"plan\",\"slash_commands\":[],\"terminal_slash_commands\":[],\"apiKeySource\":\"none\",\"claude_code_version\":\"2.1.281\",\"output_style\":\"default\",\"agents\":[],\"skills\":[],\"plugins\":[],\"capabilities\":[\"interrupt_receipt_v1\",\"interrupt_cancel_queued_v1\",\"msg_lifecycle_v1\",\"mcp_read_resource_v1\",\"mcp_tool_ui_meta_v1\"],\"analytics_disabled\":false,\"product_feedback_disabled\":false,\"uuid\":\"00000000-0000-4000-8000-100000000002\",\"messaging_socket_path\":\"/fixture/socket.sock\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"sdk_opt_in_required\",\"per_turn_effort_active\":false,\"view_mode\":\"default\"}",
+  "{\"type\":\"system\",\"subtype\":\"thinking_tokens\",\"estimated_tokens\":1,\"estimated_tokens_delta\":1,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000003\"}",
+  "{\"type\":\"system\",\"subtype\":\"thinking_tokens\",\"estimated_tokens\":1,\"estimated_tokens_delta\":1,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000004\"}",
+  "{\"type\":\"system\",\"subtype\":\"thinking_tokens\",\"estimated_tokens\":1,\"estimated_tokens_delta\":1,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000005\"}",
+  "{\"type\":\"system\",\"subtype\":\"thinking_tokens\",\"estimated_tokens\":1,\"estimated_tokens_delta\":1,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000006\"}",
+  "{\"type\":\"system\",\"subtype\":\"thinking_tokens\",\"estimated_tokens\":1,\"estimated_tokens_delta\":1,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000007\"}",
+  "{\"type\":\"system\",\"subtype\":\"thinking_tokens\",\"estimated_tokens\":1,\"estimated_tokens_delta\":1,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000008\"}",
+  "{\"type\":\"system\",\"subtype\":\"thinking_tokens\",\"estimated_tokens\":1,\"estimated_tokens_delta\":1,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000009\"}",
+  "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"id\":\"msg_fixture_000000000010\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"fixture-signature\"}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":1,\"cache_read_input_tokens\":1,\"cache_creation\":{\"ephemeral_5m_input_tokens\":1,\"ephemeral_1h_input_tokens\":1},\"output_tokens\":1,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"input_transformations\":[],\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000011\",\"timestamp\":\"1970-01-01T00:00:00.000Z\",\"request_id\":\"req_fixture_000000000012\"}",
+  "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"id\":\"msg_fixture_000000000010\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"\"}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":1,\"cache_read_input_tokens\":1,\"cache_creation\":{\"ephemeral_5m_input_tokens\":1,\"ephemeral_1h_input_tokens\":1},\"output_tokens\":1,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"input_transformations\":[],\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000013\",\"timestamp\":\"1970-01-01T00:00:00.000Z\",\"request_id\":\"req_fixture_000000000012\"}",
+  "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-haiku-4-5-20251001\",\"id\":\"msg_fixture_000000000010\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_fixture_000000000014\",\"name\":\"Write\",\"input\":{\"file_path\":\"/fixture/config-root/plans/fixture-plan.md\",\"contents\":\"\"},\"caller\":{\"type\":\"direct\"}}],\"container\":null,\"stop_reason\":null,\"stop_sequence\":null,\"stop_details\":null,\"usage\":{\"input_tokens\":1,\"cache_creation_input_tokens\":1,\"cache_read_input_tokens\":1,\"cache_creation\":{\"ephemeral_5m_input_tokens\":1,\"ephemeral_1h_input_tokens\":1},\"output_tokens\":1,\"service_tier\":\"standard\",\"inference_geo\":\"not_available\"},\"input_transformations\":[],\"diagnostics\":null,\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"00000000-0000-4000-8000-000000000001\",\"uuid\":\"00000000-0000-4000-8000-100000000015\",\"timestamp\":\"1970-01-01T00:00:00.000Z\",\"request_id\":\"req_fixture_000000000012\",\"wire_tool_inputs\":{\"toolu_fixture_000000000014\":{\"file_path\":\"/fixture/config-root/plans/fixture-plan.md\",\"contents\":\"\"}}}",
 ];

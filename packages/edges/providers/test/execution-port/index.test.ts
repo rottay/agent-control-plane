@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,8 +43,10 @@ import {
   synMessagesStream,
   syntheticCanary,
 } from "../testing/index.js";
+import * as claudeCaptures from "../testing/claude-capture/index.js";
 import {
   CAPTURED_2_1_281_ALLOWED,
+  CAPTURED_2_1_281_PLAN_WRITE,
   CAPTURED_2_1_281_SUCCESS,
   CAPTURED_AUTH_FAILURE,
   CAPTURED_SUCCESS,
@@ -1899,10 +1901,13 @@ describe("the real HTTP clients through the port (P-15/E)", () => {
 // P-15/A2 — the version gate fires after spawn, at the port (T-G1, ADR 0112)
 // ---------------------------------------------------------------------------
 
-/** A port whose one child writes its pid to a file before it writes a byte of stream. */
-function pidReportingPort(lines: readonly string[], pidFile: string, lingerMs: number): ModelExecutionPort {
+/**
+ * A port whose one child writes its pid to a file before it writes a byte of stream.
+ * The child exits 0 unless `exitCode` says otherwise (P-15/A4's T-V1 replays sample 1, exit 1).
+ */
+function pidReportingPort(lines: readonly string[], pidFile: string, lingerMs: number, exitCode = 0): ModelExecutionPort {
   const root = drillRoot();
-  const base = scriptedAdapter(claudeAdapter, { lines, exitCode: 0, lingerMs });
+  const base = scriptedAdapter(claudeAdapter, { lines, exitCode, lingerMs });
   const adapter: ProviderAdapter = {
     ...base,
     describe(req) {
@@ -2049,4 +2054,254 @@ describe("P-15/A3: the S1 retry's 2.1.281 allowed stream is admitted through the
     }
     expect(await reaped(Number.parseInt(readFileSync(pidFile, "utf8"), 10))).toBe(true);
   });
+});
+
+// ---------------------------------------------------------------------------
+// P-15/A4 — S1 attempt 3's stream through the port (T-G3, T-V1, ADR 0119)
+// ---------------------------------------------------------------------------
+
+/** Sample 5 with record 11's `tool_use.name` replaced (control B), or as captured. */
+function sample5(toolName?: string): readonly string[] {
+  if (toolName === undefined) return CAPTURED_2_1_281_PLAN_WRITE;
+  const write = JSON.parse(CAPTURED_2_1_281_PLAN_WRITE[10] ?? "{}") as Record<string, unknown>;
+  const content = (write["message"] as Record<string, unknown>)["content"] as Record<string, unknown>[];
+  const block = content[0];
+  if (block === undefined) throw new Error("sample 5's record 11 holds one block");
+  block["name"] = toolName;
+  return [...CAPTURED_2_1_281_PLAN_WRITE.slice(0, 10), JSON.stringify(write)];
+}
+
+/**
+ * The kinds of a trail that ends in a session failure, `started` left out.
+ *
+ * The session builds a read's events before it queues any, and a digest that throws
+ * discards them all (`src/session/index.ts`, `digest`): when the pipe hands `init` and
+ * the failing record over in one read, `started` is never emitted. How the pipe splits
+ * the child's writes is the operating system's, so a failed trail is compared without
+ * `started`, and `started` is held to at most once, and first.
+ */
+function failedTrailKinds(trail: readonly ExecutionEvent[]): readonly ExecutionEvent["kind"][] {
+  const kinds = trail.map((event) => event.kind);
+  const started = kinds.filter((kind) => kind === "started").length;
+  expect(started).toBeLessThanOrEqual(1);
+  expect(kinds.slice(0, started)).toEqual(kinds.filter((kind) => kind === "started"));
+  return kinds.filter((kind) => kind !== "started");
+}
+
+describe("P-15/A4: S1 attempt 3's stream is killed through the port for a reviewer, and only for the write (T-G3)", () => {
+  it("T-G3: as a reviewer, sample 5 ends in error{TRANSPORT_UNAVAILABLE, READ_ONLY_VIOLATION}; no completed, usage or operationResult; the child reaped", async () => {
+    // Layer 2 (the session's READ_ONLY_VIOLATION) pinned against the captured
+    // write: attempt 3's outcome, reproduced. The child lingers, so what ends it is the kill.
+    const pidFile = join(drillRoot(), "child.pid");
+    const sunk: string[] = [];
+    const trail = await drain(pidReportingPort(sample5(), pidFile, 5_000), route(), request({ identity: REVIEWER }), (delta) => sunk.push(delta));
+    expect(existsSync(pidFile)).toBe(true);
+    // The kill is a process fact before the error: the child ended by a signal, not an exit.
+    expect(failedTrailKinds(trail)).toEqual(["processExited", "error"]);
+    const exited = trail.find((event) => event.kind === "processExited");
+    expect(exited).toMatchObject({ kind: "processExited", exitCode: null });
+    expect(typeof (exited as { signal: unknown } | undefined)?.signal).toBe("string");
+    const last = trail.at(-1);
+    expect(last).toMatchObject({ kind: "error", refusal: "TRANSPORT_UNAVAILABLE" });
+    if (last?.kind !== "error") throw new Error("expected an error event");
+    expect(last.detail).toContain("READ_ONLY_VIOLATION");
+    for (const kind of ["completed", "usage", "operationResult"]) {
+      expect({ kind, present: trail.some((event) => event.kind === kind) }).toEqual({ kind, present: false });
+    }
+    expect(sunk).toEqual([]);
+    expect(await reaped(Number.parseInt(readFileSync(pidFile, "utf8"), 10))).toBe(true);
+  });
+
+  it("T-G3 control A (role): the same stream as an implementer is not killed: started, processExited{0, null}, completed; no error, no write; the child reaped", async () => {
+    const pidFile = join(drillRoot(), "child.pid");
+    const trail = await drain(pidReportingPort(sample5(), pidFile, 0), route(), request());
+    expect(existsSync(pidFile)).toBe(true);
+    expect(trail.map((event) => event.kind)).toEqual(["started", "processExited", "completed"]);
+    expect(trail.find((event) => event.kind === "processExited")).toEqual({ kind: "processExited", exitCode: 0, signal: null });
+    // The port does not report a write for any role (see "emits no write event").
+    for (const kind of ["error", "write"]) {
+      expect({ kind, present: trail.some((event) => event.kind === kind) }).toEqual({ kind, present: false });
+    }
+    expect(await reaped(Number.parseInt(readFileSync(pidFile, "utf8"), 10))).toBe(true);
+  });
+
+  it("T-G3 control B (tool name): the same stream as a reviewer with the tool renamed to Read is not killed; the trail is control A's", async () => {
+    const pidFile = join(drillRoot(), "child.pid");
+    const trail = await drain(pidReportingPort(sample5("Read"), pidFile, 0), route(), request({ identity: REVIEWER }));
+    expect(existsSync(pidFile)).toBe(true);
+    expect(trail.map((event) => event.kind)).toEqual(["started", "processExited", "completed"]);
+    expect(trail.find((event) => event.kind === "processExited")).toEqual({ kind: "processExited", exitCode: 0, signal: null });
+    for (const kind of ["error", "write"]) {
+      expect({ kind, present: trail.some((event) => event.kind === kind) }).toEqual({ kind, present: false });
+    }
+    expect(await reaped(Number.parseInt(readFileSync(pidFile, "utf8"), 10))).toBe(true);
+  });
+});
+
+/**
+ * T-V1, the closed verdict table (P-15/A4, AC-5): every observed Claude stream,
+ * replayed through the port under each role, keyed by `(capture, role)`.
+ *
+ * The verdict varies on role only for sample 5, the one capture carrying a
+ * `tool_use` outside the read-only allowlist. One row per role is kept for every
+ * capture anyway, so a future capture with a non-allowlisted `tool_use` cannot slip
+ * in under a pooled row. Each row's verdict is taken from the drill that already
+ * pins it, cited in `from`; each row cites its sample's digest, and the table checks
+ * the citation. `restore` names the answer a row puts back, as that drill does:
+ * samples 3 and 4 restore `"ok"` (T-D1, T-G2), samples 1, 2 and 5 replay as captured.
+ * An error row's `trail` leaves out `started`, which a failed session may not emit
+ * (`failedTrailKinds`).
+ * The test fails when a `CAPTURED_*` export has no row, or a row names none.
+ */
+interface VerdictRow {
+  readonly capture: string;
+  readonly role: "reviewer" | "implementer";
+  readonly sha256: string;
+  readonly exitCode: number;
+  readonly restore: "none" | "text" | "text-and-result";
+  readonly trail: readonly ExecutionEvent["kind"][];
+  readonly terminal: { readonly kind: "completed"; readonly operation: "SUCCEEDED" | "FAILED" | null } | { readonly kind: "error"; readonly detailWord: string };
+  readonly sunk: readonly string[];
+  readonly from: string;
+}
+
+const SAMPLE_1_SHA = "e8c72c6f4d5185c168cbe8def1cf3b9128a1404aaa690f2019217b7b2c25c502";
+const SAMPLE_2_SHA = "01132951fe2a7b0e6062b0f5997b033d0276822230f3c3c72ff3f0c2a398d312";
+const SAMPLE_3_SHA = "a1bd7d8214e337aa4f111e1e5d7ef0a76f8dcd79071d0ab3027713bfd85e095a";
+const SAMPLE_4_SHA = "21a6d56e4a49ed08166e4f812a78cebad662834ff7a81a719dd6c1e339f15749";
+const SAMPLE_5_SHA = "476aba4fbbbdd0146e6fce90ef29bba19ab06f6ed4b20ea5f8b4a4674d65e0a5";
+const FULL_TRAIL: readonly ExecutionEvent["kind"][] = ["started", "usage", "state", "processExited", "operationResult", "completed"];
+const NO_RESULT_TRAIL: readonly ExecutionEvent["kind"][] = ["started", "processExited", "completed"];
+
+const VERDICT_TABLE: readonly VerdictRow[] = Object.freeze(
+  (["reviewer", "implementer"] as const).flatMap((role): VerdictRow[] => [
+    {
+      capture: "CAPTURED_AUTH_FAILURE",
+      role,
+      sha256: SAMPLE_1_SHA,
+      exitCode: 1,
+      restore: "none",
+      trail: FULL_TRAIL,
+      terminal: { kind: "completed", operation: "FAILED" },
+      sunk: [],
+      from: "OBS sample 1 (P-07 C)",
+    },
+    {
+      capture: "CAPTURED_SUCCESS",
+      role,
+      sha256: SAMPLE_2_SHA,
+      exitCode: 0,
+      restore: "none",
+      trail: FULL_TRAIL,
+      terminal: { kind: "completed", operation: "SUCCEEDED" },
+      sunk: ["ok"],
+      from: "OBS sample 2 (P-07 C)",
+    },
+    {
+      capture: "CAPTURED_2_1_281_SUCCESS",
+      role,
+      sha256: SAMPLE_3_SHA,
+      exitCode: 0,
+      restore: "text-and-result",
+      trail: FULL_TRAIL,
+      terminal: { kind: "completed", operation: "SUCCEEDED" },
+      sunk: ["ok"],
+      from: "T-G1 positive control (P-15/A2); restored as T-D1",
+    },
+    {
+      capture: "CAPTURED_2_1_281_ALLOWED",
+      role,
+      sha256: SAMPLE_4_SHA,
+      exitCode: 0,
+      restore: "text",
+      trail: NO_RESULT_TRAIL,
+      terminal: { kind: "completed", operation: null },
+      sunk: ["ok"],
+      from: "T-G2 (P-15/A3)",
+    },
+    role === "reviewer"
+      ? {
+          capture: "CAPTURED_2_1_281_PLAN_WRITE",
+          role,
+          sha256: SAMPLE_5_SHA,
+          exitCode: 0,
+          restore: "none",
+          trail: ["processExited", "error"],
+          terminal: { kind: "error", detailWord: "READ_ONLY_VIOLATION" },
+          sunk: [],
+          from: "T-G3 (P-15/A4)",
+        }
+      : {
+          capture: "CAPTURED_2_1_281_PLAN_WRITE",
+          role,
+          sha256: SAMPLE_5_SHA,
+          exitCode: 0,
+          restore: "none",
+          trail: NO_RESULT_TRAIL,
+          terminal: { kind: "completed", operation: null },
+          sunk: [],
+          from: "T-G3 control A (P-15/A4)",
+        },
+  ]),
+);
+
+/** A capture's lines with the row's answer restored, the way the citing drill restores it. */
+function restored(lines: readonly string[], restore: VerdictRow["restore"]): readonly string[] {
+  if (restore === "none") return lines;
+  return lines.map((line) => {
+    const text = line.split('"text":""').join('"text":"ok"');
+    return restore === "text-and-result" ? text.split('"result":""').join('"result":"ok"') : text;
+  });
+}
+
+describe("P-15/A4: every observed Claude stream has a closed verdict per role (T-V1)", () => {
+  const exported = Object.entries(claudeCaptures as Record<string, unknown>).filter(([name]) => name.startsWith("CAPTURED_"));
+
+  it("the table is closed: one row per (capture, role) for every CAPTURED_* export, and no row names a capture that does not exist", () => {
+    const names = exported.map(([name]) => name).sort();
+    expect(names).toHaveLength(5);
+    const keys = VERDICT_TABLE.map((row) => row.capture + "/" + row.role).sort();
+    expect(keys).toEqual(names.flatMap((name) => [name + "/implementer", name + "/reviewer"]).sort());
+    expect(new Set(keys).size).toBe(VERDICT_TABLE.length);
+  });
+
+  it("each row cites its capture's digest, and the digest is the fixture's", () => {
+    for (const row of VERDICT_TABLE) {
+      const lines = exported.find(([name]) => name === row.capture)?.[1] as readonly string[] | undefined;
+      if (lines === undefined) throw new Error("no capture " + row.capture);
+      const digest = createHash("sha256").update(lines.map((line) => line + "\n").join(""), "utf8").digest("hex");
+      expect({ capture: row.capture, digest }).toEqual({ capture: row.capture, digest: row.sha256 });
+    }
+  });
+
+  for (const row of VERDICT_TABLE) {
+    it("T-V1 " + row.capture + " as " + row.role + " (" + row.from + ")", async () => {
+      const lines = exported.find(([name]) => name === row.capture)?.[1] as readonly string[] | undefined;
+      if (lines === undefined) throw new Error("no capture " + row.capture);
+      const pidFile = join(drillRoot(), "child.pid");
+      const sunk: string[] = [];
+      const lingerMs = row.terminal.kind === "error" ? 5_000 : 0;
+      const identity = row.role === "reviewer" ? REVIEWER : IDENTITY;
+      const trail = await drain(
+        pidReportingPort(restored(lines, row.restore), pidFile, lingerMs, row.exitCode),
+        route(),
+        request({ identity }),
+        (delta) => sunk.push(delta),
+      );
+      expect(row.terminal.kind === "error" ? failedTrailKinds(trail) : trail.map((event) => event.kind)).toEqual(row.trail);
+      const last = trail.at(-1);
+      if (row.terminal.kind === "error") {
+        expect(last).toMatchObject({ kind: "error", refusal: "TRANSPORT_UNAVAILABLE" });
+        if (last?.kind !== "error") throw new Error("expected an error event");
+        expect(last.detail).toContain(row.terminal.detailWord);
+      } else {
+        expect(last?.kind).toBe("completed");
+        const operation = trail.find((event) => event.kind === "operationResult");
+        expect(operation === undefined ? null : (operation as { status: string }).status).toBe(row.terminal.operation);
+        expect(trail.find((event) => event.kind === "processExited")).toEqual({ kind: "processExited", exitCode: row.exitCode, signal: null });
+      }
+      expect(sunk).toEqual(row.sunk);
+      expect(await reaped(Number.parseInt(readFileSync(pidFile, "utf8"), 10))).toBe(true);
+    });
+  }
 });

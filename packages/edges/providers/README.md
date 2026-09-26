@@ -63,15 +63,18 @@ the package-wide single-spawn-site law.
 - nothing is persisted to resume;
 - no MCP server of the account reaches a worker.
 
-A reviewer adds `--permission-mode plan --restricted --tools
-Glob,Grep,Read,WebFetch,WebSearch`. A `--resume` is admitted only with the
+A reviewer adds `--restricted --tools Glob,Grep,Read,WebFetch,WebSearch`, and no
+permission mode: plan mode's own affordance is a plan file, a write that the
+session's read-only layer must kill, and S1 attempt 3's reviewer emitted one (ADR
+0119). A `--resume` is admitted only with the
 attempt's own name; any other value is refused before a spawn with
 `PROTOCOL_UNSUPPORTED`, and the port never asks for one. The smoke profile's
 flags (`--tools ""`, `--max-turns`, `--safe-mode`, `--max-budget-usd`) are not
 worker defaults. The two captures passed `--verbose`, `--no-session-persistence`
 and the empty MCP configuration. What they did not observe — this exact argv,
-`--session-id` with persistence off, the reviewer's `--tools` list — is listed
-as unproven in ADR 0101.
+`--session-id` with persistence off, the reviewer's `--tools` list, this
+reviewer argv without a permission mode — is listed as unproven in ADR 0101 and
+ADR 0119.
 
 **The environment.** Built key by key, never inherited: `HOME`, `LC_ALL`, `PATH`
 and the provider's configuration variable, four for every provider, plus

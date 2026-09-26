@@ -5340,6 +5340,7 @@ interface CapturedStreams {
   readonly CAPTURED_SUCCESS: readonly string[];
   readonly CAPTURED_2_1_281_SUCCESS: readonly string[];
   readonly CAPTURED_2_1_281_ALLOWED: readonly string[];
+  readonly CAPTURED_2_1_281_PLAN_WRITE: readonly string[];
 }
 
 async function capturedStreams(): Promise<CapturedStreams> {
@@ -5356,6 +5357,7 @@ async function capturedStreams(): Promise<CapturedStreams> {
     CAPTURED_SUCCESS: lines("CAPTURED_SUCCESS"),
     CAPTURED_2_1_281_SUCCESS: lines("CAPTURED_2_1_281_SUCCESS"),
     CAPTURED_2_1_281_ALLOWED: lines("CAPTURED_2_1_281_ALLOWED"),
+    CAPTURED_2_1_281_PLAN_WRITE: lines("CAPTURED_2_1_281_PLAN_WRITE"),
   };
 }
 
@@ -5670,6 +5672,8 @@ const D4_REPO_ROOT = resolve(fileURLToPath(import.meta.url), "..", "..", "..", "
 const D4_CLI_ENTRY = join(D4_REPO_ROOT, "packages", "entrypoints", "cli", "dist", "index.js");
 const D4_OWNER = "claude/opus/coordinator/01";
 const D4_OPERATOR = "claude/opus/implementer/01";
+/** P-15/A4: the worker a reviewer task is emitted by, on the S1 kit's `…/reviewer/01` mould. */
+const D4_REVIEWER = "claude/opus/reviewer/01";
 const D4_INITIATIVE = "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7ad401";
 const D4_MODEL = "claude-opus-5@2026-06-01";
 const D4_CATALOG = "catalog-d4";
@@ -5710,6 +5714,13 @@ function d4Write(directory: string, name: string, document: unknown): string {
  * P-15/F reuses it with two options, both defaulting to D4's behaviour: the
  * instruction the envelope carries, and whether the CLI enters the task or the
  * caller does -- through the HTTP door -- with the request document returned.
+ *
+ * P-15/A4 adds `role`, `"implementer"` by default, which leaves every document this
+ * builds byte-identical and so the D4 trail pin unmoved. `"reviewer"` takes the S1
+ * kit's `prepare.json` shape: the model admits the reviewer role, the global routing
+ * assignment and the intake name it, the envelope's eligibility names it, and the
+ * worker returned (the daemon's `emittedBy`, hence the session identity) is
+ * `…/reviewer/01`; the write-set of one file and `LOCAL_COMMIT_WITH_RECEIPT` are D4's own.
  */
 function d4ThroughTheDoors(options: {
   readonly priced: boolean;
@@ -5717,9 +5728,18 @@ function d4ThroughTheDoors(options: {
   readonly intakeBy?: "CLI" | "CALLER";
   /** P-15/E: the transport the model admits, the catalog prices and the intake asks for; CLI by default. */
   readonly transport?: ResolvedRoute["transportKind"];
-}): { readonly databasePath: string; readonly taskId: string; readonly intakeRequest: Record<string, unknown> } {
+  /** P-15/A4: the role the task is routed to and emitted as; implementer by default. */
+  readonly role?: "implementer" | "reviewer";
+}): {
+  readonly databasePath: string;
+  readonly taskId: string;
+  readonly intakeRequest: Record<string, unknown>;
+  readonly worker: string;
+} {
   const instruction = options.instruction ?? D4_INSTRUCTION;
   const transport = options.transport ?? "CLI_SUBSCRIPTION";
+  const role = options.role ?? "implementer";
+  const worker = role === "reviewer" ? D4_REVIEWER : D4_OPERATOR;
   const directory = d4Directory();
   const databasePath = join(directory, "control-plane.sqlite");
   // The one act no door performs: an empty ledger file (ND-D4-6).
@@ -5747,14 +5767,14 @@ function d4ThroughTheDoors(options: {
       contextTokens: 200000,
       policyVersion: "2026.09.0",
       deprecatedAt: null,
-      eligibleRoles: ["implementer"],
+      eligibleRoles: [role],
       transports: [transport],
     }),
   );
   registry(
     "routing.json",
-    version("ROUTING_ASSIGNMENT_GLOBAL", "routing:GLOBAL:implementer:0", {
-      role: "implementer",
+    version("ROUTING_ASSIGNMENT_GLOBAL", "routing:GLOBAL:" + role + ":0", {
+      role,
       slot: 0,
       provider: "claude",
       modelVersionId: D4_MODEL,
@@ -5803,17 +5823,18 @@ function d4ThroughTheDoors(options: {
       objective: instruction,
       content: fixtureContent(instruction),
       readSet: [D4_WRITTEN],
+      ...(role === "reviewer" ? { eligibility: { roles: [role], providers: null, requiredCapabilities: [] } } : {}),
     },
     clientScope: D4_OPERATOR,
     clientRequestKey: "d4-" + taskId,
     roadmapVersionId: null,
     stepId: null,
-    role: "implementer",
+    role,
     slot: 0,
     transportKind: transport,
     recordedBy: D4_OPERATOR,
   };
-  if (options.intakeBy === "CALLER") return { databasePath, taskId, intakeRequest };
+  if (options.intakeBy === "CALLER") return { databasePath, taskId, intakeRequest, worker };
   const intake = acp([
     "intake",
     "--database",
@@ -5824,7 +5845,7 @@ function d4ThroughTheDoors(options: {
     d4Write(directory, "intake.json", intakeRequest),
   ]);
   expect({ status: intake.status, stderr: intake.stderr }).toEqual({ status: 0, stderr: "" });
-  return { databasePath, taskId, intakeRequest };
+  return { databasePath, taskId, intakeRequest, worker };
 }
 
 /** A git worktree holding the one path the envelope declares, committed. */
@@ -5888,20 +5909,25 @@ function d4EchoChild(options: { readonly isError: boolean }): {
   return { binary, echoFile, spawnLog };
 }
 
-/** The recorded form's config file, owner-only, as launchd would hand it over. */
+/**
+ * The recorded form's config file, owner-only, as launchd would hand it over.
+ * `emittedBy` is the session identity the daemon hands the adapter; D4's operator by
+ * default, `d4ThroughTheDoors`' reviewer worker for P-15/A4's reviewer rows.
+ */
 function d4ConfigFile(
   databasePath: string,
   taskId: string,
   binary: string,
   catalogDocumentId: string,
   outputBudgetBytes = 65_536,
+  emittedBy = D4_OPERATOR,
 ): string {
   const directory = d4Directory();
   return d4Write(directory, "daemon.json", {
     mode: "SQLITE_SUPERVISOR",
     databasePath,
     taskId,
-    emittedBy: D4_OPERATOR,
+    emittedBy,
     holdOpen: false,
     checkPorts: false,
     execution: {
@@ -6258,6 +6284,7 @@ type FChildMode =
   | "CAPTURED_2_1_281_SANITIZED"
   | "S1_RETRY_2_1_281"
   | "S1_RETRY_2_1_281_COMPOSED"
+  | "S1_ATTEMPT_3_2_1_281"
   | "ERROR_EXIT_0"
   | "KILLED";
 
@@ -6272,12 +6299,20 @@ type FChildMode =
  * 0114), exit 0, with its one emptied text block restored to the `"ok"` its summary
  * records, and no `result`, as captured; `S1_RETRY_2_1_281_COMPOSED` follows the same
  * seven records with sample 3's `result`, its `"ok"` restored — composed, no capture
- * shows it; `ERROR_EXIT_0` is the crossed pair, `is_error` with exit 0 and the text "boom";
+ * shows it; `S1_ATTEMPT_3_2_1_281` replays S1 attempt 3's eleven records (sample 5, P-15/A4,
+ * ADR 0119), exit 0, with NO restoration — the captured text was not `"ok"`, and the
+ * drill's claim is the kill; `ERROR_EXIT_0` is the crossed pair, `is_error` with exit 0 and the text "boom";
  * `KILLED` starts an answer and is killed before any result.
+ *
+ * Every mode also appends one JSON line to a separate `argv.log` (P-15/A4), derived
+ * from its own `process.argv` and naming no instruction text: whether a permission
+ * mode was passed, whether `--restricted` was, and the `--tools` value or null.
+ * `spawns.log` stays exactly one `spawned` line per spawn.
  */
-async function fChild(mode: FChildMode): Promise<{ readonly binary: string; readonly spawnLog: string }> {
+async function fChild(mode: FChildMode): Promise<{ readonly binary: string; readonly spawnLog: string; readonly argvLog: string }> {
   const directory = d4Directory();
   const spawnLog = join(directory, "spawns.log");
+  const argvLog = join(directory, "argv.log");
   const binary = join(directory, "fake-claude");
   const streams = await capturedStreams();
   const captured =
@@ -6294,11 +6329,19 @@ async function fChild(mode: FChildMode): Promise<{ readonly binary: string; read
                   ? streams.CAPTURED_2_1_281_SUCCESS.slice(7).map((line) => line.split('"result":""').join('"result":"ok"'))
                   : []),
               ]
-            : [];
+            : mode === "S1_ATTEMPT_3_2_1_281"
+              ? streams.CAPTURED_2_1_281_PLAN_WRITE
+              : [];
   const program = [
     "#!" + realpathSync(process.execPath),
     "const fs = require('node:fs');",
     "fs.appendFileSync(" + JSON.stringify(spawnLog) + ", 'spawned\\n');",
+    "const toolsAt = process.argv.indexOf('--tools');",
+    "fs.appendFileSync(" + JSON.stringify(argvLog) + ", JSON.stringify({",
+    "  permissionMode: process.argv.some((a) => a === '--permission-mode' || a.startsWith('--permission-mode=')),",
+    "  restricted: process.argv.includes('--restricted'),",
+    "  tools: toolsAt >= 0 ? (process.argv[toolsAt + 1] ?? null) : null,",
+    "}) + '\\n');",
     "const chunks = [];",
     "process.stdin.on('data', (c) => chunks.push(c));",
     "process.stdin.on('end', () => {",
@@ -6307,7 +6350,7 @@ async function fChild(mode: FChildMode): Promise<{ readonly binary: string; read
     "  const session = at >= 0 ? process.argv[at + 1] : 'session-f';",
     "  const out = (value) => process.stdout.write(JSON.stringify(value) + '\\n');",
     "  const mode = " + JSON.stringify(mode) + ";",
-    "  if (mode === 'AUTH_FAILURE' || mode === 'CAPTURED_2_1_281' || mode === 'CAPTURED_2_1_281_SANITIZED' || mode === 'S1_RETRY_2_1_281' || mode === 'S1_RETRY_2_1_281_COMPOSED') {",
+    "  if (mode === 'AUTH_FAILURE' || mode === 'CAPTURED_2_1_281' || mode === 'CAPTURED_2_1_281_SANITIZED' || mode === 'S1_RETRY_2_1_281' || mode === 'S1_RETRY_2_1_281_COMPOSED' || mode === 'S1_ATTEMPT_3_2_1_281') {",
     "    for (const line of " + JSON.stringify([...captured]) + ") process.stdout.write(line.split('00000000-0000-4000-8000-000000000001').join(session) + '\\n');",
     "    process.exit(mode === 'AUTH_FAILURE' ? 1 : 0);",
     "  }",
@@ -6329,8 +6372,11 @@ async function fChild(mode: FChildMode): Promise<{ readonly binary: string; read
     "});",
   ].join("\n");
   writeFileSync(binary, program + "\n", { mode: 0o700 });
-  return { binary, spawnLog };
+  return { binary, spawnLog, argvLog };
 }
+
+/** What `argv.log` records for a reviewer under ADR 0119: no permission mode, restricted, the allowlist. */
+const F_REVIEWER_ARGV_LINE = JSON.stringify({ permissionMode: false, restricted: true, tools: "Glob,Grep,Read,WebFetch,WebSearch" }) + "\n";
 
 interface FServer {
   readonly url: string;
@@ -6777,6 +6823,67 @@ describe("P-15/F: a result is read back by reference, through both new doors, be
     expect(types).not.toContain("TOKEN_USAGE_RECORDED");
     // allowed with the overage pair is no pressure either: the rate-limit numbers carry no signal.
     expect(types.filter((type) => /QUOTA|PRESSURE|AUTH_REQUIRED/.test(type))).toEqual([]);
+    expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
+    const document = await fExpectBothDoors(databasePath, taskId, {
+      listed: { outcomeStatus: "SUCCEEDED", hasResult: true },
+      document: { state: "RESULT", outcomeStatus: "SUCCEEDED", cohort: "CURRENT" },
+    });
+    const blocks = ((document["result"] as Record<string, unknown>)["document"] as Record<string, unknown>)["blocks"] as Record<string, unknown>[];
+    expect(blocks.map((block) => block["text"])).toEqual(["ok"]);
+  }, 300_000);
+
+  it("T-D4 (P-15/A4, ADR 0119): S1 attempt 3's eleven records as a reviewer through the doors fail as attempt 3 did, and the child received the argv without a permission mode", async () => {
+    // Attempt 3's class, reproduced through the registered daemon form: the session
+    // killed the child for its plan-file Write (READ_ONLY_VIOLATION) and the effect
+    // was refused at events.error. The argv half is the new one: the stream is the
+    // captured one, so what this row adds over T-G3 is that the child the daemon
+    // started as a reviewer was handed no permission mode.
+    const { databasePath, taskId, worker } = d4ThroughTheDoors({ priced: true, role: "reviewer" });
+    expect(worker).toBe(D4_REVIEWER);
+    const child = await fChild("S1_ATTEMPT_3_2_1_281");
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG, undefined, worker)])).rejects.toMatchObject({
+      name: "ExecutionEffectError",
+      refusal: "TRANSPORT_UNAVAILABLE",
+      at: "events.error",
+    });
+    expect(readFileSync(child.spawnLog, "utf8")).toBe("spawned\n");
+    expect(readFileSync(child.argvLog, "utf8")).toBe(F_REVIEWER_ARGV_LINE);
+    const ledger = openLedger(databasePath);
+    ledgers.push(ledger);
+    const types = d4Events(ledger, taskId).map((event) => event.type);
+    expect(types).toContain("TASK_FAILED");
+    for (const type of ["USAGE_OBSERVATION_RECORDED", "RESPONSE_OCCURRENCE_RECORDED", "CHECKPOINT_WRITTEN"]) {
+      expect({ type, present: types.includes(type) }).toEqual({ type, present: false });
+    }
+    // Attempt 3's doors read a FAILED effect with no result (its assert's observed values).
+    await fExpectBothDoors(databasePath, taskId, {
+      listed: { outcomeStatus: "FAILED", hasResult: false },
+      document: { state: "NO_RESULT_RECORDED", outcomeStatus: "FAILED", result: null },
+    });
+  }, 300_000);
+
+  it("T-D5 (P-15/A4, composed, no capture shows it): T-D3's composition as a reviewer reaches CHECKPOINTED, and the child received the argv without a permission mode", async () => {
+    // The in-tree twin of the operator's rehearsal c4 under the new argv: the S1
+    // retry's seven records and sample 3's result, composed, run as a reviewer.
+    const { databasePath, taskId, worker } = d4ThroughTheDoors({ priced: true, role: "reviewer" });
+    const child = await fChild("S1_RETRY_2_1_281_COMPOSED");
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG, undefined, worker)])).resolves.toBe(0);
+    expect(readFileSync(child.spawnLog, "utf8")).toBe("spawned\n");
+    expect(readFileSync(child.argvLog, "utf8")).toBe(F_REVIEWER_ARGV_LINE);
+    const ledger = openLedger(databasePath);
+    ledgers.push(ledger);
+    const events = d4Events(ledger, taskId);
+    const observations = events.filter((event) => event.type === "USAGE_OBSERVATION_RECORDED");
+    expect(observations).toHaveLength(1);
+    expect(observations[0]?.payload["usageObservation"]).toMatchObject({
+      reportKind: "CUMULATIVE",
+      isFinal: 1,
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheWriteTokens: 1,
+      cacheReadTokens: 1,
+      totalTokens: 4,
+    });
     expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
     const document = await fExpectBothDoors(databasePath, taskId, {
       listed: { outcomeStatus: "SUCCEEDED", hasResult: true },

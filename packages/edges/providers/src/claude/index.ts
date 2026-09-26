@@ -102,9 +102,15 @@ const EMPTY_MCP_CONFIG = '{"mcpServers":{}}';
  *   Both captures passed it.
  * - `--strict-mcp-config` with an empty `--mcp-config`: no MCP server of the
  *   account reaches a worker.
- * - a reviewer adds `--permission-mode plan --restricted` and `--tools` with the
- *   read-only allowlist, a CLI-side allowlist (stated in the recorded
- *   `--help` (2.1.280), behaviour not observed).
+ * - a reviewer adds `--restricted` and `--tools` with the read-only allowlist, a
+ *   CLI-side allowlist (stated in the recorded `--help` (2.1.280), behaviour not
+ *   observed), and **no** `--permission-mode` (P-15/A4, ADR 0119). Plan mode was
+ *   dropped because its own affordance, a plan file and the exit-plan step, is a
+ *   write: S1 attempt 3's reviewer emitted a `Write` of its plan file (sample 5,
+ *   `CAPTURED_2_1_281_PLAN_WRITE`), which the session's read-only layer had to kill.
+ *   Keeping the mode made the kill a reachable outcome of an honest reviewer. That
+ *   the model stops emitting such a write without it is unproven; only a real call
+ *   can show it.
  *
  * `--resume` replaces `--session-id` only when the request carries the same name
  * this attempt would be given. Any other value — a different id, an empty string,
@@ -139,10 +145,10 @@ function buildArgv(request: SessionRequest): readonly string[] {
     // The provider-native layer, added because Claude has one. It is the
     // polite layer: the load-bearing guarantee is the structural scan before
     // spawn and the write-class kill during the stream, which hold whatever
-    // these flags do. Both pair values are the safe ones the pair-aware scan
-    // accepts, so this argv can never itself enable a write. How `--tools`
-    // interacts with `--restricted` is unobserved.
-    argv.push("--permission-mode", "plan", "--restricted", "--tools", READ_ONLY_TOOL_ALLOWLIST.join(","));
+    // these flags do. No pair flag is passed, so this argv can never itself
+    // enable a write. The tool list is the one the kill reads (ADR 0119). How
+    // `--tools` interacts with `--restricted` is unobserved.
+    argv.push("--restricted", "--tools", READ_ONLY_TOOL_ALLOWLIST.join(","));
   }
 
   return Object.freeze(argv);

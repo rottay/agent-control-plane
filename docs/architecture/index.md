@@ -116,7 +116,7 @@ new records from `_template.md`, which carries the required fields.
 | 0098 | [An effect records its result by reference, with its outcome, and SUCCEEDED requires it](0098-an-effect-records-its-result-by-reference-with-its-outcome.md) | accepted |
 | 0099 | [A transport, a process and an operation are three facts, and output bytes live on the private side](0099-a-transport-a-process-and-an-operation-are-three-facts.md) | accepted |
 | 0100 | [An effect answers with a published result and its response occurrence](0100-an-effect-answers-with-a-published-result-and-its-response-occurrence.md) | accepted |
-| 0101 | [The Claude adapter speaks the observed CLI](0101-the-claude-adapter-speaks-the-observed-cli.md) | accepted |
+| 0101 | [The Claude adapter speaks the observed CLI](0101-the-claude-adapter-speaks-the-observed-cli.md) | accepted, amended by 0119 |
 | 0102 | [The exceptional producers speak the V2 coordinate](0102-the-exceptional-producers-speak-the-v2-coordinate.md) | accepted |
 | 0103 | [A delivery pins the price catalog version it will be valued against](0103-a-delivery-pins-the-price-catalog-version-it-will-be-valued-against.md) | accepted |
 | 0104 | [Registry configuration is published through one door that derives its digest](0104-registry-configuration-is-published-through-one-door-that-derives-its-digest.md) | accepted |
@@ -134,6 +134,7 @@ new records from `_template.md`, which carries the required fields.
 | 0116 | [A task changes step only by a recorded link](0116-a-task-changes-step-only-by-a-recorded-link.md) | accepted |
 | 0117 | [A tool's output interface is pinned, and structured content is admitted only when its text carries it](0117-a-tool-output-is-pinned-and-carried-only-as-text.md) | accepted |
 | 0118 | [A tool server is asked what it serves, and nothing is recorded](0118-a-tool-server-is-asked-what-it-serves-and-nothing-is-recorded.md) | accepted |
+| 0119 | [A Claude reviewer is not started in plan mode](0119-a-claude-reviewer-is-not-started-in-plan-mode.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is
