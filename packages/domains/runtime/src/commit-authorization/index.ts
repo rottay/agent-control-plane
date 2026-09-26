@@ -11,11 +11,16 @@
  * receipt this module produced; nothing here runs git, and the module never
  * names it. A test asserts the absence.
  *
- * **It mints nothing.** Every identifier and every instant in the receipt is
- * supplied by the caller -- there is no clock and no random source here, the
- * same allocation P5D and P6A use. `contractVersion` comes from
- * `@acp/contracts`, and `pushAuthorized` is `false` at the type: a receipt that
- * authorized a push is not a value this module can construct.
+ * **It mints nothing.** Every instant and every supplied identifier in the
+ * receipt is the caller's -- there is no clock and no random source here, the
+ * same allocation P5D and P6A use. The two identities it does not take from the
+ * caller are derived, not minted: the writer's instance id is the ledger's
+ * `writerWorkerIdFor` over the task and its flat attempt, and the receipt's name
+ * is the ledger's `receiptSha256` over its content (P-16/A2, ADR 0121). Both are
+ * pure functions, so the same request builds the same receipt on every retry.
+ * `contractVersion` comes from `@acp/contracts`, and `pushAuthorized` is `false`
+ * at the type: a receipt that authorized a push is not a value this module can
+ * construct.
  *
  * **Quarantine is never cleanup.** The record names what happened and what to
  * revoke; there is no field in which a restore, reset, stash or clean could be
@@ -29,9 +34,16 @@
  * two are different questions and are deliberately answered differently.
  */
 
-import { CONTRACT_VERSION, CommitAuthorizationReceipt } from "@acp/contracts";
+import {
+  CONTRACT_VERSION,
+  CanonicalInstant,
+  CommitAuthorizationReceipt,
+  VerificationReceipt,
+  WRITER_ID_UNISSUED,
+  commitMessageWithReceiptTrailer,
+} from "@acp/contracts";
 import { ControlPlaneEvent, Lease, PathDigest, WorkerIdentityString, buildIdempotencyKey } from "@acp/contracts";
-import { computeOutboxCommandId } from "@acp/ledger";
+import { LedgerValidationError, computeOutboxCommandId, receiptSha256, writerWorkerIdFor } from "@acp/ledger";
 
 import { checkWriteSetConformance } from "../enforcement/index.js";
 import type {
@@ -51,7 +63,7 @@ export type AuthorizationRefusal =
   | "CHECK_FAILED"
   | "WRITE_SET_VIOLATION"
   | "BASE_HEAD_MISSING"
-  | "BASE_HEAD_MISMATCH"
+  | typeof WRITER_ID_UNISSUED
   | "LEASE_HOLDER_MISMATCH"
   | "LEASE_WORKTREE_MISMATCH"
   | "LEASE_EXPIRED"
@@ -61,7 +73,6 @@ export type AuthorizationRefusal =
   | "COMMIT_SHA_INVALID";
 
 export const AUTHORIZATION_REFUSALS: readonly AuthorizationRefusal[] = Object.freeze([
-  "BASE_HEAD_MISMATCH",
   "BASE_HEAD_MISSING",
   "CHECKS_MISSING",
   "CHECK_FAILED",
@@ -74,6 +85,7 @@ export const AUTHORIZATION_REFUSALS: readonly AuthorizationRefusal[] = Object.fr
   "RECEIPT_INVALID",
   "REQUEST_INVALID",
   "VERIFIER_NOT_INDEPENDENT",
+  WRITER_ID_UNISSUED,
   "WRITE_SET_VIOLATION",
 ]);
 
@@ -134,50 +146,107 @@ export interface RecordedCheck {
 }
 
 /**
- * Everything the receipt needs, all of it injected.
+ * The writer transports that issue a writer id (decision 227; ND-10).
  *
- * The ids and instants are the caller's, not this module's: a pure core that
- * minted a uuid or read a clock would make the same request produce a
- * different receipt each time, and the receipt is evidence.
+ * One member today: a Claude CLI writer runs under a session named by the writer
+ * id itself. Every other transport is refused as `WRITER_ID_UNISSUED` until
+ * P-28 widens the set. Module-private: its producer is P-16/C's runner, and it is
+ * promoted when a second reader exists.
+ */
+const WRITER_ID_ISSUERS: readonly string[] = Object.freeze(["CLAUDE_CLI_SESSION"]);
+
+/**
+ * The request's closed key set (ND-11).
+ *
+ * A key outside it is refused by its own path rather than ignored, so a caller
+ * still speaking the V1 request (`initialCommit`, `receiptId`, `branch`,
+ * `commitMessage`), or one that supplies a writer id of its own, fails loudly.
+ */
+const REQUEST_KEYS: ReadonlySet<string> = new Set([
+  "taskId",
+  "revisionNumber",
+  "attemptNumber",
+  "attempt",
+  "writer",
+  "writerIdIssuer",
+  "verifier",
+  "authorizedBy",
+  "authorizedAt",
+  "worktreePath",
+  "lease",
+  "declaredWriteSet",
+  "observation",
+  "treeSha",
+  "policySha256",
+  "checks",
+  "commitMessageBody",
+  "audit",
+]);
+
+/**
+ * Everything the receipt needs, all of it injected but the two derived identities.
+ *
+ * The instants and the supplied ids are the caller's, not this module's: a pure
+ * core that minted a uuid or read a clock would make the same request produce a
+ * different receipt each time, and the receipt is evidence. The writer's instance
+ * id is **not** a field: the plane derives it (execution §10.2, "ningún proceso de
+ * worker escribe esos campos"), and a request that supplies one is refused.
+ *
+ * There is no base input and no bootstrap claim. The receipt's `baseSha` is
+ * *projected* from `observation.head` -- one authority for one fact -- and a
+ * `null` head is refused: there is no initial-commit receipt (D-9).
  */
 export interface AuthorizationRequest {
-  readonly receiptId: string;
   readonly taskId: string;
+  /** The V2 coordinate the receipt is issued for. */
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  /**
+   * The flat per-task attempt (execution `legacy_attempt_number`), the writer id's
+   * input. Never the per-revision `attemptNumber`, which restarts in each revision.
+   * That the two name the same attempt is P-16/B's door to check, not this module's.
+   */
   readonly attempt: number;
+  /** The writer's identity label. */
   readonly writer: string;
-  readonly verifier: string;
+  /**
+   * The writer's transport, as the route records it. Caller-supplied until
+   * P-16/C's runner wires it: a stated limit.
+   */
+  readonly writerIdIssuer: string;
+  /**
+   * The verifier's label, instance id and run. Supplied; P-16/C's runner fills it
+   * from its own spawn record.
+   */
+  readonly verifier: {
+    readonly identity: string;
+    readonly workerId: string;
+    readonly runId: number;
+  };
   readonly authorizedBy: string;
+  /** A canonical instant: the future `authorized_at` (execution §10.5). */
   readonly authorizedAt: string;
   readonly worktreePath: string;
-  readonly branch: string;
-  readonly declaredWriteSet: readonly string[];
-  readonly observation: WorktreeObservation;
-  readonly checks: readonly RecordedCheck[];
-  readonly commitMessage: string;
-  /**
-   * The caller asserting the repository initial commit, where no HEAD exists.
-   *
-   * A pure core cannot look; the bootstrap exception is therefore a claim the
-   * caller makes and is accountable for, not an inference this module draws
-   * from a missing value. The observation is what settles it: the claim must
-   * agree with `observation.head` being `null`, or it is refused
-   * (`BASE_HEAD_MISMATCH`).
-   *
-   * There is no separate `baseHead` input. The receipt's base head is
-   * *projected* from `observation.head` -- one authority for one fact, so a
-   * receipt can never certify conformance observed against one commit while
-   * naming another as its base.
-   */
-  readonly initialCommit?: boolean;
-  /** Present iff an audit was performed; drives `AUDIT_COMPLETED`. */
-  readonly audit?: { readonly auditor: string; readonly verdict: string };
   /** The lease the writer holds, so a violation names what to revoke. */
   readonly lease: Lease;
+  readonly declaredWriteSet: readonly string[];
+  readonly observation: WorktreeObservation;
+  /** The verified tree. Supplied; P-16/C's tree hasher produces it. */
+  readonly treeSha: string;
+  /** The digest of the verification policy applied. Supplied; P-16/C's. */
+  readonly policySha256: string;
+  readonly checks: readonly RecordedCheck[];
+  /** The message body. The trailer is added at the commit, never here. */
+  readonly commitMessageBody: string;
+  /** Present iff an audit was performed; drives `AUDIT_COMPLETED`. */
+  readonly audit?: { readonly auditor: string; readonly verdict: string };
 }
 
 export interface AuthorizationGranted {
   readonly ok: true;
   readonly receipt: CommitAuthorizationReceipt;
+  /** The receipt's name, `receipt_sha256`, computed by the ledger's one site. */
+  readonly receiptSha256: string;
   readonly events: readonly AuthorizationEvent[];
 }
 
@@ -186,25 +255,53 @@ export type AuthorizationOutcome = AuthorizationGranted | AuthorizationRefused;
 /**
  * Decide whether this commit may be authorized, and build the receipt if so.
  *
- * The order of the checks is the order of the laws: independence first,
- * because a receipt signed by its own writer is not evidence of anything; then
- * the recorded checks; then conformance, composed from P6A rather than
- * re-implemented; then the bootstrap exception; and only then the contract's
- * own parser, whose refusal is carried rather than re-worded.
+ * The order of the checks is the order of the laws: the request's own key set;
+ * then independence, by label and then by instance against the writer id the
+ * plane derives, because a receipt signed by its own writer is not evidence of
+ * anything; then the recorded checks; then the lease; then the shape of the
+ * authority and of the optional audit; then conformance, composed
+ * from P6A rather than re-implemented; then the base; then the writer id's
+ * issuer; and only then the contract's own parser, whose refusal is carried
+ * rather than re-worded. Each input is parsed before it is compared, so a
+ * malformed verifier id is `REQUEST_INVALID`, never `VERIFIER_NOT_INDEPENDENT`.
  */
 export function authorizeCommit(request: AuthorizationRequest): AuthorizationOutcome {
   const raw: unknown = request;
   if (typeof raw !== "object" || raw === null) return refuse("REQUEST_INVALID", "request");
   const fields = raw as Record<string, unknown>;
 
-  const writer: unknown = fields["writer"];
-  const verifier: unknown = fields["verifier"];
-  if (typeof writer !== "string" || typeof verifier !== "string") {
-    return refuse("REQUEST_INVALID", "request.writer");
+  for (const key of Object.keys(fields)) {
+    if (!REQUEST_KEYS.has(key)) return refuse("REQUEST_INVALID", "request." + key);
   }
+
+  const writer: unknown = fields["writer"];
+  if (typeof writer !== "string") return refuse("REQUEST_INVALID", "request.writer");
+  // The receipt's own verifier schema: a lowercase version 5 instance id and a
+  // positive run, so the shape is the contract's and never a second copy.
+  const verifierParse = VerificationReceipt.shape.verifier.safeParse(fields["verifier"]);
+  if (!verifierParse.success) {
+    const path = verifierParse.error.issues[0]?.path ?? [];
+    return refuse("REQUEST_INVALID", ["request", "verifier", ...path.map(String)].join("."));
+  }
+  const verifier = verifierParse.data;
   // Independence is identity inequality and nothing more. A role restriction
   // would be shared vocabulary this module has no standing to invent.
-  if (writer === verifier) return refuse("VERIFIER_NOT_INDEPENDENT", "request.verifier");
+  if (verifier.identity === writer) return refuse("VERIFIER_NOT_INDEPENDENT", "request.verifier.identity");
+
+  let writerWorkerId: string;
+  try {
+    writerWorkerId = writerWorkerIdFor(fields["taskId"] as string, fields["attempt"] as number);
+  } catch (error) {
+    if (error instanceof LedgerValidationError) {
+      return refuse("REQUEST_INVALID", "request." + (error.issues[0]?.path ?? "taskId"));
+    }
+    throw error;
+  }
+  // And inequality of instance: the label alone is the hole a renamed role
+  // walks through.
+  if (verifier.workerId === writerWorkerId) {
+    return refuse("VERIFIER_NOT_INDEPENDENT", "request.verifier.workerId");
+  }
 
   const checks: unknown = fields["checks"];
   if (!Array.isArray(checks)) return refuse("REQUEST_INVALID", "request.checks");
@@ -241,18 +338,21 @@ export function authorizeCommit(request: AuthorizationRequest): AuthorizationOut
   // C5: and it must still be live. An expired lease of the right holder on the
   // right tree is a lease that ended before the commit it would authorize --
   // the same instant-of-expiry rule P6A uses, `authorizedAt >= expiresAt` is
-  // expired. Instants are admitted by the contract's own parser and compared
-  // by epoch, never as strings.
-  const authorizedAt = Lease.shape.expiresAt.safeParse(fields["authorizedAt"]);
+  // expired. `authorizedAt` is the canonical instant the authorization will
+  // record, refused rather than normalized; the lease's own instant is the
+  // `Lease` contract's, and the two are compared by epoch, never as strings.
+  const authorizedAt = CanonicalInstant.safeParse(fields["authorizedAt"]);
   if (!authorizedAt.success) return refuse("REQUEST_INVALID", "request.authorizedAt");
   if (Date.parse(authorizedAt.data) >= Date.parse(lease.expiresAt)) {
     return refuse("LEASE_EXPIRED", "request.lease.expiresAt");
   }
 
-  // The optional audit is shape-checked here, with the other request guards,
-  // rather than at the point the event is built: an `AUDIT_COMPLETED` whose
-  // payload fields are `undefined` would record that an audit happened while
-  // naming no auditor, which is worse than no event at all.
+  // The authority and the optional audit are shape-checked here, with the other
+  // request guards, rather than at the point the events are built: an event whose
+  // payload names no authority, or an `AUDIT_COMPLETED` whose fields are
+  // `undefined`, would record that something happened while naming nobody.
+  const authorizedBy = WorkerIdentityString.safeParse(fields["authorizedBy"]);
+  if (!authorizedBy.success) return refuse("REQUEST_INVALID", "request.authorizedBy");
   let auditor: string | null = null;
   let auditVerdict = "";
   const audit: unknown = fields["audit"];
@@ -284,37 +384,40 @@ export function authorizeCommit(request: AuthorizationRequest): AuthorizationOut
   if (!conformance.ok) return carry(conformance);
   if (!conformance.conformant) return refuse("WRITE_SET_VIOLATION", "request.observation");
 
-  // The base head is projected, never re-asked. P6A validated `observation.head`
-  // as `null` or a git object id on the way through, so this is the observed
-  // fact itself rather than a second claim about it.
-  const baseHead = request.observation.head;
-  const initialCommit = fields["initialCommit"] === true;
-  if (baseHead === null && !initialCommit) {
-    return refuse("BASE_HEAD_MISSING", "request.observation.head");
-  }
-  // A caller asserting the bootstrap over a worktree that has a HEAD is
-  // asserting something the observation contradicts.
-  if (baseHead !== null && initialCommit) {
-    return refuse("BASE_HEAD_MISMATCH", "request.initialCommit");
+  // The base is projected, never re-asked. P6A validated `observation.head` as
+  // `null` or an object id on the way through, so this is the observed fact
+  // itself rather than a second claim about it. A `null` head is a repository
+  // with no commit, and no receipt is issued over it (D-9).
+  const baseSha = request.observation.head;
+  if (baseSha === null) return refuse("BASE_HEAD_MISSING", "request.observation.head");
+
+  // The writer id above is a derivation any caller could run. It names the
+  // writer only where the transport ran the writer under it, and today that is
+  // the Claude CLI session alone.
+  const writerIdIssuer: unknown = fields["writerIdIssuer"];
+  if (typeof writerIdIssuer !== "string" || !WRITER_ID_ISSUERS.includes(writerIdIssuer)) {
+    return refuse(WRITER_ID_UNISSUED, "request.writerIdIssuer");
   }
 
   const receipt = CommitAuthorizationReceipt.safeParse({
     contractVersion: CONTRACT_VERSION,
-    receiptId: request.receiptId,
     taskId: request.taskId,
-    attempt: request.attempt,
-    writer: request.writer,
-    verifier: request.verifier,
-    authorizedBy: request.authorizedBy,
-    authorizedAt: request.authorizedAt,
-    worktreePath: request.worktreePath,
-    branch: request.branch,
-    baseHead,
+    revisionNumber: request.revisionNumber,
+    attemptNumber: request.attemptNumber,
+    baseSha,
+    treeSha: request.treeSha,
+    objectFormat: "sha1",
+    policySha256: request.policySha256,
     declaredWriteSet: [...request.declaredWriteSet],
     observedTrackedChanges: request.observation.trackedChanges.map((entry) => ({ ...entry })),
     observedUntrackedPaths: [...request.observation.untrackedPaths],
+    writer: { identity: writer, workerId: writerWorkerId },
+    verifier: { identity: verifier.identity, workerId: verifier.workerId, runId: verifier.runId },
+    // Every recorded check exited zero above; this module builds only passing
+    // receipts, and a failing run's receipt is P-16/C's runner's.
+    runStatus: "PASS",
     checks: request.checks.map((check) => ({ ...check })),
-    commitMessage: request.commitMessage,
+    commitMessageBody: request.commitMessageBody,
     // Never anything else. A receipt cannot authorize a push, and this is the
     // only place the field is written.
     pushAuthorized: false,
@@ -323,12 +426,14 @@ export function authorizeCommit(request: AuthorizationRequest): AuthorizationOut
     const issue = receipt.error.issues[0];
     return refuse("RECEIPT_INVALID", "receipt." + (issue?.path ?? []).join("."));
   }
+  const digest = receiptSha256(receipt.data);
 
   const events: AuthorizationEvent[] = [
     event("VERIFICATION_COMPLETED", {
       taskId: request.taskId,
-      verifier: request.verifier,
+      verifier: verifier.identity,
       checks: String(request.checks.length),
+      receiptSha256: digest,
     }),
   ];
   if (auditor !== null) {
@@ -337,20 +442,22 @@ export function authorizeCommit(request: AuthorizationRequest): AuthorizationOut
         taskId: request.taskId,
         auditor,
         verdict: auditVerdict,
+        receiptSha256: digest,
       }),
     );
   }
   events.push(
     event("COMMIT_AUTHORIZED", {
       taskId: request.taskId,
-      receiptId: request.receiptId,
-      authorizedBy: request.authorizedBy,
+      receiptSha256: digest,
+      authorizedBy: authorizedBy.data,
     }),
   );
 
   return Object.freeze({
     ok: true as const,
     receipt: receipt.data,
+    receiptSha256: digest,
     events: Object.freeze(events),
   });
 }
@@ -362,6 +469,7 @@ export function authorizeCommit(request: AuthorizationRequest): AuthorizationOut
 export interface RecordedCommit {
   readonly sha: string;
   readonly parents: readonly string[];
+  /** The message's exact bytes, as the object stores them: body plus trailer. */
   readonly message: string;
 }
 
@@ -384,6 +492,11 @@ export type CommitRecordOutcome = CommitRecorded | AuthorizationRefused;
  * that they agree is what makes the receipt evidence rather than paperwork --
  * an authorization nobody reconciles against the result authorizes nothing in
  * practice.
+ *
+ * The first parent is the receipt's `baseSha`, with no exception: a root commit
+ * has none and is refused. The message is compared, byte for byte, with the
+ * receipt's body plus the one trailer that names the receipt (execution §10.5);
+ * a message without the trailer is a difference, never a match.
  */
 export function recordCommit(request: CommitRecordRequest): CommitRecordOutcome {
   const raw: unknown = request;
@@ -393,6 +506,7 @@ export function recordCommit(request: CommitRecordRequest): CommitRecordOutcome 
   const parsed = CommitAuthorizationReceipt.safeParse(fields["receipt"]);
   if (!parsed.success) return refuse("RECEIPT_INVALID", "request.receipt");
   const receipt = parsed.data;
+  const digest = receiptSha256(receipt);
 
   const commit: unknown = fields["commit"];
   if (typeof commit !== "object" || commit === null) {
@@ -412,19 +526,15 @@ export function recordCommit(request: CommitRecordRequest): CommitRecordOutcome 
       return refuse("COMMIT_SHA_INVALID", "request.commit.parents");
     }
   }
-  if (receipt.baseHead === null) {
-    // The bootstrap case: an initial commit has no parent, and one that has a
-    // parent is not the commit this receipt authorized.
-    if (parents.length !== 0) return refuse("COMMIT_PARENT_MISMATCH", "request.commit.parents");
-  } else if (parents[0] !== receipt.baseHead) {
-    // First parent only: a merge's second parent is not what the receipt was
-    // taken against, and requiring equality there would refuse lawful merges.
+  // First parent only: a merge's second parent is not what the receipt was
+  // taken against, and requiring equality there would refuse lawful merges.
+  if (parents[0] !== receipt.baseSha) {
     return refuse("COMMIT_PARENT_MISMATCH", "request.commit.parents");
   }
 
   const message: unknown = recorded["message"];
   if (typeof message !== "string") return refuse("REQUEST_INVALID", "request.commit.message");
-  if (message !== receipt.commitMessage) {
+  if (message !== commitMessageWithReceiptTrailer(receipt.commitMessageBody, digest)) {
     return refuse("COMMIT_MESSAGE_MISMATCH", "request.commit.message");
   }
 
@@ -433,12 +543,13 @@ export function recordCommit(request: CommitRecordRequest): CommitRecordOutcome 
     events: Object.freeze([
       event("COMMIT_RECORDED", {
         taskId: receipt.taskId,
-        receiptId: receipt.receiptId,
+        receiptSha256: digest,
         sha,
       }),
     ]),
   });
 }
+
 
 // ---------------------------------------------------------------------------
 // 3. Quarantine

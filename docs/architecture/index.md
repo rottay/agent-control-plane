@@ -136,6 +136,7 @@ new records from `_template.md`, which carries the required fields.
 | 0118 | [A tool server is asked what it serves, and nothing is recorded](0118-a-tool-server-is-asked-what-it-serves-and-nothing-is-recorded.md) | accepted |
 | 0119 | [A Claude reviewer is not started in plan mode](0119-a-claude-reviewer-is-not-started-in-plan-mode.md) | accepted |
 | 0120 | [An envelope states its instruction once, and a superseded task is refused by name](0120-an-envelope-states-its-instruction-once-and-a-superseded-task-is-refused-by-name.md) | accepted |
+| 0121 | [A receipt is named by its content, and the plane names its writer](0121-a-receipt-is-named-by-its-content-and-the-plane-names-its-writer.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

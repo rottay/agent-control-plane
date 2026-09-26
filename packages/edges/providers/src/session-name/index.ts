@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { WRITER_WORKER_ID_UUID_NAMESPACE } from "@acp/contracts";
+
 import { AdapterError } from "../errors/index.js";
 
 /**
@@ -20,11 +22,14 @@ import { AdapterError } from "../errors/index.js";
 /**
  * The namespace every Claude session name is derived under.
  *
- * Its own constant, distinct from the runtime's `ACP_UUID_NAMESPACE`, so a provider
- * session name can never collide with a ledger coordinate derived from the same
- * words.
+ * Distinct from the runtime's `ACP_UUID_NAMESPACE`, so a provider session name can
+ * never collide with a ledger coordinate derived from the same words. Since P-16/A2
+ * (ADR 0121) it is `@acp/contracts`' `WRITER_WORKER_ID_UUID_NAMESPACE` under its old
+ * name: the session a Claude CLI writer runs under is the writer's instance id, the
+ * rule lives in contracts, and the ledger's `writerWorkerIdFor` computes the same
+ * function over the same bytes (L-P16A2-2). The bytes did not move.
  */
-export const CLAUDE_SESSION_UUID_NAMESPACE = "7108affe-18e1-427e-8a44-493bb4a3af92";
+export const CLAUDE_SESSION_UUID_NAMESPACE = WRITER_WORKER_ID_UUID_NAMESPACE;
 
 const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 

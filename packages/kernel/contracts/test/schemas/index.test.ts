@@ -28,6 +28,10 @@ import {
   Checkpoint,
   CommitAuthorizationReceipt,
   ControlPlaneEvent,
+  VerificationReceipt,
+  WRITER_ID_UNISSUED,
+  WRITER_WORKER_ID_UUID_NAMESPACE,
+  commitMessageWithReceiptTrailer,
   DRIVER_CAPABILITIES,
   DRIVER_CAPABILITY_PROPERTIES,
   DRIVER_CAPABILITY_STATES,
@@ -285,26 +289,30 @@ function event(overrides: Record<string, unknown> = {}): unknown {
   return merged;
 }
 
+/** Two lowercase version 5 instance ids (`uuid.uuid5` over the writer namespace). */
+const WRITER_WORKER_ID = "39de475b-2696-5df6-b64b-88336de7d72c";
+const VERIFIER_WORKER_ID = "24a8af45-549e-5137-8d27-03eb76de8b47";
+
 function receipt(overrides: Record<string, unknown> = {}): unknown {
   return {
     contractVersion: CONTRACT_VERSION,
-    receiptId: THIRD_ID,
     taskId: TASK_ID,
-    attempt: 1,
-    writer: WRITER,
-    verifier: VERIFIER,
-    authorizedBy: AUTHORITY,
-    authorizedAt: AT,
-    worktreePath: "/Users/daniel/Developer/Rottay/agent-control-plane",
-    branch: "main",
-    baseHead: GIT_SHA,
+    revisionNumber: 1,
+    attemptNumber: 1,
+    baseSha: GIT_SHA,
+    treeSha: "c".repeat(40),
+    objectFormat: "sha1",
+    policySha256: SHA256,
     declaredWriteSet: ["packages/contracts/src/schemas.ts"],
     observedTrackedChanges: [
       { path: "packages/contracts/src/schemas.ts", sha256: SHA256 },
     ],
     observedUntrackedPaths: [],
+    writer: { identity: WRITER, workerId: WRITER_WORKER_ID },
+    verifier: { identity: VERIFIER, workerId: VERIFIER_WORKER_ID, runId: 1 },
+    runStatus: "PASS",
     checks: [{ command: "pnpm check", exitCode: 0, ranAt: AT }],
-    commitMessage: "feat(contracts): freeze P0 runtime contracts",
+    commitMessageBody: "feat(contracts): freeze P0 runtime contracts",
     pushAuthorized: false,
     ...overrides,
   };
@@ -1056,67 +1064,347 @@ describe("WorkerSlot", () => {
 // ---------------------------------------------------------------------------
 
 describe("CommitAuthorizationReceipt", () => {
+  /** The issue paths a parse refused with, joined; never the message text. */
+  function issuePaths(schema: z.ZodType, value: unknown): string[] {
+    const parsed = schema.safeParse(value);
+    return parsed.success ? [] : parsed.error.issues.map((issue) => issue.path.join("."));
+  }
+
+  function without(value: unknown, key: string): Record<string, unknown> {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([name]) => name !== key));
+  }
+
   it("can never authorize a push", () => {
     expect(CommitAuthorizationReceipt.safeParse(receipt({ pushAuthorized: true })).success).toBe(
       false,
     );
+    expect(VerificationReceipt.safeParse(receipt({ pushAuthorized: true })).success).toBe(false);
   });
 
-  it("requires an independent verifier", () => {
-    expect(CommitAuthorizationReceipt.safeParse(receipt({ verifier: WRITER })).success).toBe(
-      false,
-    );
+  it("parses a PASS receipt as both schemas", () => {
+    expect(VerificationReceipt.safeParse(receipt()).success).toBe(true);
+    expect(CommitAuthorizationReceipt.safeParse(receipt()).success).toBe(true);
+    // One object: what the authorization admits is a verification receipt too.
+    const parsed = CommitAuthorizationReceipt.parse(receipt());
+    expect(VerificationReceipt.parse(parsed)).toEqual(parsed);
+  });
+
+  it("admits a FAIL receipt as a verification and never as an authorization (ND-6)", () => {
+    // FAIL with every check zero: the run failed although every check that ran
+    // exited zero (timeout, observation failure, tool error).
+    const allZero = receipt({ runStatus: "FAIL" });
+    expect(VerificationReceipt.safeParse(allZero).success).toBe(true);
+    expect(issuePaths(CommitAuthorizationReceipt, allZero)).toEqual(["runStatus"]);
+
+    const nonzero = receipt({
+      runStatus: "FAIL",
+      checks: [{ command: "pnpm check", exitCode: 1, ranAt: AT }],
+    });
+    expect(VerificationReceipt.safeParse(nonzero).success).toBe(true);
+    expect(issuePaths(CommitAuthorizationReceipt, nonzero)).toEqual(["runStatus"]);
+  });
+
+  it("refuses PASS with a nonzero check: the one forbidden cell", () => {
+    const bad = receipt({ checks: [{ command: "pnpm check", exitCode: 1, ranAt: AT }] });
+    expect(issuePaths(VerificationReceipt, bad)).toEqual(["checks"]);
+    expect(issuePaths(CommitAuthorizationReceipt, bad)).toContain("checks");
+  });
+
+  it("refuses runStatus outside PASS and FAIL", () => {
+    for (const value of ["pass", "SKIPPED", "", null, 0]) {
+      expect(issuePaths(VerificationReceipt, receipt({ runStatus: value })), String(value)).toEqual(["runStatus"]);
+    }
+  });
+
+  it("requires every member, refusing null and absent alike", () => {
+    for (const key of [
+      "baseSha",
+      "treeSha",
+      "objectFormat",
+      "policySha256",
+      "runStatus",
+      "writer",
+      "verifier",
+      "commitMessageBody",
+      "checks",
+      "declaredWriteSet",
+      "revisionNumber",
+      "attemptNumber",
+      "taskId",
+    ]) {
+      expect(VerificationReceipt.safeParse(receipt({ [key]: null })).success, key + " null").toBe(false);
+      expect(VerificationReceipt.safeParse(without(receipt(), key)).success, key + " absent").toBe(false);
+    }
+    const writer = { identity: WRITER, workerId: WRITER_WORKER_ID };
+    const verifier = { identity: VERIFIER, workerId: VERIFIER_WORKER_ID, runId: 1 };
+    for (const [label, override] of [
+      ["writer.workerId null", { writer: { ...writer, workerId: null } }],
+      ["writer.workerId absent", { writer: without(writer, "workerId") }],
+      ["verifier.workerId null", { verifier: { ...verifier, workerId: null } }],
+      ["verifier.workerId absent", { verifier: without(verifier, "workerId") }],
+      ["verifier.runId null", { verifier: { ...verifier, runId: null } }],
+      ["verifier.runId absent", { verifier: without(verifier, "runId") }],
+    ] as const) {
+      expect(VerificationReceipt.safeParse(receipt(override)).success, label).toBe(false);
+    }
+  });
+
+  it("has no null base: there is no initial-commit receipt (D-9)", () => {
+    expect(issuePaths(VerificationReceipt, receipt({ baseSha: null }))).toEqual(["baseSha"]);
+    expect(issuePaths(VerificationReceipt, without(receipt(), "baseSha"))).toEqual(["baseSha"]);
+    // The V1 key is gone, and a receipt that still carries it is refused.
+    expect(VerificationReceipt.safeParse(receipt({ baseHead: GIT_SHA })).success).toBe(false);
+    expect(VerificationReceipt.safeParse(receipt({ baseHead: null })).success).toBe(false);
+  });
+
+  it("holds the base and the tree to a full lowercase object id", () => {
+    for (const key of ["baseSha", "treeSha"]) {
+      for (const bad of ["b".repeat(39), "b".repeat(41), "B".repeat(40), "b".repeat(20) + "g" + "b".repeat(19), "", 0]) {
+        expect(issuePaths(VerificationReceipt, receipt({ [key]: bad })), key + " " + String(bad)).toEqual([key]);
+      }
+      expect(VerificationReceipt.safeParse(receipt({ [key]: "0".repeat(40) })).success).toBe(true);
+    }
+  });
+
+  it("admits the one object format, sha1", () => {
+    for (const bad of ["sha256", "SHA1", "", null]) {
+      expect(issuePaths(VerificationReceipt, receipt({ objectFormat: bad })), String(bad)).toEqual(["objectFormat"]);
+    }
+    expect(issuePaths(VerificationReceipt, without(receipt(), "objectFormat"))).toEqual(["objectFormat"]);
+  });
+
+  it("holds the policy digest to the sha-256 grammar", () => {
+    for (const bad of ["a".repeat(63), "a".repeat(65), "A".repeat(64)]) {
+      expect(issuePaths(VerificationReceipt, receipt({ policySha256: bad })), String(bad.length) + " " + bad.slice(0, 1)).toEqual(["policySha256"]);
+    }
+  });
+
+  it("refuses every V1 key it dropped (strict)", () => {
+    for (const [key, value] of [
+      ["receiptId", THIRD_ID],
+      ["attempt", 1],
+      ["authorizedBy", AUTHORITY],
+      ["authorizedAt", AT],
+      ["worktreePath", "/Users/daniel/Developer/Rottay/agent-control-plane"],
+      ["branch", "main"],
+      ["baseHead", GIT_SHA],
+      ["commitMessage", "feat: x"],
+      ["initialCommit", true],
+    ] as const) {
+      expect(VerificationReceipt.safeParse(receipt({ [key]: value })).success, key).toBe(false);
+    }
+  });
+
+  it("names the writer and the verifier by a lowercase version 5 instance id", () => {
+    const v4 = "11111111-1111-4111-8111-111111111111";
+    expect(VerificationReceipt.safeParse(receipt({ writer: { identity: WRITER, workerId: v4 } })).success).toBe(false);
+    expect(
+      VerificationReceipt.safeParse(receipt({ verifier: { identity: VERIFIER, workerId: v4, runId: 1 } })).success,
+    ).toBe(false);
+    expect(
+      VerificationReceipt.safeParse(
+        receipt({ verifier: { identity: VERIFIER, workerId: WRITER_WORKER_ID_UUID_NAMESPACE.replace(/^./, "0"), runId: 1 } }),
+      ).success,
+    ).toBe(false);
+    // B-3: zod's v5 grammar alone admits uppercase hex; the receipt does not.
+    expect(
+      issuePaths(VerificationReceipt, receipt({ writer: { identity: WRITER, workerId: WRITER_WORKER_ID.toUpperCase() } })),
+    ).toEqual(["writer.workerId"]);
+    expect(
+      issuePaths(
+        VerificationReceipt,
+        receipt({ verifier: { identity: VERIFIER, workerId: VERIFIER_WORKER_ID.toUpperCase(), runId: 1 } }),
+      ),
+    ).toEqual(["verifier.workerId"]);
+    // The uppercase form of the writer's own id, as the verifier's: refused at
+    // the shape, so it never reaches (and never passes) the `!==` check.
+    expect(
+      issuePaths(
+        VerificationReceipt,
+        receipt({ verifier: { identity: VERIFIER, workerId: WRITER_WORKER_ID.toUpperCase(), runId: 1 } }),
+      ),
+    ).toEqual(["verifier.workerId"]);
+    // The positive: a lowercase v5 on each side.
+    expect(VerificationReceipt.safeParse(receipt()).success).toBe(true);
+  });
+
+  it("requires an independent verifier, by label and by instance", () => {
+    // Equal labels with different ids.
+    expect(
+      issuePaths(VerificationReceipt, receipt({ verifier: { identity: WRITER, workerId: VERIFIER_WORKER_ID, runId: 1 } })),
+    ).toEqual(["verifier.identity"]);
+    // Equal ids with different labels: the "rename the role" hole.
+    expect(
+      issuePaths(VerificationReceipt, receipt({ verifier: { identity: VERIFIER, workerId: WRITER_WORKER_ID, runId: 1 } })),
+    ).toEqual(["verifier.workerId"]);
+  });
+
+  it("holds the verifier's run to a positive integer", () => {
+    for (const bad of [0, -1, 1.5, "1"]) {
+      expect(
+        issuePaths(VerificationReceipt, receipt({ verifier: { identity: VERIFIER, workerId: VERIFIER_WORKER_ID, runId: bad } })),
+        String(bad),
+      ).toEqual(["verifier.runId"]);
+    }
+    expect(
+      VerificationReceipt.safeParse(
+        receipt({ verifier: { identity: VERIFIER, workerId: VERIFIER_WORKER_ID, runId: Number.MAX_SAFE_INTEGER } }),
+      ).success,
+    ).toBe(true);
   });
 
   it("rejects tracked or untracked changes outside the declared write-set", () => {
     const trackedDrift = receipt({
       observedTrackedChanges: [{ path: "packages/contracts/src/rogue.ts", sha256: SHA256 }],
     });
-    expect(CommitAuthorizationReceipt.safeParse(trackedDrift).success).toBe(false);
+    expect(issuePaths(CommitAuthorizationReceipt, trackedDrift)).toEqual(["observedTrackedChanges.0.path"]);
 
     const untrackedDrift = receipt({ observedUntrackedPaths: ["scratch/notes.md"] });
-    expect(CommitAuthorizationReceipt.safeParse(untrackedDrift).success).toBe(false);
+    expect(issuePaths(CommitAuthorizationReceipt, untrackedDrift)).toEqual(["observedUntrackedPaths.0"]);
+    // A FAIL run is held to conformance too: a non-conformant run is a
+    // quarantine, never a receipt.
+    expect(issuePaths(VerificationReceipt, receipt({ runStatus: "FAIL", observedUntrackedPaths: ["scratch/notes.md"] }))).toEqual([
+      "observedUntrackedPaths.0",
+    ]);
   });
 
-  it("rejects authorization when a recorded check failed", () => {
-    const bad = receipt({ checks: [{ command: "pnpm check", exitCode: 1, ranAt: AT }] });
-    expect(CommitAuthorizationReceipt.safeParse(bad).success).toBe(false);
+  it("refuses a declared path listed twice, and admits distinct ones (N-8)", () => {
+    const twice = receipt({
+      declaredWriteSet: ["packages/contracts/src/schemas.ts", "packages/contracts/src/schemas.ts"],
+    });
+    expect(issuePaths(VerificationReceipt, twice)).toEqual(["declaredWriteSet.1"]);
+    const distinct = receipt({
+      declaredWriteSet: ["packages/contracts/src/schemas.ts", "packages/contracts/src/other.ts"],
+    });
+    expect(VerificationReceipt.safeParse(distinct).success).toBe(true);
   });
 
-  it("allows a null baseHead for the repository initial commit", () => {
-    // At the initial commit there is no Git HEAD yet, so there is no base
-    // commit to name. This is the only case where null is legal.
-    const initial = receipt({ baseHead: null });
-    expect(CommitAuthorizationReceipt.safeParse(initial).success).toBe(true);
-  });
-
-  it("still accepts a full object id as the base commit", () => {
-    const normal = receipt({ baseHead: GIT_SHA });
-    expect(CommitAuthorizationReceipt.safeParse(normal).success).toBe(true);
-  });
-
-  it("still rejects a malformed non-null baseHead", () => {
+  it("holds every check instant to the canonical instant, never normalizing it", () => {
     for (const bad of [
-      "abc",
-      "b".repeat(39),
-      "b".repeat(41),
-      "B".repeat(40),
-      "g".repeat(40),
+      "2026-08-27T14:00:00.000+02:00",
+      "2026-08-27T12:00:00Z",
+      "2026-08-27T12:00:00.000z",
+      "2026-02-30T12:00:00.000Z",
       "",
-      0,
-      false,
     ]) {
       expect(
-        CommitAuthorizationReceipt.safeParse(receipt({ baseHead: bad })).success,
-        String(bad),
-      ).toBe(false);
+        issuePaths(VerificationReceipt, receipt({ checks: [{ command: "pnpm check", exitCode: 0, ranAt: bad }] })),
+        bad,
+      ).toEqual(["checks.0.ranAt"]);
     }
   });
 
-  it("does not let undefined stand in for the initial-commit null", () => {
-    expect(CommitAuthorizationReceipt.safeParse(receipt({ baseHead: undefined })).success).toBe(
+  it("refuses the four bodies the trailer's separator cannot follow", () => {
+    for (const [label, body] of [
+      ["empty", ""],
+      ["ends in LF", "feat: x\n"],
+      ["holds CR", "feat: x\r\nbody"],
+      ["carries a trailer line", "feat: x\n\nACP-Receipt: " + SHA256],
+      ["a trailer line first", "ACP-Receipt: " + SHA256],
+    ] as const) {
+      expect(issuePaths(VerificationReceipt, receipt({ commitMessageBody: body })), label).toEqual(["commitMessageBody"]);
+    }
+    // A key that is not at a line's start is prose, not a trailer.
+    expect(VerificationReceipt.safeParse(receipt({ commitMessageBody: "feat: x\n\nsee ACP-Receipt: below" })).success).toBe(true);
+    expect(VerificationReceipt.safeParse(receipt({ commitMessageBody: "feat: x\n\nbody\nlast line" })).success).toBe(true);
+  });
+
+  it("admits the bodies git rewrites or refuses, a stated limit P-17/A closes (ADR 0121 Six)", () => {
+    // Pinned so the limit is visible, not endorsed: git's `whitespace` cleanup
+    // rewrites the first three, and git refuses any message holding a NUL even
+    // with `--cleanup=verbatim`. Each fails closed downstream; P-17/A's body
+    // rules turn these into refusals and this test flips with them.
+    for (const [label, body] of [
+      ["trailing whitespace", "feat: x  "],
+      ["a leading blank line", "\nfeat: x"],
+      ["a run of blank lines", "feat: x\n\n\n\nmore"],
+      ["a NUL", "feat: x\u0000y"],
+    ] as const) {
+      expect(VerificationReceipt.safeParse(receipt({ commitMessageBody: body })).success, label).toBe(true);
+    }
+  });
+
+  it("holds its bounds at the boundary", () => {
+    const ok = (override: Record<string, unknown>): boolean => VerificationReceipt.safeParse(receipt(override)).success;
+    expect(ok({ commitMessageBody: "x" })).toBe(true);
+    expect(ok({ commitMessageBody: "x".repeat(2_000) })).toBe(true);
+    expect(ok({ commitMessageBody: "x".repeat(2_001) })).toBe(false);
+
+    const check = { command: "pnpm check", exitCode: 0, ranAt: AT };
+    expect(ok({ checks: Array.from({ length: 50 }, () => ({ ...check })) })).toBe(true);
+    expect(ok({ checks: Array.from({ length: 51 }, () => ({ ...check })) })).toBe(false);
+    expect(ok({ checks: [] })).toBe(false);
+
+    const paths = (count: number): string[] => Array.from({ length: count }, (_, index) => "src/f" + String(index) + ".ts");
+    expect(ok({ declaredWriteSet: paths(500), observedTrackedChanges: [] })).toBe(true);
+    expect(ok({ declaredWriteSet: paths(501), observedTrackedChanges: [] })).toBe(false);
+
+    for (const key of ["revisionNumber", "attemptNumber"]) {
+      expect(ok({ [key]: 10_000 }), key + " 10000").toBe(true);
+      expect(ok({ [key]: 10_001 }), key + " 10001").toBe(false);
+      expect(ok({ [key]: 0 }), key + " 0").toBe(false);
+    }
+
+    expect(ok({ checks: [{ ...check, exitCode: 255 }], runStatus: "FAIL" })).toBe(true);
+    expect(ok({ checks: [{ ...check, exitCode: 256 }], runStatus: "FAIL" })).toBe(false);
+  });
+
+  it("refuses a negative-zero exit code, which has no canonical JSON form (P-16/A2 verification N-1)", () => {
+    const check = { command: "pnpm check", exitCode: 0, ranAt: AT };
+    // `-0` passes `int().min(0)` and `-0 !== 0` is false: without the refine a
+    // receipt would parse and still have no `receipt_sha256`.
+    const negativeZero = receipt({ checks: [{ ...check, exitCode: -0 }] });
+    expect(issuePaths(VerificationReceipt, negativeZero)).toEqual(["checks.0.exitCode"]);
+    expect(CommitAuthorizationReceipt.safeParse(negativeZero).success).toBe(false);
+    expect(VerificationReceipt.safeParse(receipt({ checks: [{ ...check, exitCode: -0 }], runStatus: "FAIL" })).success).toBe(
       false,
     );
+    // Positive zero and the other boundary stay admitted.
+    expect(VerificationReceipt.safeParse(receipt({ checks: [{ ...check, exitCode: 0 }] })).success).toBe(true);
+    expect(VerificationReceipt.safeParse(receipt({ checks: [{ ...check, exitCode: -1 }], runStatus: "FAIL" })).success).toBe(
+      false,
+    );
+    // The coordinates and the run id are `min(1)`, so `-0` never reaches them either.
+    for (const key of ["revisionNumber", "attemptNumber"]) {
+      expect(VerificationReceipt.safeParse(receipt({ [key]: -0 })).success, key).toBe(false);
+    }
+  });
+});
+
+describe("the writer id's rule and the commit message's trailer (P-16/A2)", () => {
+  it("declares the writer-id namespace and the refusal word", () => {
+    // The bytes of the Claude CLI's session namespace since P-15/A (ADR 0101).
+    expect(WRITER_WORKER_ID_UUID_NAMESPACE).toBe("7108affe-18e1-427e-8a44-493bb4a3af92");
+    expect(WRITER_ID_UNISSUED).toBe("WRITER_ID_UNISSUED");
+  });
+
+  it("builds exactly body, a blank line, the trailer and one LF", () => {
+    const body = "feat(contracts): a change\n\nwith a body";
+    expect(commitMessageWithReceiptTrailer(body, SHA256)).toBe(body + "\n\nACP-Receipt: " + SHA256 + "\n");
+    expect(commitMessageWithReceiptTrailer("x", "0".repeat(64))).toBe("x\n\nACP-Receipt: " + "0".repeat(64) + "\n");
+  });
+
+  it("refuses a digest that is not 64 lowercase hex, and a body the receipt refuses, by throwing the parse", () => {
+    for (const bad of ["a".repeat(63), "a".repeat(65), "A".repeat(64), "", "g".repeat(64)]) {
+      expect(() => commitMessageWithReceiptTrailer("feat: x", bad), bad).toThrow(z.ZodError);
+    }
+    for (const body of ["", "feat: x\n", "feat: x\r", "feat: x\n\nACP-Receipt: " + SHA256, "x".repeat(2_001)]) {
+      expect(() => commitMessageWithReceiptTrailer(body, SHA256), JSON.stringify(body)).toThrow(z.ZodError);
+    }
+  });
+
+  it("parses the body with the receipt's own field schema", () => {
+    // One rule for both doors: what the builder refuses, the receipt refuses.
+    for (const body of ["", "feat: x\n", "feat: x\r", "feat: x\nACP-Receipt: y", "ok body"]) {
+      const receiptAdmits = VerificationReceipt.shape.commitMessageBody.safeParse(body).success;
+      let builderAdmits = true;
+      try {
+        commitMessageWithReceiptTrailer(body, SHA256);
+      } catch {
+        builderAdmits = false;
+      }
+      expect({ body, builderAdmits }).toEqual({ body, builderAdmits: receiptAdmits });
+    }
   });
 });
 

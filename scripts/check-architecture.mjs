@@ -12609,6 +12609,67 @@ const P16A1_WRITE_SET = [
   "packages/persistence/ledger/test/roadmap-diff/index.test.ts",
 ];
 
+/**
+ * P-16, cut A2: a receipt is named by its content, and the plane names its writer
+ * (ADR 0121; decisions 228-230; brief v1 with the DT pre-review's corrections B-1 to
+ * B-4 and its rulings on ND-1 to ND-14, adopted).
+ *
+ * `@acp/contracts` rewrites the receipt to execution §10.2's shape: `VerificationReceipt`
+ * (PASS or FAIL) and `CommitAuthorizationReceipt`, its PASS-only restriction by one
+ * refine. `baseSha` is never null (no initial-commit receipt, D-9), `treeSha` and the
+ * `sha1` object format join, the writer and the verifier are an identity plus a
+ * lowercase version 5 instance id (B-3), the verifier adds its run, instants are
+ * canonical, and the message **body** carries no trailer. The one trailer's bytes are
+ * contracts' `commitMessageWithReceiptTrailer`, which parses the body with the receipt's
+ * own field schema (B-2). `WRITER_WORKER_ID_UUID_NAMESPACE` (the Claude session
+ * namespace's bytes) and `WRITER_ID_UNISSUED` are declared there. `@acp/ledger` gains
+ * `receipt-identity`: `receiptSha256` over a versioned prefix and the canon's thirteen
+ * members, and `writerWorkerIdFor`, the one v5 derivation beside providers'
+ * `claudeSessionId`, whose namespace is now the contracts constant under its old name.
+ * The runtime's `authorizeCommit` takes the v2 request as a closed key set, derives the
+ * writer id, refuses an unissued transport by name, and names the receipt by its digest;
+ * `recordCommit` requires the first parent to be `baseSha` and the message to be body
+ * plus trailer, byte for byte. Held by L-P16A2-1 and L-P16A2-2; the writer pilot proves
+ * the trailer's bytes through a real `git commit -m`.
+ *
+ * **Pins that move.** `CONTRACTS_SCHEMA_EXPORTS` 185 -> **189**; `PATH_SCOPED_LAWS` 175
+ * -> **177** (L-P16A2-1, L-P16A2-2); the ADR corpus 120 -> **121**. Computed and pinned
+ * by no doc: this constant is one more epoch-frozen record.
+ * **Pins that do not.** `CONTRACT_VERSION` (2.11.0; no event embeds a receipt, ND-1),
+ * `API_CONTRACT_VERSION` (0.25.0), `MIGRATIONS` (27; no DDL), `RUNTIME_PUBLIC_EXPORTS`
+ * (307; the issuer set is module-private), `PROVIDERS_PUBLIC_EXPORTS` (97),
+ * `SPAWN_ALLOWED_FILES` (4), L-P15A-1 (byte-unchanged) and `CONTRACTS_ALLOWED_BUILTINS`.
+ *
+ * **Twenty-four paths; four are new**: the receipt-identity module, its types leaf, its
+ * suite and the ADR.
+ */
+const P16A2_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/commit-authorization/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/persistence/ledger/src/receipt-identity/index.ts",
+  "packages/persistence/ledger/src/receipt-identity/types/index.ts",
+  "packages/persistence/ledger/test/receipt-identity/index.test.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/domains/runtime/src/commit-authorization/index.ts",
+  "packages/domains/runtime/test/commit-authorization/index.test.ts",
+  "packages/domains/runtime/src/enforcement/index.ts",
+  "packages/edges/providers/src/session-name/index.ts",
+  "packages/edges/providers/test/session-name/index.test.ts",
+  "packages/edges/providers/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0121-a-receipt-is-named-by-its-content-and-the-plane-names-its-writer.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "docs/audit/architecture/database/execution/index.md",
+  "packages/domains/runtime/test/pilots/writer/index.test.ts",
+  "packages/entrypoints/daemon/src/git-observer/index.ts",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12867,6 +12928,7 @@ const WRITE_SET = [
   ...P37S2_WRITE_SET,
   ...P15A4_WRITE_SET,
   ...P16A1_WRITE_SET,
+  ...P16A2_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -14464,6 +14526,17 @@ const PATH_SCOPED_LAWS = [
   {
     law: "a stored envelope's version is read before its shape, and refused by name",
     scope: "packages/domains/runtime/src/recorded-task/index.ts",
+  },
+  // P-16/A2. Two new path-shaped surfaces, so two new rows: the register and the
+  // `requireScope` call sites both move 175 -> 177 for L-P16A2-1 and L-P16A2-2.
+  // L-P15A-1 is unchanged and adds none.
+  {
+    law: "a receipt is named in one place, and its trailer is built in one place",
+    scope: "packages/*/*/src/**",
+  },
+  {
+    law: "one writer-id namespace, declared in contracts and imported by both v5 sites",
+    scope: "packages/*/*/src/**",
   },
 ];
 
@@ -22551,6 +22624,13 @@ if (accountsIndex === null) {
   // P-37 seam 2 (decision 212): the one sha-256 predicate, which `Sha256Hex` and the
   // sixteen former regex copies read. 184 -> 185.
   "isSha256Hex",
+  // P-16/A2 (ADR 0121, decision 228): the verification receipt the authorization
+  // restricts, the writer id's namespace and refusal word (its computation is the
+  // ledger's), and the one builder of a commit message's trailer. 185 -> 189.
+  "VerificationReceipt",
+  "WRITER_WORKER_ID_UUID_NAMESPACE",
+  "WRITER_ID_UNISSUED",
+  "commitMessageWithReceiptTrailer",
 ];
 
   const schemasBarrel = readIfPresent("packages/kernel/contracts/src/schemas/index.ts");
@@ -32360,6 +32440,156 @@ const RECORDED_TASK_READER = "packages/domains/runtime/src/recorded-task/index.t
   }
   requireScope(LAW, scanned);
   notes.push("the recorded-task reader reads a stored envelope's version before its shape, and names both version refusals");
+}
+
+// L-P16A2-1 -- a receipt is named in one place, and its trailer is built in one
+// place (P-16/A2, ADR 0121; decision 228).
+//
+// Execution §10.2: "Sólo ledger `receipt-identity` lo calcula". A second hasher of a
+// receipt is a second identity for it, and a second spelling of the commit message's
+// trailer is a second set of bytes a commit could be compared against. Two homes, one
+// per kind of fact (B-2): the ledger's `receipt-identity` holds the three preimage
+// prefixes (`acp/receipt-identity/v1`, `acp/receipt-checks/v1`,
+// `acp/receipt-write-set/v1`) and defines `receiptSha256` and `writerWorkerIdFor`; the
+// contracts' `commit-authorization` holds the trailer's key `ACP-Receipt:` -- which
+// its body rule and its builder both read -- and defines
+// `commitMessageWithReceiptTrailer`. Over every tracked `packages/*/*/src/` `.ts` and
+// `.tsx` file, comments stripped: each literal and each `function <name>(` appears
+// exactly once in its home and nowhere else. An absent or emptied home fails, because
+// its count is zero.
+//
+// Stated limit: a text-level matcher. A literal assembled at runtime, a function
+// defined as an arrow or a method, a hash of a receipt under another name, a copy in
+// a `.js` file under `src`, in a test tree or in `scripts/`, or what `stripComments`
+// hides is not seen. That the one hasher is the one the runtime calls is the runtime
+// suite's (`authorizeCommit`'s digest equals `receiptSha256`), and the digest's bytes
+// are the ledger suite's vectors, computed outside the package.
+const RECEIPT_IDENTITY_HOME = "packages/persistence/ledger/src/receipt-identity/index.ts";
+const RECEIPT_TRAILER_HOME = "packages/kernel/contracts/src/schemas/commit-authorization/index.ts";
+{
+  const LAW = "a receipt is named in one place, and its trailer is built in one place";
+  const items = [
+    { label: "acp/receipt-identity/v1", home: RECEIPT_IDENTITY_HOME, count: (code) => code.split("acp/receipt-identity/v1").length - 1 },
+    { label: "acp/receipt-checks/v1", home: RECEIPT_IDENTITY_HOME, count: (code) => code.split("acp/receipt-checks/v1").length - 1 },
+    { label: "acp/receipt-write-set/v1", home: RECEIPT_IDENTITY_HOME, count: (code) => code.split("acp/receipt-write-set/v1").length - 1 },
+    { label: "function receiptSha256(", home: RECEIPT_IDENTITY_HOME, count: (code) => (code.match(/\bfunction\s+receiptSha256\s*\(/g) ?? []).length },
+    { label: "function writerWorkerIdFor(", home: RECEIPT_IDENTITY_HOME, count: (code) => (code.match(/\bfunction\s+writerWorkerIdFor\s*\(/g) ?? []).length },
+    { label: "ACP-Receipt:", home: RECEIPT_TRAILER_HOME, count: (code) => code.split("ACP-Receipt:").length - 1 },
+    {
+      label: "function commitMessageWithReceiptTrailer(",
+      home: RECEIPT_TRAILER_HOME,
+      count: (code) => (code.match(/\bfunction\s+commitMessageWithReceiptTrailer\s*\(/g) ?? []).length,
+    },
+  ];
+  const inHome = new Map(items.map((item) => [item.label, 0]));
+  let scanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      scanned += 1;
+      const code = stripComments(content);
+      for (const item of items) {
+        const found = item.count(code);
+        if (found === 0) continue;
+        if (relativePath === item.home) {
+          inHome.set(item.label, found);
+        } else {
+          fail(
+            relativePath +
+              " holds " +
+              item.label +
+              "; a receipt's name and its trailer have one home each, and this one is " +
+              item.home +
+              " (L-P16A2-1)",
+          );
+        }
+      }
+    }
+  }
+  for (const item of items) {
+    const found = inHome.get(item.label) ?? 0;
+    if (found !== 1) {
+      fail(
+        item.home +
+          " holds " +
+          item.label +
+          " " +
+          String(found) +
+          " time(s); exactly once, or the law has no home to protect (L-P16A2-1)",
+      );
+    }
+  }
+  requireScope(LAW, scanned);
+  notes.push(
+    "a receipt is named in " + RECEIPT_IDENTITY_HOME + " and its trailer built in " + RECEIPT_TRAILER_HOME +
+      ", over " + String(scanned) + " sources",
+  );
+}
+
+// L-P16A2-2 -- one writer-id namespace, declared in contracts and imported by both
+// v5 sites (P-16/A2, ADR 0121; decision 229).
+//
+// The writer's instance id and the Claude CLI's session name are one function over
+// one namespace: the session a Claude writer runs under is its writer id. Two SHA-1
+// sites compute it, because contracts may hold no hash (ND-4) and providers may not
+// import the ledger (ND-5): the ledger's `writerWorkerIdFor` and providers'
+// `claudeSessionId`. So the namespace's bytes are held to one declaration. Over every
+// tracked `packages/*/*/src/` `.ts` and `.tsx` file, comments stripped and compared
+// case-insensitively: the literal `7108affe-18e1-427e-8a44-493bb4a3af92` appears in
+// exactly one file, the contracts' `commit-authorization`, once; and each of the two
+// v5 sites imports `WRITER_WORKER_ID_UUID_NAMESPACE` from `@acp/contracts` and names it
+// again after the import.
+//
+// Stated limit: a text matcher. A namespace assembled at runtime, its bytes written
+// another way (no dashes, a byte array), or a third v5 over the constant under
+// another name is not seen. The semantic guard is the vectors: both suites pin the
+// same four Python `uuid.uuid5` values, each against an independent RFC 4122
+// construction.
+const WRITER_ID_NAMESPACE_LITERAL = "7108affe-18e1-427e-8a44-493bb4a3af92";
+const WRITER_ID_V5_SITES = [RECEIPT_IDENTITY_HOME, PROVIDERS_CRYPTO_SITE];
+{
+  const LAW = "one writer-id namespace, declared in contracts and imported by both v5 sites";
+  let scanned = 0;
+  const holders = [];
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      scanned += 1;
+      const found = stripComments(content).toLowerCase().split(WRITER_ID_NAMESPACE_LITERAL).length - 1;
+      if (found > 0) holders.push(relativePath + (found === 1 ? "" : " (x" + String(found) + ")"));
+    }
+  }
+  if (holders.join(", ") !== RECEIPT_TRAILER_HOME) {
+    fail(
+      "the writer-id namespace is spelled in [" +
+        holders.join(", ") +
+        "]; it is declared once, in " +
+        RECEIPT_TRAILER_HOME +
+        ", and every v5 site imports it (L-P16A2-2)",
+    );
+  }
+  const importsNamespace = /import\s*\{[^}]*\bWRITER_WORKER_ID_UUID_NAMESPACE\b[^}]*\}\s*from\s*["']@acp\/contracts["']/;
+  for (const site of WRITER_ID_V5_SITES) {
+    const code = stripComments(readIfPresent(site) ?? "");
+    const uses = (code.match(/\bWRITER_WORKER_ID_UUID_NAMESPACE\b/g) ?? []).length;
+    if (!importsNamespace.test(code) || uses < 2) {
+      fail(
+        site +
+          " does not import WRITER_WORKER_ID_UUID_NAMESPACE from @acp/contracts and name it; a v5 site derives under" +
+          " the one declared namespace (L-P16A2-2)",
+      );
+    }
+  }
+  requireScope(LAW, scanned);
+  notes.push("one writer-id namespace, in " + RECEIPT_TRAILER_HOME + ", imported by " + WRITER_ID_V5_SITES.join(" and "));
 }
 
 // L-P15F-1 -- a result's bytes leave the plane only through readEffectResult, and

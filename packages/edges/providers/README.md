@@ -59,7 +59,11 @@ the package-wide single-spawn-site law.
 
 - `--verbose` because `stream-json` under `-p` requires it;
 - `--session-id` is `claudeSessionId(taskId, attempt)`, a version 5 UUID per attempt,
-  from `src/session-name/`, the one providers file admitted to `node:crypto`;
+  from `src/session-name/`, the one providers file admitted to `node:crypto`. Its
+  namespace, `CLAUDE_SESSION_UUID_NAMESPACE`, is `@acp/contracts`'
+  `WRITER_WORKER_ID_UUID_NAMESPACE` under its old name (P-16/A2, ADR 0121): the session
+  a Claude CLI writer runs under is the writer's instance id, and the ledger's
+  `writerWorkerIdFor` derives the same value (L-P16A2-2);
 - nothing is persisted to resume;
 - no MCP server of the account reaches a worker.
 
@@ -206,7 +210,8 @@ this shape.
 `src/process/spawn/index.ts` is the only file that imports `node:child_process`, and
 `src/session/index.ts` is its only caller. In the same way,
 `src/session-name/index.ts` is the only file that imports `node:crypto`, for the
-one SHA-1 a version 5 UUID is defined over (L-P15A-1). Both facts are asserted by the
+one SHA-1 a version 5 UUID is defined over (L-P15A-1). It hashes under a namespace
+declared in `@acp/contracts`, not here (L-P16A2-2). Both facts are asserted by the
 architecture fence, not merely intended. Two spawners drift, and the drift is
 discovered only when they disagree about how to stop something.
 

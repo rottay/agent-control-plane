@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
+import { WRITER_WORKER_ID_UUID_NAMESPACE } from "@acp/contracts";
+
 import { AdapterError } from "../../src/errors/index.js";
 import { CLAUDE_SESSION_UUID_NAMESPACE, claudeSessionId } from "../../src/session-name/index.js";
 
@@ -64,6 +66,18 @@ describe("the Claude session name is a version 5 UUID per attempt", () => {
     const runtimeNamespace = "6f2a1e14-3f8b-5c2d-9a47-2b6d1c8e5f30";
     expect(CLAUDE_SESSION_UUID_NAMESPACE).not.toBe(runtimeNamespace);
     expect(claudeSessionId(TASK, 1)).not.toBe(independentV5(runtimeNamespace, TASK + "/1"));
+  });
+
+  it("is derived under the contracts' writer-id namespace, whose bytes did not move (P-16/A2)", () => {
+    // ADR 0121: the session a Claude CLI writer runs under is the writer's
+    // instance id, and the rule's namespace lives in `@acp/contracts`. The bytes
+    // are pinned as the literal P-15/A shipped, so a re-point that moved them
+    // would move every vector above as well.
+    expect(CLAUDE_SESSION_UUID_NAMESPACE).toBe(WRITER_WORKER_ID_UUID_NAMESPACE);
+    expect(CLAUDE_SESSION_UUID_NAMESPACE).toBe("7108affe-18e1-427e-8a44-493bb4a3af92");
+    for (const [taskId, attempt, expected] of VECTORS) {
+      expect(independentV5(WRITER_WORKER_ID_UUID_NAMESPACE, taskId + "/" + String(attempt))).toBe(expected);
+    }
   });
 
   it("refuses a task id or an attempt that is present and invalid, never coercing it", () => {

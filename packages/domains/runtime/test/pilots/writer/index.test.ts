@@ -1,11 +1,11 @@
-import { CONTRACT_VERSION, buildIdempotencyKey } from "@acp/contracts";
+import { CONTRACT_VERSION, buildIdempotencyKey, commitMessageWithReceiptTrailer } from "@acp/contracts";
 import type { Checkpoint, ResolvedRoute } from "@acp/contracts";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 
-import { createCheckpointStore, openLedger } from "@acp/ledger";
+import { createCheckpointStore, openLedger, receiptSha256, writerWorkerIdFor } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -76,13 +76,11 @@ import {
   WRITER_AUTHORIZED_AT,
   WRITER_CHECK_RAN_AT,
   WRITER_HAPPY_LEASE_ID,
-  WRITER_HAPPY_RECEIPT_ID,
   WRITER_HAPPY_SECOND_LEASE_ID,
   WRITER_HAPPY_TASK_ID,
   WRITER_ISSUED_AT,
   WRITER_LEASE_ACQUIRED_AT,
   WRITER_LEASE_EXPIRES_AT,
-  WRITER_PROBES_RECEIPT_ID,
   WRITER_PROBE_TASK_IDS,
   WRITER_SHARED_PROBE_LEASE_ID,
   WRITER_VIOLATION_PROBE_LEASE_ID,
@@ -121,6 +119,35 @@ const TEST_ROUTE: ResolvedRoute = {
  */
 
 const OBJECT_ID = /^[0-9a-f]{40}$/;
+
+/**
+ * The verifier's instance, as P-16/C's runner will fill it from its spawn record
+ * (P-16/A2, ADR 0121). A lowercase version 5 id (`uuid.uuid5` over the writer-id
+ * namespace and `verifier/1`), never the writer's; supplied here because the runner
+ * does not exist yet.
+ */
+const PILOT_VERIFIER_INSTANCE = {
+  identity: PILOT_VERIFIER,
+  workerId: "24a8af45-549e-5137-8d27-03eb76de8b47",
+  runId: 1,
+} as const;
+
+/** The verification policy's digest: supplied, its producer is P-16/C's. */
+const PILOT_POLICY_SHA256 = "c".repeat(64);
+
+/** A tree for the probes, which never commit; the happy path's tree is real. */
+const PROBE_TREE_SHA = "e".repeat(40);
+
+/**
+ * The v2 request's coordinates for a first attempt: revision 1, attempt 1, and the
+ * flat attempt 1 the writer id is derived from, under the Claude CLI session.
+ */
+const FIRST_ATTEMPT = {
+  revisionNumber: 1,
+  attemptNumber: 1,
+  attempt: 1,
+  writerIdIssuer: "CLAUDE_CLI_SESSION",
+} as const;
 /** A wrong-but-valid-shaped parent: 40 lowercase hex characters, never the real one. */
 const WRONG_PARENT = "d".repeat(40);
 const FAKE_COMMIT_SHA = "b".repeat(40);
@@ -535,31 +562,48 @@ describe("the writer packet, walked end to end", () => {
       expect(conformance.violations).toEqual([]);
     }
 
-    const commitMessage = "p7c: update notes/todo.txt";
+    const commitMessageBody = "p7c: update notes/todo.txt";
     const checks: readonly RecordedCheck[] = [
       { command: "git diff --check", exitCode: diffCheck.status ?? 1, ranAt: WRITER_CHECK_RAN_AT },
     ];
+    // The tree the commit will carry, read from real git before the authorization
+    // (P-16/A2): staged, then written as a tree object. Staging is not a commit;
+    // the commit below is still made only under the receipt.
+    const add = spawnGitDirect(toyDir, ["add", TOY_NOTES_PATH]);
+    expect(add.status).toBe(0);
+    const treeRead = spawnGitDirect(toyDir, ["write-tree"]);
+    expect(treeRead.status).toBe(0);
+    const treeSha = treeRead.stdout.trim();
+    expect(OBJECT_ID.test(treeSha)).toBe(true);
+
     const authorization = authorizeCommit({
-      receiptId: WRITER_HAPPY_RECEIPT_ID,
       taskId,
-      attempt: 1,
+      ...FIRST_ATTEMPT,
       writer: PILOT_WRITER,
-      verifier: PILOT_VERIFIER,
+      verifier: PILOT_VERIFIER_INSTANCE,
       authorizedBy: PILOT_AUTHORIZED_BY,
       authorizedAt: WRITER_AUTHORIZED_AT,
       worktreePath: toyDir,
-      branch: "main",
+      lease: grantedLease,
       declaredWriteSet: [TOY_NOTES_PATH],
       observation: worktreeObservation,
+      treeSha,
+      policySha256: PILOT_POLICY_SHA256,
       checks,
-      commitMessage,
-      lease: grantedLease,
+      commitMessageBody,
     });
     expect(authorization.ok).toBe(true);
     if (!authorization.ok) throw new Error("expected authorization to be granted");
     const receipt = authorization.receipt;
     expect(receipt.pushAuthorized).toBe(false);
-    expect(receipt.baseHead).toBe(initialSha);
+    expect(receipt.baseSha).toBe(initialSha);
+    expect(receipt.treeSha).toBe(treeSha);
+    expect(receipt.writer).toEqual({ identity: PILOT_WRITER, workerId: writerWorkerIdFor(taskId, 1) });
+    expect(authorization.receiptSha256).toBe(receiptSha256(receipt));
+    // The message the commit carries: the body and the one trailer that names
+    // the receipt (execution §10.5).
+    const commitMessage = commitMessageWithReceiptTrailer(commitMessageBody, authorization.receiptSha256);
+    expect(commitMessage).toBe(commitMessageBody + "\n\nACP-Receipt: " + authorization.receiptSha256 + "\n");
 
     // N2: the full granted event list, asserted as a value -- payloads
     // verbatim. Only COMMIT_AUTHORIZED is appended here (no audit was
@@ -585,9 +629,7 @@ describe("the writer packet, walked end to end", () => {
     expect(ledger.getTask(taskId)?.currentState).toBe("READY_TO_COMMIT");
 
     // 7. The real local commit, through the drill's own spawn -- never the
-    // port, which speaks only GIT_READ_VERBS.
-    const add = spawnGitDirect(toyDir, ["add", TOY_NOTES_PATH]);
-    expect(add.status).toBe(0);
+    // port, which speaks only GIT_READ_VERBS. The declared path was staged above.
     const commit = spawnGitDirect(toyDir, [
       "-c",
       "user.name=acp-pilot-drill",
@@ -613,10 +655,26 @@ describe("the writer packet, walked end to end", () => {
     const parents = parentsRead.stdout.trim().split(/\s+/).filter((entry) => entry.length > 0);
     expect(parents).toEqual([initialSha]);
 
-    const messageRead = spawnGitDirect(toyDir, ["log", "-1", "--format=%s", commitSha]);
-    expect(messageRead.status).toBe(0);
-    const readMessage = messageRead.stdout.trim();
+    // The commit's tree is the tree the receipt names.
+    const committedTree = spawnGitDirect(toyDir, ["log", "-1", "--format=%T", commitSha]);
+    expect(committedTree.status).toBe(0);
+    expect(committedTree.stdout.trim()).toBe(receipt.treeSha);
+
+    // The message's exact bytes, read back from the commit object itself:
+    // everything after the header's first blank line. No `%s`, no trim -- either
+    // would lose the trailer or its LF, and the comparison is byte for byte.
+    const objectRead = spawnGitDirect(toyDir, ["cat-file", "commit", commitSha]);
+    expect(objectRead.status).toBe(0);
+    const headerEnd = objectRead.stdout.indexOf("\n\n");
+    expect(headerEnd).toBeGreaterThan(0);
+    const readMessage = objectRead.stdout.slice(headerEnd + 2);
     expect(readMessage).toBe(commitMessage);
+    // For this body, `git commit -m` keeps the body, the blank line, the trailer
+    // and its one LF byte-identical. Not for every admitted body: the `whitespace`
+    // cleanup rewrites trailing whitespace and leading or extra blank lines, and
+    // such a commit fails closed as COMMIT_MESSAGE_MISMATCH; a body holding a NUL
+    // is refused by git outright, even verbatim (ADR 0121; P-17/A's).
+    expect(readMessage.endsWith("\n\nACP-Receipt: " + authorization.receiptSha256 + "\n")).toBe(true);
 
     // 8. Reconcile the recorded commit against the receipt.
     const reconciliation = recordCommit({
@@ -730,20 +788,20 @@ describe("the fail-closed probes", () => {
     const lease = (leaseGrant as LeaseGranted).lease;
 
     const outcome = authorizeCommit({
-      receiptId: WRITER_PROBES_RECEIPT_ID,
       taskId,
-      attempt: 1,
+      ...FIRST_ATTEMPT,
       writer: PILOT_WRITER,
-      verifier: PILOT_WRITER, // same identity: not independent
+      verifier: { ...PILOT_VERIFIER_INSTANCE, identity: PILOT_WRITER }, // same identity: not independent
       authorizedBy: PILOT_AUTHORIZED_BY,
       authorizedAt: WRITER_AUTHORIZED_AT,
       worktreePath: toyDir,
-      branch: "main",
+      lease,
       declaredWriteSet: [TOY_NOTES_PATH],
       observation,
+      treeSha: PROBE_TREE_SHA,
+      policySha256: PILOT_POLICY_SHA256,
       checks: [{ command: "git diff --check", exitCode: 0, ranAt: WRITER_CHECK_RAN_AT }],
-      commitMessage: "should never be authorized",
-      lease,
+      commitMessageBody: "should never be authorized",
     });
     expect(outcome.ok).toBe(false);
     expect((outcome as AuthorizationRefused).reason).toBe("VERIFIER_NOT_INDEPENDENT");
@@ -781,22 +839,22 @@ describe("the fail-closed probes", () => {
     expect(failing.status).not.toBe(0);
 
     const outcome = authorizeCommit({
-      receiptId: WRITER_PROBES_RECEIPT_ID,
       taskId,
-      attempt: 1,
+      ...FIRST_ATTEMPT,
       writer: PILOT_WRITER,
-      verifier: PILOT_VERIFIER,
+      verifier: PILOT_VERIFIER_INSTANCE,
       authorizedBy: PILOT_AUTHORIZED_BY,
       authorizedAt: WRITER_AUTHORIZED_AT,
       worktreePath: toyDir,
-      branch: "main",
+      lease,
       declaredWriteSet: [TOY_NOTES_PATH],
       observation,
+      treeSha: PROBE_TREE_SHA,
+      policySha256: PILOT_POLICY_SHA256,
       checks: [
         { command: "node -e process.exit(7)", exitCode: failing.status ?? 1, ranAt: WRITER_CHECK_RAN_AT },
       ],
-      commitMessage: "should never be authorized",
-      lease,
+      commitMessageBody: "should never be authorized",
     });
     expect(outcome.ok).toBe(false);
     expect((outcome as AuthorizationRefused).reason).toBe("CHECK_FAILED");
@@ -833,20 +891,20 @@ describe("the fail-closed probes", () => {
     const lease = (leaseGrant as LeaseGranted).lease;
 
     const outcome = authorizeCommit({
-      receiptId: WRITER_PROBES_RECEIPT_ID,
       taskId,
-      attempt: 1,
+      ...FIRST_ATTEMPT,
       writer: PILOT_WRITER,
-      verifier: PILOT_VERIFIER,
+      verifier: PILOT_VERIFIER_INSTANCE,
       authorizedBy: PILOT_AUTHORIZED_BY,
       authorizedAt: WRITER_AUTHORIZED_AT,
       worktreePath: toyDir,
-      branch: "main",
+      lease,
       declaredWriteSet: [TOY_NOTES_PATH],
       observation,
+      treeSha: PROBE_TREE_SHA,
+      policySha256: PILOT_POLICY_SHA256,
       checks: [{ command: "git diff --check", exitCode: 0, ranAt: WRITER_CHECK_RAN_AT }],
-      commitMessage: "should never be authorized",
-      lease,
+      commitMessageBody: "should never be authorized",
     });
     expect(outcome.ok).toBe(false);
     expect((outcome as AuthorizationRefused).reason).toBe("WRITE_SET_VIOLATION");
@@ -887,24 +945,25 @@ describe("the fail-closed probes", () => {
     const lease = (leaseGrant as LeaseGranted).lease;
 
     const authorization = authorizeCommit({
-      receiptId: WRITER_PROBES_RECEIPT_ID,
       taskId,
-      attempt: 1,
+      ...FIRST_ATTEMPT,
       writer: PILOT_WRITER,
-      verifier: PILOT_VERIFIER,
+      verifier: PILOT_VERIFIER_INSTANCE,
       authorizedBy: PILOT_AUTHORIZED_BY,
       authorizedAt: WRITER_AUTHORIZED_AT,
       worktreePath: toyDir,
-      branch: "main",
+      lease,
       declaredWriteSet: [TOY_NOTES_PATH],
       observation,
+      treeSha: PROBE_TREE_SHA,
+      policySha256: PILOT_POLICY_SHA256,
       checks: [{ command: "git diff --check", exitCode: 0, ranAt: WRITER_CHECK_RAN_AT }],
-      commitMessage: "p7c: probe commit",
-      lease,
+      commitMessageBody: "p7c: probe commit",
     }) as AuthorizationGranted;
     expect(authorization.ok).toBe(true);
     const receipt = authorization.receipt;
-    expect(receipt.baseHead).toBe(head);
+    expect(receipt.baseSha).toBe(head);
+    const message = commitMessageWithReceiptTrailer(receipt.commitMessageBody, authorization.receiptSha256);
 
     // The parent is right first (the module checks sha, then parents, then
     // message) -- only the message is tampered.
@@ -914,12 +973,21 @@ describe("the fail-closed probes", () => {
     });
     expect(messageMismatch.ok).toBe(false);
     expect((messageMismatch as AuthorizationRefused).reason).toBe("COMMIT_MESSAGE_MISMATCH");
+    // And the body alone, without the trailer that names the receipt, is a
+    // difference too: the trailer is part of the authorized bytes.
+    const bodyOnly = recordCommit({
+      receipt,
+      commit: { sha: FAKE_COMMIT_SHA, parents: [head], message: receipt.commitMessageBody },
+    });
+    expect((bodyOnly as AuthorizationRefused).reason).toBe("COMMIT_MESSAGE_MISMATCH");
+    // The positive control: the same commit with the exact message reconciles.
+    expect(recordCommit({ receipt, commit: { sha: FAKE_COMMIT_SHA, parents: [head], message } }).ok).toBe(true);
     expect(messageLedger.status().eventCount).toBe(0);
 
     // A wrong-but-valid-shaped parent, message otherwise correct.
     const parentMismatch = recordCommit({
       receipt,
-      commit: { sha: FAKE_COMMIT_SHA, parents: [WRONG_PARENT], message: receipt.commitMessage },
+      commit: { sha: FAKE_COMMIT_SHA, parents: [WRONG_PARENT], message },
     });
     expect(parentMismatch.ok).toBe(false);
     expect((parentMismatch as AuthorizationRefused).reason).toBe("COMMIT_PARENT_MISMATCH");

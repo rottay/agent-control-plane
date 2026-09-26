@@ -164,8 +164,9 @@ export function observeWorktree(
 ): { readonly ok: true; readonly observation: WorktreeObservation } | { readonly ok: false; readonly reason: string } {
   // **Status first, and it is load-bearing.** A successful status is what
   // proves this is a readable repository. Only then can a failing `rev-parse`
-  // be read as an unborn HEAD — a repository at its initial commit, which the
-  // receipt's own `baseHead` allows to be null.
+  // be read as an unborn HEAD — a repository at its initial commit. `head: null`
+  // is still an observable fact for conformance; no receipt is issued over it
+  // (the authorization refuses it as `BASE_HEAD_MISSING`, P-16/A2).
   //
   // Taken the other way round, a `rev-parse` that failed for any reason at all
   // would become `head: null`, and a broken or absent repository would be

@@ -121,6 +121,23 @@ export type { AccountIntegrityInput } from "./account-integrity/index.js";
 export { envelopeIdentityPreimageV1, envelopeSha256 } from "./envelope-identity/index.js";
 
 /**
+ * P-16/A2: a receipt's identity, version 1, and the writer's instance id (ADR 0121).
+ *
+ * `receiptSha256` is `receipt_sha256`, the effective key execution §10.2 gives the
+ * verification, and this is its one computation site: the runtime's authorization
+ * names a receipt by it, and P-16/B's door recomputes through it. `writerWorkerIdFor`
+ * is the plane's derivation of the writer's instance id from the task and its flat
+ * attempt, under the namespace `@acp/contracts` declares. The two sub-digest prefixes
+ * stay in the module: nothing outside it composes a preimage.
+ */
+export {
+  RECEIPT_IDENTITY_PREIMAGE_PREFIX_V1,
+  receiptIdentityPreimageV1,
+  receiptSha256,
+  writerWorkerIdFor,
+} from "./receipt-identity/index.js";
+
+/**
  * V2 concurrency C1: the worktree arbitration store.
  *
  * A separate database from the ledger, answering the one question history

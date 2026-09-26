@@ -87,6 +87,9 @@ ledger.close();
 | `close()` | Release the handle. |
 | `envelopeSha256(value)` | Pure. The revision identity of a task envelope; parses before it hashes. |
 | `envelopeIdentityPreimageV1(value)` | Pure. The bytes that digest is taken over. |
+| `receiptSha256(value)` | Pure. `receipt_sha256`, the name of a verification receipt (P-16/A2, ADR 0121); parses `VerificationReceipt` before it hashes, so a `CommitAuthorizationReceipt` digests the same. The one computation site. |
+| `receiptIdentityPreimageV1(value)` | Pure. The bytes that digest is taken over: the versioned prefix and the canonical JSON of the thirteen members execution §10.2 names. |
+| `writerWorkerIdFor(taskId, attempt)` | Pure. The writer's instance id: the RFC 4122 v5 UUID over `taskId + "/" + attempt` under contracts' `WRITER_WORKER_ID_UUID_NAMESPACE`, with the flat per-task attempt. Byte-identical to the Claude CLI session name. Refuses a bad argument with `LedgerValidationError`, naming it. |
 | `computeOutboxCommandId(input)` / `outboxCommandIdPreimageV1(input)` | Pure. The id of one command, over `(sagaId, phase, targetKind, targetId)` under the contract's prefix; the door recomputes it. |
 | `foldOutboxCommands(entries)` | Pure. Every command a sequence of stream events folds to, refusing what the append door refuses. |
 | `measurementStreamIdV1(coordinate)` / `measurementStreamPreimageV1(coordinate)` | Pure. The id of one usage measurement stream, over `(source, accountId, routeSegmentId, sourceEpoch)` under its versioned prefix; refuses a malformed field by name before hashing. |
@@ -312,6 +315,47 @@ path yet: `daemon-child` still compares the submission digest, which covers the
 task coordinates, the instant and the elected route and not one envelope field.
 This is the half that can be a pure function; the wiring is a later packet.
 ADR 0066 carries the reasoning.
+
+## The receipt's name, and the writer's id
+
+`receiptSha256(value)` and `receiptIdentityPreimageV1(value)` compute
+`receipt_sha256`, the effective key execution §10.2 gives a verification
+(P-16/A2, ADR 0121). The canon says only this module computes it, and the fence
+holds that (L-P16A2-1).
+
+```
+preimage = RECEIPT_IDENTITY_PREIMAGE_PREFIX_V1 + canonicalJsonStringify({ the thirteen })
+digest   = sha256(preimage)
+```
+
+As with the envelope, there is **no separator between the two**: one LF, the
+prefix's last byte. Unlike the envelope, **the preimage is a closed list**: the
+thirteen members the canon names, not the whole parsed receipt. The authorization's
+facts are not in the receipt, and the observed lists and `contractVersion` stay out
+of the preimage. That is a stated limit, and the same digest over different
+observations is P-16/B's fold-level refusal. Two members are digests derived here
+and never carried:
+
+- `checksSha256` is taken over the checks in execution order, under
+  `acp/receipt-checks/v1\n`.
+- `writeSetSha256` is taken over the declared write-set sorted by UTF-16 code unit,
+  under `acp/receipt-write-set/v1\n`.
+
+The three prefixes are this package's own, as the account-integrity and
+usage-settlement prefixes are. The two sub-prefixes are not on the barrel.
+
+The commit message's trailer is not in the preimage, because it carries the
+digest. The receipt's schema refuses a body that already holds one before anything
+is hashed. The trailer's bytes are `@acp/contracts`' `commitMessageWithReceiptTrailer`.
+
+`writerWorkerIdFor(taskId, attempt)` is the plane's derivation of the writer's
+instance id: RFC 4122 version 5 over `taskId + "/" + String(attempt)`, under the
+namespace contracts declares. `attempt` is the **flat per-task attempt**
+(`legacy_attempt_number`), never the per-revision number, which restarts in each
+revision. The value is the Claude CLI's session name, byte for byte; providers'
+`claudeSessionId` computes the same function, and both suites pin the same four
+vectors (L-P16A2-2). A bad argument throws `LedgerValidationError` naming `taskId`
+or `attempt`. **No error class is added.**
 
 ## The revision coordinate, and the revision's own record
 

@@ -45,7 +45,7 @@ this table against the barrel.
 | `task-envelope` | the unit of authorized work: instruction content, authority, exact write-set, budget |
 | `checkpoint` | what a record carries — digests and references, never content |
 | `control-plane-event` | the append-only event shape the ledger chains |
-| `commit-authorization` | the receipt a local commit requires, and what it binds |
+| `commit-authorization` | the verification receipt and its `PASS`-only restriction, the receipt a local commit requires, and what they bind; the writer id's namespace and refusal word; and `commitMessageWithReceiptTrailer`, the one builder of a commit message's trailer (P-16/A2) |
 | `execution-boundary` | the provider-neutral execution port: routes, requests, normalized events |
 | `durability-plane` | the shapes the durability port exchanges with its drivers |
 | `initiatives` | the initiative stream: registration, status, roadmap versions and their steps — the private step manifest, the declaration a `ROADMAP_STEP_DECLARED` carries, their bounds and the write set's preimage prefix (P-26 cut B) — and a step's task graph: the header a `TASK_GRAPH_DECLARED` carries, the node a `TASK_GRAPH_NODE_DECLARED` carries, the three `DEPENDENCY_FAILURE_POLICIES` and two bounds (P-27 cut A) — and a task's step link: the declaration a `TASK_STEP_LINKED` carries, its target step and the `from` pair it leaves, both null for an adoption (P-27 cut C) |
@@ -118,6 +118,37 @@ barrels, for one name: the ledger's outcome grammar reads `RESULT_STATUSES` rath
 than a copy of it (P-07 escalón B, ADR 0098). Assembling and publishing a result are
 escalones C–D's. Its types live in `result/types/index.ts`, on the content contract's
 precedent.
+
+## The receipt, version 2
+
+P-16/A2 (ADR 0121) rewrote the receipt to execution §10.2's shape.
+`VerificationReceipt` is what a verification run produces, `PASS` or `FAIL`.
+`CommitAuthorizationReceipt` is the same object restricted to `PASS` by one more
+refine, so a value it admits always parses as a verification receipt and names the
+same digest. AGENTS law 3 is read literally: an authorizing receipt with a failed
+run or a nonzero check is not a value.
+
+- `baseSha` and `treeSha` are full object ids, and `baseSha` is never null: there
+  is no initial-commit receipt. `objectFormat` is the literal `sha1`.
+- The writer is `{identity, workerId}` and the verifier `{identity, workerId, runId}`.
+  Both instance ids are version 5 UUIDs in canonical lowercase, and independence is
+  refused by label and by instance.
+- Every instant is a `CanonicalInstant`, and a declared path may not repeat.
+- `commitMessageBody` is the body alone. The field's schema refuses an empty body,
+  one that ends in `\n`, one that holds `\r`, and one with a line that begins with
+  the trailer's key.
+- `commitMessageWithReceiptTrailer(body, receiptSha256)` returns exactly
+  `body + "\n\nACP-Receipt: " + receiptSha256 + "\n"`. It parses the body with the
+  receipt's own field schema and the digest with `Sha256Hex`, and throws the parse's
+  `ZodError`. It is the one site of the trailer's bytes (L-P16A2-1).
+
+The receipt's name, `receipt_sha256`, is computed by `@acp/ledger`'s
+`receipt-identity` and nowhere else. This package may import no `node:` builtin.
+For the same reason it declares the writer id's rule and not its computation:
+`WRITER_WORKER_ID_UUID_NAMESPACE` (the Claude session namespace's bytes, which
+providers re-exports under its old name) and `WRITER_ID_UNISSUED`, the refusal of a
+writer transport with no id issuer. The v5 derivation is the ledger's
+`writerWorkerIdFor` (L-P16A2-2).
 
 ## The laws these shapes carry
 

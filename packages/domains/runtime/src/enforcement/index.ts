@@ -87,9 +87,10 @@ export type GitReadPort = (request: GitReadRequest) => GitReadOutcome;
 /**
  * What the caller saw in a worktree, in the receipt's own shape.
  *
- * This is a direct projection of `CommitAuthorizationReceipt`'s `baseHead`,
+ * This is a direct projection of `CommitAuthorizationReceipt`'s `baseSha`,
  * `observedTrackedChanges` and `observedUntrackedPaths`, so P6C's receipt is a
- * projection of this value rather than a re-shape of it.
+ * projection of this value rather than a re-shape of it. The one difference is
+ * the base: `head` may be `null` here, and a receipt's `baseSha` never is.
  *
  * The enumeration rules are pinned, because each one is a way a violation could
  * otherwise hide:
@@ -105,8 +106,10 @@ export type GitReadPort = (request: GitReadRequest) => GitReadOutcome;
 export interface WorktreeObservation {
   /**
    * The commit the observation was taken against — a 40 character git object
-   * id, or `null` only at a repository's initial commit, exactly as the
-   * receipt's `baseHead` allows.
+   * id, or `null` only at a repository's initial commit. `null` stays observable
+   * for conformance, so a HEAD-less repository can still be judged; it is never
+   * a receipt's base. No receipt has a null `baseSha` (P-16/A2, D-9), and the
+   * authorization refuses a `null` head as `BASE_HEAD_MISSING`.
    */
   readonly head: string | null;
   readonly trackedChanges: readonly PathDigest[];

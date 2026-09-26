@@ -5,9 +5,15 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { CommitAuthorizationReceipt, buildIdempotencyKey } from "@acp/contracts";
+import {
+  CommitAuthorizationReceipt,
+  VerificationReceipt,
+  WRITER_ID_UNISSUED,
+  buildIdempotencyKey,
+  commitMessageWithReceiptTrailer,
+} from "@acp/contracts";
 import type { Lease, PathDigest } from "@acp/contracts";
-import { computeOutboxCommandId, openLedger } from "@acp/ledger";
+import { computeOutboxCommandId, openLedger, receiptSha256, writerWorkerIdFor } from "@acp/ledger";
 
 import { checkWriteSetConformance } from "../../src/enforcement/index.js";
 import type { WorktreeObservation } from "../../src/enforcement/index.js";
@@ -40,6 +46,11 @@ const BASE = "0123456789abcdef0123456789abcdef01234567";
 const CHILD = "fedcba9876543210fedcba9876543210fedcba98";
 const A = "a".repeat(64);
 const MESSAGE = "feat(runtime): a drill commit";
+const TASK_ID = "33333333-3333-4333-8333-333333333333";
+/** A lowercase version 5 instance id for the verifier, other than any writer's. */
+const VERIFIER_WORKER_ID = "24a8af45-549e-5137-8d27-03eb76de8b47";
+const TREE = "89abcdef0123456789abcdef0123456789abcdef";
+const POLICY = "c".repeat(64);
 
 function lease(overrides: Partial<Lease> = {}): Lease {
   return {
@@ -67,22 +78,30 @@ function observation(overrides: Partial<WorktreeObservation> = {}): WorktreeObse
 
 function request(overrides: Partial<AuthorizationRequest> = {}): AuthorizationRequest {
   return {
-    receiptId: "22222222-2222-4222-8222-222222222222",
-    taskId: "33333333-3333-4333-8333-333333333333",
+    taskId: TASK_ID,
+    revisionNumber: 1,
+    attemptNumber: 1,
     attempt: 1,
     writer: WRITER,
-    verifier: VERIFIER,
+    writerIdIssuer: "CLAUDE_CLI_SESSION",
+    verifier: { identity: VERIFIER, workerId: VERIFIER_WORKER_ID, runId: 1 },
     authorizedBy: AUTHORIZER,
     authorizedAt: NOW,
     worktreePath: WORKTREE,
-    branch: "main",
+    lease: lease(),
     declaredWriteSet: ["src/allowed.ts"],
     observation: observation(),
+    treeSha: TREE,
+    policySha256: POLICY,
     checks: [{ command: "pnpm check", exitCode: 0, ranAt: NOW }],
-    commitMessage: MESSAGE,
-    lease: lease(),
+    commitMessageBody: MESSAGE,
     ...overrides,
   };
+}
+
+/** A request with keys the v2 type does not have, for the closed-key-set cases. */
+function requestWith(extra: Record<string, unknown>): AuthorizationRequest {
+  return { ...request(), ...extra } as AuthorizationRequest;
 }
 
 function refusal(
@@ -95,16 +114,33 @@ function refusal(
 
 describe("the authorization decision", () => {
   // (d)
-  it("builds a receipt the contract itself accepts", () => {
+  it("builds a receipt the contract itself accepts, and names it by the ledger's digest", () => {
     const out = authorizeCommit(request());
     expect(out.ok).toBe(true);
     if (!out.ok) return;
     expect(CommitAuthorizationReceipt.safeParse(out.receipt).success).toBe(true);
+    expect(VerificationReceipt.safeParse(out.receipt).success).toBe(true);
     expect(out.receipt.pushAuthorized).toBe(false);
+    expect(out.receipt.runStatus).toBe("PASS");
+    expect(out.receipt.objectFormat).toBe("sha1");
+    expect(out.receipt.treeSha).toBe(TREE);
+    expect(out.receipt.policySha256).toBe(POLICY);
+    expect(out.receipt.commitMessageBody).toBe(MESSAGE);
+    expect(out.receiptSha256).toBe(receiptSha256(out.receipt));
     expect(out.events.map((e) => e.type)).toEqual([
       "VERIFICATION_COMPLETED",
       "COMMIT_AUTHORIZED",
     ]);
+    // The payloads name the receipt by its digest; there is no receipt id.
+    for (const candidate of out.events) {
+      expect(candidate.payload["receiptSha256"]).toBe(out.receiptSha256);
+      expect(Object.keys(candidate.payload)).not.toContain("receiptId");
+    }
+    expect(out.events[1]?.payload).toEqual({
+      taskId: TASK_ID,
+      receiptSha256: out.receiptSha256,
+      authorizedBy: AUTHORIZER,
+    });
   });
 
   it("emits AUDIT_COMPLETED only when an audit was performed", () => {
@@ -118,9 +154,101 @@ describe("the authorization decision", () => {
 
   // (a)
   it("refuses a receipt whose verifier is its own writer", () => {
-    const out = authorizeCommit(request({ verifier: WRITER }));
+    const out = authorizeCommit(
+      request({ verifier: { identity: WRITER, workerId: VERIFIER_WORKER_ID, runId: 1 } }),
+    );
     expect(refusal(out).reason).toBe("VERIFIER_NOT_INDEPENDENT");
-    expect(refusal(out).at).toBe("request.verifier");
+    expect(refusal(out).at).toBe("request.verifier.identity");
+  });
+
+  // D-2: the plane fills the writer's instance id.
+  it("fills the writer's instance id from the task and its flat attempt", () => {
+    const out = authorizeCommit(request());
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.receipt.writer).toEqual({ identity: WRITER, workerId: writerWorkerIdFor(TASK_ID, 1) });
+
+    // The Claude session name's first external vector (providers' suite,
+    // Python `uuid.uuid5`): the writer id is the id the CLI ran under.
+    const vector = authorizeCommit(request({ taskId: "00000000-0000-4000-8000-00000000000a" }));
+    expect(vector.ok && vector.receipt.writer.workerId).toBe("39de475b-2696-5df6-b64b-88336de7d72c");
+
+    // The flat attempt is the input, never the per-revision number.
+    const second = authorizeCommit(
+      request({ taskId: "00000000-0000-4000-8000-00000000000a", attempt: 2, revisionNumber: 2, attemptNumber: 1 }),
+    );
+    expect(second.ok && second.receipt.writer.workerId).toBe("796cc136-89af-53a4-b947-3d0609c12f60");
+    expect(second.ok && second.receipt.attemptNumber).toBe(1);
+  });
+
+  it("refuses a verifier whose instance is the writer's, under another label", () => {
+    const out = authorizeCommit(
+      request({ verifier: { identity: VERIFIER, workerId: writerWorkerIdFor(TASK_ID, 1), runId: 1 } }),
+    );
+    expect(refusal(out).reason).toBe("VERIFIER_NOT_INDEPENDENT");
+    expect(refusal(out).at).toBe("request.verifier.workerId");
+  });
+
+  it("parses the verifier before it compares: a malformed or uppercase id is REQUEST_INVALID (B-3)", () => {
+    for (const [label, verifier, at] of [
+      ["uppercase", { identity: VERIFIER, workerId: VERIFIER_WORKER_ID.toUpperCase(), runId: 1 }, "request.verifier.workerId"],
+      [
+        "the writer's own id in uppercase",
+        { identity: VERIFIER, workerId: writerWorkerIdFor(TASK_ID, 1).toUpperCase(), runId: 1 },
+        "request.verifier.workerId",
+      ],
+      ["a v4 id", { identity: VERIFIER, workerId: "11111111-1111-4111-8111-111111111111", runId: 1 }, "request.verifier.workerId"],
+      ["run zero", { identity: VERIFIER, workerId: VERIFIER_WORKER_ID, runId: 0 }, "request.verifier.runId"],
+      ["a label", VERIFIER, "request.verifier"],
+      ["an extra key", { identity: VERIFIER, workerId: VERIFIER_WORKER_ID, runId: 1, pid: 7 }, "request.verifier"],
+    ] as const) {
+      const out = authorizeCommit(request({ verifier: verifier as never }));
+      expect({ label, reason: refusal(out).reason, at: refusal(out).at }).toEqual({
+        label,
+        reason: "REQUEST_INVALID",
+        at,
+      });
+    }
+  });
+
+  it("refuses a task id or a flat attempt the writer id cannot be derived from", () => {
+    for (const [override, at] of [
+      [{ taskId: "" }, "request.taskId"],
+      [{ attempt: 0 }, "request.attempt"],
+      [{ attempt: 1.5 }, "request.attempt"],
+      [{ attempt: "1" as never }, "request.attempt"],
+    ] as const) {
+      const run = (): AuthorizationOutcome => authorizeCommit(request(override));
+      expect(run).not.toThrow();
+      expect({ reason: refusal(run()).reason, at: refusal(run()).at }).toEqual({ reason: "REQUEST_INVALID", at });
+    }
+  });
+
+  // ND-11: the request's key set is closed.
+  it("refuses any key outside the v2 request by its own path, V1 keys and writer ids included", () => {
+    for (const [key, value] of [
+      ["initialCommit", true],
+      ["initialCommit", false],
+      ["receiptId", "22222222-2222-4222-8222-222222222222"],
+      ["branch", "main"],
+      ["commitMessage", MESSAGE],
+      ["writerWorkerId", VERIFIER_WORKER_ID],
+      ["baseHead", BASE],
+      ["surprise", 1],
+    ] as const) {
+      const out = authorizeCommit(requestWith({ [key]: value }));
+      expect({ key, reason: refusal(out).reason, at: refusal(out).at }).toEqual({
+        key,
+        reason: "REQUEST_INVALID",
+        at: "request." + key,
+      });
+    }
+    // A writer supplied as an object carrying its own id is not a label.
+    const asObject = authorizeCommit(
+      requestWith({ writer: { identity: WRITER, workerId: writerWorkerIdFor(TASK_ID, 1) } }),
+    );
+    expect(refusal(asObject).reason).toBe("REQUEST_INVALID");
+    expect(refusal(asObject).at).toBe("request.writer");
   });
 
   // (b)
@@ -133,6 +261,16 @@ describe("the authorization decision", () => {
     }));
     expect(refusal(out).reason).toBe("CHECK_FAILED");
     expect(refusal(out).at).toBe("request.checks[1]");
+  });
+
+  // P-16/A2 verification N-1: `-0` passes `!== 0`, so the contract refuses it
+  // before anything is hashed; the function returns, and never throws.
+  it("refuses a negative-zero exit code as the contract's, rather than throwing", () => {
+    const req = request({ checks: [{ command: "pnpm check", exitCode: -0, ranAt: NOW }] });
+    const run = (): AuthorizationOutcome => authorizeCommit(req);
+    expect(run).not.toThrow();
+    expect(refusal(run()).reason).toBe("RECEIPT_INVALID");
+    expect(refusal(run()).at).toBe("receipt.checks.0.exitCode");
   });
 
   // (j)
@@ -150,36 +288,36 @@ describe("the authorization decision", () => {
     expect(refusal(out).reason).toBe("WRITE_SET_VIOLATION");
   });
 
-  // (g)
-  it("refuses a null observed head outside the bootstrap, and allows it inside", () => {
-    const outside = authorizeCommit(request({ observation: observation({ head: null }) }));
-    expect(refusal(outside).reason).toBe("BASE_HEAD_MISSING");
-    expect(refusal(outside).at).toBe("request.observation.head");
-
-    const bootstrap = authorizeCommit(
-      request({ observation: observation({ head: null }), initialCommit: true }),
-    );
-    expect(bootstrap.ok).toBe(true);
-    if (!bootstrap.ok) return;
-    expect(bootstrap.receipt.baseHead).toBeNull();
+  // (g) D-9: there is no initial-commit receipt.
+  it("refuses a null observed head: no receipt is issued without a base", () => {
+    const out = authorizeCommit(request({ observation: observation({ head: null }) }));
+    expect(refusal(out).reason).toBe("BASE_HEAD_MISSING");
+    expect(refusal(out).at).toBe("request.observation.head");
   });
 
-  // (n) C1: one base-head authority -- the receipt projects the observed head.
-  it("takes the receipt's base head from the observation, not a second input", () => {
-    // There is no `baseHead` field to disagree with `observation.head`: the
-    // receipt names whatever the observation was taken against.
+  // (n) C1: one base authority -- the receipt projects the observed head.
+  it("takes the receipt's base from the observation, not a second input", () => {
     const out = authorizeCommit(request({ observation: observation({ head: CHILD }) }));
     expect(out.ok).toBe(true);
     if (!out.ok) return;
-    expect(out.receipt.baseHead).toBe(CHILD);
-    expect(Object.keys(request())).not.toContain("baseHead");
+    expect(out.receipt.baseSha).toBe(CHILD);
+    expect(Object.keys(request())).not.toContain("baseSha");
   });
 
-  // (o) C1: the bootstrap claim must agree with the observation.
-  it("refuses a bootstrap asserted over a worktree that has a head", () => {
-    const out = authorizeCommit(request({ initialCommit: true }));
-    expect(refusal(out).reason).toBe("BASE_HEAD_MISMATCH");
-    expect(refusal(out).at).toBe("request.initialCommit");
+  // ND-10: a writer transport with no id issuer is refused by name.
+  it("refuses a writer transport that issues no writer id", () => {
+    for (const issuer of [undefined, "", "CLAUDE_API", "OPENAI_CLI_SESSION", "claude_cli_session", 7]) {
+      const out = authorizeCommit(requestWith({ writerIdIssuer: issuer }));
+      expect({ issuer, reason: refusal(out).reason, at: refusal(out).at }).toEqual({
+        issuer,
+        reason: WRITER_ID_UNISSUED,
+        at: "request.writerIdIssuer",
+      });
+    }
+    const absent = { ...request() } as Record<string, unknown>;
+    delete absent["writerIdIssuer"];
+    expect(refusal(authorizeCommit(absent as never)).reason).toBe("WRITER_ID_UNISSUED");
+    expect(authorizeCommit(request({ writerIdIssuer: "CLAUDE_CLI_SESSION" })).ok).toBe(true);
   });
 
   // (p) N1: a composed refusal is carried, not flattened.
@@ -219,17 +357,44 @@ describe("the authorization decision", () => {
   });
 
   // (k)
-  it("carries the contract parser's refusal for a malformed identity", () => {
-    // `authorizedBy` is an identity no earlier guard reads, so the contract's
-    // own parser is what refuses it, and its path is carried out unchanged.
-    const out = authorizeCommit(request({ authorizedBy: "not-an-identity" }));
+  it("carries the contract parser's refusal for a malformed receipt member", () => {
+    // `policySha256` is a member no earlier guard reads, so the contract's own
+    // parser is what refuses it, and its path is carried out unchanged.
+    const out = authorizeCommit(request({ policySha256: "nope" }));
     expect(refusal(out).reason).toBe("RECEIPT_INVALID");
-    expect(refusal(out).at).toContain("receipt.");
+    expect(refusal(out).at).toBe("receipt.policySha256");
+
+    const tree = authorizeCommit(request({ treeSha: "B".repeat(40) }));
+    expect(refusal(tree).at).toBe("receipt.treeSha");
+
+    // A body with a trailer is a receipt the authorization would refuse, so it
+    // is never issued.
+    const trailered = authorizeCommit(request({ commitMessageBody: MESSAGE + "\n\nACP-Receipt: " + A }));
+    expect(refusal(trailered).reason).toBe("RECEIPT_INVALID");
+    expect(refusal(trailered).at).toBe("receipt.commitMessageBody");
+
+    // The authority is not a receipt member any more: refused as the request's.
+    const authority = authorizeCommit(request({ authorizedBy: "not-an-identity" }));
+    expect(refusal(authority).reason).toBe("REQUEST_INVALID");
+    expect(refusal(authority).at).toBe("request.authorizedBy");
 
     // A malformed `writer` is caught earlier and more specifically: no lease
     // can be held by a non-identity, so the holder binding refuses first.
     const badWriter = authorizeCommit(request({ writer: "not-an-identity" }));
     expect(refusal(badWriter).reason).toBe("LEASE_HOLDER_MISMATCH");
+  });
+
+  it("grants a body git would rewrite or refuse, a stated limit P-17/A closes (ADR 0121 Six)", () => {
+    // Pinned so the limit is visible, not endorsed. Git's `whitespace` cleanup
+    // rewrites trailing whitespace, and git refuses a NUL even with
+    // `--cleanup=verbatim`, so neither commit is ever reconciled with this
+    // receipt: it fails closed. P-17/A's body rules flip both to refusals.
+    for (const body of ["feat: x  ", "feat: x\u0000y"]) {
+      const out = authorizeCommit(request({ commitMessageBody: body }));
+      expect(out.ok, JSON.stringify(body)).toBe(true);
+      if (!out.ok) return;
+      expect(out.receipt.commitMessageBody).toBe(body);
+    }
   });
 
   // (h)
@@ -238,6 +403,7 @@ describe("the authorization decision", () => {
       ["null request", null, "REQUEST_INVALID"],
       ["checks not an array", { ...request(), checks: "no" }, "REQUEST_INVALID"],
       ["writer not a string", { ...request(), writer: 7 }, "REQUEST_INVALID"],
+      ["verifier absent", { ...request(), verifier: undefined }, "REQUEST_INVALID"],
     ] as const) {
       const run = (): AuthorizationOutcome => authorizeCommit(req as never);
       expect(run).not.toThrow();
@@ -263,77 +429,119 @@ describe("the authorization decision", () => {
   it("closes its refusal set", () => {
     expect([...AUTHORIZATION_REFUSALS]).toEqual([...AUTHORIZATION_REFUSALS].sort());
     expect(new Set(AUTHORIZATION_REFUSALS).size).toBe(AUTHORIZATION_REFUSALS.length);
+    // P-16/A2: WRITER_ID_UNISSUED joins; BASE_HEAD_MISMATCH leaves with the
+    // bootstrap claim it answered.
+    expect([...AUTHORIZATION_REFUSALS]).toEqual([
+      "BASE_HEAD_MISSING",
+      "CHECKS_MISSING",
+      "CHECK_FAILED",
+      "COMMIT_MESSAGE_MISMATCH",
+      "COMMIT_PARENT_MISMATCH",
+      "COMMIT_SHA_INVALID",
+      "LEASE_EXPIRED",
+      "LEASE_HOLDER_MISMATCH",
+      "LEASE_WORKTREE_MISMATCH",
+      "RECEIPT_INVALID",
+      "REQUEST_INVALID",
+      "VERIFIER_NOT_INDEPENDENT",
+      "WRITER_ID_UNISSUED",
+      "WRITE_SET_VIOLATION",
+    ]);
   });
 });
 
 describe("the post-commit record", () => {
-  function receiptFor(overrides: Partial<AuthorizationRequest> = {}) {
+  function granted(overrides: Partial<AuthorizationRequest> = {}) {
     const out = authorizeCommit(request(overrides));
     if (!out.ok) throw new Error("fixture authorization refused: " + out.reason);
-    return out.receipt;
+    return out;
   }
 
-  it("records a commit that matches its receipt", () => {
-    const out = recordCommit({
-      receipt: receiptFor(),
-      commit: { sha: CHILD, parents: [BASE], message: MESSAGE },
+  /** The message an authorized commit carries: the body and the one trailer. */
+  function messageFor(out: { readonly receiptSha256: string }): string {
+    return commitMessageWithReceiptTrailer(MESSAGE, out.receiptSha256);
+  }
+
+  it("records a commit whose message is exactly the body plus the trailer", () => {
+    const out = granted();
+    const message = messageFor(out);
+    expect(message).toBe(MESSAGE + "\n\nACP-Receipt: " + out.receiptSha256 + "\n");
+    const recorded = recordCommit({
+      receipt: out.receipt,
+      commit: { sha: CHILD, parents: [BASE], message },
     });
-    expect(out.ok).toBe(true);
-    if (!out.ok) return;
-    expect(out.events.map((e) => e.type)).toEqual(["COMMIT_RECORDED"]);
-    expect(out.events[0]?.payload["sha"]).toBe(CHILD);
+    expect(recorded.ok).toBe(true);
+    if (!recorded.ok) return;
+    expect(recorded.events.map((e) => e.type)).toEqual(["COMMIT_RECORDED"]);
+    expect(recorded.events[0]?.payload).toEqual({ taskId: TASK_ID, receiptSha256: out.receiptSha256, sha: CHILD });
+  });
+
+  it("refuses a message without its trailer, with another digest, or with other bytes", () => {
+    const out = granted();
+    const other = receiptSha256(granted({ commitMessageBody: "feat(runtime): another" }).receipt);
+    expect(other).not.toBe(out.receiptSha256);
+    for (const [label, message] of [
+      ["body only", MESSAGE],
+      ["body and LF", MESSAGE + "\n"],
+      ["another receipt's trailer", commitMessageWithReceiptTrailer(MESSAGE, other)],
+      ["CRLF", MESSAGE + "\r\n\r\nACP-Receipt: " + out.receiptSha256 + "\r\n"],
+      ["no final LF", MESSAGE + "\n\nACP-Receipt: " + out.receiptSha256],
+      ["uppercase digest", MESSAGE + "\n\nACP-Receipt: " + out.receiptSha256.toUpperCase() + "\n"],
+      ["something else", "something else"],
+    ] as const) {
+      const recorded = recordCommit({ receipt: out.receipt, commit: { sha: CHILD, parents: [BASE], message } });
+      expect({ label, reason: refusal(recorded).reason }).toEqual({ label, reason: "COMMIT_MESSAGE_MISMATCH" });
+    }
   });
 
   // (l)
-  it("refuses a parent that is not the receipt's baseHead", () => {
-    const out = recordCommit({
-      receipt: receiptFor(),
-      commit: { sha: CHILD, parents: [CHILD], message: MESSAGE },
+  it("refuses a first parent that is not the receipt's baseSha", () => {
+    const out = granted();
+    const recorded = recordCommit({
+      receipt: out.receipt,
+      commit: { sha: CHILD, parents: [CHILD], message: messageFor(out) },
     });
-    expect(refusal(out).reason).toBe("COMMIT_PARENT_MISMATCH");
+    expect(refusal(recorded).reason).toBe("COMMIT_PARENT_MISMATCH");
   });
 
-  it("refuses a parent at the bootstrap, and accepts none", () => {
-    const receipt = receiptFor({
-      observation: observation({ head: null }),
-      initialCommit: true,
+  it("refuses a root commit: no parent is never the base (D-9)", () => {
+    const out = granted();
+    const recorded = recordCommit({
+      receipt: out.receipt,
+      commit: { sha: CHILD, parents: [], message: messageFor(out) },
     });
-    const withParent = recordCommit({
-      receipt,
-      commit: { sha: CHILD, parents: [BASE], message: MESSAGE },
-    });
-    expect(refusal(withParent).reason).toBe("COMMIT_PARENT_MISMATCH");
-    const without = recordCommit({
-      receipt,
-      commit: { sha: CHILD, parents: [], message: MESSAGE },
-    });
-    expect(without.ok).toBe(true);
+    expect(refusal(recorded).reason).toBe("COMMIT_PARENT_MISMATCH");
+    expect(refusal(recorded).at).toBe("request.commit.parents");
   });
 
-  it("accepts a merge whose first parent is the baseHead", () => {
+  it("accepts a merge whose first parent is the baseSha", () => {
     // A merge's second parent is not what the receipt was taken against;
     // requiring equality there would refuse a lawful merge.
-    const out = recordCommit({
-      receipt: receiptFor(),
-      commit: { sha: CHILD, parents: [BASE, CHILD], message: MESSAGE },
+    const out = granted();
+    const recorded = recordCommit({
+      receipt: out.receipt,
+      commit: { sha: CHILD, parents: [BASE, CHILD], message: messageFor(out) },
     });
-    expect(out.ok).toBe(true);
+    expect(recorded.ok).toBe(true);
   });
 
-  it("refuses a changed message and a malformed sha", () => {
-    const receipt = receiptFor();
+  it("refuses a malformed sha, and a receipt that is not an authorizing one", () => {
+    const out = granted();
     expect(
       refusal(recordCommit({
-        receipt,
-        commit: { sha: CHILD, parents: [BASE], message: "something else" },
-      })).reason,
-    ).toBe("COMMIT_MESSAGE_MISMATCH");
-    expect(
-      refusal(recordCommit({
-        receipt,
-        commit: { sha: "nope", parents: [BASE], message: MESSAGE },
+        receipt: out.receipt,
+        commit: { sha: "nope", parents: [BASE], message: messageFor(out) },
       })).reason,
     ).toBe("COMMIT_SHA_INVALID");
+    // A FAIL receipt parses as a verification and never authorizes a commit.
+    const failed = { ...out.receipt, runStatus: "FAIL" as const };
+    expect(VerificationReceipt.safeParse(failed).success).toBe(true);
+    expect(
+      refusal(recordCommit({
+        receipt: failed as never,
+        commit: { sha: CHILD, parents: [BASE], message: messageFor(out) },
+      })).reason,
+    ).toBe("RECEIPT_INVALID");
   });
 
   it("refuses malformed input rather than throwing", () => {
@@ -532,6 +740,19 @@ describe("the lease binds the writer, the worktree and the moment", () => {
     expect(run).not.toThrow();
     expect(refusal(run()).reason).toBe("REQUEST_INVALID");
     expect(refusal(run()).at).toBe("request.authorizedAt");
+  });
+
+  // N-6: `authorizedAt` is the future `authorized_at`, a canonical instant; an
+  // offset spelling of a live moment is refused, never normalized.
+  it("refuses an authorizedAt that is an instant but not the canonical one", () => {
+    for (const spelling of ["2026-08-29T14:00:00.000+02:00", "2026-08-29T12:00:00Z", "2026-08-29T12:00:00.000z"]) {
+      const out = authorizeCommit(request({ authorizedAt: spelling }));
+      expect({ spelling, reason: refusal(out).reason, at: refusal(out).at }).toEqual({
+        spelling,
+        reason: "REQUEST_INVALID",
+        at: "request.authorizedAt",
+      });
+    }
   });
 
   it("keeps its refusal set closed after the new codes", () => {
