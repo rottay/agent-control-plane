@@ -137,8 +137,8 @@ function totalOf(sample: UsageSample): number {
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
- * One text block, so the envelope's `objective` equals the first text block of its
- * content and the two spellings stay one fact. `contentSha256` is a placeholder and
+ * One text block, the envelope's whole instruction: from 2.11.0 `content` states it
+ * once (P-16/A1, ADR 0120). `contentSha256` is a placeholder and
  * stays one after escalón C: C checks a declared digest against the bytes a
  * REFERENCE names, and a block whose text travels inline names no reference, so
  * there are no bytes for this figure to disagree with.
@@ -347,7 +347,6 @@ function envelopeFor(taskId: string, initiativeId: string, writeSet: readonly st
     taskId,
     initiativeId,
     title: "a drill packet",
-    objective: "walk the plan",
     content: fixtureContent("walk the plan"),
     classification: "MECHANICAL",
     issuedBy: EMITTED_BY,
@@ -2711,7 +2710,7 @@ describe("F2b: a binding declares the provider it serves", () => {
  * assertions that could not previously fail.
  */
 describe("the packet's objective reaches the model (V2-B1c)", () => {
-  it("P1/P6 delivers the envelope's objective, and nothing else, to the subject", async () => {
+  it("P1/P6 delivers the envelope's instruction, and nothing else, to the subject", async () => {
     const { binary, root, echoFile } = fakeProviderBinary(CLAUDE_LINES, { linger: false });
     const run = await startDaemon(
       b4aOptions(b4aScenarioId("b1c-delivery"), b4aExecutionConfig(binary, root)),
@@ -2722,7 +2721,7 @@ describe("the packet's objective reaches the model (V2-B1c)", () => {
     // file existing at all proves the pipe was closed as well as written --
     // its `end` handler never fires otherwise.
     expect(existsSync(echoFile)).toBe(true);
-    // P6: the instruction is the envelope's own objective, resolved by the one
+    // P6: the instruction is the envelope's own content, resolved by the one
     // producer, and it is the whole of what was sent -- not a template, not a
     // rendering, not a concatenation of context.
     expect(readFileSync(echoFile, "utf8")).toBe("walk the plan");
@@ -4769,7 +4768,6 @@ function acceptanceEnvelope(taskId: string): TaskEnvelope {
   });
   return {
     ...envelopeFor(taskId, INITIATIVE_ID),
-    objective: ACCEPTANCE_FIRST,
     content: {
       contentContractVersion: 1,
       blocks: [block("b1", ACCEPTANCE_FIRST), block("b2", ACCEPTANCE_SECOND)],
@@ -5820,7 +5818,6 @@ function d4ThroughTheDoors(options: {
   const intakeRequest = {
     envelope: {
       ...envelopeFor(taskId, D4_INITIATIVE, [D4_WRITTEN]),
-      objective: instruction,
       content: fixtureContent(instruction),
       readSet: [D4_WRITTEN],
       ...(role === "reviewer" ? { eligibility: { roles: [role], providers: null, requiredCapabilities: [] } } : {}),
@@ -6150,8 +6147,17 @@ describe("P-15/D4: a recorded task, from its door to its result (parallelism :14
  * the D4 literal `f61ca58b…ed93`, the control — and once with only the contract's
  * version literal (and the supported set) moved to 2.10.0, which gave the value below.
  * The current tree gives the same value, so D3's invariance holds at 2.10.0 too.
+ *
+ * P-16/A1 moved `CONTRACT_VERSION` to 2.11.0 and retired `TaskEnvelope.objective`
+ * (ADR 0120), so the stamp and the envelope digest both move. Restamped by the same
+ * method on the same source: `git archive be3b06f` into the scratchpad with this test
+ * as c1bb414 wrote it, run once as it stood — reproducing `f61ca58b…ed93`, the control
+ * — and once with A1's contract edits applied there (the version literal and the
+ * supported set moved to 2.11.0, the field and its refinement removed) and the drill's
+ * envelope literals without `objective`, which gave the value below. The current tree
+ * gives the same value, so D3's invariance holds at 2.11.0 too.
  */
-const D4_V1_TRAIL_SHA256 = "b11912eaf21310fa5b3781040373da9eb30720a989fa74dd82acb0659205a346";
+const D4_V1_TRAIL_SHA256 = "96593135b1f802ff9413dc53a79f086da6bf8ee995156764c2a254ec221089e5";
 
 describe("P-15/D4 PC-D3: the inline V1 walk is byte-identical to the one before D3", () => {
   it("hashes the same trail, lease rows aside, as the pre-D3 source", async () => {
@@ -6195,7 +6201,7 @@ describe("P-15/D4 PC-D3: the inline V1 walk is byte-identical to the one before 
         },
       ],
     };
-    const envelope = { ...envelopeFor(taskId, INITIATIVE_ID, [D4_WRITTEN]), objective: D4_INSTRUCTION, content: fixtureContent(D4_INSTRUCTION) } as TaskEnvelope;
+    const envelope = { ...envelopeFor(taskId, INITIATIVE_ID, [D4_WRITTEN]), content: fixtureContent(D4_INSTRUCTION) } as TaskEnvelope;
     await stopDaemon(
       await startDaemon({
         mode: "SQLITE_SUPERVISOR",

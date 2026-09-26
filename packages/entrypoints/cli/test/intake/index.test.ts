@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import {
   artifactPlaneRootFor,
   canonicalJsonStringify,
   chainDigest,
+  envelopeIdentityPreimageV1,
   envelopeSha256,
   openArtifactBlobLeaseStore,
   openArtifactPlane,
@@ -29,8 +30,8 @@ import { runIntakeVerb } from "../../src/intake/index.js";
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
- * One text block, so the envelope's `objective` equals the first text block of its
- * content and the two spellings stay one fact. `contentSha256` is a placeholder:
+ * One text block, the envelope's whole instruction: from 2.11.0 `content` states it
+ * once (P-16/A1, ADR 0120). `contentSha256` is a placeholder:
  * escalón B admits and publishes, and escalón C is where a digest is checked
  * against the bytes it describes.
  */
@@ -154,7 +155,6 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
     taskId: TASK,
     initiativeId: INITIATIVE,
     title: "Enter a task",
-    objective: OBJECTIVE,
     content: fixtureContent(OBJECTIVE),
     classification: "MECHANICAL",
     issuedBy: COORDINATOR,
@@ -247,6 +247,16 @@ function taskRows(database: string): readonly string[] {
     return (raw.prepare("SELECT event_json FROM control_plane_events ORDER BY sequence").all() as { readonly event_json: string }[]).map(
       (row) => row.event_json,
     );
+  } finally {
+    raw.close();
+  }
+}
+
+/** Every artifact event of the registry stream: the documents the seed wrote are not counted. */
+function artifactRows(database: string): number {
+  const raw = new DatabaseSync(database, { readOnly: true });
+  try {
+    return (raw.prepare("SELECT COUNT(*) AS count FROM registry_events WHERE subject_kind <> 'DOCUMENT'").get() as { readonly count: number }).count;
   } finally {
     raw.close();
   }
@@ -387,7 +397,8 @@ describe("acp intake refuses by the exit code the refusal earns", () => {
     expect(taskRows(f.database)).toHaveLength(0);
   });
 
-  it("a credential-shaped objective is BAD_REQUEST by field, never echoed, and nothing is published", async () => {
+  it("a credential-shaped instruction is BAD_REQUEST by field, never echoed, and nothing is published", async () => {
+    // The instruction is stated once, in `content`, since P-16/A1 (ADR 0120).
     const f = fixture();
     const result = await invoke([
       "intake",
@@ -396,10 +407,10 @@ describe("acp intake refuses by the exit code the refusal earns", () => {
       "--format",
       "json",
       "--request",
-      f.request({ envelope: envelope({ objective: "deploy with " + SENTINEL }) }),
+      f.request({ envelope: envelope({ content: fixtureContent("deploy with " + SENTINEL) }) }),
     ]);
     expect(result.exitCode).toBe(EXIT_USAGE);
-    expect(errorOf(result)).toMatchObject({ code: "BAD_REQUEST", detail: "request.envelope.objective" });
+    expect(errorOf(result)).toMatchObject({ code: "BAD_REQUEST", detail: "request.envelope.content.blocks.0.text" });
     expect(result.stderr).not.toContain(SENTINEL);
     expect(taskRows(f.database)).toHaveLength(0);
     expect(existsSync(artifactPlaneRootFor(f.database))).toBe(false);
@@ -432,6 +443,42 @@ describe("acp intake refuses by the exit code the refusal earns", () => {
  * Fable P-26/ACCEPT v3 N1): `acp intake` names both step words the way the gateway does,
  * through the real door, and appends nothing when it refuses.
  */
+describe("acp intake under 0.25.0: the envelope states its instruction once (P-16/A1, ADR 0120)", () => {
+  it("E1: an envelope without `objective` enters, DISCOVERED at revision 1, and its digest is the two-method value", async () => {
+    const f = fixture();
+    expect(Object.keys(envelope())).not.toContain("objective");
+    const result = await invoke(["intake", "--database", f.database, "--request", f.request()]);
+    expect(result.exitCode).toBe(EXIT_OK);
+    const document = TaskIntakeResponse.parse(JSON.parse(result.stdout));
+    expect(document.apiContractVersion).toBe("0.25.0");
+    expect(document.task).toMatchObject({ taskId: TASK, revisionNumber: 1, state: "DISCOVERED" });
+    expect(document.task.envelopeSha256).toBe(envelopeSha256(envelope()));
+    expect(document.task.envelopeSha256).toBe(createHash("sha256").update(envelopeIdentityPreimageV1(envelope()), "utf8").digest("hex"));
+    expect(existsSync(artifactPlaneRootFor(f.database))).toBe(true);
+  });
+
+  it("E2: an envelope that still carries `objective` is BAD_REQUEST at the envelope, EXIT_USAGE, with no event, no publication and no artifact row", async () => {
+    for (const objective of [OBJECTIVE, "Something the content does not say."]) {
+      const f = fixture();
+      const result = await invoke([
+        "intake",
+        "--database",
+        f.database,
+        "--format",
+        "json",
+        "--request",
+        f.request({ envelope: envelope({ objective }) }),
+      ]);
+      expect(result.exitCode, objective).toBe(EXIT_USAGE);
+      expect(errorOf(result)).toMatchObject({ code: "BAD_REQUEST", detail: "request.envelope" });
+      expect(result.stderr).not.toContain(objective);
+      expect(taskRows(f.database)).toHaveLength(0);
+      expect(artifactRows(f.database)).toBe(0);
+      expect(existsSync(artifactPlaneRootFor(f.database))).toBe(false);
+    }
+  });
+});
+
 describe("acp intake names a step its version does not declare, and a version that declares none knowably (P-27 cut B)", () => {
   const VERSION = "66666666-6666-4666-8666-666666666601";
 
@@ -487,7 +534,7 @@ describe("acp intake names a step its version does not declare, and a version th
     }
   }
 
-  /** A 2.10.0 version declaring no step, through the single door, in this suite's own mould. */
+  /** A version of the step cohort (2.10.0 on) declaring no step, through the single door, in this suite's own mould. */
   function recordVersionWithNoStep(database: string): void {
     const transitionId = "roadmap." + VERSION;
     const ledger = openLedger(database);

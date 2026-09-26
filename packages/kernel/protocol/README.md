@@ -145,6 +145,12 @@ than trusting this table.
   the versions to a new non-ledger source, `TOOL_SERVER`. `API_WRITE_ROUTES` and the
   error words do not move; ADR 0116 had assigned this minor to P-16/A1, which
   re-takes the next one.
+- **The envelope states its instruction once.** P-16/A1 moved `API_CONTRACT_VERSION`
+  to `0.25.0` without a route: the task intake request's embedded `TaskEnvelope`
+  loses `objective`, so `content` is the one statement of the instruction, and a
+  request that still carries the field is a `400 BAD_REQUEST` at `envelope`.
+  `CONTRACT_VERSION` moves to `2.11.0` with it, so `LEDGER_CONTRACT_VERSION` follows
+  by derivation (ADR 0120). No route, table or error word moves.
 - **Every read is free but one, and that one is named.** P-15/F added two reads
   and moved `API_CONTRACT_VERSION` to `0.19.0`: `taskEffects`, a plain read of a
   task's effect ids, coordinates and outcome words, and `taskEffectResult`, one

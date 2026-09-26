@@ -104,9 +104,9 @@ describe("the contract is one closed shape, version 1", () => {
     ]);
   });
 
-  it("Q1: the inline text bound names the policy a real door already applies", () => {
-    // Not a second policy: `TaskEnvelope.objective` and
-    // `ExecutionRequest.instructions` both carry min(1).max(4_000).
+  it("Q1: the inline text bound names the policy a real door already applied", () => {
+    // Not a second policy: the bound `TaskEnvelope.objective` carried,
+    // min(1).max(4_000), until P-16/A1 retired the field (ADR 0120).
     expect(CONTENT_INLINE_TEXT_MAX_CHARS).toBe(4_000);
     expect(CONTENT_BLOCK_ID_MAX_CHARS).toBe(200);
   });

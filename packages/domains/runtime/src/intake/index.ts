@@ -222,7 +222,7 @@ function refuse(
  * Pure: no ledger, no clock, no plane. Every refusal is `REQUEST_INVALID`. The
  * roadmap link is a pair in both directions (N-P14-8): a step without a version
  * and a version without a step are both refused, at the half that is missing.
- * The envelope is parsed whole — its credential guards over the objective
+ * The envelope is parsed whole — its credential guards over the content
  * included — **before anything is published**, and its digest is this module's
  * computation, never the caller's.
  */

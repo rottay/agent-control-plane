@@ -145,7 +145,6 @@ function envelope(taskId: string): Record<string, unknown> {
     taskId,
     initiativeId: INITIATIVE,
     title: "A task of the graph",
-    objective: OBJECTIVE,
     content: {
       contentContractVersion: 1,
       blocks: [
@@ -701,7 +700,7 @@ describe("production feeds named absences (readinessOf)", () => {
 });
 
 describe("P-P18-2: this build opens the history the previous one wrote", () => {
-  it("a 2.10.0 history rewound to 25 migrates under 2.10.0 through 26 to 27, verifies and rebuilds identically, and takes G1 on top", async () => {
+  it("a 2.11.0 history rewound to 25 migrates under 2.11.0 through 26 to 27, verifies and rebuilds identically, and takes G1 on top", async () => {
     const { path, bearer, app, tasks } = await world();
     await app.close();
     const before = withReader(path, (ledger) => ({

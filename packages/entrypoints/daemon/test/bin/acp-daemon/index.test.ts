@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,12 +11,16 @@ import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { CONFIG_MAX_BYTES, checkConfigPath, loadDaemonConfig } from "../../../src/bin/config-file/index.js";
 import { DEFAULT_ROUTING_CONFIG, EVIDENCE_ABSENT, loadPolicyRegistry } from "@acp/accounts";
 import type { CandidateEvidence, PolicyRouteRequest, QuotaOutcome, RoutingRequest } from "@acp/accounts";
-import { AccountRecord, CONTRACT_VERSION, buildInitiativeIdempotencyKey } from "@acp/contracts";
+import { AccountRecord, CONTRACT_VERSION, ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1, buildInitiativeIdempotencyKey } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import { admitBinary, admitConfigRoot, admitWorkdir, claudeAdapter, createExecutionPort } from "@acp/providers";
 import {
+  ARTIFACT_ACCESS_POLICY_IDS,
+  GENESIS_SHA256,
   artifactBlobLeaseStorePath,
   canonicalJsonStringify,
+  chainDigest,
+  envelopeSha256,
   openArtifactBlobLeaseStore,
   openArtifactPlane,
   openLedger,
@@ -39,8 +44,8 @@ import { EXIT_CONFIG_CONTENT, EXIT_CONFIG_PATH, EXIT_USAGE, runPackagedEntry } f
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
- * One text block, so the envelope's `objective` equals the first text block of its
- * content and the two spellings stay one fact. `contentSha256` is a placeholder:
+ * One text block, the envelope's whole instruction: from 2.11.0 `content` states it
+ * once (P-16/A1, ADR 0120). `contentSha256` is a placeholder:
  * escalón B admits and publishes, and escalón C is where a digest is checked
  * against the bytes it describes.
  */
@@ -417,7 +422,6 @@ function envelopeFor(taskId: string, initiativeId: string, writeSet: readonly st
     taskId,
     initiativeId,
     title: "a walk",
-    objective: "walk the plan",
     content: fixtureContent("walk the plan"),
     classification: "MECHANICAL",
     issuedBy: "claude/opus/implementer/01",
@@ -2075,7 +2079,6 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
       );
       const envelope = {
         ...envelopeFor(taskId, INITIATIVE, [WRITTEN]),
-        objective: INSTRUCTION,
         content: fixtureContent(INSTRUCTION),
         readSet: [WRITTEN],
       };
@@ -2228,6 +2231,208 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
     }
     // The marker lives beside the operator ledger, under the evidence root.
     expect(readdirSync(join(home, "executions", "executions"))).toHaveLength(1);
+  });
+
+  /**
+   * Plant a task "recorded under" another contract version into an operator ledger
+   * a 2.11.0 build entered it into (P-16/A1, ND-7 (a)).
+   *
+   * The real intake has run. This publishes `raw` — the entered envelope restamped to
+   * `envelopeVersion`, carrying the `objective` a 2.10.0 build still stored when
+   * `withObjective` — through the real artifact plane under the task's scope, and
+   * rewrites the intake event's `contractVersion`, reference and digest, then
+   * recomputes the task stream's chain, head and watermarks from genesis with the two
+   * append-only triggers taken out and put back verbatim (the ledger suite's
+   * `restampHistory` mould), and rebuilds the projections.
+   *
+   * The digest is computed here, test-locally, as
+   * `sha256(ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1 + canonicalJsonStringify(raw))`: the
+   * prefix carries its own LF, and the parse step of the two-method rule is omitted on
+   * purpose, because the 2.11.0 schema must refuse these bytes. The published bytes
+   * are built from exactly the `raw` that is hashed.
+   */
+  function plantRecorded(
+    databasePath: string,
+    taskId: string,
+    envelopeVersion: string,
+    eventVersion: string,
+    withObjective: boolean,
+  ): { readonly raw: Record<string, unknown>; readonly envelopeDigest: string } {
+    const ledger = openLedger(databasePath);
+    const leases = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(databasePath), {
+      incarnationId: randomUUID(),
+      createdAt: REGISTRY_AT,
+    });
+    let raw: Record<string, unknown>;
+    let referenceId: string;
+    try {
+      const plane = openArtifactPlane({ ledger, leaseStore: leases, ledgerPath: databasePath });
+      const entered = ledger.getTaskRevision(taskId, 1);
+      if (entered === null) throw new Error("the fixture's revision is missing");
+      const read = plane.read({ artifactReferenceId: entered.envelopeArtifactReferenceId ?? "", scopeKind: "TASK", scopeId: taskId });
+      if (read.verb !== "READ") throw new Error("the fixture's envelope is unreadable");
+      const base = JSON.parse(read.content.toString("utf8")) as Record<string, unknown>;
+      raw = { ...base, contractVersion: envelopeVersion, ...(withObjective ? { objective: INSTRUCTION } : {}) };
+      const bytes = Buffer.from(canonicalJsonStringify(raw), "utf8");
+      referenceId = randomUUID();
+      const published = plane.publish({
+        content: bytes,
+        declaredContentSha256: digest(canonicalJsonStringify(raw)),
+        mediaType: "application/json; charset=utf-8",
+        encryptionStatus: "PLAINTEXT",
+        encryptionProfile: "local-plaintext-v1",
+        commandId: randomUUID(),
+        artifactPinId: randomUUID(),
+        reference: {
+          artifactReferenceId: referenceId,
+          artifactClass: "TASK_ENVELOPE",
+          classification: "INTERNAL",
+          scopeKind: "TASK",
+          scopeId: taskId,
+          producerIdentity: OPERATOR,
+          accessPolicyId: ARTIFACT_ACCESS_POLICY_IDS[0],
+          retentionClass: "PERMANENT",
+          expiresAt: null,
+        },
+        recordedBy: OPERATOR,
+        intention: { eventId: randomUUID(), idempotencyKey: "planted/" + taskId + "/intended", occurredAt: INTAKE_AT, recordedAt: INTAKE_AT },
+        terminal: { eventId: randomUUID(), idempotencyKey: "planted/" + taskId + "/succeeded", occurredAt: INTAKE_AT, recordedAt: INTAKE_AT },
+        holding: {
+          holder: OPERATOR,
+          holderPid: process.pid,
+          acquiredAt: INTAKE_AT,
+          expiresAt: new Date(Date.parse(INTAKE_AT) + 5 * 60 * 1000).toISOString(),
+        },
+      });
+      if (published.verb !== "PUBLISHED") throw new Error("the planted envelope was not published: " + published.verb);
+    } finally {
+      leases.close();
+      ledger.close();
+    }
+    const envelopeDigest = digest(ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1 + canonicalJsonStringify(raw));
+
+    const database = new DatabaseSync(databasePath);
+    try {
+      const triggers = database
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name IN (?, ?)")
+        .all("control_plane_events_deny_update", "control_plane_events_deny_delete") as unknown as { readonly sql: string }[];
+      expect(triggers).toHaveLength(2);
+      database.exec("DROP TRIGGER control_plane_events_deny_update; DROP TRIGGER control_plane_events_deny_delete;");
+      const rows = database
+        .prepare("SELECT sequence, event_json FROM control_plane_events ORDER BY sequence")
+        .all() as unknown as { readonly sequence: number; readonly event_json: string }[];
+      const rewrite = database.prepare(
+        "UPDATE control_plane_events SET event_json = ?, contract_version = ?, previous_sha256 = ?, event_sha256 = ? WHERE sequence = ?",
+      );
+      let previous = GENESIS_SHA256;
+      for (const row of rows) {
+        const decoded = JSON.parse(row.event_json) as Record<string, unknown>;
+        if (decoded["taskId"] === taskId && decoded["transitionId"] === "intake") {
+          decoded["contractVersion"] = eventVersion;
+          decoded["payload"] = {
+            ...(decoded["payload"] as Record<string, unknown>),
+            envelopeSha256: envelopeDigest,
+            envelopeArtifactReferenceId: referenceId,
+          };
+        }
+        const rewritten = canonicalJsonStringify(decoded);
+        const next = chainDigest(previous, rewritten);
+        rewrite.run(rewritten, String(decoded["contractVersion"]), previous, next, row.sequence);
+        previous = next;
+      }
+      database.prepare("UPDATE ledger_meta SET value = ? WHERE key = 'head_event_sha256'").run(previous);
+      database.prepare("UPDATE projection_watermark SET source_head_sha256 = ? WHERE source_stream = ?").run(previous, "control_plane_events");
+      for (const trigger of triggers) database.exec(trigger.sql);
+    } finally {
+      database.close();
+    }
+
+    const rebuilt = openLedger(databasePath);
+    try {
+      rebuilt.rebuildReadModel();
+      expect(rebuilt.getTaskRevision(taskId, 1)?.envelopeSha256).toBe(envelopeDigest);
+      expect(rebuilt.verifyIntegrity().problems).toEqual([]);
+    } finally {
+      rebuilt.close();
+    }
+    return { raw, envelopeDigest };
+  }
+
+  /** The task's stored events, byte for byte. */
+  function trailOf(databasePath: string, taskId: string): readonly string[] {
+    const ledger = openLedger(databasePath);
+    try {
+      return ledger.listEvents({ taskId, limit: 200 }).events.map((record) => record.canonicalJson);
+    } finally {
+      ledger.close();
+    }
+  }
+
+  const SPEND = [
+    "RUN_STARTED",
+    "LEASE_ACQUIRED",
+    "EFFECT_INTENDED",
+    "DISPATCH_INTENDED",
+    "DISPATCH_OUTCOME_RECORDED",
+    "PROMPT_OCCURRENCE_RECORDED",
+    "USAGE_STREAM_DECLARED",
+    "USAGE_OBSERVATION_RECORDED",
+    "RESPONSE_OCCURRENCE_RECORDED",
+  ];
+
+  /** Start the recorded form over a planted ledger and hold it to zero spend. */
+  async function refusedStart(envelopeVersion: string, eventVersion: string, expected: string): Promise<void> {
+    const home = stage();
+    const { databasePath, taskId } = operatorLedger(home);
+    plantRecorded(databasePath, taskId, envelopeVersion, eventVersion, true);
+    const before = trailOf(databasePath, taskId);
+    const echoPath = join(stage(), "echo.txt");
+    const config = parseDaemonChildConfig(recordedDocument(databasePath, taskId, fakeClaude(stage(), echoPath), worktree()));
+
+    await expect(runDaemonChild(config)).rejects.toThrow(expected);
+
+    expect(existsSync(echoPath)).toBe(false);
+    expect(trailOf(databasePath, taskId)).toEqual(before);
+    const ledger = openLedger(databasePath);
+    try {
+      const types = ledger.listEvents({ taskId, limit: 200 }).events.map((record) => record.event.type);
+      for (const type of SPEND) expect(types, type).not.toContain(type);
+      expect(types.some((type) => type.startsWith("DISPATCH_") || type.startsWith("USAGE_"))).toBe(false);
+      expect(ledger.getTask(taskId)?.currentState).toBe("DISCOVERED");
+      expect(ledger.verifyIntegrity().problems).toEqual([]);
+    } finally {
+      ledger.close();
+    }
+    // The evidence root is admitted at start, before the read; no execution marker is
+    // ever written under it (V-C1's marker lives at `executions/executions`).
+    expect(existsSync(join(home, "executions", "executions"))).toBe(false);
+  }
+
+  it("P-16/A1 E5, the helper's positive control: the same plant left at 2.11.0 starts ok and walks to CHECKPOINTED", async () => {
+    const home = stage();
+    const { databasePath, taskId } = operatorLedger(home);
+    const planted = plantRecorded(databasePath, taskId, CONTRACT_VERSION, CONTRACT_VERSION, false);
+    // For a lawful 2.11.0 envelope the test-local digest is the one encoder's.
+    expect(planted.envelopeDigest).toBe(envelopeSha256(planted.raw));
+    const echoPath = join(stage(), "echo.txt");
+    const config = parseDaemonChildConfig(recordedDocument(databasePath, taskId, fakeClaude(stage(), echoPath), worktree()));
+    await expect(runDaemonChild(config)).resolves.toBe(0);
+    expect(readFileSync(echoPath, "utf8")).toBe(INSTRUCTION);
+    const ledger = openLedger(databasePath);
+    try {
+      expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
+      expect(ledger.verifyIntegrity().problems).toEqual([]);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  it("P-16/A1 E3: a task recorded under 2.10.0 is refused at start as ENVELOPE_VERSION_SUPERSEDED, before any walk, lease, dispatch or spend", async () => {
+    await refusedStart("2.10.0", "2.10.0", "the recorded task is refused: ENVELOPE_VERSION_SUPERSEDED at envelope.contractVersion");
+  });
+
+  it("P-16/A1 E4: an envelope stamped 2.10.0 under a 2.11.0 intake event is refused at start as ENVELOPE_VERSION_MISMATCH, with the same zero spend", async () => {
+    await refusedStart("2.10.0", CONTRACT_VERSION, "the recorded task is refused: ENVELOPE_VERSION_MISMATCH at envelope.contractVersion");
   });
 
   it("V-C2: a database under a product checkout, in any case, is refused before anything is created there", async () => {

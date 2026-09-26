@@ -152,7 +152,6 @@ function envelope(taskId: string, initiativeId: string): Record<string, unknown>
     taskId,
     initiativeId,
     title: "A task a link can move",
-    objective: OBJECTIVE,
     content: {
       contentContractVersion: 1,
       blocks: [
@@ -597,7 +596,7 @@ describe("L4: READY reads a moved node as a known block (ADR 0116 §Four)", () =
 });
 
 describe("P-P18-2: this build opens the history the previous one wrote", () => {
-  it("a 2.10.0 history rewound to 26 migrates under 2.10.0 at 27, verifies and rebuilds identically, and takes a link on top", async () => {
+  it("a 2.11.0 history rewound to 26 migrates under 2.11.0 at 27, verifies and rebuilds identically, and takes a link on top", async () => {
     const { path, bearer, app, onA } = await world();
     expect((await app.inject({ method: "POST", url: graphUrl("A", 1), headers: AUTH, payload: graphBody(GRAPH_ONE, [onA]) })).statusCode).toBe(200);
     await app.close();

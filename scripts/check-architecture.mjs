@@ -12527,6 +12527,88 @@ const P15A4_WRITE_SET = [
   "scripts/check-architecture.mjs",
 ];
 
+/**
+ * P-16, cut A1: an envelope states its instruction once, and a superseded task is
+ * refused by name (ADR 0120; decisions 220-224; brief v1 with the Kimi K3 pre-audit's
+ * corrections and the rulings on ND-1 to ND-14, adopted; stop-rulings 1 and 2).
+ *
+ * `TaskEnvelope` loses `objective` and its equality refine, so `content` is the one
+ * statement of the instruction; `CONTRACT_VERSION` 2.10.0 -> 2.11.0 for an identity
+ * (ADR 0076), the supported set 9 -> 10; `API_CONTRACT_VERSION` 0.24.0 -> 0.25.0 with no
+ * route. `readRecordedTask` reads a stored envelope's version before its shape and
+ * refuses `ENVELOPE_VERSION_MISMATCH` and `ENVELOPE_VERSION_SUPERSEDED` by name (D-B-1,
+ * decision 184), held by L-P16A1-1 and proved before spend through `runDaemonChild`
+ * (E3/E4). One daemon test file, by name, may import `node:sqlite` to plant a 2.10.0
+ * recording (the daemon import law's `DAEMON_SQLITE_FIXTURE_FILE`; no new row).
+ *
+ * **Pins that move.** `CONTRACT_VERSION` 2.10.0 -> **2.11.0**; `API_CONTRACT_VERSION`
+ * 0.24.0 -> **0.25.0**; `PATH_SCOPED_LAWS` 174 -> **175** (L-P16A1-1); the ADR corpus
+ * 119 -> **120**; `D4_V1_TRAIL_SHA256` and the three envelope-identity vectors, each
+ * restamped by its recorded method. Computed and pinned by no doc: this constant is one
+ * more epoch-frozen record.
+ * **Pins that do not.** `MIGRATIONS` (27; no DDL), the `tr_` inventory,
+ * `CONTRACTS_SCHEMA_EXPORTS` (185), `RUNTIME_PUBLIC_EXPORTS` (307), the 27 API routes,
+ * `SPAWN_ALLOWED_FILES` (4), `EXECUTION_REQUEST_CONTRACT_VERSIONS`, the daemon
+ * manifest's exact dependency surface and `ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1`.
+ *
+ * **Fifty-one paths; one is new**: the ADR. Three are admitted and untouched (the
+ * ledger `migrations` and `roadmap-diff` suites, whose 2.10.0 literals are history or
+ * cohort probes, not the version in force).
+ */
+const P16A1_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/task-envelope/index.ts",
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/src/schemas/content-block/index.ts",
+  "packages/kernel/contracts/src/schemas/execution-boundary/index.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/README.md",
+  "packages/domains/runtime/src/recorded-task/index.ts",
+  "packages/domains/runtime/src/intake/index.ts",
+  "packages/entrypoints/gateway/src/roadmap-write/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/entrypoints/daemon/README.md",
+  "docs/api-reference.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0120-an-envelope-states-its-instruction-once-and-a-superseded-task-is-refused-by-name.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/test/schemas/content-block/index.test.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/domains/runtime/test/recorded-task/index.test.ts",
+  "packages/domains/runtime/test/intake/index.test.ts",
+  "packages/persistence/ledger/test/envelope-identity/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/entrypoints/gateway/test/task-intake/index.test.ts",
+  "packages/entrypoints/cli/test/intake/index.test.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/domains/runtime/test/conflict-graph/index.test.ts",
+  "packages/domains/runtime/test/execution-chain/index.test.ts",
+  "packages/domains/runtime/test/submission/index.test.ts",
+  "packages/domains/runtime/test/pilots/helpers/index.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/entrypoints/cli/test/registry/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/daemon/test/composition/walk/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/leases/index.test.ts",
+  "packages/entrypoints/daemon/test/fallback/index.test.ts",
+  "packages/entrypoints/daemon/test/launchd/lifecycle/index.test.ts",
+  "packages/entrypoints/daemon/test/scheduler/index.test.ts",
+  "packages/entrypoints/gateway/test/task-graph/index.test.ts",
+  "packages/entrypoints/gateway/test/task-step-link/index.test.ts",
+  "packages/entrypoints/gateway/test/roadmap-write/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/roadmap-diff/index.test.ts",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12784,6 +12866,7 @@ const WRITE_SET = [
   ...P24BA_WRITE_SET,
   ...P37S2_WRITE_SET,
   ...P15A4_WRITE_SET,
+  ...P16A1_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -14375,6 +14458,12 @@ const PATH_SCOPED_LAWS = [
   {
     law: "one sha-256 digest grammar in src, and it is contracts' isSha256Hex",
     scope: "packages/*/*/src/**",
+  },
+  // P-16/A1. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 174 -> 175 for L-P16A1-1.
+  {
+    law: "a stored envelope's version is read before its shape, and refused by name",
+    scope: "packages/domains/runtime/src/recorded-task/index.ts",
   },
 ];
 
@@ -19332,6 +19421,15 @@ if (tracked.status === 0) {
   // `@acp/accounts` is test-only: the conformance fixture resolves real routes;
   // a daemon source naming it would be a daemon that resolves, which D5 refused.
   const DAEMON_TEST_ONLY_IMPORTS = new Set(["vitest", "node:child_process", "node:os", "@acp/accounts"]);
+  // P-16/A1 (ADR 0120, decision 223): one test file, by name, may import
+  // `node:sqlite`, and only because it is a test. Its E3/E4/E5 fixture plants a
+  // task recorded under a superseded contract version into an operator ledger,
+  // which a 2.11.0 build cannot author through any door: the intake event is
+  // rewritten and the chain recomputed from genesis. No daemon source touches
+  // SQLite, the manifest's exact dependency surface is unchanged, and every other
+  // daemon file -- source or test -- is still refused by both checks below. Not a
+  // member of DAEMON_TEST_ONLY_IMPORTS, which would admit every daemon test.
+  const DAEMON_SQLITE_FIXTURE_FILE = "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts";
 
   requireScope("a supervised process imports only what it is allowed", daemonSources.length);
   for (const relativePath of daemonSources) {
@@ -19354,16 +19452,18 @@ if (tracked.status === 0) {
     for (const name of importSpecifiers(content)) {
       const relative = name.startsWith("./") || name.startsWith("../");
       const spawnHere = name === "node:child_process" && SPAWN_ALLOWED_FILES.has(relativePath);
+      const sqliteFixtureHere = isTest && name === "node:sqlite" && relativePath === DAEMON_SQLITE_FIXTURE_FILE;
       const allowed =
         relative ||
         DAEMON_ALLOWED_PACKAGES.has(name) ||
         DAEMON_ALLOWED_BUILTINS.has(name) ||
         spawnHere ||
+        sqliteFixtureHere ||
         (isTest && DAEMON_TEST_ONLY_IMPORTS.has(name));
       if (!allowed) {
         fail(relativePath + " imports " + name + ", which the daemon may not use");
       }
-      if (RUNTIME_FORBIDDEN_BUILTINS.includes(name)) {
+      if (RUNTIME_FORBIDDEN_BUILTINS.includes(name) && !sqliteFixtureHere) {
         fail(relativePath + " imports " + name + "; the daemon opens no network surface");
       }
     }
@@ -19546,7 +19646,9 @@ if (tracked.status === 0) {
   }
 
   notes.push(
-    daemonSources.length + " daemon sources import only what a supervised process is allowed",
+    daemonSources.length +
+      " daemon sources import only what a supervised process is allowed; node:sqlite only in the test fixture " +
+      DAEMON_SQLITE_FIXTURE_FILE,
   );
 
   // --- L-B7S: the elector is not the walk (V2-B7S) --------------------------
@@ -32183,6 +32285,81 @@ const SHA256_HEX_HOME = "packages/kernel/contracts/src/schemas/primitives/index.
   }
   requireScope(LAW, scanned);
   notes.push("the sha-256 digest has one predicate, in " + SHA256_HEX_HOME + ", over " + String(scanned) + " other sources");
+}
+
+// L-P16A1-1 -- a stored envelope's version is read before its shape, and refused by
+// name (P-16/A1, ADR 0120; decisions 221 and 223).
+//
+// D-B-1 (decision 184): a task recorded under a supported, superseded contract version
+// is refused at read-back by its own word, before any spend, and not as a generic
+// unreadable envelope. `readRecordedTask` reads the stored envelope's `contractVersion`
+// by itself, tests it for membership in `SUPPORTED_CONTRACT_VERSIONS`, compares it with
+// the intake event's (`ENVELOPE_VERSION_MISMATCH`) and with the version in force
+// (`ENVELOPE_VERSION_SUPERSEDED`), and only then parses the whole envelope. Over the
+// reader's one file, comments stripped: exactly one `TaskEnvelope.safeParse(`; the two
+// refusals, each as a `refuse("…"` call (whitespace after the parenthesis is
+// formatting), before it; and a membership test over the
+// supported set -- the literal `SUPPORTED_CONTRACT_VERSIONS` and `.includes(` both
+// present after the last import statement -- before both refusals. The file absent or empty selects nothing and fails
+// on the empty scope.
+//
+// Stated limit: a shape law over one file, text-level. It does not see a version read
+// through an alias or a helper in another file, a membership test spelled otherwise, a
+// second reader elsewhere, or what `stripComments` hides; that the reader is the only
+// re-parse of a stored envelope in `src` is measured by grep (ADR 0120), not held here.
+// It reads text positions, not control flow: a same-file helper called after the parse,
+// refusals in dead code, the refusal text inside a string literal, and the order
+// between MISMATCH and SUPERSEDED all stay green here; the order between the two words
+// is the tests'. Behaviour is carried by the reader's tests and the daemon's E3/E4
+// through `runDaemonChild`.
+const RECORDED_TASK_READER = "packages/domains/runtime/src/recorded-task/index.ts";
+{
+  const LAW = "a stored envelope's version is read before its shape, and refused by name";
+  const content = readIfPresent(RECORDED_TASK_READER);
+  const code = content === null ? "" : stripComments(content);
+  const scanned = code.trim().length > 0 ? 1 : 0;
+  if (scanned === 1) {
+    const parses = [...code.matchAll(/\bTaskEnvelope\.safeParse\(/g)].map((match) => match.index ?? 0);
+    if (parses.length !== 1) {
+      fail(
+        RECORDED_TASK_READER +
+          " parses TaskEnvelope " +
+          String(parses.length) +
+          " time(s); once, after the version is read (L-P16A1-1)",
+      );
+    }
+    const parseAt = parses[0] ?? -1;
+    const refusalAt = {};
+    for (const word of ["ENVELOPE_VERSION_MISMATCH", "ENVELOPE_VERSION_SUPERSEDED"]) {
+      // Whitespace-tolerant: a line break after `refuse(` is formatting, not a change.
+      const at = code.search(new RegExp("\\brefuse\\(\\s*\"" + word + "\""));
+      refusalAt[word] = at;
+      if (at === -1) {
+        fail(RECORDED_TASK_READER + " no longer refuses " + word + " by name (L-P16A1-1)");
+      } else if (parseAt !== -1 && at > parseAt) {
+        fail(RECORDED_TASK_READER + " refuses " + word + " after TaskEnvelope.safeParse(; the version is read before the shape (L-P16A1-1)");
+      }
+    }
+    const firstRefusal = Math.min(
+      ...Object.values(refusalAt).filter((at) => at !== -1),
+      parseAt === -1 ? code.length : parseAt,
+    );
+    // The set named in an import statement is not a use of it: the membership
+    // test is looked for after the last import.
+    const importEnd = Math.max(0, ...[...code.matchAll(/^import\s[^;]*;/gm)].map((match) => (match.index ?? 0) + match[0].length));
+    const supportedAt = code.indexOf("SUPPORTED_CONTRACT_VERSIONS", importEnd);
+    const includesMatch = /\.includes\s*\(/.exec(code.slice(importEnd));
+    const includesAt = includesMatch === null ? -1 : importEnd + includesMatch.index;
+    if (supportedAt === -1 || includesAt === -1 || supportedAt > firstRefusal || includesAt > firstRefusal) {
+      fail(
+        RECORDED_TASK_READER +
+          " does not test the stored version for membership in SUPPORTED_CONTRACT_VERSIONS, the set and .includes( both" +
+          " before the two version refusals (L-P16A1-1)",
+      );
+    }
+  }
+  requireScope(LAW, scanned);
+  notes.push("the recorded-task reader reads a stored envelope's version before its shape, and names both version refusals");
 }
 
 // L-P15F-1 -- a result's bytes leave the plane only through readEffectResult, and

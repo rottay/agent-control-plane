@@ -1746,7 +1746,7 @@ describe("P-15/C: the effect, dispatch and transition builders land through the 
     expect(ledger.listDispatchAttempts(effectId)[0]).toMatchObject({
       dispatchAttemptId: "dsp-1",
       dispatchState: "INTENDED",
-      dispatchContractVersion: "2.10.0",
+      dispatchContractVersion: "2.11.0",
       catalogDocumentId: FIXTURE_PIN.catalogDocumentId,
       catalogVersion: FIXTURE_PIN.catalogVersion,
     });

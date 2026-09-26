@@ -1045,7 +1045,7 @@ describe("P-26/B: a roadmap version declares its steps through the real route", 
     expect(recordedPayloads(path, initiativeId).map((payload) => payload["version"])).toEqual([1, 2]);
   });
 
-  it("S8 (P-P18-2): a 2.9.0 history rewound to 24 migrates under 2.10.0, verifies and rebuilds, and takes S1 on top", async () => {
+  it("S8 (P-P18-2): a 2.9.0 history rewound to 24 migrates under 2.11.0, verifies and rebuilds, and takes S1 on top", async () => {
     const { path, initiativeId } = seed();
     const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
     const first = RoadmapVersionWriteResponse.parse(

@@ -19,8 +19,8 @@ import type {
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
- * One text block, so the envelope's `objective` equals the first text block of its
- * content and the two spellings stay one fact. `contentSha256` is a placeholder:
+ * One text block, the envelope's whole instruction: from 2.11.0 `content` states it
+ * once (P-16/A1, ADR 0120). `contentSha256` is a placeholder:
  * escalón B admits and publishes, and escalón C is where a digest is checked
  * against the bytes it describes.
  */
@@ -225,7 +225,6 @@ export function pilotEnvelope(input: PilotEnvelopeInput): TaskEnvelopeShape {
     taskId: input.taskId,
     initiativeId: PILOT_INITIATIVE_ID,
     title: "P7A pilot: read-only packet",
-    objective: "walk a NO_COMMIT packet over the real machinery and prove the fence",
     content: fixtureContent("walk a NO_COMMIT packet over the real machinery and prove the fence"),
     classification: "MECHANICAL",
     issuedBy: PILOT_AUTHORIZED_BY,

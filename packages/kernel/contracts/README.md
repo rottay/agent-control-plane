@@ -42,7 +42,7 @@ this table against the barrel.
 | `worker-identity` | the worker role vocabulary and the identity string it composes |
 | `worker-slot` | a slot's shape: its identity, its bounds and its state |
 | `lifecycle` | the task lifecycle states and the transitions between them |
-| `task-envelope` | the unit of authorized work: objective, authority, exact write-set, budget |
+| `task-envelope` | the unit of authorized work: instruction content, authority, exact write-set, budget |
 | `checkpoint` | what a record carries — digests and references, never content |
 | `control-plane-event` | the append-only event shape the ledger chains |
 | `commit-authorization` | the receipt a local commit requires, and what it binds |
@@ -69,7 +69,8 @@ is that list (P-06 escalón A, ADR 0093). A block is `text`, `image`, `audio`,
 validated against its kind, a declared `byteLength`, the `contentSha256` of the
 bytes it describes, and an `artifactRefId` — obligatory for everything except
 short text, where short is `CONTENT_INLINE_TEXT_MAX_CHARS` (4.000), the bound
-`TaskEnvelope.objective` already applies rather than a second policy.
+`TaskEnvelope.objective` applied until P-16/A1 retired the field (ADR 0120), kept
+rather than a second policy.
 
 Three rules are facts about the list and not about a block: a `blockId` names one
 block, at least one block is `text` because an instruction says something, and the
@@ -123,12 +124,14 @@ precedent.
 - **Strict objects.** Object schemas are built with `strictObject`, so an
   unknown key is a validation failure rather than a silently carried field. A
   producer that grows a field fails at the boundary instead of leaking it.
-- **One version written, a set admitted.** `CONTRACT_VERSION` is `"2.10.0"` since
-  P-26 cut B, which keys a roadmap version's steps on a cohort of the version that
-  recorded it and gives each declared step digests and a rank the ledger's door
-  re-derives (ADR 0111), as P-15 escalón C keyed a dispatch's price pin (ADR 0103):
-  the literal moved and `SUPPORTED_CONTRACT_VERSIONS` grew to nine without losing a
-  member, and every stored row still reads. It is the single literal a **producer** stamps.
+- **One version written, a set admitted.** `CONTRACT_VERSION` is `"2.11.0"` since
+  P-16/A1, which retires `TaskEnvelope.objective` so `content` states the instruction
+  once, and so moves the envelope's preimage (ADR 0120), as P-26 cut B moved it for a
+  roadmap version's steps (ADR 0111): the literal moved and
+  `SUPPORTED_CONTRACT_VERSIONS` grew to ten without losing a member, and every stored
+  row still reads. A task recorded under a superseded version is refused by name when
+  it is read back to be run (`ENVELOPE_VERSION_SUPERSEDED`), and the path is
+  re-submission under the version in force. It is the single literal a **producer** stamps.
   `SUPPORTED_CONTRACT_VERSIONS` is the set a **reader** admits, and `ContractVersion` is `z.enum` of it, so a record
   written under a version outside the set cannot be parsed as if it were
   current. The two are separate because a `z.literal` answers both questions

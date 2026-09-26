@@ -283,8 +283,20 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * not move: a query records nothing. ADR 0116 and decision 200 had assigned this minor to P-16/A1,
  * which re-takes the next one when it lands (decision 209). ADR 0118 carries the
  * reasoning.
+ *
+ * `0.24.0` → `0.25.0` at P-16/A1: the intake request's embedded envelope loses
+ * `objective`, so `content` is the one statement of the instruction, and a request
+ * that still carries the field is a `400` at `envelope` (the strict object reports the
+ * unknown key at the envelope's own path). No route moves: `API_ALLOWED_METHODS`,
+ * `API_WRITE_ROUTES`, `API_PRIVATE_READ_ROUTES` and `API_ERROR_CODES` do not. Minor,
+ * on the house's reading that a request shape which drops a field no remaining field
+ * depends on is not a new surface; the refusal a caller that still sends it observes
+ * is stated rather than hidden. `CONTRACT_VERSION` moves too, 2.10.0 → 2.11.0, so
+ * `LEDGER_CONTRACT_VERSION` follows by derivation. This is the minor ADR 0116 and
+ * decision 200 had first assigned to P-16/A1 (decision 209). ADR 0120 carries the
+ * reasoning.
  */
-export const API_CONTRACT_VERSION = "0.24.0" as const;
+export const API_CONTRACT_VERSION = "0.25.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

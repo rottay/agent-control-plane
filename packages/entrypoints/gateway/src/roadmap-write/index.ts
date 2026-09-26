@@ -101,7 +101,7 @@ export interface RecordedRoadmapVersion {
   readonly restoresVersionId: string | null;
   readonly recordedBy: string;
   readonly recordedAt: string;
-  /** Null for a version recorded before steps existed; never here, where every version is 2.10.0. */
+  /** Null for a version recorded before steps existed; never here, where every version is from 2.10.0 on. */
   readonly stepCount: number | null;
   readonly stepManifestSha256: string | null;
 }

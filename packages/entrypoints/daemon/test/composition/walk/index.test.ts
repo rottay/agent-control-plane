@@ -72,8 +72,8 @@ function usageReport(stepIndex: number, total: number | null): Extract<Execution
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
- * One text block, so the envelope's `objective` equals the first text block of its
- * content and the two spellings stay one fact. `contentSha256` is a placeholder and
+ * One text block, the envelope's whole instruction: from 2.11.0 `content` states it
+ * once (P-16/A1, ADR 0120). `contentSha256` is a placeholder and
  * stays one after escalón C: C checks a declared digest against the bytes a
  * REFERENCE names, and a block whose text travels inline names no reference, so
  * there are no bytes for this figure to disagree with.
@@ -406,7 +406,6 @@ function envelopeFor(taskId: string): TaskEnvelope {
     taskId,
     initiativeId: INITIATIVE_ID,
     title: "a P-13 walk-composition packet",
-    objective: INSTRUCTIONS,
     content: fixtureContent(INSTRUCTIONS),
     classification: "MECHANICAL",
     issuedBy: EMITTED_BY,
@@ -980,11 +979,8 @@ function textBlock(options: {
 
 /** An envelope whose content is exactly the blocks handed in. */
 function envelopeWithBlocks(taskId: string, blocks: readonly Record<string, unknown>[]): TaskEnvelope {
-  const first = blocks[0];
-  const objective = typeof first?.["text"] === "string" ? first["text"] : INSTRUCTIONS;
   return {
     ...envelopeFor(taskId),
-    objective,
     content: { contentContractVersion: 1, blocks: [...blocks] },
   } as unknown as TaskEnvelope;
 }

@@ -450,9 +450,10 @@ const ContentBlockKindSchema = z.enum(CONTENT_BLOCK_KINDS);
  * How long an instruction may be, in characters (P-06/C, ADR 0095).
  *
  * `4_000` while the instruction was one envelope field, because that is what
- * `TaskEnvelope.objective` carries and a second, looser bound would have been a place
- * for the two to disagree. Since P-06/C the instruction is **composed** from the text
- * blocks of a content list, so the figure that governs is the content contract's own:
+ * `TaskEnvelope.objective` carried until P-16/A1 retired it (ADR 0120), and a second,
+ * looser bound would have been a place for the two to disagree. Since P-06/C the
+ * instruction is **composed** from the text blocks of a content list, so the figure
+ * that governs is the content contract's own:
  * a list may hold up to `CONTENT_BLOCK_LIST_MAX` blocks, each text block up to
  * `CONTENT_INLINE_TEXT_MAX_CHARS`, and the composition writes them one after another.
  *

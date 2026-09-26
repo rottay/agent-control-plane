@@ -51,8 +51,8 @@ import type { DaemonSubmission, SubmissionCoordinates } from "../../src/submissi
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
- * One text block, so the envelope's `objective` equals the first text block of its
- * content and the two spellings stay one fact. `contentSha256` is a placeholder:
+ * One text block, the envelope's whole instruction: from 2.11.0 `content` states it
+ * once (P-16/A1, ADR 0120). `contentSha256` is a placeholder:
  * escalón B admits and publishes, and escalón C is where a digest is checked
  * against the bytes it describes.
  */
@@ -1028,7 +1028,6 @@ describe("the submission digest and the envelope digest answer different questio
     taskId: TASK,
     initiativeId: INITIATIVE,
     title: "Elect a route and bind it to the attempt",
-    objective: "Prove the two digests on this path are not one digest.",
     content: fixtureContent("Prove the two digests on this path are not one digest."),
     classification: "SEMANTIC",
     issuedBy: "kimi/k3/coordinator/01",
@@ -1086,11 +1085,9 @@ describe("the submission digest and the envelope digest answer different questio
     // submission digest does not budge, because not one envelope field enters
     // it. Two packets, one submission identity — that is the defect, stated as
     // an assertion rather than as prose.
-    // Both spellings of the one instruction move together: since escalón B the
-    // envelope refuses an objective that disagrees with its first text block.
+    // The instruction is stated once, in `content` (P-16/A1, ADR 0120).
     const different = {
       ...ENVELOPE,
-      objective: "Delete the production ledger.",
       content: fixtureContent("Delete the production ledger."),
     };
     expect(envelopeSha256(different)).not.toBe(envelopeSha256(ENVELOPE));
@@ -1105,7 +1102,7 @@ describe("the submission digest and the envelope digest answer different questio
     // Both are sha-256 of their own preimage, and the submission's preimage
     // still carries no envelope field at all.
     const submissionPreimage = canonicalSubmission(FIXED_SUBMISSION);
-    expect(submissionPreimage).not.toContain(ENVELOPE.objective);
+    expect(submissionPreimage).not.toContain("Prove the two digests on this path are not one digest.");
     expect(submissionPreimage).not.toContain("writeSet");
     expect(canonicalSubmissionDigest(FIXED_SUBMISSION)).toBe(
       createHash("sha256").update(submissionPreimage, "utf8").digest("hex"),

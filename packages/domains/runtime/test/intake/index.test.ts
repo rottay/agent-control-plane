@@ -31,8 +31,8 @@ import type { TaskIntakeFields, TaskIntakeOutcome, TaskIntakeTestFaults } from "
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
- * One text block, so the envelope's `objective` equals the first text block of its
- * content and the two spellings stay one fact. `contentSha256` is a placeholder:
+ * One text block, the envelope's whole instruction: from 2.11.0 `content` states it
+ * once (P-16/A1, ADR 0120). `contentSha256` is a placeholder:
  * escalón B admits and publishes, and escalón C is where a digest is checked
  * against the bytes it describes.
  */
@@ -350,7 +350,6 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
     taskId: TASK_A,
     initiativeId: INITIATIVE,
     title: "Enter a task",
-    objective: OBJECTIVE,
     content: fixtureContent(OBJECTIVE),
     classification: "MECHANICAL",
     issuedBy: COORDINATOR,
@@ -664,13 +663,47 @@ describe("the preconditions of the request link refuse with a class, a code and 
     expect(heads(on.ledger)).toEqual(held);
   });
 
-  it("N-P14C-17: a credential in the objective is refused at its path before a byte is published", () => {
+  it("N-P14C-17: a credential in the instruction content is refused at its path before a byte is published", () => {
+    // The instruction lives in `content` alone since P-16/A1 (ADR 0120), so that is
+    // where the credential guards now find it.
     const on = world();
     const held = heads(on.ledger);
-    const planted = envelope({ objective: "deploy with " + SENTINEL });
-    expect(intake(on, { envelope: planted })).toEqual(refusal("REQUEST_INVALID", "ENVELOPE_INVALID", "envelope.objective"));
+    const planted = envelope({ content: fixtureContent("deploy with " + SENTINEL) });
+    expect(intake(on, { envelope: planted })).toEqual(
+      refusal("REQUEST_INVALID", "ENVELOPE_INVALID", "envelope.content.blocks.0.text"),
+    );
     expect(heads(on.ledger)).toEqual(held);
     expect(on.ledger.listArtifactEvents(sha256(canonicalJsonStringify(planted)))).toEqual([]);
+  });
+
+  it("P-16/A1: an envelope that still carries `objective` is ENVELOPE_INVALID at the envelope, and nothing is published or appended", () => {
+    // Both spellings of the old legal shape: equal to the first text block, and not.
+    for (const objective of [OBJECTIVE, "Something the content does not say."]) {
+      const on = world();
+      const held = heads(on.ledger);
+      const stale = envelope({ objective });
+      expect(intake(on, { envelope: stale }), objective).toEqual(refusal("REQUEST_INVALID", "ENVELOPE_INVALID", "envelope"));
+      expect(heads(on.ledger)).toEqual(held);
+      expect(on.ledger.listArtifactEvents(sha256(canonicalJsonStringify(stale)))).toEqual([]);
+      expect(on.ledger.getTask(TASK_A)).toBeNull();
+    }
+  });
+
+  it("P-16/A1 act 2: the stored envelope's version is the intake event's, and both are the version in force", () => {
+    const on = world();
+    const outcome = entered(intake(on));
+    const record = on.ledger.getEventBySequence(outcome.sequence);
+    const read = on.plane.read({
+      artifactReferenceId: outcome.task.envelopeArtifactReferenceId,
+      scopeKind: "TASK",
+      scopeId: TASK_A,
+    });
+    if (read.verb !== "READ") throw new Error("expected the envelope");
+    const stored = JSON.parse(read.content.toString("utf8")) as Record<string, unknown>;
+    expect(Object.keys(stored)).not.toContain("objective");
+    expect(stored["contractVersion"]).toBe(record?.event.contractVersion);
+    expect(record?.event.contractVersion).toBe(CONTRACT_VERSION);
+    expect(CONTRACT_VERSION).toBe("2.11.0");
   });
 
   it("N-P14C-5: an initiative with no row is REQUEST_INVALID, and nothing enters", () => {

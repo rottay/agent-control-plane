@@ -187,7 +187,6 @@ function envelope(): Record<string, unknown> {
     taskId: TASK,
     initiativeId: INITIATIVE,
     title: "Enter a task",
-    objective: OBJECTIVE,
     content: {
       contentContractVersion: 1,
       blocks: [

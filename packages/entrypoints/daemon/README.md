@@ -188,6 +188,18 @@ response. A recorded walk writes no `TOKEN_USAGE_RECORDED`, so V1 quota does not
 see its spend until P-19. Codex and Kimi declare no usage source yet, so a
 recorded walk on them is refused at the start.
 
+A task recorded under a superseded contract version is refused at the start by
+name, before any walk, lease, dispatch or provider spawn (P-16/A1, ADR 0120): the
+recorded-task reader reads the stored envelope's `contractVersion` before its
+shape, and the start fails with `the recorded task is refused:
+ENVELOPE_VERSION_SUPERSEDED at envelope.contractVersion`, or
+`ENVELOPE_VERSION_MISMATCH` when the envelope's version is not the one its
+hash-chained intake event carries. The path for a superseded task is
+re-submission under the version in force, through `acp intake` or
+`POST /api/v1/tasks`. The E3/E4 tests prove zero spend through `runDaemonChild`
+over a planted ledger; that one test file is the only daemon file the fence lets
+import `node:sqlite`, to plant it.
+
 ## Bounds
 
 Logs are capped three ways: total bytes, file count, and a single line. All

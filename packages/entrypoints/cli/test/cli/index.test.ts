@@ -380,11 +380,12 @@ describe("usage", () => {
       // answers too as `acp initiative`, and to 0.17.0 at P-14/C for a sixth,
       // `tasks` POST, which it answers as `acp intake`. To 0.24.0 at P-24/B(a)
       // for the second private read, `toolServerTools`, which this CLI answers
-      // as `acp tool-servers`.
+      // as `acp tool-servers`. To 0.25.0 at P-16/A1, whose intake envelope
+      // no longer carries `objective` (ADR 0120).
       // Asserted as a literal on purpose: the CLI's job here is to
       // report the number a reader can pin against, and comparing it to the
       // constant it prints would assert only that the CLI can echo itself.
-      apiContractVersion: "0.24.0",
+      apiContractVersion: "0.25.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });

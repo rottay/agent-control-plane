@@ -422,9 +422,9 @@ describe("N-G-1: an invocation without a revision builds exactly the bytes it bu
     // reason: the vectors stay stamped as a6ed7c3 built them. P-07 escalón B moved
     // it to 2.8.0 (ADR 0098), and the vectors held again; P-15 escalón C moved it to
     // 2.9.0 (ADR 0103), and they held once more; P-26 cut B moved it to 2.10.0 (ADR
-    // 0111), and they held again: the vectors stamp the version they name, not the
-    // one in force.
-    expect(CONTRACT_VERSION).toBe("2.10.0");
+    // 0111), and they held again; P-16/A1 moved it to 2.11.0 (ADR 0120), and they
+    // held once more: the vectors stamp the version they name, not the one in force.
+    expect(CONTRACT_VERSION).toBe("2.11.0");
     expect(walkDigest(INVOCATION, LIFECYCLE_PLAN, "2.4.0")).toBe(
       "5c8e92f22adcb75867c79bfa353bf4dc90c57028532c06253640b4437cc2291f",
     );
@@ -509,8 +509,8 @@ describe("N-G-7: the opening is B's payload, field by field, and nothing more", 
     // names its envelope by reference (decision 41, ADR 0084), carried from the
     // invocation exactly as the digest is.
     const opening = buildWith(V2_INVOCATION, ATTEMPT_OPENING_STEP);
-    // The version in force, which P-26 cut B moved to 2.10.0 (ADR 0111).
-    expect(opening.contractVersion).toBe("2.10.0");
+    // The version in force, which P-16/A1 moved to 2.11.0 (ADR 0120).
+    expect(opening.contractVersion).toBe("2.11.0");
     expect(Object.keys(opening.payload).sort()).toEqual([
       "attemptNumber",
       "envelopeArtifactReferenceId",

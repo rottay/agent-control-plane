@@ -4626,7 +4626,7 @@ describe("the task graph fold counts its nodes and finds its head without a scan
     } as unknown as InitiativeEvent;
   }
 
-  /** A 2.10.0 version declaring two steps, `B` and `C`, and those steps. */
+  /** A version of the step cohort (2.10.0 on) declaring two steps, `B` and `C`, and those steps. */
   function versionEvents(roadmapVersionId: string, version: number, parentVersionId: string | null): readonly InitiativeEvent[] {
     return [
       event("ROADMAP_VERSION_RECORDED", "roadmap.v" + String(version), {

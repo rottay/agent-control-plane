@@ -94,9 +94,10 @@ export const CONTENT_MEDIA_TYPES_BY_KIND = {
  *
  * §4.1 `:188` makes `artifact_ref_id` obligatory "para todo lo que no sea texto
  * corto" and does not give the number. This is that number, and it deliberately
- * **names a policy that already exists** rather than inventing a second one:
- * `TaskEnvelope.objective` and `ExecutionRequest.instructions` both carry
- * `min(1).max(4_000)`, so text that passed a real door passes this bound too.
+ * **names a policy that already existed** rather than inventing a second one:
+ * `TaskEnvelope.objective` carried `min(1).max(4_000)` until P-16/A1 retired the
+ * field (ADR 0120), and this is that bound kept as the inline-text bound, so text
+ * that passed a real door passes this bound too.
  */
 export const CONTENT_INLINE_TEXT_MAX_CHARS = 4_000;
 

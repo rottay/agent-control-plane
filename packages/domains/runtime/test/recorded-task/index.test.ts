@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { CONTRACT_VERSION, buildInitiativeIdempotencyKey } from "@acp/contracts";
+import { CONTRACT_VERSION, SUPPORTED_CONTRACT_VERSIONS, buildInitiativeIdempotencyKey } from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import {
   LedgerValidationError,
@@ -159,7 +159,6 @@ function envelope(): Record<string, unknown> {
     taskId: TASK,
     initiativeId: INITIATIVE,
     title: "Enter a task",
-    objective: OBJECTIVE,
     content: {
       contentContractVersion: 1,
       blocks: [
@@ -283,6 +282,18 @@ describe("a recorded task is read back whole (P-15/D1)", () => {
 
   it("closes its vocabulary, sorted", () => {
     expect([...RECORDED_TASK_REFUSALS]).toEqual([...RECORDED_TASK_REFUSALS].sort());
+  });
+
+  it("closes its vocabulary at seven words, the two version words among them (P-16/A1)", () => {
+    expect([...RECORDED_TASK_REFUSALS]).toEqual([
+      "ENVELOPE_DIGEST_MISMATCH",
+      "ENVELOPE_UNREADABLE",
+      "ENVELOPE_VERSION_MISMATCH",
+      "ENVELOPE_VERSION_SUPERSEDED",
+      "INTAKE_UNREADABLE",
+      "ROUTE_DISAGREES_WITH_INTAKE",
+      "TASK_UNKNOWN",
+    ]);
   });
 });
 
@@ -516,5 +527,135 @@ describe("the reader refuses by name, and never reads a wrong task as a right on
     }
     // The account is the caller's election: the intake records none.
     expect(read(on, { ...ROUTE, accountId: "acct-any" }).ok).toBe(true);
+  });
+});
+
+describe("a stored envelope's version is read before its shape (P-16/A1, ADR 0120; D-B-1)", () => {
+  /** The real ledger, with the intake event's `contractVersion` replaced. */
+  function eventAt(on: World, contractVersion: string): RecordedTaskLedgerPort {
+    return {
+      getTask: (taskId) => on.ledger.getTask(taskId),
+      getEventBySequence: (sequence) => {
+        const found = on.ledger.getEventBySequence(sequence);
+        if (found === null) return null;
+        return { canonicalJson: JSON.stringify({ ...(JSON.parse(found.canonicalJson) as Record<string, unknown>), contractVersion }) };
+      },
+    };
+  }
+
+  /** The real plane, answering the given bytes for the reference the intake recorded. */
+  function bytes(on: World, content: string): RecordedTaskPlanePort {
+    return {
+      read: (request) => {
+        const real = on.plane.read(request);
+        return real.verb === "READ" ? { ...real, content: Buffer.from(content, "utf8") } : real;
+      },
+    };
+  }
+
+  /** What a build of `version` stored: its version stamp, and the `objective` it still carried. */
+  function storedUnder(version: string): string {
+    const text = ((envelope()["content"] as Record<string, unknown>)["blocks"] as Record<string, unknown>[])[0]!["text"];
+    return canonicalJsonStringify({ ...envelope(), contractVersion: version, objective: text });
+  }
+
+  const superseded = SUPPORTED_CONTRACT_VERSIONS.filter((version) => version !== CONTRACT_VERSION);
+
+  it("P2: a task intaken under the version in force reads back ok, and the stored stamp is that version", () => {
+    const on = intaken();
+    expect(CONTRACT_VERSION).toBe("2.11.0");
+    const outcome = recorded(read(on));
+    expect(outcome.task.envelope.contractVersion).toBe(CONTRACT_VERSION);
+  });
+
+  it("N3: a task recorded under a supported, superseded version is ENVELOPE_VERSION_SUPERSEDED, for every such member", () => {
+    const on = intaken();
+    const before = head(on.ledger);
+    expect(superseded).toHaveLength(SUPPORTED_CONTRACT_VERSIONS.length - 1);
+    expect(superseded).toContain("2.10.0");
+    expect(superseded).toContain("2.2.0");
+    for (const version of superseded) {
+      const outcome = readRecordedTask({ ledger: eventAt(on, version), plane: bytes(on, storedUnder(version)), taskId: TASK, route: ROUTE });
+      expect({ version, outcome }).toEqual({
+        version,
+        outcome: { ok: false, refusal: "ENVELOPE_VERSION_SUPERSEDED", at: "envelope.contractVersion", word: null },
+      });
+    }
+    expect(head(on.ledger)).toEqual(before);
+  });
+
+  it("N4: an envelope whose version is not its intake event's is ENVELOPE_VERSION_MISMATCH, in both directions, before SUPERSEDED", () => {
+    const on = intaken();
+    const before = head(on.ledger);
+    // Envelope 2.10.0 under a 2.11.0 event.
+    expect(readRecordedTask({ ledger: on.ledger, plane: bytes(on, storedUnder("2.10.0")), taskId: TASK, route: ROUTE })).toEqual({
+      ok: false,
+      refusal: "ENVELOPE_VERSION_MISMATCH",
+      at: "envelope.contractVersion",
+      word: null,
+    });
+    // Envelope 2.11.0 under a 2.10.0 event: never named SUPERSEDED.
+    expect(readRecordedTask({ ledger: eventAt(on, "2.10.0"), plane: on.plane, taskId: TASK, route: ROUTE })).toEqual({
+      ok: false,
+      refusal: "ENVELOPE_VERSION_MISMATCH",
+      at: "envelope.contractVersion",
+      word: null,
+    });
+    expect(head(on.ledger)).toEqual(before);
+  });
+
+  it("N5: a version absent, null, empty, of the wrong type, malformed or never supported is ENVELOPE_UNREADABLE at the envelope, never SUPERSEDED", () => {
+    const on = intaken();
+    const before = head(on.ledger);
+    const variants: readonly (readonly [string, unknown])[] = [
+      ["absent", undefined],
+      ["null", null],
+      ["empty", ""],
+      ["number", 2.1],
+      ["short", "2.10"],
+      ["padded", " 2.10.0"],
+      ["future", "9.9.9"],
+      ["never supported", "2.1.0"],
+    ];
+    for (const [name, value] of variants) {
+      const stored = { ...envelope(), objective: "stale" } as Record<string, unknown>;
+      if (value === undefined) Reflect.deleteProperty(stored, "contractVersion");
+      else stored["contractVersion"] = value;
+      for (const ledger of [on.ledger, eventAt(on, "2.10.0")]) {
+        const outcome = readRecordedTask({ ledger, plane: bytes(on, canonicalJsonStringify(stored)), taskId: TASK, route: ROUTE });
+        expect({ name, outcome }).toEqual({
+          name,
+          outcome: { ok: false, refusal: "ENVELOPE_UNREADABLE", at: "envelope", word: null },
+        });
+      }
+    }
+    for (const content of ["[]", "null", '"2.10.0"', "7"]) {
+      expect(readRecordedTask({ ledger: on.ledger, plane: bytes(on, content), taskId: TASK, route: ROUTE }), content).toEqual({
+        ok: false,
+        refusal: "ENVELOPE_UNREADABLE",
+        at: "envelope",
+        word: null,
+      });
+    }
+    expect(head(on.ledger)).toEqual(before);
+  });
+
+  it("N6: past the version, the shape and the digest still refuse as before", () => {
+    const on = intaken();
+    const current = (change: Record<string, unknown>): string => canonicalJsonStringify({ ...envelope(), ...change });
+    for (const change of [{ taskId: "not-a-uuid" }, { objective: OBJECTIVE }, { title: "" }]) {
+      expect(readRecordedTask({ ledger: on.ledger, plane: bytes(on, current(change)), taskId: TASK, route: ROUTE })).toEqual({
+        ok: false,
+        refusal: "ENVELOPE_UNREADABLE",
+        at: "envelope",
+        word: null,
+      });
+    }
+    expect(readRecordedTask({ ledger: on.ledger, plane: bytes(on, current({ title: "Another task" })), taskId: TASK, route: ROUTE })).toEqual({
+      ok: false,
+      refusal: "ENVELOPE_DIGEST_MISMATCH",
+      at: "envelope",
+      word: null,
+    });
   });
 });

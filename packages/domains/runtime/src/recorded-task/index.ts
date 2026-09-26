@@ -1,4 +1,10 @@
-import { ControlPlaneEvent, TaskEnvelope, isSha256Hex } from "@acp/contracts";
+import {
+  CONTRACT_VERSION,
+  ControlPlaneEvent,
+  SUPPORTED_CONTRACT_VERSIONS,
+  TaskEnvelope,
+  isSha256Hex,
+} from "@acp/contracts";
 import { TASK_INTAKE_TRANSITION_ID, envelopeSha256, isInstant, taskIntakePayloadOf } from "@acp/ledger";
 
 import { canonicalSubmissionDigest, deriveInvocation } from "../submission/index.js";
@@ -42,6 +48,21 @@ export type {
  *    `TaskEnvelope` and hash, with the ledger's one encoder, to the digest the
  *    intake recorded; the envelope must name this task and the intake's initiative.
  *    A refusal of the plane is carried by name.
+ *
+ *    **Version before shape (P-16/A1, ADR 0120).** Before the bytes are parsed as
+ *    an envelope, their `contractVersion` is read off the object by itself: a
+ *    version that is absent, not a string or not in the reader's supported set is
+ *    not an envelope (`ENVELOPE_UNREADABLE`); a version other than the one the
+ *    hash-chained intake event carries is `ENVELOPE_VERSION_MISMATCH`, because the
+ *    payload's version is the event's; and a supported version other than the one
+ *    in force is `ENVELOPE_VERSION_SUPERSEDED`, lawful history that this build does
+ *    not run. The declared path for such a task is **re-submission** under the
+ *    version in force, through `acp intake` or `POST /api/v1/tasks`. Only then is
+ *    the one `TaskEnvelope` parse reached. A superseded envelope's digest is not
+ *    re-derived — the one encoder parses with the current schema — and its version
+ *    claim is corroborated by the chained event instead. The chain catches an
+ *    edit that does not recompute it from genesis and the head; a writer with raw
+ *    database access who recomputes everything is outside what it alone proves.
  * 3. **The revision** is the intake's own: revision 1, attempt 1.
  * 4. **The submission.** `submittedAt` is the intake event's `occurredAt` — the
  *    door's instant, recorded once and the same on every restart, and held to the
@@ -65,7 +86,12 @@ export type {
  * - `ENVELOPE_DIGEST_MISMATCH` — the bytes the reference names do not hash to the
  *   digest the intake recorded.
  * - `ENVELOPE_UNREADABLE` — the plane refused the read (its word is carried), or
- *   the bytes are not an envelope.
+ *   the bytes are not an envelope, including an absent, non-string or unsupported
+ *   `contractVersion`.
+ * - `ENVELOPE_VERSION_MISMATCH` — the envelope's `contractVersion` is not the one
+ *   the intake event carries: integrity, not history.
+ * - `ENVELOPE_VERSION_SUPERSEDED` — the envelope and its intake were recorded under
+ *   a supported version that is no longer the one in force: re-submit.
  * - `INTAKE_UNREADABLE` — the first event is not this task's intake, or a field of
  *   it is not what the intake records.
  * - `ROUTE_DISAGREES_WITH_INTAKE` — the elected route differs from the resolution
@@ -75,6 +101,8 @@ export type {
 export const RECORDED_TASK_REFUSALS = [
   "ENVELOPE_DIGEST_MISMATCH",
   "ENVELOPE_UNREADABLE",
+  "ENVELOPE_VERSION_MISMATCH",
+  "ENVELOPE_VERSION_SUPERSEDED",
   "INTAKE_UNREADABLE",
   "ROUTE_DISAGREES_WITH_INTAKE",
   "TASK_UNKNOWN",
@@ -88,6 +116,22 @@ const ROUTE_FIELDS = ["provider", "model", "transportKind"] as const;
 
 function refuse(refusal: RecordedTaskRefusal, at: string, word: string | null = null): RecordedTaskOutcome & { ok: false } {
   return Object.freeze({ ok: false as const, refusal, at, word });
+}
+
+/**
+ * The stored envelope's `contractVersion`, read before its shape, or `null`.
+ *
+ * Only off a plain object that owns the key, only a string, and only a member of the
+ * reader's supported set: anything else is not a version this build can name, and the
+ * caller refuses it as unreadable without echoing it.
+ */
+function recordedVersionOf(value: unknown): string | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if (!Object.prototype.hasOwnProperty.call(value, "contractVersion")) return null;
+  const version: unknown = (value as { readonly contractVersion?: unknown }).contractVersion;
+  if (typeof version !== "string") return null;
+  const supported: readonly string[] = SUPPORTED_CONTRACT_VERSIONS;
+  return supported.includes(version) ? version : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +187,10 @@ export function readRecordedTask(input: RecordedTaskReaderInput): RecordedTaskOu
   } catch {
     return refuse("ENVELOPE_UNREADABLE", "envelope");
   }
+  const version = recordedVersionOf(envelopeJson);
+  if (version === null) return refuse("ENVELOPE_UNREADABLE", "envelope");
+  if (version !== event.contractVersion) return refuse("ENVELOPE_VERSION_MISMATCH", "envelope.contractVersion");
+  if (version !== CONTRACT_VERSION) return refuse("ENVELOPE_VERSION_SUPERSEDED", "envelope.contractVersion");
   const envelope = TaskEnvelope.safeParse(envelopeJson);
   if (!envelope.success) return refuse("ENVELOPE_UNREADABLE", "envelope");
   if (envelopeSha256(envelope.data) !== intake.envelopeSha256) return refuse("ENVELOPE_DIGEST_MISMATCH", "envelope");

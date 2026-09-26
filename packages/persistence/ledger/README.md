@@ -301,6 +301,11 @@ Two consequences are deliberate. `issuedAt` is a field, so re-issuing the same
 packet at a later instant is a new revision. `contractVersion` is a field, so
 moving `CONTRACT_VERSION` changes the digest of envelopes issued under the new
 contract — and no historical digest is migrated, because no history is rehashed.
+P-16/A1 (ADR 0120) is such a move: `TaskEnvelope` loses `objective` at `2.11.0`, so
+the same work hashes differently before and after, and a task stored under `2.10.0`
+keeps its recorded digest. Such a task is not re-run: the recorded-task reader
+refuses it by name (`ENVELOPE_VERSION_SUPERSEDED`), and it is re-submitted under the
+version in force.
 
 **This does not close finding N01.** Nothing here is wired into the submission
 path yet: `daemon-child` still compares the submission digest, which covers the
@@ -748,7 +753,7 @@ updates), that hold the cohort:
 | `outcome_contract_version` | result pair |
 | --- | --- |
 | `2.2.0` … `2.7.0` — a closed list frozen in the migration | must be `NULL` |
-| anything else — `2.8.0`, `2.9.0` and `2.10.0` today | required on `SUCCEEDED`; optional on `FAILED` |
+| anything else — `2.8.0`, `2.9.0`, `2.10.0` and `2.11.0` today | required on `SUCCEEDED`; optional on `FAILED` |
 
 Version-independent row law is a CHECK: the pair is both `NULL` or both present,
 the digest has the common shape, a result exists only on `SUCCEEDED` or `FAILED`,
@@ -785,7 +790,7 @@ the cohort:
 | `dispatch_contract_version` | pin |
 | --- | --- |
 | `2.2.0` … `2.8.0` — a closed list frozen in the migration | must be `NULL` |
-| anything else — `2.9.0` and `2.10.0` today | required |
+| anything else — `2.9.0`, `2.10.0` and `2.11.0` today | required |
 | `NULL` | refused, by the first statement |
 
 On upgrade, code in the migration's transaction writes each delivery's version (and

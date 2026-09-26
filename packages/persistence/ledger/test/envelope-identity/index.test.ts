@@ -12,8 +12,8 @@ import {
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
- * One text block, so the envelope's `objective` equals the first text block of its
- * content and the two spellings stay one fact. `contentSha256` is a placeholder:
+ * One text block, the envelope's whole instruction: from 2.11.0 `content` states it
+ * once (P-16/A1, ADR 0120). `contentSha256` is a placeholder:
  * escalón B admits and publishes, and escalón C is where a digest is checked
  * against the bytes it describes.
  */
@@ -115,8 +115,18 @@ function fixtureContent(text: string): Record<string, unknown> {
  * stream, never fields of the envelope. Recomputed twice, by `envelopeSha256` and by
  * `node:crypto` over the preimage, from a copy of this fixture outside the suite, and
  * the two agree on all three.
+ *
+ * P-16/A1 moved the version to `"2.11.0"` (ADR 0120), and this time the envelope's
+ * own shape moved with it: `objective` is retired and `content` states the
+ * instruction once. So the three vectors moved for two reasons at once, the stamp
+ * and the field, and vector 2 changed its subject: the envelope "differing only in
+ * `objective`" no longer exists, and it is now the envelope differing only in its
+ * first text block. Restamped, never lifted: recomputed twice, by `envelopeSha256`
+ * and by `node:crypto` over `envelopeIdentityPreimageV1`, from a copy of this
+ * fixture outside the suite, and the two agree on all three. The prefix did not
+ * move: a field change is not an encoding change.
  */
-const CONTRACT = "2.10.0";
+const CONTRACT = "2.11.0";
 const ISSUER = "kimi/k3/coordinator/01";
 const AT = "2026-09-11T09:00:00.000Z";
 const TASK_ID = "6f1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d";
@@ -130,7 +140,6 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
     taskId: TASK_ID,
     initiativeId: INITIATIVE_ID,
     title: "Pin the envelope revision preimage",
-    objective: "Compute one digest over every field of the contract, and freeze it.",
     content: fixtureContent("Compute one digest over every field of the contract, and freeze it."),
     classification: "SEMANTIC",
     issuedBy: ISSUER,
@@ -161,23 +170,16 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
 }
 
 /**
- * The same envelope with a different objective, and nothing else changed.
+ * The same envelope with a different instruction, and nothing else changed.
  *
  * Written as its own function rather than as an override so the two probes of
  * N01 read as what the finding describes: two packets, differing in the one
- * thing that decides what the work IS.
+ * thing that decides what the work IS. Since P-16/A1 (ADR 0120) the instruction
+ * is stated once, in the first text block of `content`, so that is the one fact
+ * this moves.
  */
-/**
- * One envelope whose instruction is `objective`, in both spellings (P-06/B).
- *
- * Since escalón B the envelope refuses an objective that disagrees with the first
- * text block of its content, so "differing only in the objective" is expressed by
- * moving the one fact and not one of its two spellings. The probe below is
- * unchanged in what it proves — two instructions, two digests — and sharper about
- * what an instruction is.
- */
-function withObjective(objective: string): Record<string, unknown> {
-  return envelope({ objective, content: fixtureContent(objective) });
+function withInstruction(text: string): Record<string, unknown> {
+  return envelope({ content: fixtureContent(text) });
 }
 
 describe("the envelope revision preimage is pinned, not merely consistent", () => {
@@ -185,9 +187,9 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
   // N01, made executable
   // -------------------------------------------------------------------------
 
-  it("two envelopes differing only in objective produce different digests", () => {
-    const first = withObjective("Compute one digest over every field of the contract.");
-    const second = withObjective("Delete the production ledger.");
+  it("two envelopes differing only in the instruction content produce different digests", () => {
+    const first = withInstruction("Compute one digest over every field of the contract.");
+    const second = withInstruction("Delete the production ledger.");
 
     // Every other field is identical, which is what makes this the finding's
     // own probe rather than a general statement about hashing: the digest the
@@ -199,7 +201,7 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
 
   it("two envelopes differing only in authority produce different digests", () => {
     // The other half of N01, and the sharper half. Authority is what a packet
-    // was allowed to touch; two envelopes that agree on the objective and
+    // was allowed to touch; two envelopes that agree on the instruction and
     // disagree on the authority are two different grants, and a digest that
     // could not tell them apart would let a narrow approval carry a wide one.
     const narrow = envelope();
@@ -262,15 +264,10 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
         expect(envelopeIdentityPreimageV1(base)).toContain(CONTRACT);
         continue;
       }
-      if (key === "objective") {
-        // The instruction has two spellings and they may not disagree, so this
-        // mutation moves both. It is still one semantic change (P-06/B, ADR 0094).
-        const revised = String(current) + " (revised)";
-        candidate = envelope({ objective: revised, content: fixtureContent(revised) });
-      } else if (key === "content") {
-        // And the content moves without touching the prose: a second block, not a
-        // text one, so the first text block still equals the objective and the only
-        // thing that changed is the content.
+      if (key === "content") {
+        // The content moves without touching the first text block: a second block,
+        // not a text one, so the instruction's prose is the same and the only thing
+        // that changed is the list. The prose moving is the N01 probe above.
         const baseContent = base["content"] as { readonly blocks: readonly Record<string, unknown>[] };
         candidate = envelope({
           content: {
@@ -381,7 +378,7 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
 
     // One key missing, everything else lawful.
     const incomplete = envelope();
-    delete incomplete["objective"];
+    delete incomplete["title"];
     expect(() => envelopeSha256(incomplete)).toThrow();
 
     // And a field that is present with the wrong type rather than absent.
@@ -494,10 +491,10 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
     // encoding changes while staying internally consistent — every other test
     // here would compute the new bytes the new way and agree with itself.
     const vectors: readonly (readonly [Record<string, unknown>, string])[] = [
-      [envelope(), "08e07650cb1eb901bf57f0e7bc2991ba78302f5fca9a1622215b72be3fd1b7c0"],
+      [envelope(), "2e7709f252f589d304e09fbe3d49e98e389382ba4d300eb2d9fae31629ff59a2"],
       [
-        withObjective("Delete the production ledger."),
-        "0fac75bb6c8eaa41b7e54015dce92d147c901c05e03059ec3ed7a241b2e19169",
+        withInstruction("Delete the production ledger."),
+        "733ed12691de36405940975f99beebe8523bfc284043a8492d65f0e8ad76ffe0",
       ],
       [
         envelope({
@@ -507,7 +504,7 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
           visualEvidenceRequired: true,
           eligibility: { roles: ["reviewer"], providers: ["anthropic"], requiredCapabilities: [] },
         }),
-        "0ca58d1288c13129c902b0c8b4b1fbabd02baf3e41faa9d5436bc4dffa20be45",
+        "6a0a2a464f7e893305769de61b53dc26443e9b27b9990b3fa9339cecf238e746",
       ],
     ];
 

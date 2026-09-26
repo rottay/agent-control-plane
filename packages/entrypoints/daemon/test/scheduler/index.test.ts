@@ -13,8 +13,8 @@ import type { ScheduledWalk, SchedulerPorts, WalkLease } from "../../src/schedul
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
- * One text block, so the envelope's `objective` equals the first text block of its
- * content and the two spellings stay one fact. `contentSha256` is a placeholder:
+ * One text block, the envelope's whole instruction: from 2.11.0 `content` states it
+ * once (P-16/A1, ADR 0120). `contentSha256` is a placeholder:
  * escalón B admits and publishes, and escalón C is where a digest is checked
  * against the bytes it describes.
  */
@@ -68,7 +68,6 @@ function envelopeOf(taskId: string, writeSet: readonly string[], conflictKeys: r
     taskId,
     initiativeId: "7a7a7a7a-7a7a-4a7a-8a7a-7a7a7a7a7a03",
     title: "a walk",
-    objective: "walk the plan",
     content: fixtureContent("walk the plan"),
     classification: "MECHANICAL",
     issuedBy: "claude/opus/implementer/01",

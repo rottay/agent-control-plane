@@ -18,7 +18,7 @@ import { z } from "zod";
  * is a producer whose output nobody can predict. What may hold more than one
  * value is the *reader's* set below.
  */
-export const CONTRACT_VERSION = "2.10.0" as const;
+export const CONTRACT_VERSION = "2.11.0" as const;
 
 /**
  * The contract versions a **reader** accepts (P-18/protocolo A, ADR 0072).
@@ -98,6 +98,13 @@ export const CONTRACT_VERSION = "2.10.0" as const;
  * `ROADMAP_STEP_DECLARED` carries digests and a rank the door re-derives from the
  * manifest rather than believes: an identity, ADR 0076's class. `"2.9.0"` joins the
  * others here for ever.
+ *
+ * **Ten members from P-16/A1 (ADR 0120), on ADR 0076's criterion: an identity.**
+ * The envelope's preimage loses a field: `TaskEnvelope` no longer carries
+ * `objective`, so `content` is the one statement of the instruction, and
+ * `envelope_sha256` differs for the same work issued before and after the bump.
+ * No column holds the field and every cohort list closes at or before `"2.9.0"`,
+ * so no migration follows. `"2.10.0"` joins the others here for ever.
  */
 export const SUPPORTED_CONTRACT_VERSIONS = [
   "2.2.0",
@@ -109,6 +116,7 @@ export const SUPPORTED_CONTRACT_VERSIONS = [
   "2.8.0",
   "2.9.0",
   "2.10.0",
+  "2.11.0",
 ] as const;
 
 /**

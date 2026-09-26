@@ -95,8 +95,8 @@ import { EffectIdParam } from "../../src/schemas/index.js";
 /**
  * The instruction content for a fixture whose prose is `text` (P-06/B, ADR 0094).
  *
- * One text block, so the envelope's `objective` equals the first text block of its
- * content and the two spellings stay one fact. `contentSha256` is a placeholder:
+ * One text block, the envelope's whole instruction: from 2.11.0 `content` states it
+ * once (P-16/A1, ADR 0120). `contentSha256` is a placeholder:
  * escalón B admits and publishes, and escalón C is where a digest is checked
  * against the bytes it describes.
  */
@@ -2310,7 +2310,7 @@ describe("the initiative registration's wire contract (P-14/B)", () => {
 
   it("N-P14B-14: moves the API version and the write table, and adds no error code", () => {
     // `0.16.0` when it landed; P-14/C's sixth write door moved it again.
-    expect(API_CONTRACT_VERSION).toBe("0.24.0");
+    expect(API_CONTRACT_VERSION).toBe("0.25.0");
     expect(isWriteRoute("initiatives")).toBe(true);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(16);
@@ -2328,7 +2328,6 @@ describe("the task intake's wire contract (P-14/C)", () => {
       taskId: TASK_ID,
       initiativeId: INITIATIVE_ID,
       title: "Enter a task",
-      objective: "Enter one task by command and by API.",
       content: fixtureContent("Enter one task by command and by API."),
       classification: "MECHANICAL",
       issuedBy: "kimi/k3/coordinator/01",
@@ -2422,10 +2421,19 @@ describe("the task intake's wire contract (P-14/C)", () => {
     expect(TaskIntakeRequest.safeParse(intake({ envelope: envelope({ stepId: "step.one" }) })).success).toBe(false);
     expect(TaskIntakeRequest.safeParse(intake({ envelope: envelope({ taskId: "not-a-uuid" }) })).success).toBe(false);
     const planted = TaskIntakeRequest.safeParse(
-      intake({ envelope: envelope({ objective: "deploy with sk-ant-api03-" + "A".repeat(40) }) }),
+      intake({ envelope: envelope({ content: fixtureContent("deploy with sk-ant-api03-" + "A".repeat(40)) }) }),
     );
     expect(planted.success).toBe(false);
-    expect(planted.error?.issues.map((issue) => issue.path.join("."))).toContain("envelope.objective");
+    expect(planted.error?.issues.map((issue) => issue.path.join("."))).toContain("envelope.content.blocks.0.text");
+  });
+
+  it("refuses an envelope that still carries `objective` at the envelope's own path (P-16/A1, 0.25.0)", () => {
+    const stale = TaskIntakeRequest.safeParse(intake({ envelope: envelope({ objective: "Enter one task by command and by API." }) }));
+    expect(stale.success).toBe(false);
+    expect(stale.error?.issues.map((issue) => ({ code: issue.code, path: issue.path.join(".") }))).toEqual([
+      { code: "unrecognized_keys", path: "envelope" },
+    ]);
+    expect(TaskIntakeRequest.safeParse(intake()).success).toBe(true);
   });
 
   it("holds the key, the step, the role, the slot and the transport to their grammars", () => {
@@ -2467,15 +2475,15 @@ describe("the task intake's wire contract (P-14/C)", () => {
   });
 
   it("N-P14C-23: moves the API version and the write table, and adds no method and no error code", () => {
-    expect(API_CONTRACT_VERSION).toBe("0.24.0");
+    expect(API_CONTRACT_VERSION).toBe("0.25.0");
     expect(isWriteRoute("tasks")).toBe(true);
     // Six when it landed; P-27 cut A's task graph route is the seventh, and P-27 cut
     // C's task step route the eighth.
     expect(API_WRITE_ROUTES).toHaveLength(8);
     expect([...API_ALLOWED_METHODS]).toEqual(["GET"]);
     expect(API_ERROR_CODES).toHaveLength(16);
-    // Derived from `CONTRACT_VERSION`, which P-26 cut B moved to 2.10.0 (ADR 0111).
-    expect(LEDGER_CONTRACT_VERSION).toBe("2.10.0");
+    // Derived from `CONTRACT_VERSION`, which P-16/A1 moved to 2.11.0 (ADR 0120).
+    expect(LEDGER_CONTRACT_VERSION).toBe("2.11.0");
   });
 });
 
@@ -2603,7 +2611,7 @@ describe("the registry publication's request (P-15/R, ADR 0104)", () => {
     ).toBe(false);
     // No route parses it: the registry publication moved neither the API contract
     // version nor the write table. Both literals are today's: P-27 cut C moved them.
-    expect(API_CONTRACT_VERSION).toBe("0.24.0");
+    expect(API_CONTRACT_VERSION).toBe("0.25.0");
     expect(API_WRITE_ROUTES).toHaveLength(8);
   });
 });
@@ -3095,7 +3103,7 @@ describe("the tool call's wire contract", () => {
 
   it("names the twelfth error code, and the version the surface now stands at", () => {
     expect(API_ERROR_CODES).toContain("TOOL_SERVERS_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.24.0");
+    expect(API_CONTRACT_VERSION).toBe("0.25.0");
   });
 
   it("names the thirteenth error code, and the version the surface now stands at", () => {
@@ -3112,7 +3120,7 @@ describe("the tool call's wire contract", () => {
     // that did not move with it is exactly the point — the version tracks the
     // whole surface, not one list. The number stays a literal so it is asserted
     // rather than echoed.
-    expect(API_CONTRACT_VERSION).toBe("0.24.0");
+    expect(API_CONTRACT_VERSION).toBe("0.25.0");
     // The door surface is unchanged: X1b adds a way for an existing route to
     // refuse, not a new route.
     expect(API_ERROR_CODES.filter((code) => code === "CLAIM_HELD")).toHaveLength(1);
@@ -3125,7 +3133,7 @@ describe("the tool call's wire contract", () => {
     expect(API_ERROR_CODES).toContain("CAPABILITY_UNSUPPORTED");
     expect(API_ERROR_CODES).toContain("SCENARIO_UNCONFIGURED");
     expect(API_ERROR_CODES).toHaveLength(16);
-    expect(API_CONTRACT_VERSION).toBe("0.24.0");
+    expect(API_CONTRACT_VERSION).toBe("0.25.0");
 
     // The distinction is the reason both exist. `SCENARIO_UNCONFIGURED` is an
     // operator problem a restart fixes, on the shape
@@ -3410,7 +3418,7 @@ describe("P-15/F: the effect reads on the wire (ADR 0107)", () => {
   it("names the private read's unconfigured server apart from the write door's", () => {
     expect(API_ERROR_CODES).toContain("PRIVATE_READ_UNCONFIGURED");
     expect(API_ERROR_CODES).toContain("WRITE_BEARER_UNCONFIGURED");
-    expect(API_CONTRACT_VERSION).toBe("0.24.0");
+    expect(API_CONTRACT_VERSION).toBe("0.25.0");
   });
 });
 
