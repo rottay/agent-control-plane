@@ -1,4 +1,4 @@
-import { ControlPlaneEvent, TaskEnvelope } from "@acp/contracts";
+import { ControlPlaneEvent, TaskEnvelope, isSha256Hex } from "@acp/contracts";
 import { TASK_INTAKE_TRANSITION_ID, envelopeSha256, isInstant, taskIntakePayloadOf } from "@acp/ledger";
 
 import { canonicalSubmissionDigest, deriveInvocation } from "../submission/index.js";
@@ -80,8 +80,6 @@ export const RECORDED_TASK_REFUSALS = [
   "TASK_UNKNOWN",
 ] as const;
 
-const SHA256_HEX = /^[0-9a-f]{64}$/;
-
 /** The revision fields a walk carries forward, each read by name before anything else of the payload. */
 const NAMED_REVISION_FIELDS = ["revisionId", "envelopeSha256", "envelopeArtifactReferenceId"] as const;
 
@@ -125,7 +123,7 @@ export function readRecordedTask(input: RecordedTaskReaderInput): RecordedTaskOu
   for (const key of NAMED_REVISION_FIELDS) {
     const value: unknown = event.payload[key];
     const readable =
-      typeof value === "string" && value.length > 0 && (key !== "envelopeSha256" || SHA256_HEX.test(value));
+      typeof value === "string" && value.length > 0 && (key !== "envelopeSha256" || isSha256Hex(value));
     if (!readable) return refuse("INTAKE_UNREADABLE", "intake.payload." + key);
   }
   const intake = taskIntakePayloadOf(event);

@@ -12424,6 +12424,60 @@ const P24BA_WRITE_SET = [
   "docs/audit/implementation/packets/index.md",
 ];
 
+/**
+ * P-37, seam 2: one `isSha256Hex` predicate (decisions 212-213; no ADR, ND-2; brief v1
+ * with the Kimi K3 pre-audit's three blocking corrections adopted as the DT's rulings).
+ *
+ * Pays the ND-3 of decision 171. Contracts' `primitives` gains a module-private
+ * `SHA256_HEX_PATTERN`, which `Sha256Hex` and the new `isSha256Hex(value: unknown)` both
+ * read, and puts the predicate on both barrels. Sixteen consumer files held their own
+ * raw `/^[0-9a-f]{64}$/` at twenty-two literal sites (thirteen module constants, nine
+ * inline); every one is now a call, thirty-five in all, with no other textual change:
+ * no guard, message, error class or refusal order moves. The one delta is a non-string,
+ * which the predicate refuses and a raw `RegExp#test` coerced, and no caller passes one.
+ * L-P37S-2 is new; L-P36C-3 now reads the artifact plane's call rather than the regex
+ * text; L-P37S-1 is unchanged but for its stated-limit comment.
+ *
+ * **Pins that move.** `CONTRACTS_SCHEMA_EXPORTS` 184 -> **185** (`isSha256Hex`);
+ * `PATH_SCOPED_LAWS` 173 -> **174**. Computed and pinned by no doc: this constant is
+ * one more epoch-frozen record (244 -> 245), whose 26 paths hold 23 more package-path
+ * literals (3371 -> 3394); the live law literals 500 -> 502.
+ * **Pins that do not.** `CONTRACT_VERSION` (2.10.0), `API_CONTRACT_VERSION` (0.24.0),
+ * `MIGRATIONS` (27), the ADR corpus (118), every other package's public exports (each
+ * deleted constant was module-private) and every event vocabulary.
+ *
+ * **Twenty-six paths; one is new**: the vector table captured from the pre-change
+ * regex.
+ */
+const P37S2_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/contracts/test/testing/sha256-hex-vectors/index.json",
+  "packages/domains/accounts/src/assignment/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor-child/index.ts",
+  "packages/domains/runtime/src/execution-effects/index.ts",
+  "packages/domains/runtime/src/recorded-task/index.ts",
+  "packages/edges/durability/src/drivers/restate-child/index.ts",
+  "packages/edges/durability/src/submit/index.ts",
+  "packages/edges/durability/src/server-handle/index.ts",
+  "packages/entrypoints/daemon/src/status/index.ts",
+  "packages/entrypoints/daemon/src/daemon-child/index.ts",
+  "packages/persistence/ledger/src/artifact-plane/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/outbox-store/index.ts",
+  "packages/persistence/ledger/src/account-integrity/index.ts",
+  "packages/persistence/ledger/src/artifact-lease-store/index.ts",
+  "packages/persistence/ledger/src/usage-settlement/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/test/artifact-lease-store/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12679,6 +12733,7 @@ const WRITE_SET = [
   ...P27C_WRITE_SET,
   ...P24B_WRITE_SET,
   ...P24BA_WRITE_SET,
+  ...P37S2_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -14263,6 +14318,13 @@ const PATH_SCOPED_LAWS = [
   {
     law: "a query records nothing: the discovery doors open no ledger and the discovery scope names no callTool",
     scope: "the two discovery door sources, packages/edges/tools/src/operation/index.ts",
+  },
+  // P-37 seam 2. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 173 -> 174 for L-P37S-2. L-P36C-3 is amended in
+  // place and L-P37S-1 is unchanged; neither adds one.
+  {
+    law: "one sha-256 digest grammar in src, and it is contracts' isSha256Hex",
+    scope: "packages/*/*/src/**",
   },
 ];
 
@@ -22334,6 +22396,9 @@ if (accountsIndex === null) {
   "TaskGraphNodeDeclaration",
   // P-27 cut C (ADR 0116): the declaration a TASK_STEP_LINKED carries. 183 -> 184.
   "TaskStepLinkDeclaration",
+  // P-37 seam 2 (decision 212): the one sha-256 predicate, which `Sha256Hex` and the
+  // sixteen former regex copies read. 184 -> 185.
+  "isSha256Hex",
 ];
 
   const schemasBarrel = readIfPresent("packages/kernel/contracts/src/schemas/index.ts");
@@ -26935,9 +27000,10 @@ if (tracked.status === 0) {
 // grammar, not merely a copy of it; a protocol-barrel re-export of the schema under
 // another name (an alias such as `EffectIdParam`, kept off the barrel today by a
 // docblock only); a second schema under another name built from such a spelling, or
-// a copy outside `protocol/src` is not seen (errata, decision 184). The other raw
-// `/^[0-9a-f]{64}$/` predicates across `packages/*/*/src` (P-37 ND-3, eighteen files)
-// are a later seam's, not this law's.
+// a copy outside `protocol/src` is not seen (errata, decision 184). A 64-digit hex
+// grammar anywhere else under `packages/*/*/src` is L-P37S-2's: P-37 seam 2
+// (decision 212) folded the sixteen files and twenty-two sites that held one into
+// contracts' `isSha256Hex`.
 {
   const PROTOCOL_SCHEMAS = "packages/kernel/protocol/src/schemas/index.ts";
   const PROTOCOL_BARREL = "packages/kernel/protocol/src/index.ts";
@@ -30370,6 +30436,11 @@ const ARTIFACT_PLANE_SITE = "packages/persistence/ledger/src/artifact-plane/inde
 // Artifacts §10 `:362-364`: paths derive from the digest, sharded by its first
 // two hex characters, and never from an untrusted reference. The shard is taken
 // in exactly one place, and there it is taken from the checked digest.
+//
+// AMENDED by P-37 seam 2 (decision 213): the check that the digest is 64 lowercase
+// hexadecimal characters read the regex text `/^[0-9a-f]{64}$/` in the file, which
+// L-P37S-2 now refuses there. It reads the call instead: `requireDigest`'s body
+// calls `isSha256Hex(` and the file imports `isSha256Hex` from `@acp/contracts`.
 {
   let digestScanned = 0;
   const source = readIfPresent(ARTIFACT_PLANE_SITE);
@@ -30385,7 +30456,13 @@ const ARTIFACT_PLANE_SITE = "packages/persistence/ledger/src/artifact-plane/inde
           " site(s); exactly one may, from a digest `requireDigest` has checked",
       );
     }
-    if (!code.includes("/^[0-9a-f]{64}$/")) {
+    const requireDigestAt = code.indexOf("function requireDigest(");
+    const requireDigestBody =
+      requireDigestAt === -1 ? "" : code.slice(requireDigestAt, code.indexOf("\n}", requireDigestAt) + 2);
+    const readsPredicate = [...code.matchAll(/import\s*\{([^}]*)\}\s*from\s*"@acp\/contracts";/g)].some((match) =>
+      (match[1] ?? "").split(",").some((piece) => piece.trim() === "isSha256Hex"),
+    );
+    if (!requireDigestBody.includes("isSha256Hex(") || !readsPredicate) {
       fail(ARTIFACT_PLANE_SITE + " no longer checks a digest as 64 lowercase hexadecimal characters");
     }
     const reconcileAt = code.indexOf("const reconcile = ");
@@ -31992,6 +32069,70 @@ const CANONICAL_INSTANT_HOME = "packages/kernel/contracts/src/schemas/primitives
   }
   requireScope("one canonical-instant predicate in src", instantScanned);
   notes.push("the canonical instant has one predicate, in " + CANONICAL_INSTANT_HOME + ", over " + String(instantScanned) + " other sources");
+}
+
+// L-P37S-2 -- one sha-256 digest grammar in src, and it is contracts' isSha256Hex
+// (P-37 seam 2; decision 213).
+//
+// Sixteen files across five packages each held their own `/^[0-9a-f]{64}$/`, and the
+// cross-package name gate could not see one, because a module-private constant is
+// never an exported collision. P-37 seam 2 folded them into contracts' `primitives`,
+// where one module-private grammar is read by `Sha256Hex` and `isSha256Hex`. Over
+// every tracked `packages/*/*/src/` `.ts` and `.tsx` file but that home, comments
+// stripped: no hex character class followed by a quantifier of 64 -- a class made
+// only of the ranges `0-9`, `\d` (or `\\d` in a string), `a-f` and `A-F`, in any
+// order, holding `a-f` or `A-F`, then `{64}`, `{64,}` or `{64,64}` -- in a regex
+// literal or a string. The home must define `export function isSha256Hex(` and hold
+// that grammar exactly once, or the law has no authority to protect.
+//
+// Stated limit: a text-level matcher. A grammar assembled at runtime, a class
+// spelled otherwise (`[0-9abcdef]`, `\p{AHex}`, `[[:xdigit:]]`, a class with a
+// fourth member), a quantifier written another way (`{0064}`, `{32}{2}`, or a range
+// that is not `{64,}` or `{64,64}`, such as `{64,128}`, `{63,64}` or `{1,64}`), a length
+// check plus a character test, a `Buffer.from(x, "hex").length === 32` round-trip,
+// zod's `z.hash("sha256")` or `z.hex()`, code `stripComments` hides, a copy in a
+// `.js` or `.mts` file under `src` (refused by the naming laws on their own), in
+// `scripts/` (the fence's own three digest regexes and the restate acquirer's
+// `SHA256_HEX` in `scripts/acquire-restate-server.mjs` stay: neither may import built
+// package code), in a test tree (tests keep an independent oracle) or in SQL (the
+// migrations' frozen `GLOB` grammars) is not seen. The 40-digit `GitCommitSha` and the
+// uuid grammars are other semantics and hold no quantifier of 64.
+const SHA256_HEX_HOME = "packages/kernel/contracts/src/schemas/primitives/index.ts";
+{
+  const LAW = "one sha-256 digest grammar in src, and it is contracts' isSha256Hex";
+  const HEX64 = /\[(?=[^\]]*[aA]-[fF])(?:0-9|\\{1,2}d|a-f|A-F){2,3}\]\{64(?:,(?:64)?)?\}/g;
+  let scanned = 0;
+  if (tracked.status === 0) {
+    const present = tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const relativePath of present) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath)) continue;
+      if (!/\.tsx?$/.test(relativePath)) continue;
+      if (relativePath === SHA256_HEX_HOME) continue;
+      const content = readIfPresent(relativePath);
+      if (content === null) continue;
+      scanned += 1;
+      if ((stripComments(content).match(HEX64) ?? []).length > 0) {
+        fail(
+          relativePath +
+            " holds its own 64-digit hex grammar; the one sha-256 predicate is @acp/contracts' isSha256Hex," +
+            " and a private copy is one no gate can see (L-P37S-2)",
+        );
+      }
+    }
+  }
+  const home = stripComments(readIfPresent(SHA256_HEX_HOME) ?? "");
+  if (!home.includes("export function isSha256Hex(")) {
+    fail(SHA256_HEX_HOME + " no longer defines isSha256Hex; the law has no authority to protect (L-P37S-2)");
+  } else if ((home.match(HEX64) ?? []).length !== 1) {
+    fail(
+      SHA256_HEX_HOME +
+        " holds the 64-digit hex grammar " +
+        String((home.match(HEX64) ?? []).length) +
+        " time(s); exactly once, or the law would match nothing or the home would hold two (L-P37S-2)",
+    );
+  }
+  requireScope(LAW, scanned);
+  notes.push("the sha-256 digest has one predicate, in " + SHA256_HEX_HOME + ", over " + String(scanned) + " other sources");
 }
 
 // L-P15F-1 -- a result's bytes leave the plane only through readEffectResult, and

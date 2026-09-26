@@ -2,6 +2,8 @@ import { dirname, join } from "node:path";
 
 import Database from "better-sqlite3";
 
+import { isSha256Hex } from "@acp/contracts";
+
 import { sha256Hex } from "../canonical-json/index.js";
 import {
   LedgerClosedError,
@@ -644,7 +646,7 @@ function requireAnchor(anchor: OutboxEventAnchor | null | undefined, field: stri
   if (!Number.isInteger(anchor.sequence) || anchor.sequence < 1) {
     throw new LedgerQueryError(field + ".sequence must be a positive integer");
   }
-  if (typeof anchor.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(anchor.sha256)) {
+  if (typeof anchor.sha256 !== "string" || !isSha256Hex(anchor.sha256)) {
     throw new LedgerQueryError(field + ".sha256 must be 64 lowercase hexadecimal characters");
   }
   return { stream: anchor.stream, sequence: anchor.sequence, sha256: anchor.sha256 };

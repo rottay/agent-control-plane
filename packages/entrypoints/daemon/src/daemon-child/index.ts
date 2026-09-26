@@ -7,6 +7,7 @@ import {
   ResolvedRoute,
   SwitchAuthorization,
   TaskEnvelope,
+  isSha256Hex,
 } from "@acp/contracts";
 import { canonicalSubmission, canonicalSubmissionDigest } from "@acp/runtime";
 
@@ -42,7 +43,6 @@ export type { DaemonLocalExecutionBinding } from "./types/index.js";
  * environment, so nothing about its behaviour depends on ambient state.
  */
 
-const SHA256_HEX = new RegExp("^[0-9a-f]{64}$");
 const UUID = new RegExp("^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", "i");
 
 /** The session budgets the CLI binding carries. Positive integers, all four. */
@@ -825,7 +825,7 @@ function parseWalks(raw: unknown, mode: DaemonMode): readonly ScheduledWalk[] {
     if (typeof initiativeId !== "string" || !UUID.test(initiativeId)) {
       throw new ModeError(at + ".initiativeId must be a uuid");
     }
-    if (typeof submissionDigest !== "string" || !SHA256_HEX.test(submissionDigest)) {
+    if (typeof submissionDigest !== "string" || !isSha256Hex(submissionDigest)) {
       throw new ModeError(at + ".submissionDigest must be 64 lowercase hex characters");
     }
 
@@ -976,7 +976,7 @@ export function parseDaemonChildConfig(raw: unknown): DaemonChildConfig {
   if (typeof emittedBy !== "string") throw new ModeError("emittedBy must be a string");
   if (typeof taskId !== "string") throw new ModeError("taskId must be a string");
   if (typeof submittedAt !== "string") throw new ModeError("submittedAt must be a string");
-  if (typeof submissionDigest !== "string" || !SHA256_HEX.test(submissionDigest)) {
+  if (typeof submissionDigest !== "string" || !isSha256Hex(submissionDigest)) {
     throw new ModeError("submissionDigest must be 64 lowercase hex characters");
   }
   if (typeof attempt !== "number" || !Number.isInteger(attempt) || attempt < 1) {

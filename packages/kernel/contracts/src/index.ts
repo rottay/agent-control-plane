@@ -20,6 +20,7 @@ export {
   CanonicalInstant,
   Timestamp,
   Sha256Hex,
+  isSha256Hex,
   BOUNDED_IDENTIFIER,
   BoundedIdentifier,
   CONTENT_CONTRACT_VERSION,

@@ -32,6 +32,7 @@ export {
   CanonicalInstant,
   Timestamp,
   Sha256Hex,
+  isSha256Hex,
 } from "./primitives/index.js";
 export {
   BOUNDED_IDENTIFIER,

@@ -1,3 +1,4 @@
+import { isSha256Hex } from "@acp/contracts";
 import {
   RESTATE_HANDLER_ADVANCE,
   RESTATE_HANDLER_READ_CACHE,
@@ -554,7 +555,7 @@ export function parseCacheReply(text: string): RestateCacheState | null {
   if (typeof sequence !== "number" || !Number.isInteger(sequence) || sequence < 0) {
     throw new Error("the cache reply carries no usable lastAppliedSequence");
   }
-  if (typeof digest !== "string" || !/^[0-9a-f]{64}$/.test(digest)) {
+  if (typeof digest !== "string" || !isSha256Hex(digest)) {
     throw new Error("the cache reply carries no usable lastAppliedEventSha256");
   }
   return { lastAppliedSequence: sequence, lastAppliedEventSha256: digest };

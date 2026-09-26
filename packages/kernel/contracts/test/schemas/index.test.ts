@@ -92,6 +92,7 @@ import {
   Timestamp,
   isCanonicalInstant,
   Sha256Hex,
+  isSha256Hex,
   ROADMAP_STEPS_MAX,
   ROADMAP_STEP_DEPENDS_ON_MAX,
   ROADMAP_STEP_MANIFEST_MAX_BYTES,
@@ -101,7 +102,8 @@ import {
 } from "../../src/index.js";
 import * as contractsBarrel from "../../src/index.js";
 import * as schemasBarrel from "../../src/schemas/index.js";
-import { Sha256Hex as PrimitiveSha256Hex } from "../../src/schemas/primitives/index.js";
+import { Sha256Hex as PrimitiveSha256Hex, isSha256Hex as primitiveIsSha256Hex } from "../../src/schemas/primitives/index.js";
+import * as primitivesModule from "../../src/schemas/primitives/index.js";
 import type { DriverAccepted, DriverOutcome } from "../../src/index.js";
 
 /** One complete usage report: every class known and summed (P-15/D2). */
@@ -3434,6 +3436,104 @@ describe("Sha256Hex is on both barrels, the protocol's one sha-256 grammar (P-37
 
   it("reproduces the verdicts, codes and messages captured from the protocol's copy before the fold", () => {
     expect(sha256Verdicts(Sha256Hex)).toEqual(SHA256_HEX_EXPECTED);
+  });
+});
+
+/**
+ * The one sha-256 predicate (P-37 seam 2, decision 212). Sixteen consumer files held a
+ * raw `/^[0-9a-f]{64}$/.test`; the vector table records what that regex answered
+ * before the fold, read from disk so the verifier can regenerate it independently.
+ * Non-strings cannot travel as JSON, so each is named by a label this suite builds,
+ * beside the raw regex's answer: the one delta of the fold is visible, not hidden.
+ */
+describe("isSha256Hex is the one sha-256 predicate (P-37 seam 2)", () => {
+  const Table = z.strictObject({
+    vectorTableVersion: z.literal(1),
+    capturedFrom: z.string().min(1),
+    vectors: z.array(z.strictObject({ vector: z.string(), verdict: z.boolean() })).min(1),
+    nonStrings: z.array(z.strictObject({ label: z.string().min(1), rawTest: z.boolean() })).min(1),
+  });
+  const TABLE = resolve(dirname(fileURLToPath(import.meta.url)), "..", "testing", "sha256-hex-vectors", "index.json");
+  const NON_STRINGS: Readonly<Record<string, unknown>> = {
+    number: 42,
+    null: null,
+    undefined: undefined,
+    emptyObject: {},
+    arrayOfDigest: [HEX],
+    boxedDigest: new String(HEX),
+    toStringDigest: { toString: () => HEX },
+    bigint64Digits: 10n ** 63n,
+  };
+
+  it("is one function object on the root barrel, the schema barrel and primitives", () => {
+    expect(contractsBarrel.isSha256Hex).toBe(primitiveIsSha256Hex);
+    expect(schemasBarrel.isSha256Hex).toBe(primitiveIsSha256Hex);
+    expect(isSha256Hex).toBe(primitiveIsSha256Hex);
+  });
+
+  it("keeps the grammar module-private: no module exports it, under its name or any other", () => {
+    for (const [name, module] of [
+      ["primitives", primitivesModule],
+      ["the schema barrel", schemasBarrel],
+      ["the root barrel", contractsBarrel],
+    ] as const) {
+      expect(Object.keys(module), name).not.toContain("SHA256_HEX_PATTERN");
+      const grammars = Object.values(module).filter(
+        (value) => value instanceof RegExp && value.source === "^[0-9a-f]{64}$",
+      );
+      expect(grammars, name).toEqual([]);
+    }
+  });
+
+  it("parses the captured table strictly, and it holds both verdicts and the boundaries", () => {
+    const table = Table.parse(JSON.parse(readFileSync(TABLE, "utf8")));
+    expect(table.vectors.some((row) => row.verdict)).toBe(true);
+    expect(table.vectors.some((row) => !row.verdict)).toBe(true);
+    const vectors = table.vectors.map((row) => row.vector);
+    for (const boundary of [HEX, HEX.slice(0, 63), HEX + "0", HEX + "\n", HEX.slice(0, 40), HEX + HEX]) {
+      expect(vectors).toContain(boundary);
+    }
+    expect(Object.keys(NON_STRINGS).sort()).toEqual(table.nonStrings.map((row) => row.label).sort());
+    // A malformed copy is refused, never read as an empty table.
+    expect(Table.safeParse({ ...table, vectors: [{ vector: HEX, verdict: "yes" }] }).success).toBe(false);
+  });
+
+  it("answers every captured string exactly as the raw regex did, and agrees with Sha256Hex", () => {
+    const table = Table.parse(JSON.parse(readFileSync(TABLE, "utf8")));
+    for (const row of table.vectors) {
+      expect(isSha256Hex(row.vector), JSON.stringify(row.vector)).toBe(row.verdict);
+      expect(Sha256Hex.safeParse(row.vector).success, JSON.stringify(row.vector)).toBe(row.verdict);
+    }
+  });
+
+  it("refuses every non-string, including the four the raw regex coerced into a digest", () => {
+    const table = Table.parse(JSON.parse(readFileSync(TABLE, "utf8")));
+    const coerced: string[] = [];
+    for (const row of table.nonStrings) {
+      const value = NON_STRINGS[row.label];
+      expect(isSha256Hex(value), row.label).toBe(false);
+      expect(Sha256Hex.safeParse(value).success, row.label).toBe(false);
+      if (row.rawTest) coerced.push(row.label);
+    }
+    expect(coerced.sort()).toEqual(["arrayOfDigest", "bigint64Digits", "boxedDigest", "toStringDigest"]);
+  });
+
+  it("records, in both columns, what the raw regex answers when re-run here as the oracle", () => {
+    const table = Table.parse(JSON.parse(readFileSync(TABLE, "utf8")));
+    const raw = /^[0-9a-f]{64}$/;
+    for (const row of table.vectors) {
+      expect(raw.test(row.vector), JSON.stringify(row.vector)).toBe(row.verdict);
+    }
+    for (const row of table.nonStrings) {
+      // `RegExp#test` coerces its argument; the cast is the pre-fold caller's coercion, replayed.
+      expect(raw.test(NON_STRINGS[row.label] as string), row.label).toBe(row.rawTest);
+    }
+  });
+
+  it("agrees with Sha256Hex over the captured table the protocol fold pinned", () => {
+    for (const [name, value, ok] of SHA256_HEX_CAPTURED) {
+      expect(isSha256Hex(value), name).toBe(ok);
+    }
   });
 });
 

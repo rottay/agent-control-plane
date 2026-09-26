@@ -1,4 +1,4 @@
-import { USAGE_REPORT_KINDS, USAGE_SOURCE_CLASSES } from "@acp/contracts";
+import { USAGE_REPORT_KINDS, USAGE_SOURCE_CLASSES, isSha256Hex } from "@acp/contracts";
 
 import { GENESIS_SHA256, canonicalJsonStringify, sha256Hex } from "../canonical-json/index.js";
 import { LedgerValidationError } from "../errors/index.js";
@@ -224,8 +224,6 @@ export const USAGE_SETTLEMENT_REFUSALS = [
 
 
 
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-
 function refuse(reason: UsageSettlementRefusal, at: string): UsageSettlementRefused {
   return { ok: false, reason, at };
 }
@@ -318,7 +316,7 @@ function requestFault(request: UsageSettlementRequest): string | null {
   const headSequence = head["sequence"];
   const headSha = head["sha256"];
   if (!isCount(headSequence)) return "cut.controlHead.sequence";
-  if (typeof headSha !== "string" || !SHA256_PATTERN.test(headSha)) return "cut.controlHead.sha256";
+  if (typeof headSha !== "string" || !isSha256Hex(headSha)) return "cut.controlHead.sha256";
   // Genesis iff sequence zero (economy §2.2), in both directions.
   if ((headSequence === 0) !== (headSha === GENESIS_SHA256)) return "cut.controlHead.sha256";
 

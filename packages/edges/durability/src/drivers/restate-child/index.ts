@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CONTRACT_VERSION, CommitPolicy, ResolvedRoute, buildIdempotencyKey } from "@acp/contracts";
+import { CONTRACT_VERSION, CommitPolicy, ResolvedRoute, buildIdempotencyKey, isSha256Hex } from "@acp/contracts";
 import type {
   Checkpoint,
   ExecutionEvent,
@@ -116,7 +116,6 @@ const CANCEL_FAULT_POINTS: readonly string[] = ["BEFORE_SETTLEMENT"];
  * exists and the journal entry that records it does not.
  */
 const SETTLE_FAULT_POINTS: readonly string[] = ["BEFORE_SETTLE", "AFTER_SETTLE_APPEND"];
-const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 export interface RestateChildConfig {
   readonly scenarioId: string;
@@ -412,7 +411,7 @@ export function parseRestateChildConfig(raw: unknown): RestateChildConfig {
   ) {
     throw new SupervisorError("child config carries a malformed invocation");
   }
-  if (!SHA256_HEX.test(submissionDigest)) {
+  if (!isSha256Hex(submissionDigest)) {
     throw new SupervisorError("submissionDigest must be 64 lowercase hex characters");
   }
 

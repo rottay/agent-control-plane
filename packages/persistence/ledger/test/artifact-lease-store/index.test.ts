@@ -952,12 +952,14 @@ describe("N-P36B-12 and H-1 -- what this module does not do", () => {
     // The allowlist this law always carried, plus the sibling leaf — the one
     // addition a type seam can make. A specifier is spelled relative to the file
     // that carries it, so the leaf's own `../index.js` is this same concept.
+    // The contracts predicate is the only foreign addition (P-37 seam 2, decision 212); the ledger is still not imported.
     expect(imports).toEqual([
       "../canonical-json/index.js",
       "../errors/index.js",
       "../index.js",
       "./types/index.js",
       "./types/index.js",
+      "@acp/contracts",
       "better-sqlite3",
       "node:path",
     ]);

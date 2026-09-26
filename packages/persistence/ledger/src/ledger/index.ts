@@ -14,6 +14,7 @@ import {
   SUPPORTED_CONTRACT_VERSIONS,
   V2_IDEMPOTENCY_NAMESPACE,
   WORKER_ROLES,
+  isSha256Hex,
 } from "@acp/contracts";
 
 import {
@@ -558,8 +559,6 @@ const CAUSATION_STREAMS: readonly CausationStream[] = [
   "registry_events",
 ];
 
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-
 function isCausationStream(value: unknown): value is CausationStream {
   return typeof value === "string" && CAUSATION_STREAMS.includes(value as CausationStream);
 }
@@ -620,7 +619,7 @@ function normalizeCausation(
       message: "a causal reference names a position of one or greater",
     });
   }
-  if (typeof candidate.sha256 !== "string" || !SHA256_PATTERN.test(candidate.sha256)) {
+  if (typeof candidate.sha256 !== "string" || !isSha256Hex(candidate.sha256)) {
     issues.push({
       path: path + ".sha256",
       message: "a causal digest is 64 lowercase hexadecimal characters",
@@ -687,7 +686,7 @@ function isBoundedIdentifier(value: unknown): value is string {
  * registry door's bound; a generation is a positive integer.
  */
 function requireArtifactDigest(value: string, field: string): string {
-  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+  if (typeof value !== "string" || !isSha256Hex(value)) {
     throw new LedgerQueryError(field + " must be 64 lowercase hexadecimal characters");
   }
   return value;
@@ -789,7 +788,7 @@ export function normalizeRegistryDocument(candidate: unknown): RegistryDocument 
   }
 
   const contentDigest = fields["contentDigest"];
-  if (typeof contentDigest !== "string" || !SHA256_PATTERN.test(contentDigest)) {
+  if (typeof contentDigest !== "string" || !isSha256Hex(contentDigest)) {
     issues.push({
       path: "contentDigest",
       message: "a content digest is 64 lowercase hexadecimal characters",
@@ -3641,7 +3640,7 @@ export class Ledger {
     if (sequence === null || count === null) {
       throw new LedgerIntegrityError(["ledger_meta holds a head or count that is not a count"]);
     }
-    if (!/^[0-9a-f]{64}$/.test(shaText)) {
+    if (!isSha256Hex(shaText)) {
       throw new LedgerIntegrityError(["ledger_meta holds a head digest that is not a sha-256"]);
     }
     return { sequence, sha256: shaText, count };
@@ -3678,7 +3677,7 @@ export class Ledger {
         "ledger_meta holds an initiative head or count that is not a count",
       ]);
     }
-    if (!/^[0-9a-f]{64}$/.test(shaText)) {
+    if (!isSha256Hex(shaText)) {
       throw new LedgerIntegrityError([
         "ledger_meta holds an initiative head digest that is not a sha-256",
       ]);
@@ -3709,7 +3708,7 @@ export class Ledger {
         "ledger_meta holds a registry head or count that is not a count",
       ]);
     }
-    if (!SHA256_PATTERN.test(shaText)) {
+    if (!isSha256Hex(shaText)) {
       throw new LedgerIntegrityError([
         "ledger_meta holds a registry head digest that is not a sha-256",
       ]);
@@ -5212,7 +5211,7 @@ export class Ledger {
         },
       ]);
     }
-    if (!SHA256_PATTERN.test(effect.requestSha256)) {
+    if (!isSha256Hex(effect.requestSha256)) {
       throw new LedgerValidationError([
         {
           path: "payload." + EFFECT_KEY + ".requestSha256",
@@ -12702,7 +12701,7 @@ export class Ledger {
     }
     const baselineSha256 = meta.get(ACCOUNT_INTEGRITY_BASELINE_SHA256) ?? "";
     const headEventSha256 = meta.get(ACCOUNT_INTEGRITY_HEAD_EVENT_SHA256) ?? "";
-    if (!SHA256_PATTERN.test(baselineSha256) || !SHA256_PATTERN.test(headEventSha256)) {
+    if (!isSha256Hex(baselineSha256) || !isSha256Hex(headEventSha256)) {
       throw new LedgerIntegrityError([
         "ledger_meta holds an account integrity digest that is not a sha-256",
       ]);

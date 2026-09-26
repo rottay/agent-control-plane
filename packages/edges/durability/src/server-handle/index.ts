@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { isSha256Hex } from "@acp/contracts";
 import {
   DATA_ROOT_RESTATE,
   LOOPBACK_HOST,
@@ -98,7 +99,7 @@ export function receiptMatchesPin(
     }
   }
   const binaryDigest = receipt["binarySha256"];
-  if (typeof binaryDigest !== "string" || !/^[0-9a-f]{64}$/.test(binaryDigest)) {
+  if (typeof binaryDigest !== "string" || !isSha256Hex(binaryDigest)) {
     return { ok: false, reason: "the receipt carries no usable binary digest" };
   }
   return { ok: true, reason: "verified" };

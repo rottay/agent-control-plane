@@ -1,4 +1,4 @@
-import { TRANSPORT_KINDS, WORKER_ROLES } from "@acp/contracts";
+import { TRANSPORT_KINDS, WORKER_ROLES, isSha256Hex } from "@acp/contracts";
 
 import type {
   AssignmentOutcome,
@@ -85,8 +85,6 @@ export const ASSIGNMENT_REFUSALS: readonly AssignmentRefusal[] = Object.freeze([
 // The entry point
 // ---------------------------------------------------------------------------
 
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-
 function isCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
@@ -104,7 +102,7 @@ function isWatermark(value: unknown): value is AssignmentWatermark {
     isCount(entry["appliedThroughSequence"]) &&
     isCount(entry["eventCount"]) &&
     typeof entry["sourceHeadSha256"] === "string" &&
-    SHA256_PATTERN.test(entry["sourceHeadSha256"])
+    isSha256Hex(entry["sourceHeadSha256"])
   );
 }
 

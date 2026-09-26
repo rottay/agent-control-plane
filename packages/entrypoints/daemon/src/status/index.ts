@@ -1,5 +1,7 @@
 import { closeSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
 
+import { isSha256Hex } from "@acp/contracts";
+
 import { FILE_MODE } from "../constants/index.js";
 import type { DaemonErrorCode } from "../errors/index.js";
 import type { DaemonRoot } from "../paths/index.js";
@@ -67,7 +69,6 @@ export interface DaemonStatusDocument {
 /** Total serialized size a status document may occupy. */
 export const STATUS_MAX_BYTES = 2_048;
 
-const SHA256_HEX = new RegExp("^[0-9a-f]{64}$");
 /**
  * The probe's five-field C-locale `lstart` rendering, e.g. "Wed Aug 27
  * 18:46:07 2026".
@@ -168,7 +169,7 @@ export function validateStatus(value: unknown): string | null {
     return "serverStartToken is not null or a ps start token";
   }
   const argvDigest = record["serverArgvDigest"];
-  if (argvDigest !== null && (typeof argvDigest !== "string" || !SHA256_HEX.test(argvDigest))) {
+  if (argvDigest !== null && (typeof argvDigest !== "string" || !isSha256Hex(argvDigest))) {
     return "serverArgvDigest is not null or 64 lowercase hex";
   }
   // The triple is atomic. A pid without an identity cannot prove anything about
@@ -185,7 +186,7 @@ export function validateStatus(value: unknown): string | null {
     return "ledgerHeadSequence is not null or a non-negative integer";
   }
   const digest = record["ledgerHeadSha256"];
-  if (digest !== null && (typeof digest !== "string" || !SHA256_HEX.test(digest))) {
+  if (digest !== null && (typeof digest !== "string" || !isSha256Hex(digest))) {
     return "ledgerHeadSha256 is not null or 64 lowercase hex";
   }
   const code = record["errorCode"];

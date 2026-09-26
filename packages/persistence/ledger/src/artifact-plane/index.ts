@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { ArtifactRegistryEvent, CONTRACT_VERSION, REFERENCE_SCOPE_KINDS } from "@acp/contracts";
+import { ArtifactRegistryEvent, CONTRACT_VERSION, REFERENCE_SCOPE_KINDS, isSha256Hex } from "@acp/contracts";
 
 import type {
   ArtifactBlobLeaseGrant,
@@ -265,7 +265,7 @@ function requireText(value: string, field: string): string {
 
 /** A digest in artifacts §3's domain, checked before any path is derived from it. */
 function requireDigest(value: string, field: string): string {
-  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+  if (typeof value !== "string" || !isSha256Hex(value)) {
     throw new LedgerQueryError(field + " must be 64 lowercase hexadecimal characters");
   }
   return value;

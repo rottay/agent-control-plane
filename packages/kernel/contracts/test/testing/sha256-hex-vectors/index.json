@@ -1,0 +1,128 @@
+{
+  "vectorTableVersion": 1,
+  "capturedFrom": "00f6b5b: the raw /^[0-9a-f]{64}$/.test that the sixteen consumer files held (13 module constants, 9 inline sites), evaluated before P-37 seam 2",
+  "vectors": [
+    {
+      "vector": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "verdict": true
+    },
+    {
+      "vector": "0000000000000000000000000000000000000000000000000000000000000000",
+      "verdict": true
+    },
+    {
+      "vector": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "verdict": true
+    },
+    {
+      "vector": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde",
+      "verdict": false
+    },
+    {
+      "vector": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0",
+      "verdict": false
+    },
+    {
+      "vector": "A123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "verdict": false
+    },
+    {
+      "vector": "0123456789abcdef0123456789abcdef01234567F9abcdef0123456789abcdef",
+      "verdict": false
+    },
+    {
+      "vector": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg",
+      "verdict": false
+    },
+    {
+      "vector": "",
+      "verdict": false
+    },
+    {
+      "vector": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+      "verdict": false
+    },
+    {
+      "vector": " 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "verdict": false
+    },
+    {
+      "vector": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef ",
+      "verdict": false
+    },
+    {
+      "vector": "\n0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "verdict": false
+    },
+    {
+      "vector": "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "verdict": false
+    },
+    {
+      "vector": "0x23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "verdict": false
+    },
+    {
+      "vector": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+      "verdict": false
+    },
+    {
+      "vector": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\r",
+      "verdict": false
+    },
+    {
+      "vector": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "verdict": false
+    },
+    {
+      "vector": "0123456789abcdef0123456789abcdef01234567",
+      "verdict": false
+    },
+    {
+      "vector": "０123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "verdict": false
+    },
+    {
+      "vector": "٠123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "verdict": false
+    },
+    {
+      "vector": "0123456789abcdef0123456789abcdef\u0000123456789abcdef0123456789abcdef",
+      "verdict": false
+    }
+  ],
+  "nonStrings": [
+    {
+      "label": "number",
+      "rawTest": false
+    },
+    {
+      "label": "null",
+      "rawTest": false
+    },
+    {
+      "label": "undefined",
+      "rawTest": false
+    },
+    {
+      "label": "emptyObject",
+      "rawTest": false
+    },
+    {
+      "label": "arrayOfDigest",
+      "rawTest": true
+    },
+    {
+      "label": "boxedDigest",
+      "rawTest": true
+    },
+    {
+      "label": "toStringDigest",
+      "rawTest": true
+    },
+    {
+      "label": "bigint64Digits",
+      "rawTest": true
+    }
+  ]
+}

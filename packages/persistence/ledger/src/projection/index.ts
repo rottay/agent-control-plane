@@ -12,6 +12,7 @@ import {
   WORKER_ROLES,
   parseWorkerIdentity,
   isCanonicalInstant as isInstant,
+  isSha256Hex,
   type ArtifactRegistryEvent,
   type ControlPlaneEvent,
   type InitiativeEvent,
@@ -832,7 +833,6 @@ export function taskRevisionKey(taskId: string, revisionNumber: number): string 
 // ---------------------------------------------------------------------------
 
 const UUID_PATTERN = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
 const INTAKE_TEXT_MAX = 512;
 const INTAKE_WATERMARKS_MAX = 16;
 const COMMIT_POLICIES: readonly string[] = ["NO_COMMIT", "LOCAL_COMMIT_WITH_RECEIPT"];
@@ -854,7 +854,7 @@ function intakeWatermarkOf(value: unknown): TaskIntakeWatermark | null {
   const { projectionName, sourceStream, appliedThroughSequence, eventCount, sourceHeadSha256 } = value;
   if (!intakeText(projectionName) || !intakeText(sourceStream)) return null;
   if (!intakeCount(appliedThroughSequence, 0) || !intakeCount(eventCount, 0)) return null;
-  if (typeof sourceHeadSha256 !== "string" || !SHA256_HEX_PATTERN.test(sourceHeadSha256)) return null;
+  if (typeof sourceHeadSha256 !== "string" || !isSha256Hex(sourceHeadSha256)) return null;
   return { projectionName, sourceStream, appliedThroughSequence, eventCount, sourceHeadSha256 };
 }
 
@@ -909,7 +909,7 @@ export function taskIntakePayloadOf(event: ControlPlaneEvent): TaskIntakePayload
 
   const { revisionId, revisionNumber, attemptNumber, envelopeSha256, envelopeArtifactReferenceId } = payload;
   if (!intakeText(revisionId) || !intakeCount(revisionNumber, 1) || !intakeCount(attemptNumber, 1)) return null;
-  if (typeof envelopeSha256 !== "string" || !SHA256_HEX_PATTERN.test(envelopeSha256)) return null;
+  if (typeof envelopeSha256 !== "string" || !isSha256Hex(envelopeSha256)) return null;
   if (payload["restoredFromRevisionId"] !== null) return null;
   if (!intakeText(envelopeArtifactReferenceId)) return null;
 
@@ -1881,7 +1881,7 @@ function resultPairReading(
         ", and a value that is not one is refused rather than read as absent",
     };
   }
-  const sha256 = typeof rawSha256 === "string" && SHA256_HEX_PATTERN.test(rawSha256) ? rawSha256 : null;
+  const sha256 = typeof rawSha256 === "string" && isSha256Hex(rawSha256) ? rawSha256 : null;
   if (rawSha256 !== undefined && sha256 === null) {
     return {
       kind: "refused",
@@ -2138,9 +2138,6 @@ export function canonicalDispatchBirth(dispatch: DispatchAttemptReadModel): stri
 // P-18/protocolo D — the prompt a delivery sent, and the answer it received.
 // ---------------------------------------------------------------------------
 
-/** A lowercase sha-256 hex digest, the shape every digest in this schema has. */
-const OCCURRENCE_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
-
 /**
  * A payload key or row identifier, safe to print in a refusal.
  *
@@ -2324,7 +2321,7 @@ export function readPromptOccurrence(
   }
 
   const promptSha256 = recordText(record, "promptSha256");
-  if (promptSha256 === null || !OCCURRENCE_DIGEST_PATTERN.test(promptSha256)) {
+  if (promptSha256 === null || !isSha256Hex(promptSha256)) {
     return refused(
       at("promptSha256"),
       "the prompt digest is a lowercase sha-256 hex string; it is conserved rather than " +
@@ -2336,7 +2333,7 @@ export function readPromptOccurrence(
     return refused(at("promptBytes"), "the prompt byte count is a non-negative safe integer");
   }
   const context = optionalText(record, "contextSha256");
-  if (!context.ok || (context.value !== null && !OCCURRENCE_DIGEST_PATTERN.test(context.value))) {
+  if (!context.ok || (context.value !== null && !isSha256Hex(context.value))) {
     return refused(
       at("contextSha256"),
       "the context digest is a lowercase sha-256 hex string, or absent where the prompt " +
@@ -2411,7 +2408,7 @@ export function readResponseOccurrence(
   }
 
   const responseSha256 = recordText(record, "responseSha256");
-  if (responseSha256 === null || !OCCURRENCE_DIGEST_PATTERN.test(responseSha256)) {
+  if (responseSha256 === null || !isSha256Hex(responseSha256)) {
     return refused(
       at("responseSha256"),
       "the response digest is a lowercase sha-256 hex string; it is conserved rather than " +
@@ -2719,8 +2716,6 @@ export const USAGE_OBSERVATION_RECORD_KEYS = [
   "occurredAt",
 ] as const;
 
-const USAGE_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
-
 /** A safe integer at or above zero that is not `-0`: A's `isCount`, for a payload. */
 function usageCount(record: Record<string, unknown>, key: string): number | null {
   const value = recordCount(record, key, 0);
@@ -2798,7 +2793,7 @@ export function readUsageStreamDeclaration(
     );
   }
   const normalizationPolicySha256 = recordText(record, "normalizationPolicySha256");
-  if (normalizationPolicySha256 === null || !USAGE_DIGEST_PATTERN.test(normalizationPolicySha256)) {
+  if (normalizationPolicySha256 === null || !isSha256Hex(normalizationPolicySha256)) {
     return refused(
       at("normalizationPolicySha256"),
       "the normalization policy is named by its lowercase sha-256 hex digest",
@@ -4327,7 +4322,7 @@ function outboxEnvelope(event: ControlPlaneEvent, keys: readonly string[]): Outb
 
 function outboxCommandIdOf(event: ControlPlaneEvent): string | null {
   const value = event.payload["commandId"];
-  return typeof value === "string" && OCCURRENCE_DIGEST_PATTERN.test(value) ? value : null;
+  return typeof value === "string" && isSha256Hex(value) ? value : null;
 }
 
 /**
@@ -5010,7 +5005,7 @@ export function initiativeRegistrationPayloadOf(event: InitiativeEvent): Initiat
     return null;
   }
   if (typeof title !== "string" || title.length === 0 || title.length > INITIATIVE_TITLE_MAX) return null;
-  if (typeof objectiveSha256 !== "string" || !/^[0-9a-f]{64}$/.test(objectiveSha256)) return null;
+  if (typeof objectiveSha256 !== "string" || !isSha256Hex(objectiveSha256)) return null;
   if (
     typeof objectiveArtifactReferenceId !== "string" ||
     objectiveArtifactReferenceId.length === 0 ||

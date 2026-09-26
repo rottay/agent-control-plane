@@ -166,9 +166,26 @@ export const ContractVersion = z.enum(SUPPORTED_CONTRACT_VERSIONS);
  */
 export const AdmittedContractVersion = z.literal(CONTRACT_VERSION);
 
-export const Sha256Hex = z
-  .string()
-  .regex(/^[0-9a-f]{64}$/, "expected a lowercase sha-256 hex digest");
+/** The sha-256 digest's grammar. Module-private: `Sha256Hex` and `isSha256Hex` read it, nobody copies it. */
+const SHA256_HEX_PATTERN = /^[0-9a-f]{64}$/;
+
+export const Sha256Hex = z.string().regex(SHA256_HEX_PATTERN, "expected a lowercase sha-256 hex digest");
+
+/**
+ * The sha-256 digest — the one predicate (P-37 seam 2; decision 212).
+ *
+ * Sixty-four lowercase hexadecimal characters and nothing else, the grammar `Sha256Hex`
+ * checks as a schema. Sixteen modules across accounts, runtime, durability, the daemon
+ * and the ledger held their own copy of it as a raw regex; they now call this one
+ * (L-P37S-2 keeps a new copy from appearing in any package source).
+ *
+ * A value that is not a string is refused rather than coerced: a raw `RegExp#test` would
+ * have read `[digest]`, `new String(digest)` or an object whose `toString` yields a
+ * digest as one. Every caller passes a value typed `string`, so no caller's verdict moves.
+ */
+export function isSha256Hex(value: unknown): value is string {
+  return typeof value === "string" && SHA256_HEX_PATTERN.test(value);
+}
 
 export const GitCommitSha = z
   .string()

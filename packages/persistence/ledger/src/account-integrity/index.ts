@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { isSha256Hex } from "@acp/contracts";
+
 import { LedgerValidationError } from "../errors/index.js";
 import type { AccountEventRow } from "../types/index.js";
 
@@ -77,8 +79,6 @@ export const ACCOUNT_INTEGRITY_PREIMAGE_PREFIX_V1 = "acp/account-event-integrity
 
 /** The previous digest of the first sidecar row. Sixty-four zeros. */
 export const ACCOUNT_INTEGRITY_GENESIS_SHA256 = "0".repeat(64);
-
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 /** SQL NULL. Never `T0:`, never `T4:null`. */
 const NULL_MARKER = Buffer.from("N;", "ascii");
@@ -183,7 +183,7 @@ export interface AccountIntegrityInput {
 export function accountIntegrityPreimageV1(input: AccountIntegrityInput): Buffer {
   const { accountSequence, previousSha256, row } = input;
 
-  if (!SHA256_PATTERN.test(previousSha256)) {
+  if (!isSha256Hex(previousSha256)) {
     throw new LedgerValidationError([
       {
         path: "previousSha256",

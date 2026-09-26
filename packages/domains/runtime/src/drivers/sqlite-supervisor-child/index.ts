@@ -2,7 +2,7 @@ import { appendFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CONTRACT_VERSION, CommitPolicy, ResolvedRoute, buildIdempotencyKey } from "@acp/contracts";
+import { CONTRACT_VERSION, CommitPolicy, ResolvedRoute, buildIdempotencyKey, isSha256Hex } from "@acp/contracts";
 import type {
   Checkpoint,
   ExecutionEvent,
@@ -62,8 +62,6 @@ const FAULT_POINTS: readonly string[] = ["AFTER_INTENT", "AFTER_EFFECT", "AFTER_
  * deterministic, and reads no envelope. An unnamed third producer fails the law.
  */
 const DRILL_INSTRUCTION = "walk the drill plan and record what happened";
-
-const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 interface ChildConfig {
   readonly scenarioId: string;
@@ -217,7 +215,7 @@ export function parseChildConfig(raw: unknown): ChildConfig {
   ) {
     throw new SupervisorError("child config carries a malformed invocation");
   }
-  if (!SHA256_HEX.test(submissionDigest)) {
+  if (!isSha256Hex(submissionDigest)) {
     throw new SupervisorError("submissionDigest must be 64 lowercase hex characters");
   }
 

@@ -2,6 +2,8 @@ import { dirname, join } from "node:path";
 
 import Database from "better-sqlite3";
 
+import { isSha256Hex } from "@acp/contracts";
+
 import { sha256Hex } from "../canonical-json/index.js";
 import {
   LedgerClosedError,
@@ -455,7 +457,7 @@ function requireText(value: string, field: string): string {
  * same bytes.
  */
 function requireDigest(value: string, field: string): string {
-  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+  if (typeof value !== "string" || !isSha256Hex(value)) {
     throw new LedgerQueryError(field + " must be 64 lowercase hexadecimal characters");
   }
   return value;

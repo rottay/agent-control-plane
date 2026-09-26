@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 
-import { CONTENT_ARTIFACT_MAX_BYTES, utf8ByteLength } from "@acp/contracts";
+import { CONTENT_ARTIFACT_MAX_BYTES, isSha256Hex, utf8ByteLength } from "@acp/contracts";
 import type {
   ExecutionEvent,
   ExecutionOutputSink,
@@ -304,8 +304,6 @@ export class ExecutionEffectError extends Error {
 /** The module's evidence directory, beside the toy's `effects/`, never inside it. */
 const EVIDENCE_DIRECTORY = "executions";
 
-const SHA256_HEX = /^[0-9a-f]{64}$/;
-
 /** What one completed execution leaves behind. Canonical JSON, one file per operation. */
 interface EvidenceMarker {
   readonly operationId: string;
@@ -415,9 +413,9 @@ function readMarker(target: string): MarkerRead {
   if (
     typeof operationId !== "string" ||
     typeof digest !== "string" ||
-    !SHA256_HEX.test(digest) ||
+    !isSha256Hex(digest) ||
     typeof trailSha256 !== "string" ||
-    !SHA256_HEX.test(trailSha256) ||
+    !isSha256Hex(trailSha256) ||
     typeof eventCount !== "number" ||
     !Number.isInteger(eventCount) ||
     eventCount < 1
