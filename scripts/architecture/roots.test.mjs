@@ -5459,27 +5459,42 @@ describe("no evidence anchor resolves from emptiness or a comment (P-03)", () =>
     }
   });
 
-  it("N51: refuses it for the whole class, not for the two shapes that were reported", async () => {
-    // The reason this packet is a rewrite and not a tenth entry in a table.
-    // Every line below divides, and every one of them divides after something
-    // a list of token kinds cannot name: an assertion, a type, an object, a
-    // function, a class, a call, an index, a keyword that is a value. Nine
-    // shapes, all of them valid TypeScript, all of them RESOLVED against the
-    // fence this repairs when the anchor was stated only in the comment after
-    // them. Adding nine entries to a set would have left the tenth.
-    const anchor = "the two door tables were compared and disagreed";
+  // The reason this packet is a rewrite and not a tenth entry in a table.
+  // Every line below divides, and every one of them divides after something
+  // a list of token kinds cannot name: an assertion, a type, an object, a
+  // function, a class, a call, an index, a keyword that is a value. Nine
+  // shapes, all of them valid TypeScript, all of them RESOLVED against the
+  // fence this repairs when the anchor was stated only in the comment after
+  // them. Adding nine entries to a set would have left the tenth.
+  //
+  // One test per shape (P-03/N51): each case spawns the whole fence once, so
+  // each runs under its own per-test timeout instead of nine fence runs
+  // sharing one, and a failure names the shape that failed.
+  const n51Anchor = "the two door tables were compared and disagreed";
 
-    for (const tail of [
-      ["const q = 4 satisfies number / 2; // " + anchor],
-      ["const q = 1 as const / 2; // " + anchor],
-      ["const v: unknown = 4;", "const q = v as unknown as number / 2; // " + anchor],
-      ["const q = {} / 2; // " + anchor],
-      ["const q = function () {} / 2; // " + anchor],
-      ["const q = class {} / 2; // " + anchor],
-      ["declare const f: () => number | undefined;", "const q = f()! / 2; // " + anchor],
-      ["declare const arr: (number | undefined)[];", "const q = arr[0]! / 2; // " + anchor],
-      ["const q = undefined / 2; // " + anchor],
-    ]) {
+  it.each([
+    ["satisfies", ["const q = 4 satisfies number / 2; // " + n51Anchor]],
+    ["as const", ["const q = 1 as const / 2; // " + n51Anchor]],
+    [
+      "as unknown as",
+      ["const v: unknown = 4;", "const q = v as unknown as number / 2; // " + n51Anchor],
+    ],
+    ["object literal", ["const q = {} / 2; // " + n51Anchor]],
+    ["function expression", ["const q = function () {} / 2; // " + n51Anchor]],
+    ["class expression", ["const q = class {} / 2; // " + n51Anchor]],
+    [
+      "non-null call",
+      ["declare const f: () => number | undefined;", "const q = f()! / 2; // " + n51Anchor],
+    ],
+    [
+      "non-null index",
+      ["declare const arr: (number | undefined)[];", "const q = arr[0]! / 2; // " + n51Anchor],
+    ],
+    ["keyword value", ["const q = undefined / 2; // " + n51Anchor]],
+  ])(
+    "N51: refuses it for the whole class, not for the two shapes that were reported (%s)",
+    async (_shape, tail) => {
+      const anchor = n51Anchor;
       const root = syntheticTree();
       evidenceHome(root, tail);
       write(root, BE_RECORD, recordCiting(anchor));
@@ -5491,8 +5506,8 @@ describe("no evidence anchor resolves from emptiness or a comment (P-03)", () =>
         pointsAt() + ' for the anchor "' + anchor + '", which that file does not state',
       );
       expect(output).toContain("V2_BACKEND_CERTIFIED withheld");
-    }
-  });
+    },
+  );
 
   it("N52: refuses a docblock left after the last statement of a file", async () => {
     // A discriminator against an implementation rather than a correction of
