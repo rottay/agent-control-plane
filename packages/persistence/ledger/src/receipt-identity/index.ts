@@ -4,9 +4,9 @@ import { VerificationReceipt, WRITER_WORKER_ID_UUID_NAMESPACE } from "@acp/contr
 
 import { canonicalJsonStringify, sha256Hex } from "../canonical-json/index.js";
 import { LedgerValidationError } from "../errors/index.js";
-import type { ReceiptCheckEntry, ReceiptIdentityPreimageV1 } from "./types/index.js";
+import type { ReceiptCheckEntry, ReceiptIdentityPreimageV1, ReceiptVerificationColumns } from "./types/index.js";
 
-export type { ReceiptCheckEntry, ReceiptIdentityPreimageV1 } from "./types/index.js";
+export type { ReceiptCheckEntry, ReceiptIdentityPreimageV1, ReceiptVerificationColumns } from "./types/index.js";
 
 /**
  * A receipt's identity, version 1, and the writer's instance id (P-16/A2, ADR 0121).
@@ -75,7 +75,16 @@ export const RECEIPT_WRITE_SET_PREIMAGE_PREFIX_V1 = "acp/receipt-write-set/v1\n"
  * JSON refuses, so no admitted receipt reaches that second throw.
  */
 export function receiptIdentityPreimageV1(value: unknown): string {
-  const receipt = VerificationReceipt.parse(value);
+  return RECEIPT_IDENTITY_PREIMAGE_PREFIX_V1 + canonicalJsonStringify(preimageOf(VerificationReceipt.parse(value)));
+}
+
+/**
+ * The thirteen members of one parsed receipt, the two derived digests computed here.
+ *
+ * Module-private: the one builder both exported readings share, so the preimage has
+ * one spelling and the column reading below parses the receipt once.
+ */
+function preimageOf(receipt: VerificationReceipt): ReceiptIdentityPreimageV1 {
   const checks: ReceiptCheckEntry[] = receipt.checks.map((check) => ({
     command: check.command,
     exitCode: check.exitCode,
@@ -102,7 +111,7 @@ export function receiptIdentityPreimageV1(value: unknown): string {
     checksSha256: sha256Hex(RECEIPT_CHECKS_PREIMAGE_PREFIX_V1 + canonicalJsonStringify(checks)),
     commitMessageBody: receipt.commitMessageBody,
   };
-  return RECEIPT_IDENTITY_PREIMAGE_PREFIX_V1 + canonicalJsonStringify(preimage);
+  return preimage;
 }
 
 /**
@@ -113,6 +122,40 @@ export function receiptIdentityPreimageV1(value: unknown): string {
  */
 export function receiptSha256(value: unknown): string {
   return sha256Hex(receiptIdentityPreimageV1(value));
+}
+
+/**
+ * The columns execution §10.2 derives from one receipt, from one parse (P-16/B, ADR
+ * 0122).
+ *
+ * `receiptSha256` is the digest `receiptSha256` returns for the same value, byte for
+ * byte, and `writeSetSha256` and `checksSha256` are the two digests inside its
+ * preimage: this is the reading the verification door compares a carried record
+ * against, so the three prefixes stay in this module (L-P16A2-1). `allChecksZero` is
+ * whether every recorded check exited zero; the contract already refuses a `PASS`
+ * with a nonzero check, so it is the fact a `FAIL` row may carry either way.
+ *
+ * Takes `unknown` and parses, as the two readings above do, and throws what they
+ * throw.
+ */
+export function receiptVerificationColumns(value: unknown): ReceiptVerificationColumns {
+  const receipt = VerificationReceipt.parse(value);
+  const preimage = preimageOf(receipt);
+  return {
+    receiptSha256: sha256Hex(RECEIPT_IDENTITY_PREIMAGE_PREFIX_V1 + canonicalJsonStringify(preimage)),
+    taskId: preimage.taskId,
+    revisionNumber: preimage.revisionNumber,
+    attemptNumber: preimage.attemptNumber,
+    baseSha: preimage.baseSha,
+    treeSha: preimage.treeSha,
+    policySha256: preimage.policySha256,
+    writeSetSha256: preimage.writeSetSha256,
+    checksSha256: preimage.checksSha256,
+    runStatus: preimage.runStatus,
+    allChecksZero: receipt.checks.every((check) => check.exitCode === 0),
+    writer: preimage.writer,
+    verifier: preimage.verifier,
+  };
 }
 
 /** The sixteen bytes of a canonical lowercase UUID. */

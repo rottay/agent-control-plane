@@ -3391,6 +3391,180 @@ SELECT
   );
 `,
   },
+  {
+    version: 28,
+    name: "verification_audit",
+    sql: `
+-- A verification is recorded by its receipt, and a verdict by its tree (P-16/B, ADR
+-- 0122; execution §10.2-§10.3 and the common objects of §10).
+--
+-- **Two tables, new and empty.** A receipt row is one receipt-form
+-- \`VERIFICATION_COMPLETED\`, keyed by the receipt's name the door recomputed from its
+-- bytes; a verdict row is one verdict-form \`AUDIT_COMPLETED\`, keyed by its event id
+-- and bound to a PASS receipt of the same attempt and to that receipt's tree. No
+-- history before this migration holds either form, so nothing is backfilled (ND-10).
+--
+-- **Foreign keys, the section's own.** Both name their attempt and the verdict names
+-- its receipt, \`DEFERRABLE INITIALLY DEFERRED\` with \`ON DELETE RESTRICT\`; both name
+-- the event that recorded them, an immediate key into the stream, which a rebuild
+-- never clears. RESTRICT fires at once even on a deferred key, so \`DERIVED_TABLES\`
+-- clears the verdicts, then the receipts, then the attempts.
+--
+-- **Every CHECK named, and spelled so a NULL cannot pass by accident.** The columns
+-- are \`NOT NULL\`, and each word list is spelled \`IS NOT NULL AND ... IN (...)\`, for
+-- the reason migration 25 spells a step's state so. The run ids are integers of one
+-- or more (decision 231, B-4): the receipt's \`runId\` is a number, never text. The
+-- instant's shape is §10.1's, the one form a text comparison orders as time; the
+-- door's own predicate is contracts' \`isCanonicalInstant\`, and this is the storage
+-- guard under it.
+CREATE TABLE verification_read_model (
+  receipt_sha256     TEXT    NOT NULL,
+  task_id            TEXT    NOT NULL,
+  revision_number    INTEGER NOT NULL,
+  attempt_number     INTEGER NOT NULL,
+  verifier_identity  TEXT    NOT NULL,
+  verifier_worker_id TEXT    NOT NULL,
+  verifier_run_id    INTEGER NOT NULL,
+  writer_identity    TEXT    NOT NULL,
+  writer_worker_id   TEXT    NOT NULL,
+  base_sha           TEXT    NOT NULL,
+  tree_sha           TEXT    NOT NULL,
+  policy_sha256      TEXT    NOT NULL,
+  write_set_sha256   TEXT    NOT NULL,
+  artifact_ref_id    TEXT    NOT NULL,
+  checks_sha256      TEXT    NOT NULL,
+  run_status         TEXT    NOT NULL,
+  all_checks_zero    INTEGER NOT NULL,
+  recorded_at        TEXT    NOT NULL,
+  sequence           INTEGER NOT NULL,
+  CONSTRAINT pk_verification_read_model PRIMARY KEY (receipt_sha256),
+  CONSTRAINT fk_verification_read_model__task_attempt_read_model
+    FOREIGN KEY (task_id, revision_number, attempt_number)
+    REFERENCES task_attempt_read_model (task_id, revision_number, attempt_number)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_verification_read_model__control_plane_events
+    FOREIGN KEY (sequence) REFERENCES control_plane_events (sequence) ON DELETE RESTRICT,
+  CONSTRAINT ck_verification_read_model__receipt_sha256_shape
+    CHECK (length(receipt_sha256) = 64 AND receipt_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_verification_read_model__revision_number_positive CHECK (revision_number > 0),
+  CONSTRAINT ck_verification_read_model__attempt_number_positive CHECK (attempt_number > 0),
+  CONSTRAINT ck_verification_read_model__verifier_run_id_positive CHECK (verifier_run_id >= 1),
+  CONSTRAINT ck_verification_read_model__distinct_workers CHECK (verifier_worker_id <> writer_worker_id),
+  CONSTRAINT ck_verification_read_model__base_sha_shape
+    CHECK (length(base_sha) = 40 AND base_sha NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_verification_read_model__tree_sha_shape
+    CHECK (length(tree_sha) = 40 AND tree_sha NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_verification_read_model__policy_sha256_shape
+    CHECK (length(policy_sha256) = 64 AND policy_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_verification_read_model__write_set_sha256_shape
+    CHECK (length(write_set_sha256) = 64 AND write_set_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_verification_read_model__checks_sha256_shape
+    CHECK (length(checks_sha256) = 64 AND checks_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_verification_read_model__run_status
+    CHECK (run_status IS NOT NULL AND run_status IN ('PASS', 'FAIL')),
+  CONSTRAINT ck_verification_read_model__all_checks_zero
+    CHECK (all_checks_zero IS NOT NULL AND all_checks_zero IN (0, 1)),
+  CONSTRAINT ck_verification_read_model__pass_requires_zero_checks
+    CHECK (run_status <> 'PASS' OR all_checks_zero = 1),
+  CONSTRAINT ck_verification_read_model__recorded_at_shape
+    CHECK (length(recorded_at) = 24 AND recorded_at GLOB
+      '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+  CONSTRAINT ck_verification_read_model__sequence_positive CHECK (sequence >= 1)
+) STRICT;
+
+CREATE INDEX ix_verification_read_model__attempt
+  ON verification_read_model (task_id, revision_number, attempt_number);
+
+-- A receipt is never rewritten: every update aborts, whatever column it names. The
+-- rebuild clears the table through \`DERIVED_TABLES\`, a DELETE, which this does not see.
+CREATE TRIGGER tr_verification_read_model__insert_only
+BEFORE UPDATE ON verification_read_model
+BEGIN
+  SELECT RAISE(ABORT, 'verification_read_model is insert-only; a receipt row is never rewritten');
+END;
+
+-- The verdict copies the receipt's tree and writer, because a CHECK reads no other
+-- table: the door and the fold hold both copies equal to the receipt row, and this
+-- row's own CHECK keeps the auditor apart from the writer it copied.
+CREATE TABLE audit_verdict_read_model (
+  audit_id          TEXT    NOT NULL,
+  task_id           TEXT    NOT NULL,
+  revision_number   INTEGER NOT NULL,
+  attempt_number    INTEGER NOT NULL,
+  receipt_sha256    TEXT    NOT NULL,
+  tree_sha          TEXT    NOT NULL,
+  writer_worker_id  TEXT    NOT NULL,
+  auditor_identity  TEXT    NOT NULL,
+  auditor_worker_id TEXT    NOT NULL,
+  auditor_run_id    INTEGER NOT NULL,
+  verdict           TEXT    NOT NULL,
+  evidence_sha256   TEXT    NOT NULL,
+  artifact_ref_id   TEXT    NOT NULL,
+  recorded_at       TEXT    NOT NULL,
+  sequence          INTEGER NOT NULL,
+  CONSTRAINT pk_audit_verdict_read_model PRIMARY KEY (audit_id),
+  CONSTRAINT fk_audit_verdict_read_model__verification_read_model
+    FOREIGN KEY (receipt_sha256) REFERENCES verification_read_model (receipt_sha256)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_audit_verdict_read_model__task_attempt_read_model
+    FOREIGN KEY (task_id, revision_number, attempt_number)
+    REFERENCES task_attempt_read_model (task_id, revision_number, attempt_number)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_audit_verdict_read_model__control_plane_events
+    FOREIGN KEY (sequence) REFERENCES control_plane_events (sequence) ON DELETE RESTRICT,
+  CONSTRAINT ck_audit_verdict_read_model__revision_number_positive CHECK (revision_number > 0),
+  CONSTRAINT ck_audit_verdict_read_model__attempt_number_positive CHECK (attempt_number > 0),
+  CONSTRAINT ck_audit_verdict_read_model__receipt_sha256_shape
+    CHECK (length(receipt_sha256) = 64 AND receipt_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_audit_verdict_read_model__tree_sha_shape
+    CHECK (length(tree_sha) = 40 AND tree_sha NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_audit_verdict_read_model__distinct_from_writer CHECK (auditor_worker_id <> writer_worker_id),
+  CONSTRAINT ck_audit_verdict_read_model__auditor_run_id_positive CHECK (auditor_run_id >= 1),
+  CONSTRAINT ck_audit_verdict_read_model__verdict
+    CHECK (verdict IS NOT NULL AND verdict IN ('ACCEPT', 'ACCEPT_WITH_CORRECTIONS', 'REJECT')),
+  CONSTRAINT ck_audit_verdict_read_model__evidence_sha256_shape
+    CHECK (length(evidence_sha256) = 64 AND evidence_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_audit_verdict_read_model__recorded_at_shape
+    CHECK (length(recorded_at) = 24 AND recorded_at GLOB
+      '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+  CONSTRAINT ck_audit_verdict_read_model__sequence_positive CHECK (sequence >= 1)
+) STRICT;
+
+CREATE INDEX ix_audit_verdict_read_model__attempt
+  ON audit_verdict_read_model (task_id, revision_number, attempt_number);
+
+-- A verdict is never rewritten, on the receipt's terms.
+CREATE TRIGGER tr_audit_verdict_read_model__insert_only
+BEFORE UPDATE ON audit_verdict_read_model
+BEGIN
+  SELECT RAISE(ABORT, 'audit_verdict_read_model is insert-only; a verdict row is never rewritten');
+END;
+
+-- Two watermarks born at the task head, with migration 20's keys and migrations
+-- 25-27's instant: no history holds either form, so the empty fold is level with the
+-- head; the instant is the head event's own, the epoch only for an empty stream, so a
+-- seeded watermark and one the door wrote cannot be told apart.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  name,
+  'control_plane_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'head_event_sha256'),
+  COALESCE(
+    (SELECT recorded_at FROM control_plane_events
+      WHERE sequence = CAST((SELECT value FROM ledger_meta WHERE key = 'head_sequence') AS INTEGER)),
+    '1970-01-01T00:00:00.000Z'
+  )
+FROM (
+  SELECT 'verification_read_model' AS name
+  UNION ALL SELECT 'audit_verdict_read_model'
+);
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -3444,6 +3618,12 @@ export const DERIVED_TABLES: readonly string[] = [
   // at commit rather than at the delete that caused it.
   "response_occurrence_read_model",
   "prompt_occurrence_read_model",
+  // P-16/B's pair, before C's cohort and children first: a verdict names its receipt,
+  // and both name their attempt. Deferred foreign keys, but each carries `ON DELETE
+  // RESTRICT`, which fires at once even on a deferred key: a wrong order aborts the
+  // DELETE that caused it, and the attempt table below is cleared after both.
+  "audit_verdict_read_model",
+  "verification_read_model",
   // The P-18/protocolo C cohort, children first: a dispatch names an effect and
   // a segment, an effect names a segment, and a segment names an attempt. The
   // three foreign keys are `DEFERRABLE INITIALLY DEFERRED`, so a wrong order
@@ -3509,6 +3689,10 @@ export const PROJECTION_NAMES: readonly string[] = [
   "usage_settlement_read_model",
   "usage_settlement_source_head_read_model",
   "usage_settlement_observation_read_model",
+  // And P-16/B's pair, named `VERIFICATION_PROJECTION` and `AUDIT_VERDICT_PROJECTION`
+  // below, in execution §10's order.
+  "verification_read_model",
+  "audit_verdict_read_model",
 ];
 
 /**
@@ -3813,6 +3997,21 @@ export const TASK_STEP_LINK_MIGRATION = 27;
 export const TASK_STEP_LINK_PROJECTION = "task_step_link_read_model";
 
 /**
+ * The migration that records a verification by its receipt and a verdict by its tree
+ * (P-16/B, ADR 0122).
+ *
+ * Named for `TASK_STEP_LINK_MIGRATION`'s reasons: the suite and the rewind fixtures
+ * hold the number against where the SQL sits.
+ */
+export const VERIFICATION_AUDIT_MIGRATION = 28;
+
+/** The projection that holds one row per recorded verification receipt (P-16/B). */
+export const VERIFICATION_PROJECTION = "verification_read_model";
+
+/** The projection that holds one row per recorded audit verdict (P-16/B). */
+export const AUDIT_VERDICT_PROJECTION = "audit_verdict_read_model";
+
+/**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
  * Named rather than written as a literal at the two sites that need it, because
@@ -3893,6 +4092,8 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: USAGE_SETTLEMENT_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: USAGE_SETTLEMENT_SOURCE_HEAD_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: USAGE_SETTLEMENT_OBSERVATION_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: VERIFICATION_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: AUDIT_VERDICT_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: "roadmap_version_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: ROADMAP_STEP_PROJECTION, sourceStream: INITIATIVE_STREAM },
@@ -4177,6 +4378,15 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "table", name: "task_step_link_read_model" },
   { type: "index", name: "ix_task_step_link_read_model__task_sequence" },
   { type: "trigger", name: "tr_task_step_link_read_model__insert_only" },
+  // P-16/B. Two tables, their attempt lookups and their insert-only triggers (ND-9):
+  // dropping a trigger leaves `schema_migrations` intact while a recorded receipt or
+  // verdict, and so what an authorization later reads, quietly becomes rewritable.
+  { type: "table", name: "verification_read_model" },
+  { type: "index", name: "ix_verification_read_model__attempt" },
+  { type: "trigger", name: "tr_verification_read_model__insert_only" },
+  { type: "table", name: "audit_verdict_read_model" },
+  { type: "index", name: "ix_audit_verdict_read_model__attempt" },
+  { type: "trigger", name: "tr_audit_verdict_read_model__insert_only" },
 ];
 
 export interface MigrationConformance {

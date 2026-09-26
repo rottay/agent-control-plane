@@ -816,6 +816,71 @@ export interface ResponseOccurrenceReadModel {
 }
 
 /**
+ * One verification receipt, as execution §10.2 records it (P-16/B, ADR 0122).
+ *
+ * Keyed by `receiptSha256`, the digest the door recomputed from the receipt's own
+ * bytes, read by the authorized reference `artifactReferenceId`; every other column is
+ * the value the door derived from the same receipt, and a carried value that
+ * differs was refused before this row existed. `writerWorkerId` is the plane's v5
+ * derivation over the task and the attempt's flat number, never the per-revision
+ * one. `verifierWorkerId` and `verifierRunId` are the receipt's own: the check
+ * against the runner's spawn record is P-16/C's (decision 232).
+ *
+ * `allChecksZero` is a boolean here and `0`/`1` in the table. `recordedAt` and
+ * `sequence` are the recording `VERIFICATION_COMPLETED`'s. Insert-only: a second
+ * event naming the same receipt with the same metadata keeps this row, its
+ * `sequence` and its `recordedAt`.
+ */
+export interface VerificationReadModel {
+  readonly receiptSha256: string;
+  readonly taskId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly verifierIdentity: string;
+  readonly verifierWorkerId: string;
+  readonly verifierRunId: number;
+  readonly writerIdentity: string;
+  readonly writerWorkerId: string;
+  readonly baseSha: string;
+  readonly treeSha: string;
+  readonly policySha256: string;
+  readonly writeSetSha256: string;
+  readonly artifactReferenceId: string;
+  readonly checksSha256: string;
+  readonly runStatus: "PASS" | "FAIL";
+  readonly allChecksZero: boolean;
+  readonly recordedAt: string;
+  readonly sequence: number;
+}
+
+/**
+ * One audit verdict, as execution §10.3 records it (P-16/B, ADR 0122).
+ *
+ * `auditId` is the recording `AUDIT_COMPLETED`'s own event id (ND-6). The verdict
+ * is bound to a `PASS` receipt of the same task, revision and attempt, and to that
+ * receipt's tree: `treeSha` and `writerWorkerId` are copies the door and the fold
+ * hold equal to the receipt row's. `evidenceSha256` is the `EVIDENCE` reference's
+ * content digest, and the evidence names this receipt (ND-5). Insert-only.
+ */
+export interface AuditVerdictReadModel {
+  readonly auditId: string;
+  readonly taskId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly receiptSha256: string;
+  readonly treeSha: string;
+  readonly writerWorkerId: string;
+  readonly auditorIdentity: string;
+  readonly auditorWorkerId: string;
+  readonly auditorRunId: number;
+  readonly verdict: "ACCEPT" | "ACCEPT_WITH_CORRECTIONS" | "REJECT";
+  readonly evidenceSha256: string;
+  readonly artifactReferenceId: string;
+  readonly recordedAt: string;
+  readonly sequence: number;
+}
+
+/**
  * One declared measurement stream — economy §1.1 (P-32/captura B, ADR 0089).
  *
  * `measurementStreamId` is the digest of the versioned preimage of the four

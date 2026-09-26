@@ -1,6 +1,7 @@
 import type { RoadmapVersionRefusal } from "../roadmap-version/index.js";
 import type { TaskGraphRefusal } from "../task-graph/index.js";
 import type { TaskStepLinkRefusal } from "../task-step-link/index.js";
+import type { VerificationRefusal } from "../verification-record/index.js";
 
 /**
  * Typed ledger errors.
@@ -32,7 +33,8 @@ export type LedgerErrorCode =
   | "LEDGER_ROADMAP_VERSION_REFUSED"
   | "LEDGER_INITIATIVE_BATCH_CONFLICT"
   | "LEDGER_TASK_GRAPH_REFUSED"
-  | "LEDGER_TASK_STEP_LINK_REFUSED";
+  | "LEDGER_TASK_STEP_LINK_REFUSED"
+  | "LEDGER_VERIFICATION_REFUSED";
 
 /** Base class for everything this package throws deliberately. */
 export class LedgerError extends Error {
@@ -387,6 +389,27 @@ export class LedgerTaskStepLinkRefusedError extends LedgerError {
   constructor(reason: TaskStepLinkRefusal, at: string) {
     super("LEDGER_TASK_STEP_LINK_REFUSED", "the task step link was refused: " + reason + " at " + at);
     this.name = "LedgerTaskStepLinkRefusedError";
+    this.reason = reason;
+    this.at = at;
+  }
+}
+
+/**
+ * The task door refused a receipt-form `VERIFICATION_COMPLETED` or a verdict-form
+ * `AUDIT_COMPLETED` by the decision's word, or the fold met one the door would have
+ * refused (P-16/B, ADR 0122).
+ *
+ * `LedgerTaskStepLinkRefusedError`'s mould: the word and the field, never a value. A
+ * receipt's bytes, an evidence's bytes and a carried digest never enter the message.
+ */
+export class LedgerVerificationRefusedError extends LedgerError {
+  readonly reason: VerificationRefusal;
+  /** The field that failed. Never content. */
+  readonly at: string;
+
+  constructor(reason: VerificationRefusal, at: string) {
+    super("LEDGER_VERIFICATION_REFUSED", "the verification record was refused: " + reason + " at " + at);
+    this.name = "LedgerVerificationRefusedError";
     this.reason = reason;
     this.at = at;
   }

@@ -556,9 +556,10 @@ hoy). Migradas de `attempt` plano a `(revision_number, attempt_number)`.
 
 Cinco tablas: el checkpoint (§10.1), el receipt de verificación (§10.2), el
 veredicto de auditoría (§10.3), el commit observado (§10.4) y la autorización de
-commit (§10.5), que §10.4 proyecta al registrarse. Ninguna existe en código,
-§10.1 incluida; los objetos comunes, los dueños de cada una y los negativos que
-heredan sus cortes están al final de la sección. El receipt, el veredicto, la
+commit (§10.5), que §10.4 proyecta al registrarse. §10.2 y §10.3 existen en código
+desde P-16/B (migración 28, ADR 0122, decisiones 231–233); §10.1, §10.4 y §10.5 no.
+Los objetos comunes, los dueños de cada una y los negativos que heredan sus cortes
+están al final de la sección. El receipt, el veredicto, la
 autorización y el commit forman los cuatro eslabones direccionados por contenido de
 [contratos §12](../../contracts/index.md): cada uno se re-deriva desde bytes, nunca se
 copia de otra fila.
@@ -662,14 +663,14 @@ campos. El pid y el instante de arranque del proceso son sólo evidencia, y
 | `attempt_number` | INTEGER | NOT NULL | `ck_verification_read_model__attempt_number_positive`: `> 0`. |
 | `verifier_identity` | TEXT | NOT NULL | identidad uniforme del verificador. |
 | `verifier_worker_id` | TEXT | NOT NULL | identidad de instancia **emitida por el supervisor**; es la que decide, no la etiqueta de rol. El runner la acuña como UUID v5 sobre `(task, attempt, role, ordinal de spawn)` bajo su propio espacio de nombres: determinista, reproducible en replay, sin azar ni reloj. |
-| `verifier_run_id` | TEXT | NOT NULL | corrida concreta del verificador: el ordinal de spawn de esa misma derivación. |
+| `verifier_run_id` | INTEGER | NOT NULL | corrida concreta del verificador: el ordinal de spawn de esa misma derivación, entero como el `verifier.runId` del receipt. `ck_verification_read_model__verifier_run_id_positive`: `CHECK (verifier_run_id >= 1)` (P-16/B, decisión 231). |
 | `writer_identity` | TEXT | NOT NULL | identidad uniforme del writer. |
-| `writer_worker_id` | TEXT | NOT NULL | identidad de instancia del writer: la derivación v5 por intento sobre `(taskId, attempt)`, la misma con que `claudeSessionId` (`packages/edges/providers/src/session-name/index.ts`) la deriva. La regla —el espacio de nombres `WRITER_WORKER_ID_UUID_NAMESPACE` y la palabra `WRITER_ID_UNISSUED`— vive en contracts; el cálculo, `writerWorkerIdFor`, en ledger `receipt-identity`, porque contracts no hashea (P-16/A2). Su entrada es el **intento plano por tarea** (`legacy_attempt_number`, §3), nunca el `attempt_number` por revisión, así que no lleva coordenada de revisión: decidido por la decisión 229; la biyección coordenada → intento plano la prueba la puerta de P-16/B. Un transporte de writer sin emisor se rehúsa por nombre (`WRITER_ID_UNISSUED`, límite con dueño P-28). `ck_verification_read_model__distinct_workers`: `CHECK (verifier_worker_id <> writer_worker_id)`. |
+| `writer_worker_id` | TEXT | NOT NULL | identidad de instancia del writer: la derivación v5 por intento sobre `(taskId, attempt)`, la misma con que `claudeSessionId` (`packages/edges/providers/src/session-name/index.ts`) la deriva. La regla —el espacio de nombres `WRITER_WORKER_ID_UUID_NAMESPACE` y la palabra `WRITER_ID_UNISSUED`— vive en contracts; el cálculo, `writerWorkerIdFor`, en ledger `receipt-identity`, porque contracts no hashea (P-16/A2). Su entrada es el **intento plano por tarea** (`legacy_attempt_number`, §3), nunca el `attempt_number` por revisión, así que no lleva coordenada de revisión: decidido por la decisión 229. La biyección coordenada → intento plano la prueba la puerta desde P-16/B (decisiones 231–232): la coordenada nombra un intento abierto de `task_attempt_read_model`, el `attempt` plano del evento es su `legacy_attempt_number`, y la puerta y el fold rehúsan con la misma palabra, `WRITER_ID_MISMATCH`, un id del writer que no sea `writerWorkerIdFor(taskId, legacy_attempt_number)` —el derivado del intento por revisión incluido—. Un transporte de writer sin emisor se rehúsa por nombre (`WRITER_ID_UNISSUED`, límite con dueño P-28). `ck_verification_read_model__distinct_workers`: `CHECK (verifier_worker_id <> writer_worker_id)`. |
 | `base_sha` | TEXT | NOT NULL | **el commit base** sobre el que se verificó; no es un árbol. **No hay receipt de commit inicial**: la columna es NOT NULL siempre y una «excepción de bootstrap» con base nula se rehúsa, porque es el único camino en que «primer padre = base» no se puede verificar. |
 | `tree_sha` | TEXT | NOT NULL | SHA del árbol resultante verificado. El formato de objetos es `sha1`, el literal `objectFormat` del receipt, que está dentro de la preimagen; no hay columna `object_format`, porque una columna con un solo valor lícito es muerta. |
 | `policy_sha256` | TEXT | NOT NULL | Digest de la política de verificación aplicada. |
 | `write_set_sha256` | TEXT | NOT NULL | Digest del write-set verificado contra la política del envelope. |
-| `artifact_ref_id` | TEXT | NOT NULL | Referencia de acceso autorizada al artefacto privado del receipt completo (checks detallados); ver [artifacts](../artifacts/index.md) — **no** el mero `checks_sha256`, que sólo identifica bytes. |
+| `artifact_ref_id` | TEXT | NOT NULL | Referencia de acceso autorizada al artefacto privado del receipt completo (checks detallados); ver [artifacts](../artifacts/index.md) — **no** el mero `checks_sha256`, que sólo identifica bytes. El evento la lleva como `artifactReferenceId` (decisión 231): `artifactRefId` es el vocabulario de bloques de contenido. La referencia es de clase `RECEIPT` con alcance `TASK`/la tarea del evento. |
 | `checks_sha256` | TEXT | NOT NULL | Digest de los checks ejecutados. |
 | `run_status` | TEXT | NOT NULL | `ck_verification_read_model__run_status`: `CHECK (run_status IS NOT NULL AND run_status IN ('PASS','FAIL'))`. `ck_verification_read_model__pass_requires_zero_checks`: `CHECK (run_status <> 'PASS' OR all_checks_zero = 1)`. `PASS` con un check no cero es la única celda prohibida. `FAIL` con `all_checks_zero = 1` es lícito: el run falló aunque todo check que corrió salió en cero (timeout, fallo de observación, error de herramienta; [tests §8](../../../quality/testing/index.md) #18). |
 | `all_checks_zero` | INTEGER | NOT NULL | `ck_verification_read_model__all_checks_zero`: `CHECK (all_checks_zero IS NOT NULL AND all_checks_zero IN (0, 1))`. |
@@ -683,7 +684,7 @@ campos. El pid y el instante de arranque del proceso son sólo evidencia, y
 | `fk_verification_read_model__control_plane_events` | `FOREIGN KEY (sequence) REFERENCES control_plane_events(sequence) ON DELETE RESTRICT` |
 | `ix_verification_read_model__attempt` | el índice común. |
 | CHECK de forma | `…__receipt_sha256_shape`, `…__policy_sha256_shape`, `…__write_set_sha256_shape` y `…__checks_sha256_shape` (64 hex); `…__base_sha_shape` y `…__tree_sha_shape` (40 hex, la forma de `head_sha` de §10.1); `…__recorded_at_shape` (el GLOB de §10.1); `…__sequence_positive`. |
-| Validación de referencia | La puerta recomputa `receipt_sha256` desde los bytes (arriba). Tarea, revisión e intento son los del sujeto V2 del evento. `writer_worker_id` es la derivación que la puerta recomputa desde la tarea y el intento; `verifier_worker_id` y `verifier_run_id` son los del registro de spawn del runner, nunca los que el receipt declara por su cuenta. |
+| Validación de referencia | La puerta recomputa `receipt_sha256` desde los bytes (arriba). Tarea, revisión e intento son los del sujeto V2 del evento. `writer_worker_id` es la derivación que la puerta recomputa desde la tarea y el intento plano; `verifier_worker_id` y `verifier_run_id` son los del registro de spawn del runner, nunca los que el receipt declara por su cuenta. **Hasta P-16/C** no hay registro de spawn: la puerta de P-16/B comprueba su forma (v5 en minúsculas, entero `>= 1`) y su independencia del writer por etiqueta y por instancia, y registra los que el receipt declara; la comprobación contra el registro de spawn aterriza con P-16/C (decisión 232). |
 | Fold / rebuild | Sólo inserción. Un replay del mismo `receipt_sha256` con la misma metadata conserva la fila y el primer `sequence`/`recorded_at`; el mismo digest con metadata distinta es corrupción y rehúsa. |
 
 ### 10.3 `audit_verdict_read_model`
@@ -694,7 +695,7 @@ copiada del receipt; no es una columna que el productor llena a su gusto.
 
 | Columna | Tipo | Nullable | Semántica |
 | --- | --- | --- | --- |
-| `audit_id` | TEXT | NOT NULL | PK. |
+| `audit_id` | TEXT | NOT NULL | PK: el `eventId` del `AUDIT_COMPLETED` que registra el veredicto (P-16/B, decisión 231), único por el índice `event_id` del stream. |
 | `task_id` | TEXT | NOT NULL | tarea auditada; igual a la del receipt referido. |
 | `revision_number` | INTEGER | NOT NULL | `ck_audit_verdict_read_model__revision_number_positive`: `> 0`. **Igual** a la del receipt referido. |
 | `attempt_number` | INTEGER | NOT NULL | `ck_audit_verdict_read_model__attempt_number_positive`: `> 0`. **Igual** a la del receipt referido. |
@@ -702,11 +703,11 @@ copiada del receipt; no es una columna que el productor llena a su gusto.
 | `tree_sha` | TEXT | NOT NULL | **Igual** al `tree_sha` de la fila del receipt, sostenido por puerta y fold; no se suministra libremente. |
 | `writer_worker_id` | TEXT | NOT NULL | **Copiado** por el fold desde la fila del receipt. La puerta y el fold rehúsan una copia que difiera, con el mismo issue (decisión 56). |
 | `auditor_identity` | TEXT | NOT NULL | identidad uniforme del auditor. |
-| `auditor_worker_id` | TEXT | NOT NULL | identidad de instancia emitida por el supervisor, acuñada como la del verificador: UUID v5 sobre `(task, attempt, role, ordinal de spawn)`. `ck_audit_verdict_read_model__distinct_from_writer`: `CHECK (auditor_worker_id <> writer_worker_id)`, sobre la misma fila. |
-| `auditor_run_id` | TEXT | NOT NULL | corrida concreta del auditor: el ordinal de spawn, acuñado como `verifier_run_id`. Cierra para el auditor el `worker_run_id` que [contratos §5](../../contracts/index.md) exige. |
+| `auditor_worker_id` | TEXT | NOT NULL | identidad de instancia emitida por el supervisor, acuñada como la del verificador: UUID v5 sobre `(task, attempt, role, ordinal de spawn)`. `ck_audit_verdict_read_model__distinct_from_writer`: `CHECK (auditor_worker_id <> writer_worker_id)`, sobre la misma fila. Hasta P-16/C, la puerta registra la que el veredicto declara tras comprobar su forma y su independencia del writer por etiqueta y por instancia; la comprobación contra el registro de spawn aterriza con P-16/C (decisión 232). |
+| `auditor_run_id` | INTEGER | NOT NULL | corrida concreta del auditor: el ordinal de spawn, acuñado como `verifier_run_id`. Cierra para el auditor el `worker_run_id` que [contratos §5](../../contracts/index.md) exige. `ck_audit_verdict_read_model__auditor_run_id_positive`: `CHECK (auditor_run_id >= 1)` (P-16/B, decisión 231). Hasta P-16/C, el que el veredicto declara (decisión 232). |
 | `verdict` | TEXT | NOT NULL | `ck_audit_verdict_read_model__verdict`: `CHECK (verdict IS NOT NULL AND verdict IN ('ACCEPT','ACCEPT_WITH_CORRECTIONS','REJECT'))`. La autorización lee **sólo** `ACCEPT` sobre el mismo `receipt_sha256` (§10.5). `ACCEPT_WITH_CORRECTIONS` precede a una revisión nueva, y por lo tanto a un receipt nuevo: no autoriza. |
 | `evidence_sha256` | TEXT | NOT NULL | digest de la evidencia. Su preimagen incluye `receipt_sha256`, así que un blob de evidencia no se re-ata a otro receipt. |
-| `artifact_ref_id` | TEXT | NOT NULL | referencia de acceso autorizada a la evidencia; conocer el digest no concede acceso. |
+| `artifact_ref_id` | TEXT | NOT NULL | referencia de acceso autorizada a la evidencia; conocer el digest no concede acceso. El evento la lleva como `artifactReferenceId`; es de clase `EVIDENCE` con alcance `TASK`/la tarea del evento, `evidence_sha256` es su `content_sha256`, y sus bytes son un objeto JSON cuyo `receiptSha256` nombra el receipt del veredicto (`EVIDENCE_RECEIPT_MISMATCH`; decisión 231). |
 | `recorded_at` | TEXT | NOT NULL | instante canónico del evento `AUDIT_COMPLETED`. |
 | `sequence` | INTEGER | NOT NULL | secuencia de ese mismo evento; `> 0`. |
 
@@ -917,11 +918,11 @@ deja de aplicar cuando un receipt posterior la supersede.
 
 ### Índices / OCC / transacción / rebuild (las cinco)
 
-**Ninguna de las cinco tablas existe en código**, §10.1 incluida (cero apariciones
-en las migraciones). El patrón de FK, «validación de referencia» y CHECK de forma se
-escribe aquí por primera vez; la migración que lo materialice no lo describe como un
-precedente existente («como el de checkpoint»), porque no lo hay. Dueños: §10.2 y
-§10.3 aterrizan en P-16/B, en la migración 28 o posterior; §10.5, el predicado de
+**§10.2 y §10.3 existen en código desde P-16/B** (migración 28, ADR 0122); §10.1,
+§10.4 y §10.5 no. El patrón de FK, «validación de referencia» y CHECK de forma se
+escribió aquí por primera vez y la migración 28 lo materializa; no lo describe como un
+precedente existente («como el de checkpoint»), porque no lo había. Dueños: §10.2 y
+§10.3 aterrizaron en P-16/B, en la migración 28; §10.5, el predicado de
 vigencia y la proyección de §10.4, en P-17/A–C. Esta sección fija la forma física
 antes del código (P-16/0, decisiones 225–227), para que ningún corte la diseñe en
 vuelo.

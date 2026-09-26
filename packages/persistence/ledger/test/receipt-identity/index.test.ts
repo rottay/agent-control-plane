@@ -16,6 +16,7 @@ import {
   RECEIPT_WRITE_SET_PREIMAGE_PREFIX_V1,
   receiptIdentityPreimageV1,
   receiptSha256,
+  receiptVerificationColumns,
   writerWorkerIdFor,
 } from "../../src/receipt-identity/index.js";
 
@@ -314,7 +315,51 @@ describe("the writer's instance id", () => {
   });
 });
 
+describe("the columns execution §10.2 derives from one receipt (P-16/B, ADR 0122)", () => {
+  it("P8: returns A2's pinned vectors unchanged, from one parse", () => {
+    const pass = receiptVerificationColumns(receipt());
+    expect(pass).toEqual({
+      receiptSha256: PASS_SHA256,
+      taskId: TASK,
+      revisionNumber: 1,
+      attemptNumber: 1,
+      baseSha: "0123456789abcdef0123456789abcdef01234567",
+      treeSha: "89abcdef0123456789abcdef0123456789abcdef",
+      policySha256: "c".repeat(64),
+      writeSetSha256: WRITE_SET_SHA256,
+      checksSha256: PASS_CHECKS_SHA256,
+      runStatus: "PASS",
+      allChecksZero: true,
+      writer: { identity: "claude/opus/implementer/01", workerId: WRITER_ID },
+      verifier: { identity: "claude/sonnet/verifier/01", workerId: VERIFIER_ID, runId: 1 },
+    });
+    // The second encoder: the three digests recomputed here from the literal preimages.
+    expect(pass.receiptSha256).toBe(sha256(preimage("PASS", PASS_CHECKS_SHA256)));
+    expect(pass.writeSetSha256).toBe(sha256(WRITE_SET_PREIMAGE));
+    expect(pass.checksSha256).toBe(sha256(PASS_CHECKS_PREIMAGE));
+    expect(pass.receiptSha256).toBe(receiptSha256(receipt()));
+
+    const fail = receiptVerificationColumns(receipt({ runStatus: "FAIL", checks: FAIL_CHECKS.map((check) => ({ ...check })) }));
+    expect(fail.receiptSha256).toBe(FAIL_SHA256);
+    expect(fail.checksSha256).toBe(sha256(FAIL_CHECKS_PREIMAGE));
+    expect(fail.runStatus).toBe("FAIL");
+    expect(fail.allChecksZero).toBe(false);
+    // FAIL with every check at zero: the fact the column carries either way.
+    expect(receiptVerificationColumns(receipt({ runStatus: "FAIL" })).allChecksZero).toBe(true);
+  });
+
+  it("refuses what the identity refuses, by the contract's own parse", () => {
+    expect(thrownName(() => receiptVerificationColumns({}))).toBe(thrownName(() => receiptSha256({})));
+    expect(thrownName(() => receiptVerificationColumns(receipt({ pushAuthorized: true })))).toBe("ZodError");
+    expect(thrownName(() => receiptVerificationColumns(null))).toBe("ZodError");
+  });
+});
+
 describe("the ledger barrel", () => {
+  it("keeps the column reading in the module: the verification door is its one caller", () => {
+    expect(Object.keys(ledgerBarrel)).not.toContain("receiptVerificationColumns");
+  });
+
   it("exports the three functions and the identity prefix, and keeps the sub-prefixes in the module", () => {
     expect(ledgerBarrel.RECEIPT_IDENTITY_PREIMAGE_PREFIX_V1).toBe(RECEIPT_IDENTITY_PREIMAGE_PREFIX_V1);
     expect(ledgerBarrel.receiptIdentityPreimageV1).toBe(receiptIdentityPreimageV1);

@@ -16,7 +16,13 @@ import {
 import type { ControlPlaneEvent, InitiativeEvent } from "@acp/contracts";
 import { describe, expect, it } from "vitest";
 
-import { LedgerRoadmapVersionRefusedError, LedgerTaskGraphRefusedError, LedgerTaskStepLinkRefusedError } from "../../src/errors/index.js";
+import {
+  LedgerRoadmapVersionRefusedError,
+  LedgerTaskGraphRefusedError,
+  LedgerTaskStepLinkRefusedError,
+  LedgerVerificationRefusedError,
+} from "../../src/errors/index.js";
+import { receiptVerificationColumns, writerWorkerIdFor } from "../../src/receipt-identity/index.js";
 
 import {
   applyArtifactEventToSnapshot,
@@ -5006,5 +5012,226 @@ describe("the task step link fold (P-27 cut C, ADR 0116)", () => {
     }).toThrow(LedgerTaskStepLinkRefusedError);
     expect(snapshot.taskStepLinks.size).toBe(2);
     expect(snapshot.taskStepLinkHeads.get(TASK)?.sequence).toBe(21);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-16/B: the fold's share of the receipt and the verdict (ADR 0122)
+// ---------------------------------------------------------------------------
+
+/**
+ * The fold calls the door's decision over the snapshot it is filling, and reads no
+ * byte (ND-4): a receipt it folds is copied from the event, never reopened. These are
+ * the corruption guards only a hand-built stream reaches: a second verdict under one
+ * audit id (the stream's `event_id` is unique, so the door never meets it, ND-6), the
+ * same receipt under other metadata, the writer id derived from the per-revision
+ * attempt (ND-17), and a verdict on a FAIL receipt. `test/verification-record` drives
+ * the same words through the door and through `rebuildReadModel()`.
+ */
+describe("the verification fold refuses in the door's words (P-16/B)", () => {
+  const TASK_ID = "00000000-0000-4000-8000-00000000000b";
+  const AT = "2026-09-26T12:00:00.000Z";
+  const VERIFIER_ID = "24a8af45-549e-5137-8d27-03eb76de8b47";
+  const AUDITOR_ID = writerWorkerIdFor("00000000-0000-4000-8000-0000000000aa", 7);
+
+  let next = 0;
+  function event(
+    type: ControlPlaneEvent["type"],
+    flat: number,
+    payload: Record<string, unknown>,
+    extra: { readonly eventId?: string; readonly fromState?: string | null } = {},
+  ): ControlPlaneEvent {
+    next += 1;
+    const transitionId = "t." + String(next);
+    return {
+      contractVersion: CONTRACT_VERSION,
+      eventId: extra.eventId ?? "7e7e7e7e-0000-4000-8000-" + String(next).padStart(12, "0"),
+      taskId: TASK_ID,
+      attempt: flat,
+      transitionId,
+      idempotencyKey: buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId: TASK_ID,
+        revisionNumber: payload["revisionNumber"] as number,
+        attemptNumber: payload["attemptNumber"] as number,
+        transitionId,
+      }),
+      type,
+      fromState: extra.fromState === undefined ? "DISCOVERED" : extra.fromState,
+      toState: "DISCOVERED",
+      emittedBy: "claude/opus/coordinator/01",
+      occurredAt: AT,
+      recordedAt: AT,
+      correlationId: null,
+      causationId: null,
+      payload,
+    } as unknown as ControlPlaneEvent;
+  }
+
+  function opening(flat: number, revisionNumber: number, revisionId: string): ControlPlaneEvent {
+    return event(
+      "TASK_ATTEMPT_OPENED",
+      flat,
+      {
+        revisionId,
+        revisionNumber,
+        attemptNumber: 1,
+        envelopeSha256: "e".repeat(64),
+        envelopeArtifactReferenceId: "ref-envelope",
+        invocationId: "inv-" + String(flat),
+        legacyAttemptNumber: flat,
+      },
+      { fromState: flat === 1 ? null : "DISCOVERED" },
+    );
+  }
+
+  function receipt(writerFlat: number, revisionNumber: number, runStatus = "PASS"): Record<string, unknown> {
+    const columns = receiptVerificationColumns({
+      contractVersion: CONTRACT_VERSION,
+      taskId: TASK_ID,
+      revisionNumber,
+      attemptNumber: 1,
+      baseSha: "0123456789abcdef0123456789abcdef01234567",
+      treeSha: "89abcdef0123456789abcdef0123456789abcdef",
+      objectFormat: "sha1",
+      policySha256: "c".repeat(64),
+      declaredWriteSet: ["src/a.ts"],
+      observedTrackedChanges: [],
+      observedUntrackedPaths: [],
+      writer: { identity: "claude/opus/implementer/01", workerId: writerWorkerIdFor(TASK_ID, writerFlat) },
+      verifier: { identity: "claude/sonnet/verifier/01", workerId: VERIFIER_ID, runId: 1 },
+      runStatus,
+      checks: [{ command: "pnpm check", exitCode: 0, ranAt: AT }],
+      commitMessageBody: "feat(runtime): a verified change",
+      pushAuthorized: false,
+    });
+    return {
+      receiptSha256: columns.receiptSha256,
+      // No such reference exists anywhere: the fold never asks.
+      artifactReferenceId: "ref-never-published",
+      baseSha: columns.baseSha,
+      treeSha: columns.treeSha,
+      policySha256: columns.policySha256,
+      writeSetSha256: columns.writeSetSha256,
+      checksSha256: columns.checksSha256,
+      runStatus: columns.runStatus,
+      allChecksZero: columns.allChecksZero,
+      writer: { ...columns.writer },
+      verifier: { ...columns.verifier },
+    };
+  }
+
+  function verdictOf(record: Record<string, unknown>, verdict = "ACCEPT"): Record<string, unknown> {
+    return {
+      receiptSha256: record["receiptSha256"],
+      treeSha: record["treeSha"],
+      writerWorkerId: (record["writer"] as { workerId: string }).workerId,
+      auditor: { identity: "claude/sonnet/reviewer/01", workerId: AUDITOR_ID, runId: 1 },
+      verdict,
+      evidenceSha256: "d".repeat(64),
+      artifactReferenceId: "ref-evidence-never-published",
+    };
+  }
+
+  function refusal(action: () => void): { readonly reason: string; readonly at: string } {
+    try {
+      action();
+    } catch (error: unknown) {
+      if (error instanceof LedgerVerificationRefusedError) return { reason: error.reason, at: error.at };
+      throw error;
+    }
+    throw new Error("expected the fold to refuse");
+  }
+
+  /** A snapshot holding revision 1 (flat 1) and revision 2 (flat 2), each at attempt 1. */
+  function folded(): ReturnType<typeof createProjectionSnapshot> {
+    const snapshot = createProjectionSnapshot();
+    applyEventToSnapshot(snapshot, opening(1, 1, "9a9a9a9a-0000-4000-8000-000000000001"), 1, "1".repeat(64));
+    applyEventToSnapshot(snapshot, opening(2, 2, "9a9a9a9a-0000-4000-8000-000000000002"), 2, "2".repeat(64));
+    return snapshot;
+  }
+
+  it("copies a receipt without reading its bytes, and keeps the first row of a same-metadata repeat", () => {
+    const snapshot = folded();
+    const record = receipt(1, 1);
+    applyEventToSnapshot(snapshot, event("VERIFICATION_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, verification: record }), 3, "3".repeat(64));
+    applyEventToSnapshot(snapshot, event("VERIFICATION_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, verification: record }), 4, "4".repeat(64));
+    expect([...snapshot.verifications.values()].map((row) => [row.receiptSha256, row.sequence, row.artifactReferenceId])).toEqual([
+      [record["receiptSha256"], 3, "ref-never-published"],
+    ]);
+  });
+
+  it("refuses the same receipt under other metadata, and a second verdict under one audit id", () => {
+    const snapshot = folded();
+    const record = receipt(1, 1);
+    applyEventToSnapshot(snapshot, event("VERIFICATION_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, verification: record }), 3, "3".repeat(64));
+    expect(
+      refusal(() => {
+        applyEventToSnapshot(
+          snapshot,
+          event("VERIFICATION_COMPLETED", 1, {
+            revisionNumber: 1,
+            attemptNumber: 1,
+            verification: { ...record, artifactReferenceId: "ref-other" },
+          }),
+          4,
+          "4".repeat(64),
+        );
+      }),
+    ).toEqual({ reason: "RECEIPT_METADATA_CONFLICT", at: "payload.verification.receiptSha256" });
+
+    const auditId = "7e7e7e7e-0000-4000-8000-00000000ffff";
+    applyEventToSnapshot(
+      snapshot,
+      event("AUDIT_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, auditVerdict: verdictOf(record) }, { eventId: auditId }),
+      5,
+      "5".repeat(64),
+    );
+    // The same id and the same metadata: the first row, its sequence kept.
+    applyEventToSnapshot(
+      snapshot,
+      event("AUDIT_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, auditVerdict: verdictOf(record) }, { eventId: auditId }),
+      6,
+      "6".repeat(64),
+    );
+    expect(snapshot.auditVerdicts.get(auditId)?.sequence).toBe(5);
+    expect(
+      refusal(() => {
+        applyEventToSnapshot(
+          snapshot,
+          event("AUDIT_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, auditVerdict: verdictOf(record, "REJECT") }, { eventId: auditId }),
+          7,
+          "7".repeat(64),
+        );
+      }),
+    ).toEqual({ reason: "RECEIPT_METADATA_CONFLICT", at: "eventId" });
+  });
+
+  it("recomputes the writer's id over the flat attempt (ND-17), and refuses a verdict on a FAIL receipt", () => {
+    const snapshot = folded();
+    const perRevision = receipt(1, 2);
+    expect(
+      refusal(() => {
+        applyEventToSnapshot(
+          snapshot,
+          event("VERIFICATION_COMPLETED", 2, { revisionNumber: 2, attemptNumber: 1, verification: perRevision }),
+          3,
+          "3".repeat(64),
+        );
+      }),
+    ).toEqual({ reason: "WRITER_ID_MISMATCH", at: "payload.verification.writer.workerId" });
+
+    const fail = receipt(1, 1, "FAIL");
+    applyEventToSnapshot(snapshot, event("VERIFICATION_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, verification: fail }), 4, "4".repeat(64));
+    expect(
+      refusal(() => {
+        applyEventToSnapshot(
+          snapshot,
+          event("AUDIT_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, auditVerdict: verdictOf(fail) }),
+          5,
+          "5".repeat(64),
+        );
+      }),
+    ).toEqual({ reason: "AUDIT_RECEIPT_NOT_PASS", at: "payload.auditVerdict.receiptSha256" });
   });
 });

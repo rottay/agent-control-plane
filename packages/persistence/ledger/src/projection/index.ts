@@ -36,6 +36,7 @@ import {
   LedgerValidationError,
   type LedgerValidationIssue,
 } from "../errors/index.js";
+import { decideVerificationRecord } from "../verification-record/index.js";
 import {
   OUTBOX_COMMAND_KINDS,
   OUTBOX_STATES,
@@ -67,6 +68,8 @@ import {
 import type {
   ArtifactBlobReadModel,
   ArtifactFoldView,
+  AuditVerdictReadModel,
+  VerificationReadModel,
   ArtifactPinReadModel,
   ArtifactProjectionSnapshot,
   ArtifactProjectionWrites,
@@ -3473,6 +3476,13 @@ export interface ProjectionSnapshot {
   readonly usageObservationClaims: Map<string, string>;
   readonly usageEffectObservations: Map<string, UsageObservationReadModel[]>;
   readonly usageEffectSettlements: Map<string, UsageSettlementReadModel[]>;
+  /**
+   * P-16/B's pair, insert-only: receipts keyed by `receiptSha256`, verdicts by
+   * `auditId`. A second arrival under one key with the same metadata keeps the first
+   * row; with other metadata the fold refuses it in the door's words.
+   */
+  readonly verifications: Map<string, VerificationReadModel>;
+  readonly auditVerdicts: Map<string, AuditVerdictReadModel>;
 }
 
 export function createProjectionSnapshot(): ProjectionSnapshot {
@@ -3502,6 +3512,8 @@ export function createProjectionSnapshot(): ProjectionSnapshot {
     usageObservationClaims: new Map<string, string>(),
     usageEffectObservations: new Map<string, UsageObservationReadModel[]>(),
     usageEffectSettlements: new Map<string, UsageSettlementReadModel[]>(),
+    verifications: new Map<string, VerificationReadModel>(),
+    auditVerdicts: new Map<string, AuditVerdictReadModel>(),
   };
 }
 
@@ -4031,6 +4043,29 @@ export function applyEventToSnapshot(
         },
       ]);
     }
+  }
+
+  // P-16/B's receipt and verdict, last, through the decision the door calls, so a
+  // rebuild refuses exactly what the door refused, in the same words (decision 56).
+  // It reads the attempt rows folded above and the receipts folded before, and never
+  // a byte: the door recomputed the receipt's name, and the fold copies it (ND-4).
+  // Last on purpose: `verifyIntegrity()` reports this refusal rather than throwing
+  // it, and everything else the event folds is then already in the snapshot.
+  const verification = decideVerificationRecord(
+    {
+      legacyAttempt: (taskId, revisionNumber, attemptNumber) =>
+        snapshot.taskAttempts.get(taskAttemptKey(taskId, revisionNumber, attemptNumber))?.legacyAttemptNumber ?? null,
+      verification: (receiptSha256) => snapshot.verifications.get(receiptSha256) ?? null,
+      auditVerdict: (auditId) => snapshot.auditVerdicts.get(auditId) ?? null,
+    },
+    event,
+    sequence,
+  );
+  if (verification?.kind === "VERIFICATION" && !verification.recorded) {
+    snapshot.verifications.set(verification.row.receiptSha256, verification.row);
+  }
+  if (verification?.kind === "AUDIT_VERDICT" && !verification.recorded) {
+    snapshot.auditVerdicts.set(verification.row.auditId, verification.row);
   }
 }
 

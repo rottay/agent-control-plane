@@ -1084,9 +1084,16 @@ describe("P-26/B: a roadmap version declares its steps through the real route", 
     for (const trigger of triggers) raw.exec(trigger.sql);
     // P-27 cut A: migration 26 goes first, children first, or the step table it names
     // cannot go and the re-applied 26 aborts on its own tables. P-27 cut C: migration
-    // 27 before it, for the same reason.
+    // 27 before it, for the same reason, and P-16/B: migration 28 before that.
     raw.exec(
-      "DROP TRIGGER tr_task_step_link_read_model__insert_only;" +
+      "DROP TRIGGER tr_audit_verdict_read_model__insert_only;" +
+        "DROP TRIGGER tr_verification_read_model__insert_only;" +
+        "DROP INDEX ix_audit_verdict_read_model__attempt;" +
+        "DROP INDEX ix_verification_read_model__attempt;" +
+        "DROP TABLE audit_verdict_read_model;" +
+        "DROP TABLE verification_read_model;" +
+        "DELETE FROM projection_watermark WHERE projection_name IN ('verification_read_model', 'audit_verdict_read_model');" +
+        "DROP TRIGGER tr_task_step_link_read_model__insert_only;" +
         "DROP INDEX ix_task_step_link_read_model__task_sequence;" +
         "DROP TABLE task_step_link_read_model;" +
         "DELETE FROM projection_watermark WHERE projection_name = 'task_step_link_read_model';" +
@@ -1113,7 +1120,7 @@ describe("P-26/B: a roadmap version declares its steps through the real route", 
 
     // The server's handle is read-only and may not migrate; a writable open does.
     const migrated = openLedger(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(27);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(28);
     expect(migrated.listRoadmapVersions(initiativeId).map((row) => [row.recordingContractVersion, row.stepCount])).toEqual([["2.9.0", null]]);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     const rows = migrated.listRoadmapVersions(initiativeId);

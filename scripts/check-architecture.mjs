@@ -12670,6 +12670,71 @@ const P16A2_WRITE_SET = [
   "packages/entrypoints/daemon/src/git-observer/index.ts",
 ];
 
+/**
+ * P-16, cut B: a verification is recorded by its receipt, and a verdict by its tree
+ * (ADR 0122; decisions 231-233; brief v1 with the DT pre-review's corrections B-1 to
+ * B-5 and its rulings on ND-1 to ND-17, adopted, and the DT's stop ruling 1).
+ *
+ * Migration 28 lands execution §10.2 `verification_read_model` and §10.3
+ * `audit_verdict_read_model`: STRICT, every CHECK named, the run ids `INTEGER >= 1`
+ * (B-4), deferred keys to the attempt and to the receipt, an immediate key to the
+ * stream, two insert-only triggers, two watermarks born at the task head. The ledger
+ * gains `verification-record`: the receipt form (`VERIFICATION_COMPLETED` holding
+ * `verification`) and the verdict form (`AUDIT_COMPLETED` holding `auditVerdict`), both
+ * closed; one decision the door and the fold call, in one sorted vocabulary of nineteen
+ * words; the receipt and the evidence read by reference before the lock, as a value,
+ * judged inside the transaction after the replay check (B-5). The door recomputes the
+ * receipt's name from its bytes (`RECEIPT_DIGEST_MISMATCH`) and derives the writer's
+ * id over the coordinate's flat attempt (`WRITER_ID_MISMATCH`, the bijection). Beats
+ * stay byte-unchanged and project nothing (ND-2). Held by L-P16B-1 and L-P16B-2;
+ * L-P15F-1 (ii) admits the verification reader and L-P15I-1 names migration 28's two
+ * instant GLOBs, each amended in its own row.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 177 -> **179** (L-P16B-1, L-P16B-2); the ADR
+ * corpus 121 -> **122**; `MIGRATIONS` 27 -> **28**; `DERIVED_TABLES` 35 -> 37;
+ * `EXPECTED_SCHEMA_OBJECTS` 132 -> 138; `PROJECTION_NAMES` 16 -> 18;
+ * `PROJECTION_SOURCES` 32 -> 34. Computed and pinned by no doc: this constant is one
+ * more epoch-frozen record.
+ * **Pins that do not.** `CONTRACT_VERSION` (2.11.0, ND-1 (a) with its condition),
+ * `API_CONTRACT_VERSION` (0.25.0, ND-13), `CONTRACTS_SCHEMA_EXPORTS` (189, ND-3),
+ * `RUNTIME_PUBLIC_EXPORTS` (307), `PROVIDERS_PUBLIC_EXPORTS` (97), `SPAWN_ALLOWED_FILES`
+ * (4), L-P06C-1's four block readers (the stop ruling: the record says
+ * `artifactReferenceId`).
+ *
+ * **Twenty-eight paths; four are new**: the verification-record module, its types
+ * leaf, its suite and the ADR.
+ */
+const P16B_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/verification-record/index.ts",
+  "packages/persistence/ledger/src/verification-record/types/index.ts",
+  "packages/persistence/ledger/src/receipt-identity/index.ts",
+  "packages/persistence/ledger/src/receipt-identity/types/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/errors/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/verification-record/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/persistence/ledger/test/receipt-identity/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/task-intake/index.test.ts",
+  "packages/entrypoints/gateway/test/task-step-link/index.test.ts",
+  "packages/entrypoints/gateway/test/roadmap-write/index.test.ts",
+  "packages/entrypoints/gateway/test/task-graph/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0122-a-verification-is-recorded-by-its-receipt-and-a-verdict-by-its-tree.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "docs/audit/architecture/database/execution/index.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12929,6 +12994,7 @@ const WRITE_SET = [
   ...P15A4_WRITE_SET,
   ...P16A1_WRITE_SET,
   ...P16A2_WRITE_SET,
+  ...P16B_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -14537,6 +14603,18 @@ const PATH_SCOPED_LAWS = [
   {
     law: "one writer-id namespace, declared in contracts and imported by both v5 sites",
     scope: "packages/*/*/src/**",
+  },
+  // P-16/B. Two new path-shaped surfaces, so two new rows: the register and the
+  // `requireScope` call sites both move 177 -> 179 for L-P16B-1 and L-P16B-2.
+  // L-P15F-1 (ii) admits the verification reader and L-P15I-1 names migration 28's
+  // counted GLOB exception, each amended in its own row; neither adds one.
+  {
+    law: "a verification row and a verdict row have one door, and neither is rewritten",
+    scope: "packages/persistence/ledger/src/ledger/index.ts, packages/*/*/src/**",
+  },
+  {
+    law: "the door recomputes the receipt's name, and the words live in one home",
+    scope: "packages/persistence/ledger/src/verification-record/index.ts, packages/*/*/src/**",
   },
 ];
 
@@ -28154,6 +28232,201 @@ if (tracked.status === 0) {
   requireScope(LAW, scanned);
 }
 
+// L-P16B-1 -- a verification row and a verdict row have one door, and neither is
+// rewritten (P-16/B, ADR 0122; decisions 231 and 233; ND-9, ND-16).
+//
+// L-P27C-1's mould, for two tables. Over every tracked `packages/*/*/src` `.ts`/`.tsx`
+// file, comments stripped: every write naming `verification_read_model` or
+// `audit_verdict_read_model` -- an `INSERT`, a `REPLACE`, an `UPDATE` or a `DELETE
+// FROM`, the name bare or `main`-qualified, either part optionally quoted (L-P27-2's
+// matcher) -- is in `ledger/src/ledger/index.ts`, is an `INSERT` with no conflict
+// clause, and sits inside its table's one writer, `#insertVerification` or
+// `#insertAuditVerdict`, each holding its insert; none is an `UPDATE` or a `DELETE
+// FROM` by name (the rebuild clears both through `DERIVED_TABLES`). Over the door:
+// `this.#assertVerificationGranted(` is called exactly once, inside
+// `#appendOneInTransaction`, before that function's `INSERT INTO control_plane_events`,
+// so a refusal writes nothing and every task event -- through `append` and through
+// `appendBatch` alike -- meets the grant.
+//
+// Stated limit: L-P27C-1's, restated. A text-level matcher: a table name assembled by
+// concatenation or held in a variable, a schema other than `main`, an SQL comment
+// between the keywords, whitespace around the qualifying dot, a literal written with
+// escapes (the name in escaped quotes inside a TS string, `UPDATE \"verification_read_model\"`,
+// bitten on a disposable copy and still passing: verification v1, N-2), or a grant
+// neutralized while its call stays, is not seen. Migration 28's insert-only triggers
+// (any `UPDATE`, whatever its spelling, aborts), its CHECKs, `verifyIntegrity()` (a
+// `DELETE` is reported) and `test/verification-record`'s door drills (N11) are the
+// behaviour.
+{
+  const DOOR_SITE = "packages/persistence/ledger/src/ledger/index.ts";
+  const LAW = "a verification row and a verdict row have one door, and neither is rewritten";
+  const TABLES = [
+    { table: "verification_read_model", writer: "  #insertVerification(" },
+    { table: "audit_verdict_read_model", writer: "  #insertAuditVerdict(" },
+  ];
+  const span = (code, head, close) => {
+    const start = code.indexOf(head);
+    const end = start === -1 ? -1 : code.indexOf(close, start);
+    return start === -1 || end === -1 ? { start: -1, end: -1, text: "" } : { start, end, text: code.slice(start, end) };
+  };
+  let scanned = 0;
+  const inserts = new Map(TABLES.map((entry) => [entry.table, []]));
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      const code = stripComments(file);
+      for (const { table } of TABLES) {
+        const write = new RegExp(
+          "\\b(?:INSERT(?:\\s+OR\\s+\\w+)?\\s+INTO|REPLACE\\s+INTO|UPDATE|DELETE\\s+FROM)\\s+(?:[\"'`[]?main[\"'`\\]]?\\.)?[\"'`[]?" + table + "\\b",
+          "gi",
+        );
+        for (const match of code.matchAll(write)) {
+          const verb = match[0];
+          if (relativePath !== DOOR_SITE) {
+            fail(relativePath + " writes " + table + " (" + verb + "); only the ledger's task door does (L-P16B-1)");
+            continue;
+          }
+          const from = match.index ?? 0;
+          const to = code.indexOf(".run(", from);
+          const statement = code.slice(from, to === -1 ? code.length : to);
+          if (/^(?:INSERT\s+OR|REPLACE)/i.test(verb) || /ON CONFLICT/i.test(statement)) {
+            fail(DOOR_SITE + " writes " + table + " with a conflict clause (" + verb + "); a row is insert-only (L-P16B-1)");
+          } else if (/^UPDATE/i.test(verb)) {
+            fail(DOOR_SITE + " updates " + table + " (" + verb + "); a row is never rewritten (L-P16B-1)");
+          } else if (/^DELETE/i.test(verb)) {
+            fail(DOOR_SITE + " deletes from " + table + " by name (" + verb + "); a row is insert-only (L-P16B-1)");
+          } else {
+            inserts.get(table).push(from);
+          }
+        }
+      }
+    }
+  }
+  const door = readIfPresent(DOOR_SITE);
+  if (door !== null) {
+    const code = stripComments(door);
+    for (const { table, writer } of TABLES) {
+      const body = span(code, writer, "\n  }\n");
+      const found = inserts.get(table);
+      const inside = found.filter((from) => body.start !== -1 && from >= body.start && from <= body.end);
+      if (found.length !== 1 || inside.length !== 1) {
+        fail(
+          DOOR_SITE +
+            " inserts into " +
+            table +
+            " " +
+            String(found.length) +
+            " time(s), " +
+            String(inside.length) +
+            " inside " +
+            writer.trim() +
+            "; the one writer is " +
+            writer.trim() +
+            " (L-P16B-1)",
+        );
+      }
+    }
+    const single = span(code, "  #appendOneInTransaction(", "\n  }\n");
+    const grant = single.text.indexOf("this.#assertVerificationGranted(");
+    const insert = single.text.indexOf("INSERT INTO control_plane_events");
+    const calls = [...code.matchAll(/this\.#assertVerificationGranted\(/g)].map((match) => match.index ?? 0);
+    if (single.start === -1 || grant === -1 || insert === -1 || grant > insert) {
+      fail(
+        DOOR_SITE +
+          " #appendOneInTransaction no longer grants a receipt or a verdict through this.#assertVerificationGranted( before it inserts the event (L-P16B-1)",
+      );
+    }
+    if (calls.length !== 1 || single.start === -1 || (calls[0] ?? 0) < single.start || (calls[0] ?? 0) > single.end) {
+      fail(DOOR_SITE + " #assertVerificationGranted is called " + String(calls.length) + " time(s); once, in #appendOneInTransaction (L-P16B-1)");
+    }
+    notes.push("a verification row and a verdict row have one door each, insert-only, granted before the event is inserted");
+  }
+  requireScope(LAW, scanned);
+}
+
+// L-P16B-2 -- the door recomputes the receipt's name, and the words live in one home
+// (P-16/B, ADR 0122; decisions 231 and 233; ND-8, ND-16).
+//
+// Execution §10.2: the door "recalcula `receipt_sha256` desde los bytes" and refuses a
+// difference by name. Over `ledger/src/verification-record/index.ts`, comments
+// stripped: it imports `receiptVerificationColumns` from `../receipt-identity/index.js`
+// (the one home of the receipt's name, L-P16A2-1) and calls it inside
+// `assertVerificationArtifact`, whose body compares its `receiptSha256` and raises
+// `RECEIPT_DIGEST_MISMATCH`; and it declares `VERIFICATION_REFUSALS` as an array literal
+// of upper-case words, sorted and without repeats. Over every tracked `packages/*/*/src`
+// `.ts`/`.tsx` file: `VERIFICATION_REFUSALS` is declared there and only there, and
+// `decideVerificationRecord` is declared (`export function <name>(`) exactly once,
+// there.
+//
+// Stated limit: L-P27C-1's "declared once" limit (only the spelling `export function
+// <name>(`), and a text matcher: a column function reached through an alias, a
+// comparison neutralized while its text stays, or a word list assembled at runtime is
+// not seen. The door drills of `test/verification-record` (N1, N2) are the behaviour.
+{
+  const HOME = "packages/persistence/ledger/src/verification-record/index.ts";
+  const LAW = "the door recomputes the receipt's name, and the words live in one home";
+  let scanned = 0;
+  const decisions = [];
+  const vocabulary = [];
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      const code = stripComments(file);
+      const declared = code.match(/export\s+function\s+decideVerificationRecord\s*\(/g) ?? [];
+      for (let index = 0; index < declared.length; index += 1) decisions.push(relativePath);
+      if (/(?:const|let|var)\s+VERIFICATION_REFUSALS\b/.test(code)) vocabulary.push(relativePath);
+    }
+  }
+  if (decisions.length !== 1 || decisions[0] !== HOME) {
+    fail("decideVerificationRecord is declared " + String(decisions.length) + " time(s) (" + (decisions.join(", ") || "no file") + "); its one home is " + HOME + " (L-P16B-2)");
+  }
+  if (vocabulary.length !== 1 || vocabulary[0] !== HOME) {
+    fail("VERIFICATION_REFUSALS is declared in " + (vocabulary.join(", ") || "no file") + "; its one home is " + HOME + " (L-P16B-2)");
+  }
+  const home = readIfPresent(HOME);
+  let words = [];
+  if (home === null) {
+    fail(HOME + " is gone; the verification door has no home (L-P16B-2)");
+  } else {
+    const code = stripComments(home);
+    const literal = /export const VERIFICATION_REFUSALS = \[([^\]]*)\] as const;/.exec(code);
+    if (literal === null) {
+      fail(HOME + " no longer declares VERIFICATION_REFUSALS as an array literal the law can read (L-P16B-2)");
+    } else {
+      const entries = (literal[1] ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+      words = entries.map((entry) => (/^"([A-Z][A-Z_]*)"$/.exec(entry) ?? [])[1]);
+      if (words.length === 0 || words.some((word) => word === undefined)) {
+        fail(HOME + " VERIFICATION_REFUSALS holds an entry that is not an upper-case word (L-P16B-2)");
+      } else if (words.join(",") !== [...words].sort().join(",") || new Set(words).size !== words.length) {
+        fail(HOME + " VERIFICATION_REFUSALS is not sorted without repeats (L-P16B-2)");
+      }
+    }
+    const imported = /import\s*\{[^}]*\breceiptVerificationColumns\b[^}]*\}\s*from\s*["']\.\.\/receipt-identity\/index\.js["']/.test(code);
+    const body = functionBody(code, "export function assertVerificationArtifact(");
+    if (!imported || body === null || !/\breceiptVerificationColumns\s*\(/.test(body)) {
+      fail(
+        HOME +
+          " does not import receiptVerificationColumns from ../receipt-identity/index.js and call it in assertVerificationArtifact;" +
+          " the door recomputes the receipt's name from its bytes (L-P16B-2)",
+      );
+    } else if (!/\.receiptSha256\s*!==\s*row\.receiptSha256\)\s*refuse\("RECEIPT_DIGEST_MISMATCH"/.test(body)) {
+      fail(HOME + " assertVerificationArtifact no longer refuses a recomputed name that differs as RECEIPT_DIGEST_MISMATCH (L-P16B-2)");
+    }
+  }
+  requireScope(LAW, scanned);
+  notes.push("the verification door recomputes a receipt's name in " + HOME + "; " + String(words.length) + " refusal words, sorted and closed");
+}
+
 // --- 21c. V2-B5/R11: the telemetry export edge ------------------------------
 //
 // Five path-scoped laws over one new package, plus a barrel pin and a record
@@ -32268,7 +32541,24 @@ const CHAIN_WALK_SITE = "packages/entrypoints/daemon/src/composition/walk/index.
 // The offset-bearing `Timestamp` family (accounts, telemetry) holds none of these
 // tokens and is outside the law by its own grammar. The lease arbiter's
 // `toISOString()` normalises and compares nothing, so no exception is named.
+//
+// AMENDED by P-16/B (ADR 0122; decision 233; DT pre-review B-2), in its own row: one
+// named, counted exception. Execution §10.1 mandates the storage CHECK
+// `recorded_at GLOB '…[0-9][0-9][0-9]Z'` for §10.2 and §10.3, and that SQL sits inside
+// a template literal `stripComments` does not strip, so the grammar matcher reads it.
+// In `ledger/src/migrations/index.ts` alone, the exact §10.1 GLOB literal
+// (`INSTANT_GLOB_LITERAL`, quotes included) is admitted exactly
+// `INSTANT_GLOB_COUNT` times -- one per table of migration 28 -- and is blanked before
+// the file is scanned for everything else, as before. A third copy, a copy changed by
+// one character, or the grammar anywhere else in that file fails; the GLOB is never
+// respelled to dodge the matcher. It is a storage guard, not a second predicate: the
+// door's predicate stays `isCanonicalInstant` (RECORDED_AT_NOT_CANONICAL). The register
+// does not move.
 const CANONICAL_INSTANT_HOME = "packages/kernel/contracts/src/schemas/primitives/index.ts";
+const INSTANT_GLOB_SITE = "packages/persistence/ledger/src/migrations/index.ts";
+const INSTANT_GLOB_LITERAL =
+  "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'";
+const INSTANT_GLOB_COUNT = 2;
 {
   let instantScanned = 0;
   const GRAMMAR = /(?:\\{1,2}d\{3\}|\[0-9\]\{3\}|(?:\\{1,2}d){3}|(?:\[0-9\]){3})(?:Z|\[Z\])/;
@@ -32283,7 +32573,21 @@ const CANONICAL_INSTANT_HOME = "packages/kernel/contracts/src/schemas/primitives
       const content = readIfPresent(relativePath);
       if (content === null) continue;
       instantScanned += 1;
-      const code = stripComments(content);
+      let code = stripComments(content);
+      if (relativePath === INSTANT_GLOB_SITE) {
+        const globs = code.split(INSTANT_GLOB_LITERAL).length - 1;
+        if (globs !== INSTANT_GLOB_COUNT) {
+          fail(
+            INSTANT_GLOB_SITE +
+              " holds the §10.1 instant GLOB " +
+              String(globs) +
+              " time(s); L-P15I-1 admits it exactly " +
+              String(INSTANT_GLOB_COUNT) +
+              " times there, one per table of migration 28, and nowhere else",
+          );
+        }
+        code = code.split(INSTANT_GLOB_LITERAL).join("''");
+      }
       if (GRAMMAR.test(code) || ROUND_TRIP.test(code) || ZOD_PRECISION.test(code)) {
         fail(
           relativePath +
@@ -32606,9 +32910,10 @@ const WRITER_ID_V5_SITES = [RECEIPT_IDENTITY_HOME, PROVIDERS_CRYPTO_SITE];
 //   and its types, and types; the runtime's events and execution chain; and the
 //   result concept with its type leaf. No entrypoint names it: a door derives
 //   `hasResult` from the pair's presence;
-// - (ii) `readByReference(` is called only by the objective reader, the result reader
-//   and the step manifest reader (P-26 cut B) -- the ledger's one reader by reference
-//   and its three callers;
+// - (ii) `readByReference(` is called only by the objective reader, the result reader,
+//   the step manifest reader (P-26 cut B) and the verification door's receipt and
+//   evidence reader (P-16/B) -- the ledger's one reader by reference and its four
+//   callers;
 // - (iii) `readEffectResult(` is called only inside two function bodies, once each:
 //   `effectResult` in the gateway's effect-result module and `buildEffectResult` in
 //   the CLI's observation module (function-level since v4, verifier v3 §2: a second
@@ -32641,6 +32946,13 @@ const WRITER_ID_V5_SITES = [RECEIPT_IDENTITY_HOME, PROVIDERS_CRYPTO_SITE];
 // `readEffectResult(` / `effectResult(` call inside the door's own body and escapes
 // it by assignment to module-level state is one site inside the body and is not
 // seen — the alias family's sibling, deliberate rather than accidental.
+//
+// AMENDED by P-16/B (ADR 0122; decision 233; DT pre-review B-1), in its own row: (ii)
+// admits a fourth caller, `ledger/src/verification-record/index.ts`, on the P-26 cut B
+// terms -- a re-derivation and not a sink. The task door reads a receipt's bytes to
+// recompute its name and hold every carried column to it, and an evidence's bytes to
+// bind it to its receipt; the bytes reach that comparison and nothing else: no event,
+// response, log or error message. The register does not move.
 const RESULT_REFERENCE_NAMERS = [
   "packages/persistence/ledger/src/ledger/index.ts",
   "packages/persistence/ledger/src/projection/index.ts",
@@ -32659,6 +32971,10 @@ const REFERENCE_READ_CALLERS = [
   // manifest, a re-derivation and not a sink -- nothing it reads reaches an event, a
   // response or a log.
   "packages/persistence/ledger/src/roadmap-steps/index.ts",
+  // P-16/B (ADR 0122): the task door's read of a receipt and of an evidence, before its
+  // lock and as a value, on the same terms -- a re-derivation and not a sink: the bytes
+  // reach the door's comparison and nothing else.
+  "packages/persistence/ledger/src/verification-record/index.ts",
 ];
 const EFFECT_RESULT_HOME = "packages/domains/runtime/src/operation-result/index.ts";
 const EFFECT_RESULT_CALLERS = {
@@ -32694,7 +33010,7 @@ const RESULT_READ_RECORDING_NAMES =
         if (!REFERENCE_READ_CALLERS.includes(relativePath)) {
           fail(
             relativePath +
-              " reads the private plane by reference; the objective reader, the result reader and the step manifest reader are its three callers",
+              " reads the private plane by reference; the objective reader, the result reader, the step manifest reader and the verification reader are its four callers",
           );
         }
       }

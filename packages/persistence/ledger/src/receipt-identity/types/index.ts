@@ -36,3 +36,24 @@ export interface ReceiptIdentityPreimageV1 {
   readonly checksSha256: string;
   readonly commitMessageBody: string;
 }
+
+/**
+ * The columns execution §10.2 takes from one receipt (P-16/B, ADR 0122): its name,
+ * its coordinate, the members the table copies and the two digests derived inside
+ * the preimage, plus `allChecksZero`, which no preimage member carries.
+ */
+export interface ReceiptVerificationColumns {
+  readonly receiptSha256: string;
+  readonly taskId: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly baseSha: string;
+  readonly treeSha: string;
+  readonly policySha256: string;
+  readonly writeSetSha256: string;
+  readonly checksSha256: string;
+  readonly runStatus: "PASS" | "FAIL";
+  readonly allChecksZero: boolean;
+  readonly writer: { readonly identity: string; readonly workerId: string };
+  readonly verifier: { readonly identity: string; readonly workerId: string; readonly runId: number };
+}

@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CONTRACT_VERSION,
+  buildIdempotencyKey,
   ARTIFACT_CLASSES,
   ARTIFACT_CLASSIFICATIONS,
   ARTIFACT_EVENT_KINDS,
@@ -71,6 +72,9 @@ import {
   TASK_STEP_LINK_MIGRATION,
   TASK_STEP_LINK_PROJECTION,
   TASK_STREAM,
+  VERIFICATION_AUDIT_MIGRATION,
+  VERIFICATION_PROJECTION,
+  AUDIT_VERDICT_PROJECTION,
   checkMigrationConformance,
 } from "../../src/migrations/index.js";
 import {
@@ -220,7 +224,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -250,11 +254,12 @@ describe("migration 7 appends the watermark table without touching the applied s
       "roadmap_steps",
       "task_graph",
       "task_step_link",
+      "verification_audit",
     ]);
   });
 
   it("is the only migration that creates the watermark table", () => {
-    // Migrations 9, 11, 12, 13, 14, 15, 17, 19, 20, 21 and 25 seed rows into it, which is what a
+    // Migrations 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 25, 26, 27 and 28 seed rows into it, which is what a
     // migration that adds a projection does; none of them creates, alters or
     // drops the table.
     const creating = MIGRATIONS.filter((migration) =>
@@ -264,7 +269,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     const naming = MIGRATIONS.filter((migration) =>
       migration.sql.includes("projection_watermark"),
     );
-    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 25, 26, 27]);
+    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 25, 26, 27, 28]);
   });
 
   it("declares the table STRICT and names its constraints by the §3.2 convention", () => {
@@ -346,6 +351,8 @@ describe("the closed set of watermark rows is exactly the streams under discipli
       "usage_settlement_read_model@control_plane_events",
       "usage_settlement_source_head_read_model@control_plane_events",
       "usage_settlement_observation_read_model@control_plane_events",
+      "verification_read_model@control_plane_events",
+      "audit_verdict_read_model@control_plane_events",
       "initiative_read_model@initiative_events",
       "roadmap_version_read_model@initiative_events",
       "roadmap_step_read_model@initiative_events",
@@ -530,6 +537,9 @@ describe("migration 8 types causality without touching the applied seven", () =>
       { type: "trigger", name: "tr_task_graph_revision_read_model__supersede_once" },
       // P-27 cut C: a task step link is never rewritten.
       { type: "trigger", name: "tr_task_step_link_read_model__insert_only" },
+      // P-16/B: a receipt row and a verdict row are never rewritten (ND-9).
+      { type: "trigger", name: "tr_verification_read_model__insert_only" },
+      { type: "trigger", name: "tr_audit_verdict_read_model__insert_only" },
     ]);
     // And the legacy prefix still names exactly the three streams that coined
     // it, so the rename did not quietly move one of theirs.
@@ -590,7 +600,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
     ]);
   });
 
@@ -818,8 +828,9 @@ describe("the two-source projection is the only name with two watermark rows", (
     ]);
     // Twenty-five before P-33/catálogo A's catalog took the twenty-sixth row,
     // twenty-six before P-26 cut B's two step projections, twenty-eight before P-27
-    // cut A's three task graph projections, and thirty-one before P-27 cut C's link.
-    expect(PROJECTION_SOURCES).toHaveLength(32);
+    // cut A's three task graph projections, thirty-one before P-27 cut C's link, and
+    // thirty-two before P-16/B's receipt and verdict.
+    expect(PROJECTION_SOURCES).toHaveLength(34);
   });
 
   it("still does not claim the account stream (D3)", () => {
@@ -1039,8 +1050,9 @@ describe("migration 12 adds the attempt's own record without touching the applie
     // Nine until migration 22 added its two (P-07 escalón B), eleven until
     // migration 23 added its two (P-15 escalón C), thirteen until migration 25
     // added its two (P-26 cut B), fifteen until migration 26 added its one (P-27
-    // cut A), and sixteen until migration 27 added its one (P-27 cut C).
-    expect(triggers).toHaveLength(17);
+    // cut A), sixteen until migration 27 added its one (P-27 cut C), and seventeen
+    // until migration 28 added its two (P-16/B).
+    expect(triggers).toHaveLength(19);
     expect(triggers.filter((object) => object.name.startsWith("tr_task_attempt"))).toEqual([]);
   });
 
@@ -1121,8 +1133,8 @@ describe("migration 14 adds the occurrences without touching the applied thirtee
     // equality between a prompt and its delivery is the fold's and the door's.
     expect(statements).not.toContain("CREATE TRIGGER");
     // Eight when this migration landed; migration 16 adds the ninth, and
-    // migration 22 the tenth and eleventh.
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(17);
+    // migration 22 the tenth and eleventh, and migration 28 the last two.
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(19);
   });
 
   it("names both tables' constraints by the §3.2 convention, and §8's pair verbatim", () => {
@@ -1205,9 +1217,9 @@ describe("migration 14 adds the occurrences without touching the applied thirtee
       ).toEqual([{ projectionName: name, sourceStream: "control_plane_events" }]);
       expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({ type: "table", name });
     }
-    // Ten when this migration landed; the eleventh is P-14 C's client key, and
-    // the five after it are P-32/captura B's usage cohort.
-    expect(PROJECTION_NAMES).toHaveLength(16);
+    // Ten when this migration landed; the eleventh is P-14 C's client key, the
+    // five after it are P-32/captura B's usage cohort, and the last two P-16/B's.
+    expect(PROJECTION_NAMES).toHaveLength(18);
   });
 
   it("clears the answers before the prompts, and the prompts before the deliveries", () => {
@@ -1543,7 +1555,7 @@ describe("migration 15 rebuilds the registry stream and adds the artifact plane"
     ]);
     // Eight when this migration landed; the ninth is migration 16's, the tenth
     // and eleventh migration 22's.
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(17);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(19);
     expect(statements).not.toMatch(/CREATE TRIGGER tr_artifact/);
   });
 });
@@ -1577,7 +1589,7 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
     // Sixteen when this migration landed; the seventeenth is P-14 A's, the
     // eighteenth P-14 B's, the nineteenth P-14 C's, the twentieth P-32/captura B's
     // the twenty-first P-33/catálogo A's and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(27);
+    expect(MIGRATIONS).toHaveLength(28);
     expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION]?.name).toBe("model_version_registry");
   });
 
@@ -1622,7 +1634,7 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
       type: "trigger",
       name: "tr_task_revision_read_model__validate_envelope_reference",
     });
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(17);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(19);
   });
 
   it("freezes the cohort as a closed list, spelled as the fold spells it, and never compares versions", () => {
@@ -1675,7 +1687,7 @@ describe("migration 17 folds the model version registry from the registry stream
     // Seventeen when this migration landed; the eighteenth is P-14 B's, the
     // nineteenth P-14 C's, the twentieth P-32/captura B's and the twenty-first
     // P-33/catálogo A's, and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(27);
+    expect(MIGRATIONS).toHaveLength(28);
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION]?.name).toBe("initiative_registration_detail");
   });
 
@@ -1771,7 +1783,7 @@ describe("migration 17 folds the model version registry from the registry stream
       { type: "table", name: "model_version_transport" },
       { type: "index", name: "ux_model_version_transport__transport" },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(17);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(19);
   });
 });
 
@@ -1800,7 +1812,7 @@ describe("migration 18 adds the initiative projection's three columns and nothin
     // Eighteen when this migration landed; the nineteenth is P-14 C's, the
     // twentieth P-32/captura B's, the twenty-first P-33/catálogo A's and the
     // twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(27);
+    expect(MIGRATIONS).toHaveLength(28);
     expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION]?.name).toBe("task_submission");
   });
 
@@ -1850,7 +1862,7 @@ describe("migration 19 gives a task's client key its one home", () => {
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION - 1]?.name).toBe("task_submission");
     // Nineteen when this migration landed; the twentieth is P-32/captura B's and
     // the twenty-first P-33/catálogo A's, and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(27);
+    expect(MIGRATIONS).toHaveLength(28);
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION]?.name).toBe("usage_capture");
   });
 
@@ -1927,7 +1939,7 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
     expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION - 1]?.name).toBe("usage_capture");
     // Twenty when this migration landed; the twenty-first is P-33/catálogo A's
     // and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(27);
+    expect(MIGRATIONS).toHaveLength(28);
     expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION]?.name).toBe("price_interval_catalog");
   });
 
@@ -2048,11 +2060,13 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
     expect(at(USAGE_OBSERVATION_PROJECTION)).toBeLessThan(at(USAGE_MEASUREMENT_STREAM_PROJECTION));
     expect(at(USAGE_MEASUREMENT_STREAM_PROJECTION)).toBeLessThan(at("effect_read_model"));
     expect(at(USAGE_OBSERVATION_PROJECTION)).toBeLessThan(at(DISPATCH_ATTEMPT_PROJECTION));
-    expect(PROJECTION_NAMES).toHaveLength(16);
+    // Sixteen when this migration landed; P-16/B's pair makes eighteen.
+    expect(PROJECTION_NAMES).toHaveLength(18);
     // Twenty-five when this cohort landed; P-33/catálogo A's registry row is the
     // twenty-sixth, P-26 cut B's two step projections the next two, P-27 cut A's three
-    // task graph projections the next three, and P-27 cut C's link the last.
-    expect(PROJECTION_SOURCES).toHaveLength(32);
+    // task graph projections the next three, P-27 cut C's link the next, and P-16/B's
+    // receipt and verdict the last two.
+    expect(PROJECTION_SOURCES).toHaveLength(34);
     expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("usage_"))).toEqual([
       { type: "table", name: "usage_measurement_stream_read_model" },
       { type: "index", name: "ux_usage_measurement_stream__identity" },
@@ -2066,7 +2080,7 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
       { type: "table", name: "usage_settlement_source_head_read_model" },
       { type: "table", name: "usage_settlement_observation_read_model" },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(17);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(19);
   });
 });
 
@@ -2093,7 +2107,7 @@ describe("migration 21 gives a price catalog version its one table", () => {
     expect(PRICE_INTERVAL_CATALOG_MIGRATION).toBe(21);
     expect(MIGRATIONS[PRICE_INTERVAL_CATALOG_MIGRATION - 1]?.name).toBe("price_interval_catalog");
     // Twenty-one when this migration landed; the twenty-second is P-07 B's.
-    expect(MIGRATIONS).toHaveLength(27);
+    expect(MIGRATIONS).toHaveLength(28);
   });
 
   it("H-1: creates economy's table under economy's name, STRICT, and nothing else is created, altered or dropped", () => {
@@ -2168,13 +2182,13 @@ describe("migration 21 gives a price catalog version its one table", () => {
       { projectionName: PRICE_INTERVAL_PROJECTION, sourceStream: REGISTRY_STREAM },
     ]);
     expect(PROJECTION_SOURCES.filter((source) => source.sourceStream === REGISTRY_STREAM)).toHaveLength(7);
-    // Twenty-eight until P-27 cut A's three task graph projections, and thirty-one
-    // until P-27 cut C's link.
-    expect(PROJECTION_SOURCES).toHaveLength(32);
+    // Twenty-eight until P-27 cut A's three task graph projections, thirty-one
+    // until P-27 cut C's link, and thirty-two until P-16/B's receipt and verdict.
+    expect(PROJECTION_SOURCES).toHaveLength(34);
     expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("price_"))).toEqual([
       { type: "table", name: PRICE_INTERVAL_PROJECTION },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(17);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(19);
     // No kind is added: the stream has carried PRICE_TABLE since migration 9.
     expect(DOCUMENT_KINDS).toContain("PRICE_TABLE");
   });
@@ -2201,7 +2215,7 @@ describe("migration 22 names an effect's result by reference, with its outcome, 
     expect(TWENTY_SECOND?.name).toBe("effect_result_reference");
     expect(EFFECT_RESULT_REFERENCE_MIGRATION).toBe(22);
     expect(MIGRATIONS[EFFECT_RESULT_REFERENCE_MIGRATION - 1]?.name).toBe("effect_result_reference");
-    expect(MIGRATIONS).toHaveLength(27);
+    expect(MIGRATIONS).toHaveLength(28);
   });
 
   it("adds three columns in place and two triggers, and creates, drops, updates and seeds nothing else", () => {
@@ -2283,7 +2297,7 @@ describe("migration 23 pins a delivery's price catalog version, by cohort", () =
     expect(TWENTY_THIRD?.name).toBe("dispatch_catalog_pin");
     expect(DISPATCH_CATALOG_PIN_MIGRATION).toBe(23);
     expect(MIGRATIONS[DISPATCH_CATALOG_PIN_MIGRATION - 1]?.name).toBe("dispatch_catalog_pin");
-    expect(MIGRATIONS).toHaveLength(27);
+    expect(MIGRATIONS).toHaveLength(28);
   });
 
   it("adds three columns in place and two triggers, and creates, drops, updates and seeds nothing else", () => {
@@ -2481,7 +2495,7 @@ describe("migration 24 makes a roadmap version's number unique per initiative", 
     expect(TWENTY_FOURTH?.name).toBe("roadmap_version_uniqueness");
     expect(ROADMAP_VERSION_UNIQUENESS_MIGRATION).toBe(24);
     expect(MIGRATIONS[ROADMAP_VERSION_UNIQUENESS_MIGRATION - 1]?.name).toBe("roadmap_version_uniqueness");
-    expect(MIGRATIONS).toHaveLength(27);
+    expect(MIGRATIONS).toHaveLength(28);
   });
 
   it("creates one unique index and nothing else, and the inventory names it", () => {
@@ -2555,9 +2569,19 @@ describe("migration 24 makes a roadmap version's number unique per initiative", 
     return { initiativeId, ids };
   }
 
-  /** Migrations 27, 26, 25 and 24 undone on a raw handle: the ledger is back at 23. */
+  /** Migrations 28, 27, 26, 25 and 24 undone on a raw handle: the ledger is back at 23. */
   function rewindTo23(raw: Database.Database): void {
     // Migration 27 first (P-27 cut C): its table names the step table by foreign key.
+    // Migration 28 first (P-16/B): a verdict names its receipt, and both name an attempt.
+    raw.exec(
+      "DROP TRIGGER tr_audit_verdict_read_model__insert_only; " +
+        "DROP TRIGGER tr_verification_read_model__insert_only; " +
+        "DROP INDEX ix_audit_verdict_read_model__attempt; " +
+        "DROP INDEX ix_verification_read_model__attempt; " +
+        "DROP TABLE audit_verdict_read_model; " +
+        "DROP TABLE verification_read_model; " +
+        "DELETE FROM projection_watermark WHERE projection_name IN ('verification_read_model', 'audit_verdict_read_model');",
+    );
     raw.exec(
       "DROP TRIGGER tr_task_step_link_read_model__insert_only; " +
         "DROP INDEX ix_task_step_link_read_model__task_sequence; " +
@@ -2651,8 +2675,8 @@ describe("migration 24 makes a roadmap version's number unique per initiative", 
   it("is present on a fresh ledger", () => {
     const path = scratch();
     openLedger(path).close();
-    // 25 when this migration's suite was written; migration 27 (P-27 cut C) is the tail.
-    expect(state(path)).toEqual({ applied: 27, index: 1 });
+    // 25 when this migration's suite was written; migration 28 (P-16/B) is the tail.
+    expect(state(path)).toEqual({ applied: 28, index: 1 });
   });
 
   it("upgrades a ledger at 23 holding versions 1..3, and every row is unchanged", () => {
@@ -2671,7 +2695,7 @@ describe("migration 24 makes a roadmap version's number unique per initiative", 
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     expect(rows.map((row) => row.version)).toEqual([1, 2, 3]);
-    expect(state(path)).toEqual({ applied: 27, index: 1 });
+    expect(state(path)).toEqual({ applied: 28, index: 1 });
   });
 
   it("refuses a stream holding two events with one (initiativeId, version), names the pair, and applies nothing", () => {
@@ -2772,7 +2796,7 @@ describe("migration 25 gives a roadmap version its steps", () => {
     expect(TWENTY_FIFTH?.name).toBe("roadmap_steps");
     expect(ROADMAP_STEPS_MIGRATION).toBe(25);
     // The tail until P-27 cut A's migration 26 followed it, and 27 after that.
-    expect(MIGRATIONS).toHaveLength(27);
+    expect(MIGRATIONS).toHaveLength(28);
     expect(MIGRATIONS[ROADMAP_STEPS_MIGRATION]?.name).toBe("task_graph");
   });
 
@@ -3000,7 +3024,7 @@ describe("migration 26 gives a step its task graph", () => {
     expect(TASK_GRAPH_MIGRATION).toBe(26);
     expect(MIGRATIONS[TASK_GRAPH_MIGRATION - 1]?.name).toBe("task_graph");
     // The tail until P-27 cut C's migration 27 followed it.
-    expect(MIGRATIONS).toHaveLength(27);
+    expect(MIGRATIONS).toHaveLength(28);
     expect(MIGRATIONS[TASK_GRAPH_MIGRATION]?.name).toBe("task_step_link");
   });
 
@@ -3048,9 +3072,10 @@ describe("migration 26 gives a step its task graph", () => {
     expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({ type: "trigger", name: "tr_task_graph_revision_read_model__supersede_once" });
     expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({ type: "index", name: "ix_task_dependency_read_model__depends_on" });
     // 34 and 129 when this migration landed; P-27 cut C's migration 27 added one table,
-    // and one table, one index and one trigger to the inventory.
-    expect(DERIVED_TABLES).toHaveLength(35);
-    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(132);
+    // and one table, one index and one trigger to the inventory; P-16/B's migration 28
+    // two tables, and two tables, two indexes and two triggers.
+    expect(DERIVED_TABLES).toHaveLength(37);
+    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(138);
   });
 
   function scratch(): string {
@@ -3104,6 +3129,16 @@ describe("migration 26 gives a step its task graph", () => {
     const raw = new Database(path);
     // Migration 27 first (P-27 cut C): its table names the step table, and it is undone
     // before 26 by the rule that undoes 26 before 25.
+    // Migration 28 first (P-16/B): a verdict names its receipt, and both name an attempt.
+    raw.exec(
+      "DROP TRIGGER tr_audit_verdict_read_model__insert_only; " +
+        "DROP TRIGGER tr_verification_read_model__insert_only; " +
+        "DROP INDEX ix_audit_verdict_read_model__attempt; " +
+        "DROP INDEX ix_verification_read_model__attempt; " +
+        "DROP TABLE audit_verdict_read_model; " +
+        "DROP TABLE verification_read_model; " +
+        "DELETE FROM projection_watermark WHERE projection_name IN ('verification_read_model', 'audit_verdict_read_model');",
+    );
     raw.exec(
       "DROP TRIGGER tr_task_step_link_read_model__insert_only; " +
         "DROP INDEX ix_task_step_link_read_model__task_sequence; " +
@@ -3123,7 +3158,7 @@ describe("migration 26 gives a step its task graph", () => {
     expect(watermarks(path)).toEqual([]);
 
     const migrated = openLedger(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_STEP_LINK_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(VERIFICATION_AUDIT_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     const rows = watermarks(path);
@@ -3133,7 +3168,7 @@ describe("migration 26 gives a step its task graph", () => {
       [1, 1],
     ]);
     expect(new Set(rows.map((row) => row.head)).size).toBe(1);
-    expect(head.migrations.at(-1)?.version).toBe(TASK_STEP_LINK_MIGRATION);
+    expect(head.migrations.at(-1)?.version).toBe(VERIFICATION_AUDIT_MIGRATION);
   });
 
   /** A raw handle with foreign keys ON, over a step the three tables can hang off. */
@@ -3318,12 +3353,14 @@ describe("migration 27 records a task's step links", () => {
     linked_at: "2026-09-25T00:00:00.000Z",
   };
 
-  it("sits at the tail of a set whose order is fixed", () => {
+  it("sits at the position a set whose order is fixed gave it", () => {
     expect(TWENTY_SEVENTH?.version).toBe(27);
     expect(TWENTY_SEVENTH?.name).toBe("task_step_link");
     expect(TASK_STEP_LINK_MIGRATION).toBe(27);
     expect(MIGRATIONS[TASK_STEP_LINK_MIGRATION - 1]?.name).toBe("task_step_link");
-    expect(MIGRATIONS).toHaveLength(27);
+    // The tail until P-16/B's migration 28 followed it.
+    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS[TASK_STEP_LINK_MIGRATION]?.name).toBe("verification_audit");
   });
 
   it("adds one table, one index and one trigger, alters nothing, and seeds one watermark", () => {
@@ -3367,9 +3404,10 @@ describe("migration 27 records a task's step links", () => {
     ]) {
       expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual(object);
     }
-    // 34 + 1 and 129 + 3: the table, and the table, its index and its trigger.
-    expect(DERIVED_TABLES).toHaveLength(35);
-    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(132);
+    // 34 + 1 and 129 + 3: the table, and the table, its index and its trigger; then
+    // migration 28's 2 and 6 (P-16/B).
+    expect(DERIVED_TABLES).toHaveLength(37);
+    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(138);
     expect(INITIATIVE_PROJECTION_NAMES).toHaveLength(8);
   });
 
@@ -3417,6 +3455,16 @@ describe("migration 27 records a task's step links", () => {
     });
     ledger.close();
     const raw = new Database(path);
+    // Migration 28 first (P-16/B): a verdict names its receipt, and both name an attempt.
+    raw.exec(
+      "DROP TRIGGER tr_audit_verdict_read_model__insert_only; " +
+        "DROP TRIGGER tr_verification_read_model__insert_only; " +
+        "DROP INDEX ix_audit_verdict_read_model__attempt; " +
+        "DROP INDEX ix_verification_read_model__attempt; " +
+        "DROP TABLE audit_verdict_read_model; " +
+        "DROP TABLE verification_read_model; " +
+        "DELETE FROM projection_watermark WHERE projection_name IN ('verification_read_model', 'audit_verdict_read_model');",
+    );
     raw.exec(
       "DROP TRIGGER tr_task_step_link_read_model__insert_only; " +
         "DROP INDEX ix_task_step_link_read_model__task_sequence; " +
@@ -3428,7 +3476,7 @@ describe("migration 27 records a task's step links", () => {
     expect(watermark(path)).toEqual([]);
 
     const migrated = openLedger(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(TASK_STEP_LINK_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(VERIFICATION_AUDIT_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     const rows = watermark(path);
@@ -3523,6 +3571,429 @@ describe("migration 27 records a task's step links", () => {
     );
     // The rebuild's clearing is a DELETE, which the trigger does not see.
     expect(verdict(() => raw.prepare("DELETE FROM task_step_link_read_model").run()).admit).toBe(true);
+    raw.close();
+  });
+});
+
+/**
+ * Migration 28, a verification by its receipt and a verdict by its tree (P-16/B, ADR
+ * 0122; execution §10.2-§10.3 and the common objects of §10).
+ *
+ * The text; the rosters the rebuild and the watermarks read, children before the
+ * attempt they name; a fresh ledger and one upgraded from 27 with both watermarks
+ * born at the task head and the head event's instant; every named CHECK bitten by its
+ * own row, plus a NULL per column and the run ids at NULL and 0 (B-4); and both
+ * insert-only triggers bitten by an update of every column. `test/verification-record`
+ * asserts the door, the fold and the foreign keys' order over a real ledger.
+ */
+describe("migration 28 records a verification by its receipt and a verdict by its tree", () => {
+  const TWENTY_EIGHTH = MIGRATIONS[27];
+  const statements = (TWENTY_EIGHTH?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+  const HEX64 = "a".repeat(64);
+  const HEX40 = "b".repeat(40);
+  const AT = "2026-09-26T12:00:00.000Z";
+  const RECEIPT_COLUMNS = [
+    "receipt_sha256",
+    "task_id",
+    "revision_number",
+    "attempt_number",
+    "verifier_identity",
+    "verifier_worker_id",
+    "verifier_run_id",
+    "writer_identity",
+    "writer_worker_id",
+    "base_sha",
+    "tree_sha",
+    "policy_sha256",
+    "write_set_sha256",
+    "artifact_ref_id",
+    "checks_sha256",
+    "run_status",
+    "all_checks_zero",
+    "recorded_at",
+    "sequence",
+  ];
+  const VERDICT_COLUMNS = [
+    "audit_id",
+    "task_id",
+    "revision_number",
+    "attempt_number",
+    "receipt_sha256",
+    "tree_sha",
+    "writer_worker_id",
+    "auditor_identity",
+    "auditor_worker_id",
+    "auditor_run_id",
+    "verdict",
+    "evidence_sha256",
+    "artifact_ref_id",
+    "recorded_at",
+    "sequence",
+  ];
+  const receiptRow: Record<string, unknown> = {
+    receipt_sha256: HEX64,
+    task_id: "t1",
+    revision_number: 1,
+    attempt_number: 1,
+    verifier_identity: "claude/sonnet/verifier/01",
+    verifier_worker_id: "v-worker",
+    verifier_run_id: 1,
+    writer_identity: "claude/opus/implementer/01",
+    writer_worker_id: "w-worker",
+    base_sha: HEX40,
+    tree_sha: HEX40,
+    policy_sha256: HEX64,
+    write_set_sha256: HEX64,
+    artifact_ref_id: "ref-receipt",
+    checks_sha256: HEX64,
+    run_status: "PASS",
+    all_checks_zero: 1,
+    recorded_at: AT,
+    sequence: 1,
+  };
+  const verdictRow: Record<string, unknown> = {
+    audit_id: "a1",
+    task_id: "t1",
+    revision_number: 1,
+    attempt_number: 1,
+    receipt_sha256: HEX64,
+    tree_sha: HEX40,
+    writer_worker_id: "w-worker",
+    auditor_identity: "claude/sonnet/reviewer/01",
+    auditor_worker_id: "a-worker",
+    auditor_run_id: 1,
+    verdict: "ACCEPT",
+    evidence_sha256: HEX64,
+    artifact_ref_id: "ref-evidence",
+    recorded_at: AT,
+    sequence: 2,
+  };
+
+  it("sits at the tail of a set whose order is fixed", () => {
+    expect(TWENTY_EIGHTH?.version).toBe(28);
+    expect(TWENTY_EIGHTH?.name).toBe("verification_audit");
+    expect(VERIFICATION_AUDIT_MIGRATION).toBe(28);
+    expect(MIGRATIONS[VERIFICATION_AUDIT_MIGRATION - 1]?.name).toBe("verification_audit");
+    expect(MIGRATIONS).toHaveLength(28);
+  });
+
+  it("adds two STRICT tables, two indexes and two triggers, alters nothing, and seeds two watermarks", () => {
+    expect([...statements.matchAll(/CREATE TABLE (\w+)/g)].map((match) => match[1])).toEqual([
+      VERIFICATION_PROJECTION,
+      AUDIT_VERDICT_PROJECTION,
+    ]);
+    expect([...statements.matchAll(/CREATE TRIGGER (\w+)/g)].map((match) => match[1])).toEqual([
+      "tr_verification_read_model__insert_only",
+      "tr_audit_verdict_read_model__insert_only",
+    ]);
+    expect([...statements.matchAll(/CREATE (?:UNIQUE )?INDEX (\w+)/g)].map((match) => match[1])).toEqual([
+      "ix_verification_read_model__attempt",
+      "ix_audit_verdict_read_model__attempt",
+    ]);
+    expect(statements).not.toMatch(/DROP |ALTER TABLE|ON CONFLICT|\bSET\b|DEFAULT/);
+    expect(statements.match(/\) STRICT;/g)).toHaveLength(2);
+    // No object format and no subject columns: §10.2 has none, and §10.3's
+    // adjudication triple is a reading, not columns.
+    expect(statements).not.toMatch(/object_format|subject_/);
+    // Both triggers have no condition: every update aborts, whatever it names.
+    const bodies = [...statements.matchAll(/BEGIN\n([\s\S]*?)\nEND;/g)].map((match) => match[1] ?? "");
+    expect(bodies).toHaveLength(2);
+    for (const body of bodies) {
+      expect(body).not.toContain("WHERE");
+      expect(body).toContain("RAISE(ABORT");
+    }
+    // Every named object of §10.2/§10.3 and the common block, by name.
+    for (const name of [
+      "pk_verification_read_model",
+      "fk_verification_read_model__task_attempt_read_model",
+      "fk_verification_read_model__control_plane_events",
+      "ck_verification_read_model__receipt_sha256_shape",
+      "ck_verification_read_model__revision_number_positive",
+      "ck_verification_read_model__attempt_number_positive",
+      "ck_verification_read_model__verifier_run_id_positive",
+      "ck_verification_read_model__distinct_workers",
+      "ck_verification_read_model__base_sha_shape",
+      "ck_verification_read_model__tree_sha_shape",
+      "ck_verification_read_model__policy_sha256_shape",
+      "ck_verification_read_model__write_set_sha256_shape",
+      "ck_verification_read_model__checks_sha256_shape",
+      "ck_verification_read_model__run_status",
+      "ck_verification_read_model__all_checks_zero",
+      "ck_verification_read_model__pass_requires_zero_checks",
+      "ck_verification_read_model__recorded_at_shape",
+      "ck_verification_read_model__sequence_positive",
+      "pk_audit_verdict_read_model",
+      "fk_audit_verdict_read_model__verification_read_model",
+      "fk_audit_verdict_read_model__task_attempt_read_model",
+      "fk_audit_verdict_read_model__control_plane_events",
+      "ck_audit_verdict_read_model__revision_number_positive",
+      "ck_audit_verdict_read_model__attempt_number_positive",
+      "ck_audit_verdict_read_model__receipt_sha256_shape",
+      "ck_audit_verdict_read_model__tree_sha_shape",
+      "ck_audit_verdict_read_model__distinct_from_writer",
+      "ck_audit_verdict_read_model__auditor_run_id_positive",
+      "ck_audit_verdict_read_model__verdict",
+      "ck_audit_verdict_read_model__evidence_sha256_shape",
+      "ck_audit_verdict_read_model__recorded_at_shape",
+      "ck_audit_verdict_read_model__sequence_positive",
+    ]) {
+      expect(statements, name).toMatch(new RegExp("CONSTRAINT " + name + "\\s"));
+    }
+    // The attempt and the receipt are deferred; the stream's key is immediate.
+    expect(statements.match(/ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED/g)).toHaveLength(3);
+    expect(statements.match(/REFERENCES control_plane_events \(sequence\) ON DELETE RESTRICT,/g)).toHaveLength(2);
+    // The run ids are integers (B-4), and §10.1's instant is spelled once per table.
+    expect(statements).toMatch(/verifier_run_id\s+INTEGER NOT NULL/);
+    expect(statements).toMatch(/auditor_run_id\s+INTEGER NOT NULL/);
+    expect(statements.split("[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T").length - 1).toBe(2);
+    expect(statements).toContain("'control_plane_events',\n  1,");
+  });
+
+  it("declares both projections in every roster that must agree, cleared verdicts first and before the attempts", () => {
+    const at = (name: string): number => DERIVED_TABLES.indexOf(name);
+    expect(at(AUDIT_VERDICT_PROJECTION)).toBeGreaterThanOrEqual(0);
+    expect(at(AUDIT_VERDICT_PROJECTION)).toBeLessThan(at(VERIFICATION_PROJECTION));
+    expect(at(VERIFICATION_PROJECTION)).toBeLessThan(at(TASK_ATTEMPT_PROJECTION));
+    for (const name of [VERIFICATION_PROJECTION, AUDIT_VERDICT_PROJECTION]) {
+      expect(PROJECTION_NAMES).toContain(name);
+      expect(PROJECTION_SOURCES.filter((source) => source.projectionName === name)).toEqual([
+        { projectionName: name, sourceStream: TASK_STREAM },
+      ]);
+    }
+    for (const object of [
+      { type: "table", name: VERIFICATION_PROJECTION },
+      { type: "index", name: "ix_verification_read_model__attempt" },
+      { type: "trigger", name: "tr_verification_read_model__insert_only" },
+      { type: "table", name: AUDIT_VERDICT_PROJECTION },
+      { type: "index", name: "ix_audit_verdict_read_model__attempt" },
+      { type: "trigger", name: "tr_audit_verdict_read_model__insert_only" },
+    ]) {
+      expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual(object);
+    }
+    expect(DERIVED_TABLES).toHaveLength(37);
+    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(138);
+  });
+
+  function scratch(): string {
+    return join(mkdtempSync(join(realpathSync(tmpdir()), "acp-p16b-migration-")), "ledger.sqlite");
+  }
+
+  interface Mark {
+    readonly name: string;
+    readonly sequence: number;
+    readonly count: number;
+    readonly head: string;
+    readonly updatedAt: string;
+  }
+
+  function marks(path: string): readonly Mark[] {
+    const raw = new Database(path, { readonly: true });
+    try {
+      return raw
+        .prepare(
+          "SELECT projection_name AS name, applied_sequence AS sequence, event_count AS count, " +
+            "source_head_sha256 AS head, updated_at AS updatedAt FROM projection_watermark " +
+            "WHERE projection_name IN (?, ?) ORDER BY projection_name",
+        )
+        .all(VERIFICATION_PROJECTION, AUDIT_VERDICT_PROJECTION) as Mark[];
+    } finally {
+      raw.close();
+    }
+  }
+
+  it("is present on a fresh ledger, both watermarks at the empty task head and the epoch", () => {
+    const path = scratch();
+    openLedger(path).close();
+    expect(marks(path).map((row) => [row.name, row.sequence, row.count, row.head, row.updatedAt])).toEqual([
+      [AUDIT_VERDICT_PROJECTION, 0, 0, GENESIS_SHA256, "1970-01-01T00:00:00.000Z"],
+      [VERIFICATION_PROJECTION, 0, 0, GENESIS_SHA256, "1970-01-01T00:00:00.000Z"],
+    ]);
+  });
+
+  it("upgrades a ledger at 27 holding a task, both watermarks born at the head with the head event's instant", () => {
+    const path = scratch();
+    const ledger = openLedger(path);
+    const taskId = randomUUID();
+    const recordedAt = "2026-09-26T09:30:00.123Z";
+    ledger.append({
+      contractVersion: CONTRACT_VERSION,
+      eventId: randomUUID(),
+      taskId,
+      attempt: 1,
+      transitionId: "discover",
+      idempotencyKey: buildIdempotencyKey({ taskId, attempt: 1, transitionId: "discover" }),
+      type: "TASK_DISCOVERED",
+      fromState: null,
+      toState: "DISCOVERED",
+      emittedBy: "claude/opus/coordinator/01",
+      occurredAt: recordedAt,
+      recordedAt,
+      correlationId: null,
+      causationId: null,
+      payload: {},
+    });
+    const head = ledger.status();
+    ledger.close();
+    const raw = new Database(path);
+    raw.exec(
+      "DROP TRIGGER tr_audit_verdict_read_model__insert_only; " +
+        "DROP TRIGGER tr_verification_read_model__insert_only; " +
+        "DROP INDEX ix_audit_verdict_read_model__attempt; " +
+        "DROP INDEX ix_verification_read_model__attempt; " +
+        "DROP TABLE audit_verdict_read_model; " +
+        "DROP TABLE verification_read_model; " +
+        "DELETE FROM projection_watermark WHERE projection_name IN ('verification_read_model', 'audit_verdict_read_model');",
+    );
+    raw.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(VERIFICATION_AUDIT_MIGRATION);
+    raw.close();
+    expect(marks(path)).toEqual([]);
+
+    const migrated = openLedger(path);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(VERIFICATION_AUDIT_MIGRATION);
+    expect(migrated.verifyIntegrity().problems).toEqual([]);
+    migrated.close();
+    expect(marks(path).map((row) => [row.name, row.sequence, row.count, row.head, row.updatedAt])).toEqual([
+      [AUDIT_VERDICT_PROJECTION, 1, 1, head.headEventSha256, recordedAt],
+      [VERIFICATION_PROJECTION, 1, 1, head.headEventSha256, recordedAt],
+    ]);
+  });
+
+  /** A raw handle over a fresh ledger with foreign keys OFF: the CHECKs alone are under test. */
+  function checksOnly(): Database.Database {
+    const path = scratch();
+    openLedger(path).close();
+    const raw = new Database(path);
+    raw.pragma("foreign_keys = OFF");
+    return raw;
+  }
+
+  function verdict(write: () => void): { readonly admit: boolean; readonly message: string } {
+    try {
+      write();
+      return { admit: true, message: "" };
+    } catch (error: unknown) {
+      return { admit: false, message: String(error) };
+    }
+  }
+
+  function inserter(raw: Database.Database, table: string, columns: readonly string[]) {
+    const statement = raw.prepare(
+      "INSERT INTO " + table + " (" + columns.join(", ") + ") VALUES (" + columns.map(() => "?").join(", ") + ")",
+    );
+    return (row: Record<string, unknown>): Database.RunResult => statement.run(...columns.map((column) => row[column]));
+  }
+
+  it("refuses a NULL in every column of either table, and the run ids at 0 (B-4)", () => {
+    const raw = checksOnly();
+    const receipt = inserter(raw, VERIFICATION_PROJECTION, RECEIPT_COLUMNS);
+    const audit = inserter(raw, AUDIT_VERDICT_PROJECTION, VERDICT_COLUMNS);
+    for (const column of RECEIPT_COLUMNS) {
+      expect(verdict(() => receipt({ ...receiptRow, [column]: null })).admit, column).toBe(false);
+    }
+    for (const column of VERDICT_COLUMNS) {
+      expect(verdict(() => audit({ ...verdictRow, [column]: null })).admit, column).toBe(false);
+    }
+    expect(verdict(() => receipt({ ...receiptRow, verifier_run_id: 0 })).message).toContain(
+      "ck_verification_read_model__verifier_run_id_positive",
+    );
+    expect(verdict(() => audit({ ...verdictRow, auditor_run_id: 0 })).message).toContain(
+      "ck_audit_verdict_read_model__auditor_run_id_positive",
+    );
+    // STRICT: a run id is an integer, never its text.
+    expect(verdict(() => receipt({ ...receiptRow, verifier_run_id: "one" })).admit).toBe(false);
+    // The lawful rows.
+    expect(verdict(() => receipt(receiptRow)).admit).toBe(true);
+    expect(verdict(() => audit(verdictRow)).admit).toBe(true);
+    raw.close();
+  });
+
+  it("bites every named CHECK of the receipt with its own row, and admits the lawful FAIL shapes", () => {
+    const raw = checksOnly();
+    const receipt = inserter(raw, VERIFICATION_PROJECTION, RECEIPT_COLUMNS);
+    let n = 0;
+    const fresh = (overrides: Record<string, unknown>): Record<string, unknown> => {
+      n += 1;
+      return { ...receiptRow, receipt_sha256: n.toString(16).padStart(64, "0"), ...overrides };
+    };
+    const cases: readonly (readonly [string, Record<string, unknown>])[] = [
+      ["ck_verification_read_model__receipt_sha256_shape", { receipt_sha256: "A".repeat(64) }],
+      ["ck_verification_read_model__receipt_sha256_shape", { receipt_sha256: "a".repeat(63) }],
+      ["ck_verification_read_model__revision_number_positive", { revision_number: 0 }],
+      ["ck_verification_read_model__attempt_number_positive", { attempt_number: 0 }],
+      ["ck_verification_read_model__distinct_workers", { verifier_worker_id: "w-worker" }],
+      ["ck_verification_read_model__base_sha_shape", { base_sha: "g".repeat(40) }],
+      ["ck_verification_read_model__tree_sha_shape", { tree_sha: "b".repeat(41) }],
+      ["ck_verification_read_model__policy_sha256_shape", { policy_sha256: "z".repeat(64) }],
+      ["ck_verification_read_model__write_set_sha256_shape", { write_set_sha256: "a".repeat(65) }],
+      ["ck_verification_read_model__checks_sha256_shape", { checks_sha256: "" }],
+      ["ck_verification_read_model__run_status", { run_status: "pass" }],
+      ["ck_verification_read_model__all_checks_zero", { all_checks_zero: 2 }],
+      ["ck_verification_read_model__pass_requires_zero_checks", { run_status: "PASS", all_checks_zero: 0 }],
+      ["ck_verification_read_model__recorded_at_shape", { recorded_at: "2026-09-26T12:00:00.000+02:00" }],
+      ["ck_verification_read_model__recorded_at_shape", { recorded_at: "2026-09-26T12:00:00Z" }],
+      ["ck_verification_read_model__sequence_positive", { sequence: 0 }],
+    ];
+    for (const [name, overrides] of cases) {
+      expect(verdict(() => receipt(fresh(overrides))).message, name + " " + JSON.stringify(overrides)).toContain(name);
+    }
+    // FAIL with every check at zero, and FAIL with one nonzero: both lawful (§8 #18).
+    expect(verdict(() => receipt(fresh({ run_status: "FAIL", all_checks_zero: 1 }))).admit).toBe(true);
+    expect(verdict(() => receipt(fresh({ run_status: "FAIL", all_checks_zero: 0 }))).admit).toBe(true);
+    raw.close();
+  });
+
+  it("bites every named CHECK of the verdict with its own row, and admits each of the three verdicts", () => {
+    const raw = checksOnly();
+    const audit = inserter(raw, AUDIT_VERDICT_PROJECTION, VERDICT_COLUMNS);
+    let n = 0;
+    const fresh = (overrides: Record<string, unknown>): Record<string, unknown> => {
+      n += 1;
+      return { ...verdictRow, audit_id: "a-" + String(n), ...overrides };
+    };
+    const cases: readonly (readonly [string, Record<string, unknown>])[] = [
+      ["ck_audit_verdict_read_model__revision_number_positive", { revision_number: 0 }],
+      ["ck_audit_verdict_read_model__attempt_number_positive", { attempt_number: -1 }],
+      ["ck_audit_verdict_read_model__receipt_sha256_shape", { receipt_sha256: "a".repeat(40) }],
+      ["ck_audit_verdict_read_model__tree_sha_shape", { tree_sha: "a".repeat(64) }],
+      ["ck_audit_verdict_read_model__distinct_from_writer", { auditor_worker_id: "w-worker" }],
+      ["ck_audit_verdict_read_model__verdict", { verdict: "ACCEPTED" }],
+      ["ck_audit_verdict_read_model__evidence_sha256_shape", { evidence_sha256: "E".repeat(64) }],
+      ["ck_audit_verdict_read_model__recorded_at_shape", { recorded_at: "2026-09-26 12:00:00.000Z" }],
+      ["ck_audit_verdict_read_model__sequence_positive", { sequence: 0 }],
+    ];
+    for (const [name, overrides] of cases) {
+      expect(verdict(() => audit(fresh(overrides))).message, name + " " + JSON.stringify(overrides)).toContain(name);
+    }
+    // The auditor apart from the writer by instance, whatever the labels say.
+    expect(
+      verdict(() => audit(fresh({ auditor_identity: "claude/opus/reviewer/02", auditor_worker_id: "w-worker" }))).message,
+    ).toContain("ck_audit_verdict_read_model__distinct_from_writer");
+    for (const word of ["ACCEPT", "ACCEPT_WITH_CORRECTIONS", "REJECT"]) {
+      expect(verdict(() => audit(fresh({ verdict: word }))).admit, word).toBe(true);
+    }
+    raw.close();
+  });
+
+  it("both triggers bite an update of every column, and a delete still clears the tables", () => {
+    const raw = checksOnly();
+    inserter(raw, VERIFICATION_PROJECTION, RECEIPT_COLUMNS)(receiptRow);
+    inserter(raw, AUDIT_VERDICT_PROJECTION, VERDICT_COLUMNS)(verdictRow);
+    for (const [table, columns, key] of [
+      [VERIFICATION_PROJECTION, RECEIPT_COLUMNS, "receipt_sha256"],
+      [AUDIT_VERDICT_PROJECTION, VERDICT_COLUMNS, "audit_id"],
+    ] as const) {
+      for (const column of columns) {
+        const outcome = verdict(() =>
+          raw.prepare("UPDATE " + table + " SET " + column + " = " + column + " WHERE " + key + " IS NOT NULL").run(),
+        );
+        expect(outcome.message, table + "." + column).toContain("insert-only");
+      }
+    }
+    expect(verdict(() => raw.prepare("DELETE FROM audit_verdict_read_model").run()).admit).toBe(true);
+    expect(verdict(() => raw.prepare("DELETE FROM verification_read_model").run()).admit).toBe(true);
     raw.close();
   });
 });

@@ -41,6 +41,7 @@ export {
   LedgerInitiativeBatchConflictError,
   LedgerTaskGraphRefusedError,
   LedgerTaskStepLinkRefusedError,
+  LedgerVerificationRefusedError,
 } from "./errors/index.js";
 
 // P8-8D-pre: the content-addressed artifact store. The Checkpoint law's twin —
@@ -354,6 +355,12 @@ export type {
   TaskGraphTaskLink,
 } from "./task-graph/index.js";
 
+// P-16/B (ADR 0122): the closed words a receipt-form VERIFICATION_COMPLETED or a
+// verdict-form AUDIT_COMPLETED is refused by, at the door and in the fold. The decision
+// and the door's read of the receipt stay in the module: the task door is their caller.
+export { VERIFICATION_REFUSALS } from "./verification-record/index.js";
+export type { VerificationRefusal } from "./verification-record/index.js";
+
 // P-27 cut C (ADR 0116): a task's step link -- the decision, pure over what its caller
 // answers, with its closed refusal words; the one read of a task's current step, which
 // the task graph door and the runtime's READY adapter share; and the one producer the
@@ -559,6 +566,8 @@ export type {
   PromptOccurrenceReadModel,
   RedactionVerdict,
   ResponseOccurrenceReadModel,
+  VerificationReadModel,
+  AuditVerdictReadModel,
   LedgerEventRecord,
   LedgerIdentity,
   LedgerPragmaStatus,

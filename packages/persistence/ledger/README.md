@@ -67,6 +67,7 @@ ledger.close();
 | `decideTaskGraph(request)` | Pure. One task graph revision against what its caller answers about the history — whether its id is held, whether its step is declared under the initiative, the step's current revision, whether each task revision exists, and the step each task entered on — refused by one of seven words, `TASK_GRAPH_REFUSALS`; a cycle is `GRAPH_DEPENDENCY_CYCLE` at the nodes on it, by task id and revision, and a node whose task did not enter on this step is `GRAPH_TASK_OUT_OF_SCOPE` at the node. Two callers: the batch door, which is the law, and `declareTaskGraph`, the fast path. |
 | `declareTaskGraph(input)` | The one producer of a task graph revision: a revision id already recorded is answered as a replay from its rows, or refused if they differ; otherwise decide, then append the header and its nodes through the batch door. Handles, the instant and identities are injected; ledger errors are thrown untouched. |
 | `getTaskStepLinks(taskId)` | One task's step links in `sequence` order (P-27 cut C): the chain whose last target is its current step; empty for a task never linked. |
+| `getVerification(receiptSha256)` / `listAuditVerdicts(receiptSha256)` | One recorded verification receipt by its name, or null, and every verdict on it in `sequence` order (P-16/B): what P-17/A's authorization reads. Read-only; no route or verb exposes them. |
 | `currentTaskStepLink(intake, links)` | Pure. The one read of a task's current step: the last link by `sequence`, else the step its intake named, else null. The task graph door and producer, the link decision and the runtime's READY adapter share it. |
 | `decideTaskStepLink(request)` | Pure. One task's link to one step against what its caller answers — the step declared under the initiative, the versions' numbers, the task's revision 1, its intake and its links — refused by one of six words, `TASK_STEP_LINK_REFUSALS`, in the order ADR 0116 records. An adoption goes to any declared step, a re-link to the same step id in a strictly later version. Two callers: the single initiative door, which is the law, and `linkTaskToStep`, the fast path. |
 | `linkTaskToStep(input)` | The one producer of a task's step link: a link already recorded at `(task, version)` is answered as a replay from its row, or refused if it differs; otherwise decide, then append one `TASK_STEP_LINKED` through the single door. Handles, the instant and the event id are injected; ledger errors are thrown untouched. |
@@ -192,6 +193,7 @@ seventeenth class cannot arrive without appearing here.
 | `LedgerInitiativeBatchConflictError` | an initiative batch meets a stream that holds part of it, or all of it with other content; a batch is recorded whole or replayed whole, and carries the count of keys already recorded, never a body |
 | `LedgerTaskGraphRefusedError` | the batch door refuses a task graph revision by the decision's word, or the fold meets a revision the door would have refused; carries `reason` and `at` — a field path, or the nodes on a cycle by task id and revision — never content |
 | `LedgerTaskStepLinkRefusedError` | the single initiative door refuses a task's step link by the decision's word, or the fold meets a link the door would have refused; carries `reason` and `at`, a field path, never content. `rebuildReadModel()` throws it; `verifyIntegrity()` reports it |
+| `LedgerVerificationRefusedError` | the task door refuses a receipt-form `VERIFICATION_COMPLETED` or a verdict-form `AUDIT_COMPLETED` by one of the nineteen words of `VERIFICATION_REFUSALS`, or the fold meets one the door would have refused; carries `reason` and `at`, a field path, never a receipt's or an evidence's bytes nor a carried digest. `rebuildReadModel()` throws it; `verifyIntegrity()` reports it |
 
 ## Tables
 
@@ -210,6 +212,8 @@ seventeenth class cannot arrive without appearing here.
 | `execution_route_read_model` | derived | the route each `(task, attempt)` was admitted on: provider, model, account, transport and the capability-policy version that chose them |
 | `task_revision_read_model` | derived | one row per `(task, revision)`: the revision's stable handle, its envelope digest, the registered reference its envelope's bytes are read by (`NULL` before contract version `2.5.0`, since migration 16) and what it restored |
 | `task_attempt_read_model` | derived | one row per `(task, revision, attempt)`: the flat assignment that goes in the legacy `attempt` column, and the invocation the attempt is in bijection with |
+| `verification_read_model` | derived | one row per verification receipt, since migration 28 (execution §10.2): keyed by the `receipt_sha256` the door recomputed from the receipt's bytes, its attempt, the writer and the verifier (identity, instance, run), the base and verified trees, the policy, write-set and checks digests, `run_status`, `all_checks_zero`, and the reference its bytes are read by. Insert-only |
+| `audit_verdict_read_model` | derived | one row per audit verdict, since migration 28 (execution §10.3): keyed by its event id, bound to a PASS receipt of the same attempt, a copy of that receipt's tree and writer, the auditor (identity, instance, run), the verdict, and the evidence's digest and reference. Insert-only |
 | `execution_route_segment_read_model` | derived | one row per stretch of one attempt's route, with explicit lineage back to the segment that handed off to it |
 | `effect_read_model` | derived | one row per logical operation of a run, found by its logical key rather than by a physical coordinate; since migration 22, the contract version that recorded its outcome and, with the outcome, the registered `RESPONSE` reference and digest of its result |
 | `dispatch_attempt_read_model` | derived | one row per concrete external delivery of one effect, in the five states of execution §7 |
@@ -1784,6 +1788,67 @@ One table, `ix_task_step_link_read_model__task_sequence`, the insert-only trigge
 one watermark seeded at the initiative head, migration 26's text. Nothing is backfilled:
 no history before it holds a link. `CONTRACT_VERSION` does not move: the link's ids are
 derived and no existing shape gains a cohort (ND-1).
+
+## A verification by its receipt, and a verdict by its tree (P-16/B, ADR 0122)
+
+`VERIFICATION_COMPLETED` and `AUDIT_COMPLETED` have two forms each. A **beat** -- what
+the daemon's walk emits today, `{submissionDigest, [revisionNumber, attemptNumber],
+beat, planIndex}` or an observation-style top-level `verdict` -- is admitted
+byte-unchanged and projects nothing. A `VERIFICATION_COMPLETED` whose payload holds the
+key `verification` is in **receipt form**, and an `AUDIT_COMPLETED` holding
+`auditVerdict` is in **verdict form**. Both are closed at every level:
+
+```
+{ revisionNumber, attemptNumber, verification: { receiptSha256, artifactReferenceId,
+  baseSha, treeSha, policySha256, writeSetSha256, checksSha256, runStatus,
+  allChecksZero, writer: { identity, workerId }, verifier: { identity, workerId, runId } } }
+
+{ revisionNumber, attemptNumber, auditVerdict: { receiptSha256, treeSha, writerWorkerId,
+  auditor: { identity, workerId, runId }, verdict, evidenceSha256, artifactReferenceId } }
+```
+
+The reference is `artifactReferenceId`, the ledger's name for a registry reference id;
+`artifactRefId` is the content-block vocabulary and an unknown key here. The column keeps
+the canon's name, `artifact_ref_id`.
+
+**One decision, two callers.** `decideVerificationRecord` (module-private) is pure over
+the event and what its caller answers: the task door calls it inside its transaction,
+the fold over its snapshot, and both throw `LedgerVerificationRefusedError` with the
+same word (decision 56). It checks the grammar, the instant (`isCanonicalInstant`;
+an offset instant is `RECORDED_AT_NOT_CANONICAL`), that the coordinate names an opened
+attempt and the event's flat attempt is that row's, the writer's id as
+`writerWorkerIdFor(taskId, flat attempt)` (the bijection; `WRITER_ID_MISMATCH`),
+the verifier's and the auditor's independence by label and by instance, and for a
+verdict its PASS receipt of the same attempt, tree and writer.
+
+**The bytes are the door's alone.** Before its lock, `append` and `appendBatch` read the
+receipt (class `RECEIPT`) or the evidence (class `EVIDENCE`) by reference under the
+event's task, and hold the answer as a value. Inside the transaction, after the exact
+replay and the event-id checks, the door re-asserts the registry row, recomputes the
+receipt's name from its bytes with `receiptVerificationColumns` and refuses a
+difference as `RECEIPT_DIGEST_MISMATCH`, holds every carried column to the receipt
+(`RECEIPT_FIELD_MISMATCH` at its path), and requires the evidence to be a JSON object
+whose `receiptSha256` names the verdict's receipt (`EVIDENCE_RECEIPT_MISMATCH`). An
+exact replay returns its first record even if the bytes have since become unreadable.
+The fold and `verifyIntegrity()` copy what the door admitted and never reopen a blob.
+
+A second event naming the same receipt with the same metadata keeps the first row, its
+`sequence` and its `recorded_at`; other metadata is `RECEIPT_METADATA_CONFLICT`. A
+verdict's `audit_id` is its own event id.
+
+### Migration 28
+
+Two STRICT tables, execution §10.2 and §10.3, every CHECK named; the run ids are
+`INTEGER >= 1`; deferred keys to the attempt and (for a verdict) to the receipt, an
+immediate key to the stream; `ix_verification_read_model__attempt`,
+`ix_audit_verdict_read_model__attempt` and two insert-only triggers; two watermarks
+seeded at the task head with the head event's instant. Nothing is backfilled: no
+history before it holds either form (ND-10). The fold judges the record, never the blob, so
+a receipt-form event planted before 28 is folded by the rebuild even when the door
+would have refused its bytes: a row is byte-verified only when its event was admitted
+at migration 28 or later (ADR 0122 §One). `CONTRACT_VERSION` does not move (ND-1):
+no reader of recorded history recomputes a receipt's name. From migration 28 on, a change
+to the v5 writer-id rule or to either form's key grammar owes a bump with a cohort.
 
 ## Integrity
 

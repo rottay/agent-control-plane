@@ -44,6 +44,7 @@ import {
   LedgerTaskGraphRefusedError,
   LedgerTaskStepLinkRefusedError,
   LedgerValidationError,
+  LedgerVerificationRefusedError,
   type LedgerValidationIssue,
 } from "../errors/index.js";
 import { decideRoadmapVersion } from "../roadmap-version/index.js";
@@ -51,6 +52,13 @@ import { readRoadmapStepManifest } from "../roadmap-steps/index.js";
 import { decideTaskGraph, taskGraphLinkOf } from "../task-graph/index.js";
 import type { TaskGraphTaskLink } from "../task-graph/index.js";
 import { currentTaskStepLink, decideTaskStepLink } from "../task-step-link/index.js";
+import {
+  assertVerificationArtifact,
+  decideVerificationRecord,
+  readVerificationArtifact,
+  type VerificationArtifactRead,
+  type VerificationDecisionView,
+} from "../verification-record/index.js";
 import {
   ACCOUNT_INTEGRITY_MIGRATION,
   DISPATCH_CATALOG_PIN_MIGRATION,
@@ -291,6 +299,8 @@ import {
   type TaskRevisionReadModel,
   type TaskStepLinkReadModel,
   type TaskSubmissionReadModel,
+  type AuditVerdictReadModel,
+  type VerificationReadModel,
   TASK_CLIENT_KEY_PATTERN,
   type WorkerPage,
   type WorkerQuery,
@@ -1350,6 +1360,92 @@ interface TaskStepLinkRow {
   readonly from_step_id: string | null;
   readonly sequence: number;
   readonly linked_at: string;
+}
+
+/** One stored receipt row (P-16/B). Snake case, because it is a row. */
+interface VerificationRow {
+  readonly receipt_sha256: string;
+  readonly task_id: string;
+  readonly revision_number: number;
+  readonly attempt_number: number;
+  readonly verifier_identity: string;
+  readonly verifier_worker_id: string;
+  readonly verifier_run_id: number;
+  readonly writer_identity: string;
+  readonly writer_worker_id: string;
+  readonly base_sha: string;
+  readonly tree_sha: string;
+  readonly policy_sha256: string;
+  readonly write_set_sha256: string;
+  readonly artifact_ref_id: string;
+  readonly checks_sha256: string;
+  readonly run_status: string;
+  readonly all_checks_zero: number;
+  readonly recorded_at: string;
+  readonly sequence: number;
+}
+
+function verificationRowToModel(row: VerificationRow): VerificationReadModel {
+  return {
+    receiptSha256: row.receipt_sha256,
+    taskId: row.task_id,
+    revisionNumber: row.revision_number,
+    attemptNumber: row.attempt_number,
+    verifierIdentity: row.verifier_identity,
+    verifierWorkerId: row.verifier_worker_id,
+    verifierRunId: row.verifier_run_id,
+    writerIdentity: row.writer_identity,
+    writerWorkerId: row.writer_worker_id,
+    baseSha: row.base_sha,
+    treeSha: row.tree_sha,
+    policySha256: row.policy_sha256,
+    writeSetSha256: row.write_set_sha256,
+    artifactReferenceId: row.artifact_ref_id,
+    checksSha256: row.checks_sha256,
+    runStatus: row.run_status as VerificationReadModel["runStatus"],
+    allChecksZero: row.all_checks_zero === 1,
+    recordedAt: row.recorded_at,
+    sequence: row.sequence,
+  };
+}
+
+/** One stored verdict row (P-16/B). */
+interface AuditVerdictRow {
+  readonly audit_id: string;
+  readonly task_id: string;
+  readonly revision_number: number;
+  readonly attempt_number: number;
+  readonly receipt_sha256: string;
+  readonly tree_sha: string;
+  readonly writer_worker_id: string;
+  readonly auditor_identity: string;
+  readonly auditor_worker_id: string;
+  readonly auditor_run_id: number;
+  readonly verdict: string;
+  readonly evidence_sha256: string;
+  readonly artifact_ref_id: string;
+  readonly recorded_at: string;
+  readonly sequence: number;
+}
+
+function auditVerdictRowToModel(row: AuditVerdictRow): AuditVerdictReadModel {
+  return {
+    auditId: row.audit_id,
+    taskId: row.task_id,
+    revisionNumber: row.revision_number,
+    attemptNumber: row.attempt_number,
+    receiptSha256: row.receipt_sha256,
+    treeSha: row.tree_sha,
+    writerWorkerId: row.writer_worker_id,
+    auditorIdentity: row.auditor_identity,
+    auditorWorkerId: row.auditor_worker_id,
+    auditorRunId: row.auditor_run_id,
+    verdict: row.verdict as AuditVerdictReadModel["verdict"],
+    evidenceSha256: row.evidence_sha256,
+    artifactReferenceId: row.artifact_ref_id,
+    recordedAt: row.recorded_at,
+    sequence: row.sequence,
+  };
 }
 
 function taskStepLinkRowToModel(row: TaskStepLinkRow): TaskStepLinkReadModel {
@@ -4176,9 +4272,13 @@ export class Ledger {
     // not deserve the write lock, and a well-formed one cannot be resolved
     // without reading the stream it names.
     const reference = normalizeCausation(causation, "causation");
+    // The receipt or evidence a receipt-form or verdict-form event names, read by
+    // reference before the lock and held as a value (P-16/B, ND-4): a refusal in it is
+    // raised by name inside the transaction, after the replay check (B-5).
+    const artifact = readVerificationArtifact(this, event);
 
     const run = this.#db.transaction(
-      (): AppendResult => this.#appendInTransaction(event, canonicalJson, reference),
+      (): AppendResult => this.#appendInTransaction(event, canonicalJson, reference, artifact),
     );
     // IMMEDIATE takes the write lock at BEGIN rather than at first write, so
     // two processes serialize here instead of discovering the conflict late and
@@ -4258,6 +4358,8 @@ export class Ledger {
         event: parsed.data,
         canonicalJson: canonicalJsonStringify(parsed.data),
         causation: normalizeCausation(causations?.[index], "causations[" + String(index) + "]"),
+        // `append`'s read of the private plane, one per event, before the lock (P-16/B).
+        artifact: readVerificationArtifact(this, parsed.data),
       };
     });
 
@@ -4272,8 +4374,8 @@ export class Ledger {
       let predecessor: OutboxPredecessor | null = null;
       const inserted: { readonly index: number; readonly event: ControlPlaneEvent }[] = [];
 
-      for (const [index, { event, canonicalJson, causation }] of prepared.entries()) {
-        const appended = this.#appendOneInTransaction(event, canonicalJson, causation, predecessor);
+      for (const [index, { event, canonicalJson, causation, artifact }] of prepared.entries()) {
+        const appended = this.#appendOneInTransaction(event, canonicalJson, causation, predecessor, artifact);
         results.push(appended.result);
         if (appended.head === null) {
           predecessor = null;
@@ -4336,10 +4438,11 @@ export class Ledger {
     event: ControlPlaneEvent,
     canonicalJson: string,
     causation: CausationRef | null,
+    artifact: VerificationArtifactRead | null,
   ): AppendResult {
     // No predecessor: a unitary append is its own transaction, so nothing it
     // follows committed with it.
-    const appended = this.#appendOneInTransaction(event, canonicalJson, causation, null);
+    const appended = this.#appendOneInTransaction(event, canonicalJson, causation, null, artifact);
     if (appended.head === null) return appended.result;
 
     this.#writeWatermarks(TASK_WATERMARKS, {
@@ -4364,12 +4467,15 @@ export class Ledger {
    *
    * `predecessor` is the event the same transaction inserted immediately before
    * this one, or null — the only fact about a batch an outbox intention needs.
+   * `artifact` is the bytes a receipt-form or verdict-form event names, read before
+   * the lock (P-16/B), or null.
    */
   #appendOneInTransaction(
     event: ControlPlaneEvent,
     canonicalJson: string,
     causation: CausationRef | null,
     predecessor: OutboxPredecessor | null,
+    artifact: VerificationArtifactRead | null,
   ): AppendedEvent {
     const existingByKey = this.#stmt(
       "SELECT " + EVENT_COLUMNS + " FROM control_plane_events WHERE idempotency_key = ?",
@@ -4493,6 +4599,12 @@ export class Ledger {
     // settlement fold can see — a coverage overlap, a forked correction, the int64
     // ceiling — is refused as `#projectEvent` folds it, inside this transaction.
     assertUsageCaptureAdmissible(usageBaseView((sql) => this.#stmt(sql)), event);
+
+    // The receipt and the verdict (P-16/B, ADR 0122). After the attempt's identity,
+    // because both hang off an opened attempt, and before the insert, so a refusal
+    // writes nothing. The replay and event-id checks above ran first: an exact replay
+    // returned its first record whatever the bytes read before the lock said (B-5).
+    this.#assertVerificationGranted(event, expectedSequence, artifact);
 
     const info = this.#stmt(
       "INSERT INTO control_plane_events (" +
@@ -6416,6 +6528,143 @@ export class Ledger {
 
     const response = nextResponseOccurrenceProjection(event, sequence);
     if (response !== null) this.#insertResponseOccurrence(response);
+
+    // The receipt and the verdict (P-16/B), last, for `applyEventToSnapshot`'s order:
+    // the decision `#assertVerificationGranted` granted, run again over the same
+    // tables with the sequence the event was given. A row held under the same key
+    // and metadata is kept, with its first `sequence` and `recorded_at`.
+    const verification = decideVerificationRecord(this.#verificationView(), event, sequence);
+    if (verification?.kind === "VERIFICATION" && !verification.recorded) this.#insertVerification(verification.row);
+    if (verification?.kind === "AUDIT_VERDICT" && !verification.recorded) this.#insertAuditVerdict(verification.row);
+  }
+
+  /**
+   * What the verification decision asks about the history, answered from the tables
+   * this transaction keeps level (P-16/B). The fold answers the same three questions
+   * from its snapshot.
+   */
+  #verificationView(): VerificationDecisionView {
+    return {
+      legacyAttempt: (taskId, revisionNumber, attemptNumber) => {
+        const row = this.#stmt(
+          "SELECT legacy_attempt_number FROM task_attempt_read_model " +
+            "WHERE task_id = ? AND revision_number = ? AND attempt_number = ?",
+        ).get(taskId, revisionNumber, attemptNumber) as { readonly legacy_attempt_number: number } | undefined;
+        return row === undefined ? null : row.legacy_attempt_number;
+      },
+      verification: (receiptSha256) => {
+        const row = this.#stmt("SELECT * FROM verification_read_model WHERE receipt_sha256 = ?").get(receiptSha256) as
+          | VerificationRow
+          | undefined;
+        return row === undefined ? null : verificationRowToModel(row);
+      },
+      auditVerdict: (auditId) => {
+        const row = this.#stmt("SELECT * FROM audit_verdict_read_model WHERE audit_id = ?").get(auditId) as
+          | AuditVerdictRow
+          | undefined;
+        return row === undefined ? null : auditVerdictRowToModel(row);
+      },
+    };
+  }
+
+  /**
+   * Grant a receipt-form `VERIFICATION_COMPLETED` or a verdict-form `AUDIT_COMPLETED`,
+   * or refuse it by name before anything is written (P-16/B, ADR 0122; L-P16B-1).
+   *
+   * The one decision first, over this transaction's tables: grammar, instant, the
+   * opened attempt and its flat number, the writer's derived id, independence, and
+   * for a verdict its receipt row. Then what only bytes answer, over the value the
+   * door read before its lock: the registry's reference row, re-asserted here, and
+   * for a receipt its name recomputed from its bytes and every carried column held to
+   * the receipt; for a verdict the evidence bound to its receipt. An event in neither
+   * form passes untouched: a beat is admitted byte-unchanged (ND-2).
+   */
+  #assertVerificationGranted(event: ControlPlaneEvent, sequence: number, artifact: VerificationArtifactRead | null): void {
+    const decision = decideVerificationRecord(this.#verificationView(), event, sequence);
+    if (decision === null) return;
+    assertVerificationArtifact(decision, artifact, (artifactReferenceId) => {
+      const row = this.#stmt(
+        "SELECT artifact_class, content_sha256, scope_kind, scope_id FROM artifact_reference_read_model " +
+          "WHERE artifact_reference_id = ?",
+      ).get(artifactReferenceId) as
+        | {
+            readonly artifact_class: string;
+            readonly content_sha256: string;
+            readonly scope_kind: string;
+            readonly scope_id: string | null;
+          }
+        | undefined;
+      return row === undefined
+        ? null
+        : {
+            artifactClass: row.artifact_class,
+            contentSha256: row.content_sha256,
+            scopeKind: row.scope_kind,
+            scopeId: row.scope_id,
+          };
+    });
+  }
+
+  /**
+   * Write one receipt row. Insert-only (P-16/B; L-P16B-1): no conflict clause, and
+   * migration 28's trigger refuses any update. A receipt already held is kept by the
+   * decision before this is reached, and a rebuild writes into a cleared table.
+   */
+  #insertVerification(row: VerificationReadModel): void {
+    this.#stmt(
+      "INSERT INTO verification_read_model (" +
+        "receipt_sha256, task_id, revision_number, attempt_number, verifier_identity, verifier_worker_id, " +
+        "verifier_run_id, writer_identity, writer_worker_id, base_sha, tree_sha, policy_sha256, " +
+        "write_set_sha256, artifact_ref_id, checks_sha256, run_status, all_checks_zero, recorded_at, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      row.receiptSha256,
+      row.taskId,
+      row.revisionNumber,
+      row.attemptNumber,
+      row.verifierIdentity,
+      row.verifierWorkerId,
+      row.verifierRunId,
+      row.writerIdentity,
+      row.writerWorkerId,
+      row.baseSha,
+      row.treeSha,
+      row.policySha256,
+      row.writeSetSha256,
+      row.artifactReferenceId,
+      row.checksSha256,
+      row.runStatus,
+      row.allChecksZero ? 1 : 0,
+      row.recordedAt,
+      row.sequence,
+    );
+  }
+
+  /** Write one verdict row. Insert-only (P-16/B; L-P16B-1), on `#insertVerification`'s terms. */
+  #insertAuditVerdict(row: AuditVerdictReadModel): void {
+    this.#stmt(
+      "INSERT INTO audit_verdict_read_model (" +
+        "audit_id, task_id, revision_number, attempt_number, receipt_sha256, tree_sha, writer_worker_id, " +
+        "auditor_identity, auditor_worker_id, auditor_run_id, verdict, evidence_sha256, artifact_ref_id, " +
+        "recorded_at, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      row.auditId,
+      row.taskId,
+      row.revisionNumber,
+      row.attemptNumber,
+      row.receiptSha256,
+      row.treeSha,
+      row.writerWorkerId,
+      row.auditorIdentity,
+      row.auditorWorkerId,
+      row.auditorRunId,
+      row.verdict,
+      row.evidenceSha256,
+      row.artifactReferenceId,
+      row.recordedAt,
+      row.sequence,
+    );
   }
 
   #upsertExecutionRoute(route: ExecutionRouteReadModel): void {
@@ -9951,6 +10200,11 @@ export class Ledger {
       for (const response of snapshot.responseOccurrences.values()) {
         this.#insertResponseOccurrence(response);
       }
+      // The receipts, then the verdicts that name them (P-16/B), after the attempts
+      // both hang off. Cleared above verdicts first; every insert lands on an empty
+      // key, and a history the fold refused never reaches this loop.
+      for (const verification of snapshot.verifications.values()) this.#insertVerification(verification);
+      for (const verdict of snapshot.auditVerdicts.values()) this.#insertAuditVerdict(verdict);
       // The P-32/captura B cohort, after the effects and the deliveries it hangs
       // off, parents first: the streams, the observations in the order the replay
       // recorded them — a correction after its target — and each revision's
@@ -10181,8 +10435,28 @@ export class Ledger {
     // §Five): the task stream is reopened once, here, and never again for the link
     // reports below.
     const taskIntakes = new Map<string, TaskGraphTaskLink>();
+    // A receipt or a verdict the fold refuses is reported at its sequence rather than
+    // thrown (P-16/B): its decision is the fold's last step, so everything else the
+    // event folds is already in the snapshot, and the report describes the ledger
+    // instead of dying on it. The rebuild lets it throw.
+    const verificationRefusals: IntegrityProblem[] = [];
     const replay = this.#replay((event, row) => {
-      applyEventToSnapshot(snapshot, event, row.sequence, row.event_sha256);
+      try {
+        applyEventToSnapshot(snapshot, event, row.sequence, row.event_sha256);
+      } catch (error: unknown) {
+        if (!(error instanceof LedgerVerificationRefusedError)) throw error;
+        verificationRefusals.push({
+          kind: "PROJECTION",
+          detail:
+            "task sequence " +
+            String(row.sequence) +
+            " records a verification the fold refuses: " +
+            error.reason +
+            " at " +
+            error.at,
+          sequence: row.sequence,
+        });
+      }
       applyEventToOutboxFold(outbox, {
         event,
         sequence: row.sequence,
@@ -10192,7 +10466,7 @@ export class Ledger {
       const intake = taskGraphLinkOf(event);
       if (intake !== null && !taskIntakes.has(event.taskId)) taskIntakes.set(event.taskId, intake);
     });
-    problems.push(...replay.problems);
+    problems.push(...replay.problems, ...verificationRefusals);
 
     const initiativeSnapshot = createInitiativeProjectionSnapshot();
     // The fold refuses a roadmap version by name (P-26/A); a check reports that
@@ -11886,6 +12160,31 @@ export class Ledger {
         ).map((row) => [row.occurrence_id, responseOccurrenceRowToModel(row)]),
       ),
     );
+    // And P-16/B's pair, by the same helper and for its reason: a verdict quietly
+    // re-pointed at another receipt, or a run status flipped under a row, leaves every
+    // count unchanged.
+    this.#compareRowSet(
+      problems,
+      "verification_read_model",
+      snapshot.verifications,
+      new Map(
+        (this.#stmt("SELECT * FROM verification_read_model").all() as VerificationRow[]).map((row) => [
+          row.receipt_sha256,
+          verificationRowToModel(row),
+        ]),
+      ),
+    );
+    this.#compareRowSet(
+      problems,
+      "audit_verdict_read_model",
+      snapshot.auditVerdicts,
+      new Map(
+        (this.#stmt("SELECT * FROM audit_verdict_read_model").all() as AuditVerdictRow[]).map((row) => [
+          row.audit_id,
+          auditVerdictRowToModel(row),
+        ]),
+      ),
+    );
 
     this.#compareUsageProjections(snapshot, problems);
 
@@ -12306,6 +12605,31 @@ export class Ledger {
       "SELECT * FROM prompt_occurrence_read_model WHERE occurrence_id = ?",
     ).get(occurrenceId) as PromptOccurrenceRow | undefined;
     return row === undefined ? null : promptOccurrenceRowToModel(row);
+  }
+
+  /**
+   * One receipt row by its name, or null (P-16/B, ND-13): what P-17/A's
+   * authorization reads. Read-only; no route or verb exposes it.
+   */
+  getVerification(receiptSha256: string): VerificationReadModel | null {
+    this.#assertOpen("getVerification");
+    const row = this.#stmt("SELECT * FROM verification_read_model WHERE receipt_sha256 = ?").get(receiptSha256) as
+      | VerificationRow
+      | undefined;
+    return row === undefined ? null : verificationRowToModel(row);
+  }
+
+  /**
+   * Every verdict on one receipt, in the order recorded (P-16/B, ND-13). Empty for a
+   * receipt nobody audited, or one this ledger does not hold. Read-only.
+   */
+  listAuditVerdicts(receiptSha256: string): readonly AuditVerdictReadModel[] {
+    this.#assertOpen("listAuditVerdicts");
+    return (
+      this.#stmt("SELECT * FROM audit_verdict_read_model WHERE receipt_sha256 = ? ORDER BY sequence ASC").all(
+        receiptSha256,
+      ) as AuditVerdictRow[]
+    ).map(auditVerdictRowToModel);
   }
 
   /**
