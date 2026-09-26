@@ -108,7 +108,7 @@ que llegó. **Todavía sin productor**: ninguna fila existe hasta P-18.
 | `task_id` | TEXT | NOT NULL | PK (compuesta). |
 | `revision_number` | INTEGER | NOT NULL | PK (compuesta). `CHECK >= 1`. |
 | `revision_id` | TEXT | NOT NULL | `UNIQUE`. Identificador global estable de esta revisión, para referenciarla sin la coordenada compuesta. |
-| `envelope_sha256` | TEXT | NOT NULL | Cubre **todos** los campos de `TaskEnvelope` — objetivo, autoridad, `allowedCommands`, `forbiddenActions`, `conflictKeys`, reglas de validación, criterios de elegibilidad, forma de salida esperada, política de checkpoint, `visualEvidenceRequired`, clasificación y emisor de la autoridad (§6.2 canónico). **No** se duplica campo por campo acá: la preimagen exacta vive en el contrato maestro `kernel/contracts`. |
+| `envelope_sha256` | TEXT | NOT NULL | Cubre **todos** los campos de `TaskEnvelope` — `content` (la instrucción), autoridad, `allowedCommands`, `forbiddenActions`, `conflictKeys`, reglas de validación, criterios de elegibilidad, forma de salida esperada, política de checkpoint, `visualEvidenceRequired`, clasificación y emisor de la autoridad (§6.2 canónico). **No** se duplica campo por campo acá: la preimagen exacta vive en el contrato maestro `kernel/contracts`. |
 | `envelope_artifact_reference_id` | TEXT | NULL en la cohorte anterior; NOT NULL desde P-36/local | **Aditivo en P-36/local** (decisión 41): la columna no existe en las migraciones anteriores; `NULL` sólo en revisiones registradas antes de esa migración, y nunca se inventa una referencia por digest. El contenido íntegro del envelope es un artefacto de `artifact_class = 'TASK_ENVELOPE'` ([artifacts §2](../artifacts/index.md)). **Se recupera por esta referencia autorizada, no por el digest**: conocer `envelope_sha256` no concede acceso a los bytes. |
 | `restored_from_revision_id` | TEXT | NULL | `NULL` salvo que esta revisión sea la restauración de un envelope anterior. Puede compartir `envelope_sha256` con la revisión restaurada: eso es exactamente el caso que impide una `UNIQUE(task_id, envelope_sha256)` (§7.3 canónico). |
 | `created_at` | TEXT | NOT NULL | — |
@@ -549,10 +549,19 @@ ejecuciones del mismo punto tras un reintento).
 
 ---
 
-## 10. `checkpoint_read_model`, `verification_read_model`, `audit_verdict_read_model`, `commit_read_model`
+## 10. `checkpoint_read_model`, `verification_read_model`, `audit_verdict_read_model`, `commit_read_model`, `commit_authorization_read_model`
 
 **Nuevo** (el store de bytes ya existe, pero nadie produce la proyección
 hoy). Migradas de `attempt` plano a `(revision_number, attempt_number)`.
+
+Cinco tablas: el checkpoint (§10.1), el receipt de verificación (§10.2), el
+veredicto de auditoría (§10.3), el commit observado (§10.4) y la autorización de
+commit (§10.5), que §10.4 proyecta al registrarse. Ninguna existe en código,
+§10.1 incluida; los objetos comunes, los dueños de cada una y los negativos que
+heredan sus cortes están al final de la sección. El receipt, el veredicto, la
+autorización y el commit forman los cuatro eslabones direccionados por contenido de
+[contratos §12](../../contracts/index.md): cada uno se re-deriva desde bytes, nunca se
+copia de otra fila.
 
 ### 10.1 `checkpoint_read_model`
 
@@ -627,43 +636,97 @@ PK `receipt_sha256`. El receipt referencia un artefacto privado por **`artifact_
 autorizado**, no sólo por su digest — compartir un digest no concede acceso a los bytes
 (§12 canónico); ver [artifacts](../artifacts/index.md).
 
+**`receipt_sha256` es la clave efectiva.** Su preimagen es un prefijo versionado más
+el JSON canónico de {`taskId`, `revisionNumber`, `attemptNumber`, `baseSha`, `treeSha`,
+`objectFormat`, `policySha256`, `writeSetSha256`, `writer{identity, workerId}`,
+`verifier{identity, workerId, runId}`, `runStatus`, `checksSha256`,
+`commitMessageBody`}. Como `task_id` está dentro de la preimagen, la compuesta
+`(task_id, receipt_sha256)` de [contratos §15](../../contracts/index.md) es la forma
+enunciada de esta misma clave, no una segunda. Entra el **cuerpo** del mensaje de
+commit; el trailer `ACP-Receipt:` no entra, porque lleva este mismo digest (§10.5).
+Sólo ledger `receipt-identity` lo calcula (P-16/A2). La puerta lo recomputa desde los
+bytes del receipt leídos por referencia autorizada y rehúsa una diferencia como
+`RECEIPT_DIGEST_MISMATCH`; nunca lo copia de otra fila.
+
+**Quién llena las identidades.** El receipt lo produce el runner del plane, nunca un
+worker, y el plane llena `writer_worker_id`, `verifier_worker_id` y
+`verifier_run_id` desde sus propios registros; ningún proceso de worker escribe esos
+campos. El pid y el instante de arranque del proceso son sólo evidencia, y
+`SpawnedProcess.startedAt: 0` nunca se lee como instante de arranque.
+
 | Columna | Tipo | Nullable | Semántica |
 | --- | --- | --- | --- |
-| `receipt_sha256` | TEXT | NOT NULL | PK. |
-| `task_id` | TEXT | NOT NULL | tarea verificada. |
+| `receipt_sha256` | TEXT | NOT NULL | PK; clave efectiva (arriba). |
+| `task_id` | TEXT | NOT NULL | tarea verificada; igual al sujeto del evento. |
 | `revision_number` | INTEGER | NOT NULL | `ck_verification_read_model__revision_number_positive`: `> 0`. |
 | `attempt_number` | INTEGER | NOT NULL | `ck_verification_read_model__attempt_number_positive`: `> 0`. |
 | `verifier_identity` | TEXT | NOT NULL | identidad uniforme del verificador. |
-| `verifier_worker_id` | TEXT | NOT NULL | identidad de instancia **emitida por el supervisor**; es la que decide, no la etiqueta de rol. |
-| `verifier_run_id` | TEXT | NOT NULL | corrida concreta del verificador. |
+| `verifier_worker_id` | TEXT | NOT NULL | identidad de instancia **emitida por el supervisor**; es la que decide, no la etiqueta de rol. El runner la acuña como UUID v5 sobre `(task, attempt, role, ordinal de spawn)` bajo su propio espacio de nombres: determinista, reproducible en replay, sin azar ni reloj. |
+| `verifier_run_id` | TEXT | NOT NULL | corrida concreta del verificador: el ordinal de spawn de esa misma derivación. |
 | `writer_identity` | TEXT | NOT NULL | identidad uniforme del writer. |
-| `writer_worker_id` | TEXT | NOT NULL | identidad de instancia del writer. `ck_verification_read_model__distinct_workers`: `CHECK (verifier_worker_id <> writer_worker_id)`. |
-| `base_sha` | TEXT | NOT NULL | **el commit base** sobre el que se verificó; no es un árbol. |
-| `tree_sha` | TEXT | NOT NULL | SHA del árbol resultante verificado. |
+| `writer_worker_id` | TEXT | NOT NULL | identidad de instancia del writer: la derivación v5 por intento sobre `(taskId, attempt)`, la misma con que `claudeSessionId` (`packages/edges/providers/src/session-name/index.ts:43`) la deriva hoy, elevada a contracts en P-16/A2. Su entrada no lleva la coordenada de revisión; si debe llevarla es una pregunta de A2, nombrada aquí y no decidida. Un transporte de writer sin emisor se rehúsa por nombre (`WRITER_ID_UNISSUED`, límite con dueño P-28). `ck_verification_read_model__distinct_workers`: `CHECK (verifier_worker_id <> writer_worker_id)`. |
+| `base_sha` | TEXT | NOT NULL | **el commit base** sobre el que se verificó; no es un árbol. **No hay receipt de commit inicial**: la columna es NOT NULL siempre y una «excepción de bootstrap» con base nula se rehúsa, porque es el único camino en que «primer padre = base» no se puede verificar. |
+| `tree_sha` | TEXT | NOT NULL | SHA del árbol resultante verificado. El formato de objetos es `sha1`, el literal `objectFormat` del receipt, que está dentro de la preimagen; no hay columna `object_format`, porque una columna con un solo valor lícito es muerta. |
 | `policy_sha256` | TEXT | NOT NULL | Digest de la política de verificación aplicada. |
 | `write_set_sha256` | TEXT | NOT NULL | Digest del write-set verificado contra la política del envelope. |
 | `artifact_ref_id` | TEXT | NOT NULL | Referencia de acceso autorizada al artefacto privado del receipt completo (checks detallados); ver [artifacts](../artifacts/index.md) — **no** el mero `checks_sha256`, que sólo identifica bytes. |
 | `checks_sha256` | TEXT | NOT NULL | Digest de los checks ejecutados. |
-| `run_status` | TEXT | NOT NULL | `CHECK IN ('PASS','FAIL')`. Independiente de `all_checks_zero`: éste resume el conteo, aquél el veredicto de ejecución del run de verificación en sí. |
-| `all_checks_zero` | INTEGER | NOT NULL | `CHECK IN (0, 1)`. |
-| `recorded_at` | TEXT | NOT NULL | — |
-| `sequence` | INTEGER | NOT NULL | — |
+| `run_status` | TEXT | NOT NULL | `ck_verification_read_model__run_status`: `CHECK (run_status IS NOT NULL AND run_status IN ('PASS','FAIL'))`. `ck_verification_read_model__pass_requires_zero_checks`: `CHECK (run_status <> 'PASS' OR all_checks_zero = 1)`. `PASS` con un check no cero es la única celda prohibida. `FAIL` con `all_checks_zero = 1` es lícito: el run falló aunque todo check que corrió salió en cero (timeout, fallo de observación, error de herramienta; [tests §8](../../../quality/testing/index.md) #18). |
+| `all_checks_zero` | INTEGER | NOT NULL | `ck_verification_read_model__all_checks_zero`: `CHECK (all_checks_zero IS NOT NULL AND all_checks_zero IN (0, 1))`. |
+| `recorded_at` | TEXT | NOT NULL | instante canónico del evento `VERIFICATION_COMPLETED` que registra el receipt; nunca un `Timestamp` con desplazamiento. |
+| `sequence` | INTEGER | NOT NULL | secuencia de ese mismo evento. |
+
+| Objeto | Forma |
+| --- | --- |
+| `pk_verification_read_model` | `PRIMARY KEY (receipt_sha256)` |
+| `fk_verification_read_model__task_attempt_read_model` | la FK de intento común (abajo). |
+| `fk_verification_read_model__control_plane_events` | `FOREIGN KEY (sequence) REFERENCES control_plane_events(sequence) ON DELETE RESTRICT` |
+| `ix_verification_read_model__attempt` | el índice común. |
+| CHECK de forma | `…__receipt_sha256_shape`, `…__policy_sha256_shape`, `…__write_set_sha256_shape` y `…__checks_sha256_shape` (64 hex); `…__base_sha_shape` y `…__tree_sha_shape` (40 hex, la forma de `head_sha` de §10.1); `…__recorded_at_shape` (el GLOB de §10.1); `…__sequence_positive`. |
+| Validación de referencia | La puerta recomputa `receipt_sha256` desde los bytes (arriba). Tarea, revisión e intento son los del sujeto V2 del evento. `writer_worker_id` es la derivación que la puerta recomputa desde la tarea y el intento; `verifier_worker_id` y `verifier_run_id` son los del registro de spawn del runner, nunca los que el receipt declara por su cuenta. |
+| Fold / rebuild | Sólo inserción. Un replay del mismo `receipt_sha256` con la misma metadata conserva la fila y el primer `sequence`/`recorded_at`; el mismo digest con metadata distinta es corrupción y rehúsa. |
 
 ### 10.3 `audit_verdict_read_model`
+
+El veredicto se ata a un receipt **y** a su árbol. Una SQLite `CHECK` no lee otra
+tabla, así que la identidad del writer que la comparación necesita viaja en la fila,
+copiada del receipt; no es una columna que el productor llena a su gusto.
 
 | Columna | Tipo | Nullable | Semántica |
 | --- | --- | --- | --- |
 | `audit_id` | TEXT | NOT NULL | PK. |
-| `task_id` | TEXT | NOT NULL | tarea auditada. |
-| `revision_number` | INTEGER | NOT NULL | `ck_audit_verdict_read_model__revision_number_positive`: `> 0`. |
-| `attempt_number` | INTEGER | NOT NULL | `ck_audit_verdict_read_model__attempt_number_positive`: `> 0`. |
+| `task_id` | TEXT | NOT NULL | tarea auditada; igual a la del receipt referido. |
+| `revision_number` | INTEGER | NOT NULL | `ck_audit_verdict_read_model__revision_number_positive`: `> 0`. **Igual** a la del receipt referido. |
+| `attempt_number` | INTEGER | NOT NULL | `ck_audit_verdict_read_model__attempt_number_positive`: `> 0`. **Igual** a la del receipt referido. |
+| `receipt_sha256` | TEXT | NOT NULL | `fk_audit_verdict_read_model__verification_read_model`. La puerta y el fold rehúsan un veredicto cuyo `receipt_sha256` no nombra una fila `run_status = 'PASS'` de la misma tarea/revisión/intento: un veredicto sobre un receipt `FAIL` se rehúsa en ambos. La autorización repite el requisito de `PASS` por su lado (§10.5). |
+| `tree_sha` | TEXT | NOT NULL | **Igual** al `tree_sha` de la fila del receipt, sostenido por puerta y fold; no se suministra libremente. |
+| `writer_worker_id` | TEXT | NOT NULL | **Copiado** por el fold desde la fila del receipt. La puerta y el fold rehúsan una copia que difiera, con el mismo issue (decisión 56). |
 | `auditor_identity` | TEXT | NOT NULL | identidad uniforme del auditor. |
-| `auditor_worker_id` | TEXT | NOT NULL | identidad de instancia emitida por el supervisor. `ck_audit_verdict_read_model__distinct_from_writer`: distinta de la del writer. |
-| `verdict` | TEXT | NOT NULL | `ck_audit_verdict_read_model__verdict`: `CHECK (verdict IN ('ACCEPT','ACCEPT_WITH_CORRECTIONS','REJECT'))`. |
-| `evidence_sha256` | TEXT | NOT NULL | digest de la evidencia. |
+| `auditor_worker_id` | TEXT | NOT NULL | identidad de instancia emitida por el supervisor, acuñada como la del verificador: UUID v5 sobre `(task, attempt, role, ordinal de spawn)`. `ck_audit_verdict_read_model__distinct_from_writer`: `CHECK (auditor_worker_id <> writer_worker_id)`, sobre la misma fila. |
+| `auditor_run_id` | TEXT | NOT NULL | corrida concreta del auditor: el ordinal de spawn, acuñado como `verifier_run_id`. Cierra para el auditor el `worker_run_id` que [contratos §5](../../contracts/index.md) exige. |
+| `verdict` | TEXT | NOT NULL | `ck_audit_verdict_read_model__verdict`: `CHECK (verdict IS NOT NULL AND verdict IN ('ACCEPT','ACCEPT_WITH_CORRECTIONS','REJECT'))`. La autorización lee **sólo** `ACCEPT` sobre el mismo `receipt_sha256` (§10.5). `ACCEPT_WITH_CORRECTIONS` precede a una revisión nueva, y por lo tanto a un receipt nuevo: no autoriza. |
+| `evidence_sha256` | TEXT | NOT NULL | digest de la evidencia. Su preimagen incluye `receipt_sha256`, así que un blob de evidencia no se re-ata a otro receipt. |
 | `artifact_ref_id` | TEXT | NOT NULL | referencia de acceso autorizada a la evidencia; conocer el digest no concede acceso. |
-| `recorded_at` | TEXT | NOT NULL | instante del append. |
-| `sequence` | INTEGER | NOT NULL | secuencia del evento; `> 0`. |
+| `recorded_at` | TEXT | NOT NULL | instante canónico del evento `AUDIT_COMPLETED`. |
+| `sequence` | INTEGER | NOT NULL | secuencia de ese mismo evento; `> 0`. |
+
+**Lectura de adjudicación.** La tripleta de [datos §6.6](../index.md) se lee sobre esta
+fila como `(subject_kind = 'RECEIPT', subject_id = receipt_sha256,
+subject_revision_sha256 = tree_sha)`. Es una lectura, no columnas: esta tabla no lleva
+columnas `subject_*`, y el `subject_kind` de planning §9.1 no se ensancha. Una
+adjudicación de corrección referencia el veredicto por `audit_id`
+(`source_rejection_id`), y eso sigue siendo cierto.
+
+| Objeto | Forma |
+| --- | --- |
+| `pk_audit_verdict_read_model` | `PRIMARY KEY (audit_id)` |
+| `fk_audit_verdict_read_model__verification_read_model` | `FOREIGN KEY (receipt_sha256) REFERENCES verification_read_model(receipt_sha256) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED` |
+| `fk_audit_verdict_read_model__task_attempt_read_model` | la FK de intento común. |
+| `fk_audit_verdict_read_model__control_plane_events` | `FOREIGN KEY (sequence) REFERENCES control_plane_events(sequence) ON DELETE RESTRICT` |
+| `ix_audit_verdict_read_model__attempt` | el índice común. |
+| CHECK de forma | `…__receipt_sha256_shape` y `…__evidence_sha256_shape` (64 hex); `…__tree_sha_shape` (40 hex); `…__recorded_at_shape`; `…__sequence_positive`. |
+| Validación de referencia | La puerta y el fold comprueban contra la fila del receipt: estado `PASS`; tarea, revisión e intento iguales; `tree_sha` igual; `writer_worker_id` igual. Una discrepancia rehúsa con el mismo issue en ambos y no se corrige reasignando el veredicto. |
+| Fold / rebuild | Sólo inserción; el mismo `audit_id` con metadata distinta es corrupción. |
 
 ### 10.4 `commit_read_model`
 
@@ -671,32 +734,231 @@ PK `commit_sha` — el SHA de commit **observado**, registrado sólo tras verifi
 independiente; un `fk_commit_read_model__verification_read_model` por sí solo no
 autoriza nada, es sólo trazabilidad.
 
+**Es la proyección `RECORDED` de §10.5.** Ninguna fila existe sin su autorización, y
+hay exactamente dos caminos que la insertan, cada uno en el mismo `appendBatch` que
+lleva la fila de §10.5 a `RECORDED`: el evento `COMMIT_RECORDED`, desde `INTENDED`; y
+la reconciliación de P-17/C (evento pendiente), desde `OUTCOME_UNKNOWN`, cuando prueba
+que el commit ya existe en Git. La intención no vive aquí, porque un commit
+intentado todavía no tiene SHA y esta PK es NOT NULL.
+
 | Columna | Tipo | Nullable | Semántica |
 | --- | --- | --- | --- |
-| `commit_sha` | TEXT | NOT NULL | PK. SHA observado del commit real en Git, registrado después de un `PASS` independiente. |
+| `commit_sha` | TEXT | NOT NULL | PK. SHA observado del commit real en Git, registrado después de un `PASS` independiente. Se **lee de vuelta del VCS** (`rev-parse <rama>`), nunca se toma de la salida de `commit-tree`. |
 | `task_id` | TEXT | NOT NULL | tarea. |
 | `revision_number` | INTEGER | NOT NULL | `ck_commit_read_model__revision_number_positive`: `> 0`. |
 | `attempt_number` | INTEGER | NOT NULL | `ck_commit_read_model__attempt_number_positive`: `> 0`. |
-| `receipt_sha256` | TEXT | NOT NULL | `fk_commit_read_model__verification_read_model`. |
+| `receipt_sha256` | TEXT | NOT NULL | `fk_commit_read_model__verification_read_model`; con `task_id`, `fk_commit_read_model__commit_authorization_read_model`. |
 | `revalidated_base_sha` | TEXT | NOT NULL | commit base revalidado **al momento del commit**, no copiado del receipt. **Debe ser igual** a `verification_read_model.base_sha`. |
 | `revalidated_tree_sha` | TEXT | NOT NULL | árbol revalidado; **debe ser igual** a `verification_read_model.tree_sha`. |
 | `revalidated_write_set_sha256` | TEXT | NOT NULL | write-set revalidado; **igualdad exacta** contra el autorizado, nunca una aproximación. |
+| `revalidated_policy_sha256` | TEXT | NOT NULL | política revalidada al momento del commit; **debe ser igual** a `verification_read_model.policy_sha256`. |
 | `worktree_sha256` | TEXT | NOT NULL | digest del worktree en el momento del commit. |
-| `authorized_at` | TEXT | NOT NULL | instante de la autorización, tomado del evento. |
-| `recorded_at` | TEXT | NOT NULL | instante del append. |
-| `sequence` | INTEGER | NOT NULL | secuencia del evento que produjo la fila; `> 0`. |
+| `authorized_at` | TEXT | NOT NULL | instante de la autorización, **sostenido igual** al `authorized_at` de la fila de §10.5, que lo toma del evento `COMMIT_AUTHORIZED`: es una proyección, no un valor que se suministra aparte. |
+| `recorded_at` | TEXT | NOT NULL | instante canónico del evento que inserta la fila: `COMMIT_RECORDED`, o el evento pendiente de la reconciliación de P-17/C. |
+| `sequence` | INTEGER | NOT NULL | secuencia de ese mismo evento; `> 0`. |
 
-**La revalidación no admite diferencias.** El commit exige las tres igualdades de
-arriba **más** un `PASS` independiente **antes** de tocar Git. Cualquier diferencia
-invalida el receipt y obliga a una verificación nueva: no se commitea sobre una
-base que se movió. Una clave foránea por sí sola no autoriza nada.
+**La revalidación no admite diferencias.** El commit exige las cuatro igualdades de
+arriba —base, tree, write-set y política— **más** un `PASS` independiente **antes** de
+tocar Git. Cualquier diferencia invalida el receipt y obliga a una verificación nueva:
+no se commitea sobre una base que se movió. Una clave foránea por sí sola no autoriza
+nada.
 
-### Índices / OCC / transacción / rebuild (las cuatro)
+| Objeto | Forma |
+| --- | --- |
+| `pk_commit_read_model` | `PRIMARY KEY (commit_sha)` |
+| `uq_commit_read_model__task_receipt` | `UNIQUE (task_id, receipt_sha256)`, la clave de [contratos §15](../../contracts/index.md) para el commit. |
+| `fk_commit_read_model__verification_read_model` | `FOREIGN KEY (receipt_sha256) REFERENCES verification_read_model(receipt_sha256) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED` |
+| `fk_commit_read_model__commit_authorization_read_model` | `FOREIGN KEY (task_id, receipt_sha256) REFERENCES commit_authorization_read_model(task_id, receipt_sha256) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED` |
+| `fk_commit_read_model__task_attempt_read_model` | la FK de intento común. |
+| `fk_commit_read_model__control_plane_events` | `FOREIGN KEY (sequence) REFERENCES control_plane_events(sequence) ON DELETE RESTRICT` |
+| `ix_commit_read_model__attempt` | el índice común. |
+| CHECK de forma | `…__commit_sha_shape`, `…__revalidated_base_sha_shape` y `…__revalidated_tree_sha_shape` (40 hex); `…__receipt_sha256_shape`, `…__revalidated_write_set_sha256_shape`, `…__revalidated_policy_sha256_shape` y `…__worktree_sha256_shape` (64 hex); `…__authorized_at_shape` y `…__recorded_at_shape`; `…__sequence_positive`. |
+| Validación de referencia | Contra el commit observado: su árbol (`^{tree}`) es `tree_sha` del receipt, su primer padre es `base_sha`, el sha256 de su mensaje es el `commit_message_sha256` de §10.5, y write-set y política revalidan iguales. Contra §10.5: la fila existe y cumple uno de los dos caminos de inserción: está en `INTENDED` y el predicado de vigencia se cumple en la puerta (`COMMIT_RECORDED`), **o** está en `OUTCOME_UNKNOWN` y la reconciliación de P-17/C prueba árbol, primer padre y mensaje (evento pendiente de P-17/C). En el segundo camino el predicado de vigencia **no** se relee: el efecto ya ocurrió y el registro sólo lo observa, así que un lease vencido desde entonces no lo impide. En ambos, `authorized_at`, tarea, revisión e intento son iguales. |
+| Fold / rebuild | Sólo inserción; el mismo `commit_sha` con metadata distinta es corrupción. |
+
+### 10.5 `commit_authorization_read_model`
+
+**Nuevo en P-16/0; no existe en código.** Es la fila de la autorización de commit:
+nace con `COMMIT_AUTHORIZED` y el fold la pliega desde ese evento. §10.4 es su
+proyección `RECORDED`. Tabla `STRICT`, sin defaults.
+
+| Columna | Tipo | Nullable | Semántica |
+| --- | --- | --- | --- |
+| `task_id` | TEXT | NOT NULL | PK (compuesta); igual a la del receipt. |
+| `receipt_sha256` | TEXT | NOT NULL | PK (compuesta); `fk_commit_authorization_read_model__verification_read_model`. El receipt debe ser `run_status = 'PASS'` (puerta y fold). Como en §10.2, `receipt_sha256` sola es la clave efectiva. |
+| `revision_number` | INTEGER | NOT NULL | `ck_commit_authorization_read_model__revision_number_positive`: `> 0`; igual a la del receipt. |
+| `attempt_number` | INTEGER | NOT NULL | `ck_commit_authorization_read_model__attempt_number_positive`: `> 0`; igual a la del receipt. |
+| `audit_id` | TEXT | NOT NULL | `fk_commit_authorization_read_model__audit_verdict_read_model`. El veredicto debe ser `verdict = 'ACCEPT'` sobre el **mismo** `receipt_sha256`. |
+| `commit_message_sha256` | TEXT | NOT NULL | sha256 sobre los bytes exactos del mensaje: cuerpo más trailer (abajo). |
+| `authorized_at` | TEXT | NOT NULL | instante canónico del evento `COMMIT_AUTHORIZED`. P-17/B lo usa como `GIT_AUTHOR_DATE` y `GIT_COMMITTER_DATE`: el adapter no lee reloj y el objeto commit es función de hechos registrados. Inmutable tras el INSERT. |
+| `authorized_sequence` | INTEGER | NOT NULL | secuencia del evento `COMMIT_AUTHORIZED`. `ck_commit_authorization_read_model__authorized_sequence_positive`: `CHECK (authorized_sequence >= 1)`. Inmutable tras el INSERT. |
+| `state` | TEXT | NOT NULL | `ck_commit_authorization_read_model__state`: `CHECK (state IS NOT NULL AND state IN ('INTENDED','RECORDED','OUTCOME_UNKNOWN','SUPERSEDED'))`. |
+| `commit_sha` | TEXT | NULL | `NULL` sii `state <> 'RECORDED'` (CHECK abajo). |
+| `superseded_by_receipt_sha256` | TEXT | NULL | `NULL` sii `state <> 'SUPERSEDED'` (CHECK abajo). El receipt posterior que la dejó sin efecto: `fk_commit_authorization_read_model__superseding_receipt`. |
+| `recorded_at` | TEXT | NOT NULL | instante canónico del evento de la **última** transición. |
+| `sequence` | INTEGER | NOT NULL | secuencia de ese mismo evento: el par `recorded_at`/`sequence` nombra siempre un evento, como en §10.1. |
+
+**CHECK de estado, deletreados en los dos sentidos.** Un `NULL` no satisface ninguno:
+
+```sql
+CONSTRAINT ck_commit_authorization_read_model__commit_sha_iff_recorded CHECK (
+  (state IS NOT NULL AND state IN ('RECORDED') AND commit_sha IS NOT NULL)
+  OR (state IS NOT NULL AND state IN ('INTENDED','OUTCOME_UNKNOWN','SUPERSEDED')
+      AND commit_sha IS NULL))
+CONSTRAINT ck_commit_authorization_read_model__superseded_by_iff_superseded CHECK (
+  (state IS NOT NULL AND state IN ('SUPERSEDED') AND superseded_by_receipt_sha256 IS NOT NULL)
+  OR (state IS NOT NULL AND state IN ('INTENDED','RECORDED','OUTCOME_UNKNOWN')
+      AND superseded_by_receipt_sha256 IS NULL))
+CONSTRAINT ck_commit_authorization_read_model__superseded_by_distinct CHECK (
+  superseded_by_receipt_sha256 IS NULL
+  OR superseded_by_receipt_sha256 <> receipt_sha256)
+```
+
+**El mensaje y su trailer.** La preimagen del receipt lleva el **cuerpo** (§10.2). La
+autorización le agrega el trailer y registra `commit_message_sha256` sobre estos
+bytes exactos:
+
+```
+<cuerpo> + "\n\nACP-Receipt: " + <receipt_sha256, 64 hex minúsculas> + "\n"
+```
+
+Hay exactamente un trailer. La autorización rehúsa por nombre, y nunca normaliza, un
+cuerpo vacío, un cuerpo que termina en `\n`, un cuerpo que contiene `\r` y un cuerpo
+que ya lleva una línea `ACP-Receipt:`: así los bytes del separador no son ambiguos.
+Cada caso tiene su propia palabra, que fija el corte que implementa la autorización
+(P-17/A). El commit y la reconciliación comparan el mensaje observado con cuerpo más
+trailer por igualdad exacta; un mensaje observado sin el trailer es una diferencia.
+
+**Transiciones, cerradas.** Sólo el fold hace UPDATE, y cada transición tiene su
+evento:
+
+| Desde | Hacia | Evento | Condición |
+| --- | --- | --- | --- |
+| — | `INTENDED` | `COMMIT_AUTHORIZED` | INSERT, con las precondiciones de puerta de abajo. |
+| `INTENDED` | `RECORDED` | `COMMIT_RECORDED` | el predicado de vigencia se cumple; inserta la fila de §10.4 en el mismo `appendBatch`. |
+| `INTENDED` | `OUTCOME_UNKNOWN` | pendiente, de P-17/C | el efecto sobre la ref se expuso y su desenlace no se conoce. |
+| `OUTCOME_UNKNOWN` | `RECORDED` | pendiente, de P-17/C | la reconciliación prueba que la ref apunta al commit con ese árbol, ese primer padre y ese mensaje; inserta la fila de §10.4. El predicado de vigencia no se relee: el efecto ya ocurrió. |
+| `OUTCOME_UNKNOWN` | `INTENDED` | pendiente, de P-17/C | la reconciliación prueba NOT_DONE: la ref no se movió, y no hay un `VERIFICATION_COMPLETED` de la tarea posterior al del receipt. La PK impide una autorización nueva para el mismo receipt, así que volver a `INTENDED` es el único camino lícito de reintento; el reintento re-evalúa el predicado de vigencia. |
+| `INTENDED` | `SUPERSEDED` | `VERIFICATION_COMPLETED` posterior | otro receipt de la misma `task_id`, en cualquier revisión o intento; fija `superseded_by_receipt_sha256`. |
+
+`RECORDED` y `SUPERSEDED` son terminales. Toda otra transición se rehúsa, incluida
+`OUTCOME_UNKNOWN → SUPERSEDED`: `OUTCOME_UNKNOWN` bloquea el reintento hasta la
+reconciliación ([datos §6.4](../index.md)), y mientras una fila de la tarea está en ese
+estado no se registra otra autorización de la tarea. Así hay a lo sumo una fila
+`INTENDED` por tarea. Los eventos que producen `OUTCOME_UNKNOWN` y su reconciliación
+son de **P-17/C**: aquí se nombran como pendientes y no se inventan.
+
+**Vigencia.** Una sola función predicado, que la puerta llama como precondición de
+`COMMIT_RECORDED` y de la vuelta `OUTCOME_UNKNOWN → INTENDED`; la reconciliación que
+registra un commit ya ocurrido no la llama. La autorización está vigente si y sólo si se cumplen las tres:
+
+1. Existe una fila en `INTENDED` para `(task_id, receipt_sha256)`; `INTENDED` ya
+   excluye la supersesión.
+2. El lease de worktree del writer existe y no venció: `authorized_at < lease.expiresAt`.
+   En coordinación `expires_at` es `NULL` sii no hay lease; un lease ausente se rehúsa
+   por nombre antes de comparar y nunca se compara contra `NULL`. Los dos operandos se parsean como instantes canónicos y se comparan por epoch; la
+   igualdad cuenta como vencido. Un instante de lease no canónico (por ejemplo, con
+   desplazamiento `+02:00`) se rehúsa por nombre y nunca se normaliza. El predicado
+   lee el lease de su dueño ([coordinación](../coordination/index.md)) por el
+   worktree de la tarea; esta tabla no lleva columna de lease, porque una expiración
+   copiada sería evidencia de otro contenido.
+3. Base, tree, write-set y política revalidan iguales al receipt.
+
+El predicado es reproducible en replay: compara dos instantes registrados, no un
+reloj. No hay TTL más allá del lease, y P-17 no tiene evento de revocación: revocar una
+autorización es de **P-28**. La vida en el instante del efecto es otra cosa: es la
+comprobación del token de fence de la parte 1 de [contratos §6.1](../../contracts/index.md),
+que P-17/B hace al ejecutar `update-ref`; es un chequeo de fencing, no una comparación
+de relojes. Queda como pregunta de P-17/B, no como afirmación, si un lease vencido
+pero todavía no reasignado conserva un token de fence vigente.
+
+**Precondiciones de puerta** ([contratos §2.1](../../contracts/index.md)):
+
+- `COMMIT_AUTHORIZED` sólo desde `AUDITING`, con la política
+  `LOCAL_COMMIT_WITH_RECEIPT` leída del envelope registrado (N03), el receipt en
+  `PASS`, el veredicto `ACCEPT` sobre el mismo receipt, el lease del writer vivo,
+  ningún cambio fuera del write-set y ningún `VERIFICATION_COMPLETED` de la tarea
+  posterior al del receipt: el receipt es el último de la tarea. Sin esto, un receipt
+  anterior autorizado tras uno posterior nunca quedaría superseded (la supersesión
+  sólo la dispara un evento posterior) y `ux_commit_authorization_read_model__intended_task`
+  rehusaría la autorización del receipt vigente. La puerta lo comprueba y no lo supone
+  del ciclo de vida; la vuelta `OUTCOME_UNKNOWN → INTENDED` exige lo mismo.
+- `COMMIT_RECORDED` sólo desde `READY_TO_COMMIT`, con la autorización vigente. La
+  reconciliación de P-17/C que registra un commit ya ocurrido lleva la tarea de
+  `READY_TO_COMMIT` a `COMMITTED` por el segundo camino de §10.4, sin el predicado
+  ([contratos §2.1](../../contracts/index.md)).
+- `VERIFICATION_COMPLETED` se rehúsa mientras una fila de §10.5 de la tarea está en
+  `OUTCOME_UNKNOWN`: la puerta lo comprueba y no lo supone de §2.1 `RUNNING → VERIFYING`.
+  Así un NOT_DONE probado siempre tiene la vuelta a `INTENDED` y nunca necesita
+  `OUTCOME_UNKNOWN → SUPERSEDED`.
+- En una tarea `NO_COMMIT`, `COMMIT_AUTHORIZED` y `COMMIT_RECORDED` se rehúsan **por
+  nombre**; que el plan de sólo lectura no tenga el paso no basta.
+
+**Idempotencia** ([contratos §15](../../contracts/index.md)): la misma
+`(task_id, receipt_sha256)` produce la misma fila y el mismo `commit_message_sha256`;
+deja de aplicar cuando un receipt posterior la supersede.
+
+| Objeto | Forma |
+| --- | --- |
+| `pk_commit_authorization_read_model` | `PRIMARY KEY (task_id, receipt_sha256)` |
+| `ux_commit_authorization_read_model__intended_task` | `UNIQUE INDEX (task_id) WHERE state = 'INTENDED'`: a lo sumo una fila `INTENDED` por tarea. |
+| `fk_commit_authorization_read_model__verification_read_model` | `FOREIGN KEY (receipt_sha256) REFERENCES verification_read_model(receipt_sha256) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED` |
+| `fk_commit_authorization_read_model__audit_verdict_read_model` | `FOREIGN KEY (audit_id) REFERENCES audit_verdict_read_model(audit_id) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED` |
+| `fk_commit_authorization_read_model__superseding_receipt` | `FOREIGN KEY (superseded_by_receipt_sha256) REFERENCES verification_read_model(receipt_sha256) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED` |
+| `fk_commit_authorization_read_model__authorized_event` | `FOREIGN KEY (authorized_sequence) REFERENCES control_plane_events(sequence) ON DELETE RESTRICT`: el evento `COMMIT_AUTHORIZED`. |
+| `fk_commit_authorization_read_model__control_plane_events` | `FOREIGN KEY (sequence) REFERENCES control_plane_events(sequence) ON DELETE RESTRICT`: el evento de la última transición. |
+| `fk_commit_authorization_read_model__task_attempt_read_model` | la FK de intento común. |
+| `ix_commit_authorization_read_model__attempt` | el índice común. |
+| CHECK de forma | `…__receipt_sha256_shape`, `…__commit_message_sha256_shape` y `…__superseded_by_receipt_sha256_shape` (64 hex; la última sólo cuando no es `NULL`); `…__commit_sha_shape` (40 hex, sólo cuando no es `NULL`); `…__authorized_at_shape` y `…__recorded_at_shape`; `…__sequence_positive`. |
+| Validación de referencia | Contra el receipt: `PASS`, tarea, revisión e intento iguales. Contra el veredicto: `ACCEPT` y el mismo `receipt_sha256`. Contra el receipt que supersede: la misma `task_id`, distinto de `receipt_sha256` y registrado después. `authorized_sequence` es un evento `COMMIT_AUTHORIZED` de esta tarea, y `authorized_at` es su instante. |
+| Trigger de UPDATE | Nombra cada columna de estado: sólo cambian `state`, `commit_sha`, `superseded_by_receipt_sha256`, `recorded_at` y `sequence`, y sólo por una transición de la lista. Toda otra columna, `authorized_at` y `authorized_sequence` incluidas, es inmutable tras el INSERT. |
+| OCC / transacción | Sólo el projector escribe. Cada transición, su evento, la cabeza del stream, la fila de §10.4 cuando corresponde y el avance de `projection_watermark` van en el mismo `appendBatch`. |
+| Fold / rebuild | Determinista desde `control_plane_events`; la misma clave con metadata de autorización distinta es corrupción y rehúsa. |
+
+### Índices / OCC / transacción / rebuild (las cinco)
+
+**Ninguna de las cinco tablas existe en código**, §10.1 incluida (cero apariciones
+en las migraciones). El patrón de FK, «validación de referencia» y CHECK de forma se
+escribe aquí por primera vez; la migración que lo materialice no lo describe como un
+precedente existente («como el de checkpoint»), porque no lo hay. Dueños: §10.2 y
+§10.3 aterrizan en P-16/B, en la migración 28 o posterior; §10.5, el predicado de
+vigencia y la proyección de §10.4, en P-17/A–C. Esta sección fija la forma física
+antes del código (P-16/0, decisiones 225–227), para que ningún corte la diseñe en
+vuelo.
 
 | Objeto | Forma |
 | --- | --- |
 | `ix_<tabla>__attempt` | `INDEX (task_id, revision_number, attempt_number)` en cada una. |
-| Rebuild | Determinista desde `control_plane_events`. |
+| `fk_<tabla>__task_attempt_read_model` | `FOREIGN KEY (task_id, revision_number, attempt_number) REFERENCES task_attempt_read_model(task_id, revision_number, attempt_number) ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED` en cada una. |
+| `fk_<tabla>__control_plane_events` | `FOREIGN KEY (sequence) REFERENCES control_plane_events(sequence) ON DELETE RESTRICT`, con `ck_<tabla>__sequence_positive`: `CHECK (sequence >= 1)`. |
+| Instantes | Toda columna de instante de §10.2–§10.5 (`recorded_at`, `authorized_at`) es el instante canónico, con su propio `ck_<tabla>__<columna>_shape`: el GLOB de `recorded_at` de §10.1. El borde valida calendario real antes del append. |
+| Digests | Toda columna sha256 `c` lleva `ck_<tabla>__<c>_shape`: `CHECK (length(c) = 64 AND c NOT GLOB '*[^0-9a-f]*')`; toda columna de objeto Git, la forma de 40 hex de `head_sha` de §10.1 (formato de objetos `sha1`, §10.2). |
+| Tabla | `STRICT`, sin defaults: el fold aporta cada valor. |
+| OCC / transacción | Sólo el projector escribe, en el mismo `appendBatch` que el evento y el avance de `projection_watermark`. |
+| Validación de referencia | Además de las FK, la puerta y el fold comprueban lo que cada tabla lista; una discrepancia rehúsa con el mismo issue en ambos (decisión 56) y nunca se corrige reasignando la fila. |
+| Rebuild | Determinista desde `control_plane_events`, a un corte fijado y verificado; la misma clave con metadata distinta es corrupción. |
+
+**Negativos que heredan los cortes que implementan §10.2–§10.5** (P-16/B, P-17/A y
+P-17/C; cada brief los lee de aquí):
+
+- una fila con `NULL` por cada predicado CHECK;
+- `PASS` con un check no cero, rehusado; `FAIL` con todos en cero, admitido;
+- `auditor_worker_id = writer_worker_id` con etiquetas de rol distintas, rehusado;
+- un `writer_worker_id` copiado que difiere del receipt, rehusado por puerta y fold;
+- un `tree_sha` del veredicto distinto del receipt, rehusado;
+- un veredicto sobre un receipt `FAIL`, rehusado por puerta y fold;
+- `ACCEPT_WITH_CORRECTIONS` no autoriza;
+- un `COMMIT_AUTHORIZED` sobre una tarea `NO_COMMIT`, rehusado por nombre;
+- cada transición cerrada, positiva, y cada transición ilegal;
+- un lease con `+02:00`, rehusado por nombre;
+- un lease ausente (`expires_at` `NULL`), rehusado por nombre antes de comparar;
+- un `COMMIT_AUTHORIZED` sobre un receipt con un `VERIFICATION_COMPLETED` posterior de la tarea, rehusado;
+- una fila `OUTCOME_UNKNOWN` cuya reconciliación prueba árbol, primer padre y mensaje se registra `RECORDED` con su fila de §10.4 aunque el lease haya vencido después del efecto, y la tarea pasa de `READY_TO_COMMIT` a `COMMITTED`;
+- un `VERIFICATION_COMPLETED` de la tarea mientras una fila de §10.5 está en `OUTCOME_UNKNOWN`, rehusado;
+- `authorized_at == expiresAt` cuenta como vencido;
+- un mensaje observado sin el trailer cuenta como diferencia;
+- un cuerpo vacío, que termina en `\n`, que contiene `\r` o que ya lleva
+  `ACP-Receipt:`, rehusado por nombre en la autorización.
 
 ---
 
@@ -877,6 +1139,7 @@ da cero. Una acción sin ack no se representa como PAUSED/NOTIFIED.
 | `prompt_record_read_model` (PK `prompt_sha256`) | No existe (propuesto en el modelo anterior) | `prompt_occurrence_read_model` + `response_occurrence_read_model`, separa identidad de bytes de ocurrencia. | §8 |
 | `tool_call_read_model` (PK `transition_id`) | No existe (propuesto en el modelo anterior) | Mismo nombre, PK `effect_id`. | §9 |
 | `checkpoint_read_model`, `verification_read_model`, `audit_verdict_read_model`, `commit_read_model` | No existe (propuesto en el modelo anterior) | Mismos nombres, coordenada de intento actualizada. | §10 |
+| — (no existía) | No existe; nuevo en P-16/0 | `commit_authorization_read_model` nuevo; `commit_read_model` pasa a ser su proyección `RECORDED`. | §10.5 |
 | `worker_read_model`, `worker_task_read_model` | Hoy, mig. 2 | Sin cambio. | §12 |
 | `artifact_index_read_model` | No existe (propuesto en el modelo anterior) | Ver [artifacts](../artifacts/index.md), no vive en esta hoja. | — |
 | `anomaly_read_model` | No existe (propuesto en el modelo anterior) | Conserva el nombre; snapshot racional/policy, fuentes y muestras normalizadas; solicitud y confirmación de acción separadas. | §11 |

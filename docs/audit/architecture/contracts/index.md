@@ -84,10 +84,10 @@ exitoso**, y una tarea sin commit puede completarse.
 | `RUNNING` | `WAITING_APPROVAL` | el plan exige aprobación en este punto | aprobación solicitada | no |
 | `WAITING_APPROVAL` | `RUNNING` | aprobación concedida, vigente, con digest de revisión coincidente | aprobación decidida | no |
 | `RUNNING` | `VERIFYING` | efectos liquidados; ninguno en `OUTCOME_UNKNOWN` | verificación solicitada | no |
-| `VERIFYING` | `AUDITING` | receipt de un verificador **distinto del writer**, con todos los checks en cero | verificación completada | no |
-| `AUDITING` | `READY_TO_COMMIT` | veredicto de aceptación **y** `commit_policy = LOCAL_COMMIT_WITH_RECEIPT` | auditoría completada | no |
+| `VERIFYING` | `AUDITING` | receipt `PASS` de un verificador **distinto del writer** (lo que implica todos los checks en cero) | verificación completada | no |
+| `AUDITING` | `READY_TO_COMMIT` | veredicto `ACCEPT` **y** `commit_policy = LOCAL_COMMIT_WITH_RECEIPT` | auditoría completada | no |
 | `AUDITING` | `COMPLETED` | veredicto de aceptación **y** `commit_policy = NO_COMMIT` | tarea completada | **sí** |
-| `READY_TO_COMMIT` | `COMMITTED` | autorización vigente para ese tree; base y tree revalidados | commit registrado con el SHA observado | no |
+| `READY_TO_COMMIT` | `COMMITTED` | autorización vigente para ese tree (el predicado de [execution §10.5](../database/execution/index.md)), **o** la reconciliación de P-17/C prueba árbol, primer padre y mensaje de un commit ya ocurrido ([execution §10.4](../database/execution/index.md), sin releer el predicado); base y tree revalidados | commit registrado con el SHA observado | no |
 | `COMMITTED` | `CHECKPOINTED` | checkpoint escrito y recuperable | checkpoint escrito | no |
 | `CHECKPOINTED` | `COMPLETED` | recursos liberados y acusados | tarea completada | **sí** |
 | cualquiera | `CANCELLED` | cancelación autorizada; efectos liquidados o reconciliados | tarea cancelada | **sí** |
@@ -138,11 +138,13 @@ filas y la misma respuesta pública dos veces.
 
 ## 3. Petición
 
-**Qué es.** Un envelope normalizado: iniciativa, paso, rol, objetivo, autoridad,
-read-set y write-set, política de commit, presupuesto, contexto de entrada.
+**Qué es.** Un envelope normalizado: iniciativa, paso, rol, instrucción
+(`content`, §4.1), autoridad, read-set y write-set, política de commit,
+presupuesto, contexto de entrada.
 
 **Identidad.** El `envelope_sha256` se computa sobre la preimagen definida en
-[datos §6.2](../database/index.md). Objetivo y autoridad **entran** en la preimagen.
+[datos §6.2](../database/index.md). La instrucción y la autoridad **entran** en la
+preimagen.
 Este es el defecto N01: hoy dos objetivos distintos y dos autoridades distintas
 producen el mismo digest de sumisión.
 
@@ -451,7 +453,7 @@ Dos reglas de fallo:
   se pudo comprobar— **no se promete suspensión**. Se espera y se reconcilia; no se
   produce un segundo efecto conocido.
 
-**Cambiar de modelo o de cuenta no autoriza cambiar el objetivo ni la autoridad.**
+**Cambiar de modelo o de cuenta no autoriza cambiar la instrucción ni la autoridad.**
 El `envelope_sha256` se conserva a través del handoff; si cambia, es una revisión
 nueva y el handoff se rechaza.
 
@@ -528,16 +530,63 @@ envelope (N03).
 
 | Eslabón | Precondición | Evidencia mínima | Rechazo |
 | --- | --- | --- | --- |
-| Verificación | proceso verificador distinto del writer, base y tree concretos | comandos ejecutados con sus exit codes, `base_sha`, `tree_sha` | `AUTHORITY_REFUSED` si el verificador es el writer |
-| Auditoría | auditor real con acceso de lectura al diff | veredicto trazable con evidencia por digest | `PRECONDITION_FAILED` sin diff disponible |
-| Autorización | receipt válido, todos los checks en cero, sin cambios fuera del write-set | evento de autorización con el digest del receipt | `PRECONDITION_FAILED` con la lista de checks no cero |
-| Commit | autorización vigente para ese tree | `commit_sha` **consultado al VCS**, no asumido | `CONFLICT` si el tree cambió |
+| Verificación | proceso verificador distinto del writer por identidad de worker llenada por el plane; base y tree concretos; formato de objetos `sha1` | comandos ejecutados con sus exit codes, `base_sha`, `tree_sha`, `receipt_sha256` sobre el cuerpo del mensaje | `AUTHORITY_REFUSED` si el verificador es el writer; `OBJECT_FORMAT_UNSUPPORTED` por nombre, clase `CAPABILITY_UNSUPPORTED` (§16.2), si el repositorio usa otro formato |
+| Auditoría | auditor real con acceso de lectura al diff, distinto del writer por la identidad copiada del receipt; receipt `PASS` de la misma tarea/revisión/intento | veredicto ligado a `receipt_sha256` y `tree_sha`; `evidence_sha256` incluye el receipt | `PRECONDITION_FAILED` sin diff disponible; `AUTHORITY_REFUSED` si el auditor es el writer |
+| Autorización | receipt `PASS` (lo que implica todos los checks en cero; `FAIL` nunca autoriza), exigido de nuevo por la autorización; `ACCEPT` sobre el mismo receipt; política `LOCAL_COMMIT_WITH_RECEIPT` leída del envelope registrado; lease del writer vivo; sin cambios fuera del write-set | fila `INTENDED` de [execution §10.5](../database/execution/index.md) con `commit_message_sha256` sobre cuerpo más trailer | `PRECONDITION_FAILED` nombrando `run_status = FAIL` y la lista de checks no cero (vacía cuando todo check que corrió salió en cero); `NO_COMMIT` rechazado por nombre |
+| Commit | autorización vigente: el predicado de execution §10.5; **o**, para registrar un commit ya ocurrido, la reconciliación de P-17/C que prueba árbol, primer padre y mensaje desde `OUTCOME_UNKNOWN` (segundo camino de execution §10.4, sin releer el predicado) | `commit_sha` **consultado al VCS** (leído de vuelta, no tomado de `commit-tree` ni asumido); árbol observado = `tree_sha`; primer padre = `base_sha`; digest del mensaje observado = `commit_message_sha256`; write-set y política revalidados iguales | `CONFLICT` si el tree o la base se movieron |
+
+**Ningún commit con evidencia de otro contenido.** Los cuatro eslabones están
+direccionados por contenido y encadenados:
+
+1. **Receipt.** `receipt_sha256` es el digest de una preimagen versionada que incluye
+   base, tree, formato de objetos, política, write-set, identidades del writer y del
+   verificador, estado, checks y el **cuerpo** del mensaje. La puerta lo recomputa
+   desde los bytes del receipt leídos por referencia autorizada y rehúsa una
+   diferencia como `RECEIPT_DIGEST_MISMATCH`.
+2. **Veredicto.** Referencia `receipt_sha256` y `tree_sha`. La puerta y el fold
+   exigen una fila `PASS` de la misma tarea/revisión/intento bajo ese digest; un
+   veredicto sobre un receipt `FAIL` se rehúsa. `evidence_sha256` incluye el receipt.
+3. **Autorización.** Referencia `(receipt_sha256, audit_id)`. La puerta exige
+   `ACCEPT` sobre ese receipt, repite por su lado el requisito de `PASS`, lee la
+   política del envelope, exige el lease vivo y rehúsa por nombre una tarea
+   `NO_COMMIT`. Agrega al cuerpo el trailer `ACP-Receipt: <receipt_sha256>` y
+   registra `commit_message_sha256` sobre cuerpo más trailer.
+4. **Commit.** Referencia `receipt_sha256`. La puerta exige que el árbol observado,
+   el primer padre, el digest del mensaje observado y los digests revalidados de
+   write-set y política sean iguales a los del receipt y la autorización, y lee el
+   `commit_sha` de vuelta del VCS.
+
+La puerta re-deriva cada eslabón desde bytes leídos por referencia y nunca lo copia de
+otra fila. Un valor copiado de otra fila es evidencia de otro contenido y se rehúsa;
+una columna que una fila repite de otra (el `writer_worker_id` y el `tree_sha` del
+veredicto) se sostiene igual por puerta y fold y no satisface un eslabón por sí sola.
+Las tablas, sus CHECK, sus transiciones y los negativos que heredan los cortes que las
+implementan están en [execution §10](../database/execution/index.md).
+
+**Quién llena el campo.** El receipt y el veredicto los produce el runner del plane,
+nunca un worker, y el plane llena las identidades de writer, verificador y auditor
+desde sus propios registros (§5): el writer por la derivación v5 por intento, el
+verificador y el auditor por una v5 sobre tarea, intento, rol y ordinal de spawn, con
+ese ordinal como identificador de corrida. El pid y el instante de arranque de un
+proceso son sólo evidencia. Un transporte de writer sin emisor se rehúsa por nombre
+(`WRITER_ID_UNISSUED`), un límite con dueño P-28.
 
 **`NO_COMMIT` no es lo mismo que read-only.** `NO_COMMIT` prohíbe la autorización
 y la realización de un commit, y **permite editar archivos dentro del write-set**.
 `READ_ONLY` prohíbe efectos mutantes sobre el workspace y las herramientas, y
 **permite** que el plane registre estado y checkpoints internos. Ninguno de los dos
-produce confirmaciones ficticias.
+produce confirmaciones ficticias. `READ_ONLY` es un valor de `workspace_mode` (§2),
+no una política de commit: los dos ejes son ortogonales (decisión 13). Hoy el
+envelope no lo lleva; lo agrega **P-17**, y agregarlo mueve `envelope_sha256` (la
+clase de la decisión 48).
+
+**El límite de `COMPLETED`.** §2.1 es el destino (decisión 22): `NO_COMMIT` termina
+en `COMPLETED` desde `AUDITING`, y el camino del commit cierra con
+`CHECKPOINTED → COMPLETED`. El estado todavía no existe en código: el código termina
+en `CHECKPOINTED` hasta P-21 (el plan de sólo lectura cierra
+`AUDITING → CHECKPOINTED`). **P-21** es el dueño de `COMPLETED`, porque su
+precondición, «recursos liberados y acusados», es el reap y la saga. Ese
+`CHECKPOINTED` no acredita éxito, y el ADR de P-16/D repite este límite.
 
 **La habilitación operativa del commit requiere el mínimo de recuperación.** El
 enforcement se puede desarrollar y probar antes, sobre repositorios descartables,
@@ -576,7 +625,7 @@ Cuatro digests distintos, con cuatro significados distintos:
 | Digest | Qué identifica | Cambia cuando |
 | --- | --- | --- |
 | `authority_sha256` | el documento de autoridad vigente | cambia la autoridad, no el trabajo |
-| `envelope_sha256` | la revisión del trabajo | cambia objetivo, autoridad, sets, política o presupuesto |
+| `envelope_sha256` | la revisión del trabajo | cambia la instrucción, la autoridad, los sets, la política o el presupuesto |
 | `prompt_sha256` | los bytes de una instrucción concreta | cambian los bytes |
 | `content_sha256` | los bytes de un artefacto | cambian los bytes |
 
@@ -603,6 +652,7 @@ canales y pruebas con secretos sintéticos, con el alcance declarado.
 | Resultado | `effect_id` | la misma referencia | — |
 | Checkpoint | `checkpoint_sha256` | la misma fila | — |
 | Verificación | `receipt_sha256` | el mismo receipt | cambió `tree_sha`: el receipt no aplica |
+| Autorización | `(task_id, receipt_sha256)` | la misma fila y el mismo `commit_message_sha256` | un `VERIFICATION_COMPLETED` posterior de la misma tarea la supersede: deja de aplicar |
 | Commit | `(task_id, receipt_sha256)` | el mismo `commit_sha` | el tree cambió: `CONFLICT` |
 
 **La clave de idempotencia de la sumisión es del cliente, no del contenido.** El

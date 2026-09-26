@@ -315,12 +315,12 @@ clave de idempotencia. Este mínimo pertenece a P-18/M4, no espera a P-23/M7.
 ### 6.2 Preimagen del `envelope_sha256`
 
 **Cubre todos los campos del contrato `TaskEnvelope`**, no una selección. Incluye,
-además del objetivo, la autoridad, los sets y la política: comandos permitidos,
-acciones prohibidas, claves de conflicto, reglas de validación, criterios de
-elegibilidad, forma de salida esperada, política de checkpoint, requisito de
-evidencia visual, clasificación y emisor de la autoridad. El contrato maestro es
-`kernel/contracts` y esta página **no** reproduce una preimagen parcial que se
-desactualizaría.
+además de la instrucción (`content`), la autoridad, los sets y la política:
+comandos permitidos, acciones prohibidas, claves de conflicto, reglas de
+validación, criterios de elegibilidad, forma de salida esperada, política de
+checkpoint, requisito de evidencia visual, clasificación y emisor de la autoridad.
+El contrato maestro es `kernel/contracts` y esta página **no** reproduce una
+preimagen parcial que se desactualizaría.
 
 Queda fuera de la preimagen: el reloj por defecto, el `attempt_number`, el
 `account_id`, el `model_version_id` resuelto y cualquier identificador de proceso.
@@ -355,6 +355,7 @@ Cerrado, exhaustivo, compartido por todos los efectos externos:
 | `dependency_failure_policy` | `WAIT_SUCCESS` (por defecto), `ALLOW_FAILURE`, `REQUIRE_TERMINAL` |
 | `approval_state` | `PENDING`, `GRANTED`, `DENIED`, `EXPIRED`, `CANCELLED`, `REVOKED` |
 | `adjudication_kind` | `REVIEW_CORRECTION`, `MODEL_DUEL` |
+| `commit_authorization_state` | `INTENDED`, `RECORDED`, `OUTCOME_UNKNOWN`, `SUPERSEDED` ([execution §10.5](execution/index.md)) |
 
 `OUTCOME_UNKNOWN` no es un fallo y no habilita reintento. Un `INFLIGHT` vencido
 **no** implica que reintentar sea seguro: implica reconciliar por handle o por
@@ -396,10 +397,15 @@ Un dato que no se conoce **no se inventa y no se codifica como cadena vacía**.
 - **El receipt lleva metadata obligatoria**: tarea, revisión, `base_sha`,
   `tree_sha`, `policy_sha256`, `write_set_sha256`, identidad y corrida del
   verificador, estado, checks y su digest, más la referencia al artefacto privado
-  que contiene la salida completa.
+  que contiene la salida completa. Su formato de objetos es el literal `sha1`: un
+  repositorio con otro formato se rehúsa por nombre. Receipt, veredicto,
+  autorización y commit son cuatro eslabones direccionados por contenido que la
+  puerta re-deriva; sus tablas y reglas viven en [execution §10](execution/index.md),
+  no aquí.
 - **El commit valida antes de tocar Git**: igualdad exacta contra el receipt, un
-  `PASS` independiente, y revalidación de la base, el tree y el write-set actuales.
-  Después registra el SHA **observado**. Una referencia foránea no autoriza nada.
+  `PASS` independiente, y revalidación de la base, el tree, el write-set y la
+  política actuales. Después registra el SHA **observado**. Una referencia
+  foránea no autoriza nada.
 - **Un envelope privado se lee por referencia autorizada de artefacto**, no por
   conocer su `envelope_sha256`.
 
