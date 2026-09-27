@@ -5731,6 +5731,8 @@ function d4ThroughTheDoors(options: {
   readonly role?: "implementer" | "reviewer";
   /** P-16/D1: the checks the recorded envelope declares; two synthetic ones by default. */
   readonly commands?: readonly string[];
+  /** P-16/D2: the envelope's commit policy; envelopeFor's LOCAL_COMMIT_WITH_RECEIPT by default. */
+  readonly commitPolicy?: "NO_COMMIT" | "LOCAL_COMMIT_WITH_RECEIPT";
 }): {
   readonly databasePath: string;
   readonly taskId: string;
@@ -5827,6 +5829,7 @@ function d4ThroughTheDoors(options: {
       // they read the copy and spend nothing.
       validation: { commands: [...(options.commands ?? ["test -f " + D4_WRITTEN, "exit 0"])], independentVerifierRequired: true },
       ...(role === "reviewer" ? { eligibility: { roles: [role], providers: null, requiredCapabilities: [] } } : {}),
+      ...(options.commitPolicy === undefined ? {} : { commitPolicy: options.commitPolicy }),
     },
     clientScope: D4_OPERATOR,
     clientRequestKey: "d4-" + taskId,
@@ -6127,10 +6130,10 @@ describe("P-15/D4: a recorded task, from its door to its result (parallelism :14
     expect(replayed.verifyIntegrity().problems).toEqual([]);
   }, 180_000);
 
-  it("P-16/D1 N1-N3 through the door: a failing check, no declared check, and a writer that changed nothing", async () => {
+  it("P-16/D1 N1 and N3 through the door: a failing check, and a writer that changed nothing", async () => {
+    // N2 (no declared check) is refused before any spend since P-16/D2: its own case below.
     const cases = [
       { name: "N1", commands: ["exit 1"], writerChange: true, reason: "VERIFICATION_FAILED", word: "RECEIPT_FAIL", receipts: ["FAIL"], verdicts: [] },
-      { name: "N2", commands: [], writerChange: true, reason: "VERIFICATION_FAILED", word: "RUNNER_CHECKS_UNDECLARED", receipts: [], verdicts: [] },
       { name: "N3", commands: ["exit 0"], writerChange: false, reason: "AUDIT_NOT_ACCEPTED", word: "REJECT", receipts: ["PASS"], verdicts: ["REJECT"] },
     ] as const;
     for (const each of cases) {
@@ -6150,6 +6153,49 @@ describe("P-15/D4: a recorded task, from its door to its result (parallelism :14
       expect(transitions.includes("audited"), each.name).toBe(false);
       expect(ledger.getTask(taskId)?.currentState, each.name).toBe("FAILED");
       expect(ledger.verifyIntegrity().problems, each.name).toEqual([]);
+    }
+  }, 300_000);
+
+  it("P-16/D1 N2, re-pinned by P-16/D2 (ADR 0125): no declared check is refused at start, before any spawn, receipt or spend", async () => {
+    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true, commands: [] });
+    const child = d4EchoChild({ isError: false });
+    const before = openLedger(databasePath);
+    const trail = d4Events(before, taskId);
+    before.close();
+    await expect(runPackagedEntry([d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG)])).rejects.toThrow(
+      "the recorded walk is refused before any spend: CHECKS_UNDECLARED at envelope.validation.commands",
+    );
+    expect(existsSync(child.spawnLog)).toBe(false);
+    const ledger = openLedger(databasePath);
+    ledgers.push(ledger);
+    expect(d4Events(ledger, taskId)).toEqual(trail);
+    expect(ledger.listVerifications(taskId, 1, 1)).toEqual([]);
+    expect(ledger.getTask(taskId)?.currentState).toBe("DISCOVERED");
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+  }, 180_000);
+
+  it("P-16/D2 P3 through the doors: the lawful NO_COMMIT path verifies, audits and checkpoints, and commits nothing", async () => {
+    for (const writerChange of [true, false]) {
+      const { databasePath, taskId } = d4ThroughTheDoors({ priced: true, commitPolicy: "NO_COMMIT" });
+      const child = d4EchoChild({ isError: false });
+      const config = d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG, undefined, undefined, writerChange);
+      await expect(runPackagedEntry([config]), String(writerChange)).resolves.toBe(0);
+      expect(readFileSync(child.spawnLog, "utf8")).toBe("spawned\n");
+      const ledger = openLedger(databasePath);
+      ledgers.push(ledger);
+      const receipts = ledger.listVerifications(taskId, 1, 1);
+      expect(receipts.map((row) => row.runStatus), String(writerChange)).toEqual(["PASS"]);
+      // DIFF_PRESENT_FOR_COMMIT is vacuous under NO_COMMIT: a writer that changed nothing is still ACCEPT.
+      expect(ledger.listAuditVerdicts(receipts[0]?.receiptSha256 ?? "").map((row) => row.verdict), String(writerChange)).toEqual(["ACCEPT"]);
+      const stream = ledger.listEvents({ taskId, limit: 500 }).events.map((record) => record.event);
+      const transitions = stream.map((event) => event.transitionId);
+      expect(transitions.includes("verified") && transitions.includes("audited"), String(writerChange)).toBe(true);
+      const checkpoint = stream.find((event) => event.type === "CHECKPOINT_WRITTEN");
+      expect(checkpoint?.fromState, String(writerChange)).toBe("AUDITING");
+      expect(stream.map((event) => event.toState), String(writerChange)).not.toContain("READY_TO_COMMIT");
+      expect(stream.some((event) => event.type.startsWith("COMMIT_")), String(writerChange)).toBe(false);
+      expect(ledger.getTask(taskId)?.currentState, String(writerChange)).toBe("CHECKPOINTED");
+      expect(ledger.verifyIntegrity().problems, String(writerChange)).toEqual([]);
     }
   }, 300_000);
 
@@ -7033,6 +7079,14 @@ async function fExpectBothDoors(
 // D-F-5 enters by `acp intake` and runs the LOCAL leg over a real loopback socket:
 // the tracked child server, spawned by path. Every credential is a canary this
 // file writes into a disposable owner directory; no real one is read or reachable.
+//
+// P-16/D2 (ADR 0125, decision 243; ND-5 (a)): neither transport has a writer id
+// issuer, so the recorded start now refuses both WRITER_ID_UNISSUED before any
+// request or spend. D-F-4 (folded with the API_KEY 401/429 and N-E-21 cases) and
+// D-F-5 are re-pinned to that refusal, the substitute and the loopback socket kept
+// and proved unasked; the result read-back through both doors returns when P-28
+// widens the issuers. The two doors' read-back of a result stays proved by the CLI
+// recorded drills above, and the leaves by the providers' port suites.
 // ---------------------------------------------------------------------------
 
 const E_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
@@ -7380,29 +7434,6 @@ async function eCanarySweep(input: {
   expect(where).toEqual([]);
 }
 
-/** Read the one effect through both doors, returning the bodies read. */
-async function eReadBack(
-  server: FServer,
-  databasePath: string,
-  taskId: string,
-): Promise<{ readonly document: Record<string, unknown>; readonly bodies: readonly string[]; readonly cliOutput: readonly string[] }> {
-  const listed = acp(["effects", taskId, "--database", databasePath, "--format", "json"]);
-  expect({ status: listed.status, stderr: listed.stderr }).toEqual({ status: 0, stderr: "" });
-  const effectId = String(fOnlyEffect(JSON.parse(listed.stdout))["effectId"]);
-  const byHttp = await fGet(server, fPaths(taskId, effectId).result);
-  expect([byHttp.status, byHttp.cacheControl]).toEqual([200, "no-store"]);
-  const byCli = acp(["result", "--task", taskId, "--effect", effectId, "--database", databasePath, "--format", "json"]);
-  expect({ status: byCli.status, stderr: byCli.stderr }).toEqual({ status: 0, stderr: "" });
-  const document = JSON.parse(byHttp.body) as Record<string, unknown>;
-  expect(JSON.parse(byCli.stdout)).toEqual(document);
-  return { document, bodies: [byHttp.body], cliOutput: [listed.stdout, listed.stderr, byCli.stdout, byCli.stderr] };
-}
-
-function eBlocksText(document: Record<string, unknown>): string {
-  const blocks = ((document["result"] as Record<string, unknown>)["document"] as Record<string, unknown>)["blocks"] as Record<string, unknown>[];
-  return blocks.map((block) => String(block["text"])).join("");
-}
-
 function eTypes(databasePath: string, taskId: string): readonly D4Event[] {
   const ledger = openLedger(databasePath);
   try {
@@ -7425,83 +7456,85 @@ describe("P-15/E: the real clients, from the doors to the result, with a credent
     }
   }, 600_000);
 
-  it("D-F-4 (API_KEY): POST /tasks, the Messages leaf over the substitute, read back through both doors; the canary nowhere", async () => {
-    const canary = eCanary("DF4" + randomUUID().replace(/-/g, "").slice(0, 12));
-    const sentinel = "PESFOUR" + randomUUID().replace(/-/g, "");
-    const instruction = "Echo this instruction back, word for word: " + sentinel;
-    const { databasePath, taskId, intakeRequest } = d4ThroughTheDoors({ priced: true, instruction, intakeBy: "CALLER", transport: "API_KEY" });
-    const accountsFile = eOwnerFiles({ "e-main": canary });
-    const server = await fServer(databasePath, { bearer: true, accountsFile });
-    const intake = await fetch(server.url + "/api/v1/tasks", {
-      method: "POST",
-      headers: { authorization: "Bearer " + F_TOKEN, "content-type": "application/json" },
-      body: JSON.stringify(intakeRequest),
-    });
-    expect(intake.status).toBe(200);
-
-    const run = await eRunWithSubstitute(eConfigFile(databasePath, taskId, { transportKind: "API_KEY", accountsFile }), (call) => {
-      const body = JSON.parse(call.init.body as string) as { messages: { content: string }[] };
-      return new Response(eReads(eMessagesStream(body.messages[0]?.content ?? "")), {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-      });
-    });
-    // P-16/D1 (ND-5 (a), a declared limit): an API_KEY transport has no writer-id
-    // issuer (P-28), so the recorded walk's verification refuses WRITER_ID_UNISSUED
-    // after the spend and the task settles VERIFICATION_FAILED; the result chain below
-    // is unchanged, and only the final state moved. The pre-spend refusal is P-16/D2's.
-    expect(run.outcome.code).toBeNull();
-    expect(run.outcome.error).toMatchObject({ name: "VerificationPhaseError", reason: "VERIFICATION_FAILED", word: "WRITER_ID_UNISSUED" });
-
-    // The transport's positive control (C-E9.3): one call, the exact request, the canary once.
-    expect(run.substitute.strays).toEqual([]);
-    expect(run.substitute.late).toBe(0);
-    expect(run.substitute.calls).toHaveLength(1);
-    const [call] = run.substitute.calls;
-    if (call === undefined) throw new Error("no call");
-    expect([call.init.method, call.init.redirect, call.init.signal instanceof AbortSignal]).toEqual(["POST", "manual", true]);
-    const headers = new Headers(call.init.headers);
-    expect([...headers.keys()].sort()).toEqual(["anthropic-version", "content-type", "x-api-key"]);
-    expect(headers.get("x-api-key")).toBe(canary);
-    expect(JSON.parse(call.init.body as string)).toEqual({
-      model: "claude-opus-5",
-      max_tokens: 256,
-      stream: true,
-      messages: [{ role: "user", content: instruction }],
-    });
-
-    // The ledger: one CUMULATIVE final observation, a SUCCEEDED settlement, integrity ok.
+  /**
+   * P-16/D2 (ADR 0125, decision 243; ND-5 (a)): a recorded walk on a transport with no
+   * writer id issuer is refused at start, before anything is appended, leased,
+   * dispatched or spent. The credential still resolves at the start (it is read before
+   * the ledger opens) and never leaves: no request is made, and the canary is swept.
+   */
+  function eRefusedBeforeSpend(databasePath: string, taskId: string, trail: readonly D4Event[], error: unknown): void {
+    expect(eErrorText(error)).toContain("the recorded walk is refused before any spend: WRITER_ID_UNISSUED at route");
     const events = eTypes(databasePath, taskId);
+    expect(events).toEqual(trail);
     const types = events.map((event) => event.type);
-    expect(types.filter((type) => type === "USAGE_OBSERVATION_RECORDED")).toHaveLength(1);
-    expect(events.find((event) => event.type === "USAGE_OBSERVATION_RECORDED")?.payload["usageObservation"]).toMatchObject({
-      reportKind: "CUMULATIVE",
-      isFinal: 1,
-      inputTokens: 5,
-      outputTokens: 7,
-      cacheWriteTokens: 11,
-      cacheReadTokens: 13,
-      totalTokens: 36,
-    });
-    expect(types).not.toContain("CHECKPOINT_WRITTEN");
-    expect(events.find((event) => event.type === "TASK_FAILED")?.payload).toMatchObject({ reason: "VERIFICATION_FAILED" });
+    for (const absent of ["RUN_STARTED", "LEASE_ACQUIRED", "EFFECT_INTENDED", "DISPATCH_INTENDED", "PROMPT_OCCURRENCE_RECORDED", "USAGE_STREAM_DECLARED", "USAGE_OBSERVATION_RECORDED", "RESPONSE_OCCURRENCE_RECORDED", "AUTH_REQUIRED_RAISED", "TASK_FAILED"]) {
+      expect(types, absent).not.toContain(absent);
+    }
+    const ledger = openLedger(databasePath);
+    try {
+      expect(ledger.getTask(taskId)?.currentState).toBe("DISCOVERED");
+    } finally {
+      ledger.close();
+    }
+  }
 
-    // Read back through both doors: RESULT/SUCCEEDED, the sentinel where it may be.
-    const read = await eReadBack(server, databasePath, taskId);
-    expect(read.document).toMatchObject({ state: "RESULT", outcomeStatus: "SUCCEEDED", cohort: "CURRENT" });
-    expect(eBlocksText(read.document)).toBe(instruction);
-    expect(read.bodies.join("")).toContain(sentinel);
+  /**
+   * D-F-4, re-pinned by P-16/D2 and folded with the API_KEY 401/429 and N-E-21 recorded
+   * cases (ND-5 condition 3): each substitute answer -- the Messages stream, a 401, a
+   * 429, a transport failure carrying the canary -- is never asked, because the start
+   * refuses first. The end-to-end result read-back ADR 0108 made P-15/E's acceptance
+   * condition is suspended until P-28 widens the issuers (ADR 0125).
+   */
+  const E_API_KEY_ANSWERS: readonly (readonly [string, (canary: string, call: { readonly init: RequestInit }) => Response])[] = [
+    [
+      "D-F-4",
+      (_canary, call) => {
+        const body = JSON.parse(call.init.body as string) as { messages: { content: string }[] };
+        return new Response(eReads(eMessagesStream(body.messages[0]?.content ?? "")), { status: 200, headers: { "content-type": "text/event-stream" } });
+      },
+    ],
+    ["401", (canary) => new Response(JSON.stringify({ error: { type: "authentication_error", message: canary } }), { status: 401 })],
+    ["429", (canary) => new Response(JSON.stringify({ error: { type: "rate_limit_error", message: canary } }), { status: 429 })],
+    [
+      "N-E-21",
+      (canary) => {
+        throw new TypeError("fetch failed: " + canary, { cause: { code: "ECONNRESET", detail: canary } });
+      },
+    ],
+  ];
 
-    await eCanarySweep({ canary, databasePath, server, taskId, io: run.io, error: run.outcome.error, cliOutput: read.cliOutput, readBodies: read.bodies });
-    await fSweep(server, { sentinel, taskId, ledgerPath: databasePath, cliStderr: read.cliOutput.filter((_, index) => index % 2 === 1) });
-  }, 300_000);
+  it("D-F-4 with 401, 429 and N-E-21 (API_KEY), re-pinned by P-16/D2: POST /tasks, then the start refuses WRITER_ID_UNISSUED before any request or spend; the canary nowhere", async () => {
+    for (const [name, answer] of E_API_KEY_ANSWERS) {
+      const canary = eCanary("DF4" + name.replace(/[^A-Z0-9]/g, "") + randomUUID().replace(/-/g, "").slice(0, 12));
+      const { databasePath, taskId, intakeRequest } = d4ThroughTheDoors({ priced: true, intakeBy: "CALLER", transport: "API_KEY" });
+      const accountsFile = eOwnerFiles({ "e-main": canary });
+      const server = await fServer(databasePath, { bearer: true, accountsFile });
+      const intake = await fetch(server.url + "/api/v1/tasks", {
+        method: "POST",
+        headers: { authorization: "Bearer " + F_TOKEN, "content-type": "application/json" },
+        body: JSON.stringify(intakeRequest),
+      });
+      expect(intake.status, name).toBe(200);
+      const trail = eTypes(databasePath, taskId);
+
+      const run = await eRunWithSubstitute(eConfigFile(databasePath, taskId, { transportKind: "API_KEY", accountsFile }), (call) =>
+        answer(canary, call),
+      );
+      expect(run.outcome.code, name).toBeNull();
+      expect(run.substitute.calls, name).toHaveLength(0);
+      expect(run.substitute.strays, name).toEqual([]);
+      expect(run.substitute.late, name).toBe(0);
+      eRefusedBeforeSpend(databasePath, taskId, trail, run.outcome.error);
+      const listed = acp(["effects", taskId, "--database", databasePath, "--format", "json"]);
+      await eCanarySweep({ canary, databasePath, server, taskId, io: run.io, error: run.outcome.error, cliOutput: [listed.stdout, listed.stderr], readBodies: [] });
+    }
+  }, 600_000);
 
   for (const auth of ["CREDENTIAL", "NONE"] as const) {
-    it("D-F-5 (LOCAL, auth " + auth + "): acp intake, the local leaf over a real loopback socket, read back through both doors", async () => {
+    it("D-F-5 (LOCAL, auth " + auth + "), re-pinned by P-16/D2: acp intake, then the start refuses WRITER_ID_UNISSUED; the loopback socket is never asked", async () => {
       const canary = eCanary("DF5" + auth.slice(0, 1) + randomUUID().replace(/-/g, "").slice(0, 12));
-      const sentinel = "PESFIVE" + randomUUID().replace(/-/g, "");
-      const instruction = "Echo this instruction back, word for word: " + sentinel;
-      const { databasePath, taskId } = d4ThroughTheDoors({ priced: true, instruction, transport: "LOCAL_OR_SELF_HOSTED" });
+      const { databasePath, taskId } = d4ThroughTheDoors({ priced: true, transport: "LOCAL_OR_SELF_HOSTED" });
+      const trail = eTypes(databasePath, taskId);
       const loopback = await eLoopback();
       // The header log holds the credential by design: it is outside every swept root.
       for (const root of [resolve(databasePath, ".."), E_DAEMON_ROOT]) expect(loopback.headerLog.startsWith(root + "/")).toBe(false);
@@ -7514,38 +7547,15 @@ describe("P-15/E: the real clients, from the doors to the result, with a credent
           ...(accountsFile === undefined ? {} : { accountsFile }),
         }),
       );
-      // P-16/D1 (ND-5 (a)): a local transport has no writer-id issuer either; the walk
-      // spends, its verification refuses, and the task settles VERIFICATION_FAILED.
       expect(run.outcome.code).toBeNull();
-      expect(run.outcome.error).toMatchObject({ name: "VerificationPhaseError", reason: "VERIFICATION_FAILED", word: "WRITER_ID_UNISSUED" });
-
-      // The transport's positive control: the socket saw exactly one request, and the
-      // bearer header exactly when the auth is CREDENTIAL.
-      const log = readFileSync(loopback.headerLog, "utf8");
-      expect(log.split("POST /v1/chat/completions")).toHaveLength(2);
-      if (auth === "CREDENTIAL") {
-        expect(log.split("authorization: Bearer " + canary + "\n")).toHaveLength(2);
-      } else {
-        expect(log).not.toContain("authorization:");
-      }
-
-      // No usage frame: no observation, never a report of zeros.
-      const events = eTypes(databasePath, taskId);
-      const observations = events.filter((event) => event.type === "USAGE_OBSERVATION_RECORDED");
-      for (const observation of observations) {
-        const usage = observation.payload["usageObservation"] as Record<string, unknown>;
-        for (const key of ["inputTokens", "outputTokens", "cacheWriteTokens", "cacheReadTokens"]) expect(usage[key]).not.toBe(0);
-      }
-      expect(events.find((event) => event.type === "TASK_FAILED")?.payload).toMatchObject({ reason: "VERIFICATION_FAILED" });
+      eRefusedBeforeSpend(databasePath, taskId, trail, run.outcome.error);
+      // The socket saw no request at all.
+      const log = existsSync(loopback.headerLog) ? readFileSync(loopback.headerLog, "utf8") : "";
+      expect(log).not.toContain("POST /v1/chat/completions");
+      expect(log).not.toContain("authorization:");
 
       const server = await fServer(databasePath, { bearer: true, ...(accountsFile === undefined ? {} : { accountsFile }) });
-      const read = await eReadBack(server, databasePath, taskId);
-      expect(read.document).toMatchObject({ state: "RESULT", outcomeStatus: "SUCCEEDED", cohort: "CURRENT" });
-      expect(eBlocksText(read.document)).toBe(instruction);
-      expect(read.bodies.join("")).toContain(sentinel);
-
-      await eCanarySweep({ canary, databasePath, server, taskId, io: run.io, error: run.outcome.error, cliOutput: read.cliOutput, readBodies: read.bodies });
-      await fSweep(server, { sentinel, taskId, ledgerPath: databasePath, cliStderr: read.cliOutput.filter((_, index) => index % 2 === 1) });
+      await eCanarySweep({ canary, databasePath, server, taskId, io: run.io, error: run.outcome.error, cliOutput: [], readBodies: [] });
     }, 300_000);
   }
 
@@ -7562,56 +7572,6 @@ describe("P-15/E: the real clients, from the doors to the result, with a credent
     expect(run.substitute.strays).toEqual([]);
     const types = eTypes(databasePath, taskId).map((event) => event.type);
     for (const absent of ["LEASE_ACQUIRED", "EFFECT_INTENDED", "DISPATCH_INTENDED"]) expect(types, absent).not.toContain(absent);
-    const server = await fServer(databasePath, { bearer: true, accountsFile });
-    await eCanarySweep({ canary, databasePath, server, taskId, io: run.io, error: run.outcome.error, cliOutput: [], readBodies: [] });
-  }, 300_000);
-
-  it("carries a 401 as the account's AUTH_REQUIRED pressure and a FAILED outcome, and a 429 as a failed execution with no retry", async () => {
-    for (const status of [401, 429] as const) {
-      const canary = eCanary("S" + String(status) + randomUUID().replace(/-/g, "").slice(0, 12));
-      const { databasePath, taskId } = d4ThroughTheDoors({ priced: true, transport: "API_KEY" });
-      const accountsFile = eOwnerFiles({ "e-main": canary });
-      const run = await eRunWithSubstitute(
-        eConfigFile(databasePath, taskId, { transportKind: "API_KEY", accountsFile }),
-        () => new Response(JSON.stringify({ error: { type: "authentication_error", message: canary } }), { status }),
-      );
-      expect(run.outcome.code).toBeNull();
-      expect(run.substitute.calls).toHaveLength(1);
-      const events = eTypes(databasePath, taskId);
-      if (status === 401) {
-        // The authRequired chunk is the pressure the plane records, on the account.
-        expect(events.find((event) => event.type === "AUTH_REQUIRED_RAISED")?.payload).toMatchObject({
-          accountId: D4_ACCOUNT,
-          pressure: "AUTH_REQUIRED",
-        });
-      } else {
-        // The leg's closed word is the port's error event detail; the effect settles on
-        // the event's refusal, and the word itself is proved at the port (providers,
-        // "the real HTTP clients through the port"), since no door reads a trail's detail.
-        expect(events.some((event) => event.type === "AUTH_REQUIRED_RAISED")).toBe(false);
-        expect(run.outcome.error).toMatchObject({ name: "ExecutionEffectError", refusal: "TRANSPORT_UNAVAILABLE", at: "events.error" });
-      }
-      expect(events.find((event) => event.type === "TASK_FAILED")?.payload).toMatchObject({ reason: "EXECUTION_FAILED" });
-      const server = await fServer(databasePath, { bearer: true, accountsFile });
-      const listed = acp(["effects", taskId, "--database", databasePath, "--format", "json"]);
-      expect(fOnlyEffect(JSON.parse(listed.stdout))).toMatchObject({ outcomeStatus: "FAILED" });
-      await eCanarySweep({ canary, databasePath, server, taskId, io: run.io, error: run.outcome.error, cliOutput: [listed.stdout, listed.stderr], readBodies: [] });
-    }
-  }, 600_000);
-
-  it("settles a transport failure carrying the canary as a failed execution, and the canary reaches no sink (N-E-21)", async () => {
-    const canary = eCanary("UNREACH" + randomUUID().replace(/-/g, "").slice(0, 12));
-    const { databasePath, taskId } = d4ThroughTheDoors({ priced: true, transport: "API_KEY" });
-    const accountsFile = eOwnerFiles({ "e-main": canary });
-    const run = await eRunWithSubstitute(eConfigFile(databasePath, taskId, { transportKind: "API_KEY", accountsFile }), () => {
-      throw new TypeError("fetch failed: " + canary, { cause: { code: "ECONNRESET", detail: canary } });
-    });
-    expect(run.outcome.code).toBeNull();
-    expect(run.substitute.calls).toHaveLength(1);
-    // The closed word is the port's error detail (proved at the port); here the effect
-    // settles on the event's refusal, and nothing of the thrown value travels.
-    expect(run.outcome.error).toMatchObject({ name: "ExecutionEffectError", refusal: "TRANSPORT_UNAVAILABLE", at: "events.error" });
-    expect(eTypes(databasePath, taskId).find((event) => event.type === "TASK_FAILED")?.payload).toMatchObject({ reason: "EXECUTION_FAILED" });
     const server = await fServer(databasePath, { bearer: true, accountsFile });
     await eCanarySweep({ canary, databasePath, server, taskId, io: run.io, error: run.outcome.error, cliOutput: [], readBodies: [] });
   }, 300_000);

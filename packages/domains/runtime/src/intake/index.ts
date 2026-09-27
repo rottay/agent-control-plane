@@ -128,6 +128,16 @@ export type {
  *   reference that names no task until a retry completes the intake;
  * - a publication of that pair that ended `ABANDONED` is never retried by this
  *   door: the intake is refused `CONTENT_REJECTED` until another decision.
+ *
+ * ## An empty write-set is refused (P-16/D2, ADR 0125)
+ *
+ * A `NO_COMMIT` envelope that declares no path is `REQUEST_INVALID`
+ * `WRITE_SET_EMPTY` at `envelope.writeSet`, beside `ROLE_NOT_IN_ENVELOPE`, so nothing
+ * is published and nothing appended (decision 242). Under
+ * `LOCAL_COMMIT_WITH_RECEIPT` the contract's own refinement refuses it first, as
+ * `ENVELOPE_INVALID` at `envelope.commitPolicy`. A read-only task is P-17's
+ * `workspaceMode`. An envelope with no check commands still enters: the recorded
+ * walk refuses it before its spend (`CHECKS_UNDECLARED`), not the intake.
  */
 
 // ---------------------------------------------------------------------------
@@ -171,6 +181,7 @@ export const TASK_INTAKE_CODES = [
   "ROLE_NOT_IN_ENVELOPE",
   "TASK_ALREADY_RECORDED",
   "WRITE_RACE_LOST",
+  "WRITE_SET_EMPTY",
 ] as const;
 
 /** How the envelope's bytes are described to the plane. */
@@ -586,10 +597,11 @@ function publicationRequestFor(
 }
 
 /**
- * The preconditions of contracts §5 that read the ledger, after the key: the task
- * is new, the initiative exists, the roadmap version exists for it, the role is
- * one the envelope admits, and the registry resolves the role for this slot and
- * transport. The resolution carries the vector it was read at.
+ * The preconditions of contracts §5, after the key: the task is new, the
+ * initiative exists, the roadmap version exists for it, the role is one the
+ * envelope admits, the envelope declares a write-set (P-16/D2: `WRITE_SET_EMPTY`,
+ * the one check here that reads the envelope alone), and the registry resolves the
+ * role for this slot and transport. The resolution carries the vector it was read at.
  */
 function preconditions(ledger: Ledger, parsed: ParsedTaskIntake): TaskIntakeResolution | TaskIntakeRefused {
   const { envelope } = parsed;
@@ -619,6 +631,13 @@ function preconditions(ledger: Ledger, parsed: ParsedTaskIntake): TaskIntakeReso
   }
   if (!envelope.eligibility.roles.includes(parsed.role)) {
     return refuse("REQUEST_INVALID", "ROLE_NOT_IN_ENVELOPE", "role");
+  }
+  // An envelope that declares no path is refused by name before anything is
+  // published (P-16/D2, ADR 0125, decision 242): `NO_COMMIT` edits inside its
+  // write-set, and a task that may edit nothing is P-17's `workspaceMode`, not an
+  // empty write-set. Under `LOCAL_COMMIT_WITH_RECEIPT` the contract refuses it first.
+  if (envelope.writeSet.length === 0) {
+    return refuse("REQUEST_INVALID", "WRITE_SET_EMPTY", "envelope.writeSet");
   }
 
   const reading = ledger.getGlobalRoutingAssignment({ role: parsed.role, slot: parsed.slot });

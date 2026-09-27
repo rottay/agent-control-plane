@@ -159,6 +159,10 @@ model version the proposal `MIGRATE_TO_ACTIVE_MODEL_VERSION`. A body the schema
 refuses, the envelope's own contract included, is `400` before the plane sees a byte;
 from `0.25.0` (contract `2.11.0`, ADR 0120) that includes an envelope that still
 carries `objective`, refused as an unknown key with the detail `envelope`.
+From P-16/D2 (ADR 0125), still `0.25.0`: a `NO_COMMIT` envelope with an empty write-set
+is `409` `WRITE_REFUSED` with `REQUEST_INVALID` `WRITE_SET_EMPTY` and the detail
+`envelope.writeSet`, publishing and appending nothing; under `LOCAL_COMMIT_WITH_RECEIPT`
+the contract refuses it first, `400` at `envelope.commitPolicy`.
 An intake takes no lease: two tasks with overlapping write-sets both enter, and the
 conflict is reported when one is acquired. No door mints a task id or a client key.
 

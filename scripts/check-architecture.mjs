@@ -12877,6 +12877,58 @@ const P16D1_WRITE_SET = [
   "packages/domains/runtime/README.md",
 ];
 
+/**
+ * P-16, cut D2: a recorded walk is refused before its spend (ADR 0125; decisions
+ * 242-244; brief v1 with the DT pre-review's corrections NB-1..NB-8 and its rulings on
+ * ND-1 to ND-11, adopted).
+ *
+ * D-S1-2 (decision 160) is paid by ruling, not by default: an empty write-set is
+ * unlawful under both commit policies until P-17's `workspaceMode` (ND-1 (b)). The
+ * intake refuses a `NO_COMMIT` envelope with no path as `REQUEST_INVALID`
+ * `WRITE_SET_EMPTY` before anything is published; the recorded start asks runtime's
+ * pure `recordedWalkRefusal` once, after `readRecordedTask` and before anything is
+ * appended, and refuses `CHECKS_UNDECLARED`, `WRITE_SET_EMPTY` or `WRITER_ID_UNISSUED`
+ * by name with zero spend (ND-5 (a)). The runner and the auditor keep their own words
+ * as the backstop. D1's N2, D-F-4, D-F-5 and the API_KEY 401/429 and N-E-21 recorded
+ * cases are re-pinned to the pre-spend refusal. Held by L-P16D2-1.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 185 -> **186**; `RUNTIME_PUBLIC_EXPORTS` 314
+ * -> **317**; the ADR corpus 124 -> **125**. **Pins that do not.** `CONTRACT_VERSION`
+ * (2.11.0: no schema moves), `API_CONTRACT_VERSION` (0.25.0, ND-8 (a)), `MIGRATIONS`
+ * (28), `CONTRACTS_SCHEMA_EXPORTS` (191), `SPAWN_ALLOWED_FILES` (5),
+ * `DAEMON_PUBLIC_EXPORTS`, `COMPOSITION_PUBLIC_EXPORTS`, `DAEMON_ALLOWED_BUILTINS`,
+ * `PROVIDERS_PUBLIC_EXPORTS` (97).
+ *
+ * **Twenty-two paths; one is new**: the ADR. The twenty-second, the runner suite, was
+ * admitted on a measured red (DT stop ruling 1): N5's empty-write-set fixture is
+ * re-planted because the intake now refuses that task, correcting the pre-review's
+ * measurement.
+ */
+const P16D2_WRITE_SET = [
+  "packages/domains/runtime/src/recorded-task/index.ts",
+  "packages/domains/runtime/src/recorded-task/types/index.ts",
+  "packages/domains/runtime/src/intake/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/test/recorded-task/index.test.ts",
+  "packages/domains/runtime/test/intake/index.test.ts",
+  "packages/entrypoints/daemon/src/composition/index.ts",
+  "packages/entrypoints/daemon/src/verification-runner/index.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/verification-runner/index.test.ts",
+  "packages/entrypoints/cli/test/intake/index.test.ts",
+  "packages/entrypoints/gateway/test/task-intake/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0125-a-recorded-walk-is-refused-before-its-spend.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "docs/audit/architecture/contracts/index.md",
+  "docs/api-reference.md",
+  "packages/domains/runtime/README.md",
+  "packages/entrypoints/daemon/README.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -13139,6 +13191,7 @@ const WRITE_SET = [
   ...P16B_WRITE_SET,
   ...P16C_WRITE_SET,
   ...P16D1_WRITE_SET,
+  ...P16D2_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -14790,6 +14843,12 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the commit policy is read, never stated",
     scope: "packages/entrypoints/daemon/src/**",
+  },
+  // P-16/D2. One new path-shaped surface, so one new row: the register and the
+  // `requireScope` call sites both move 185 -> 186 for L-P16D2-1.
+  {
+    law: "a recorded walk is refused before its spend",
+    scope: "packages/*/*/src/**",
   },
 ];
 
@@ -19756,7 +19815,15 @@ if (tracked.status === 0) {
   // SQLite, the manifest's exact dependency surface is unchanged, and every other
   // daemon file -- source or test -- is still refused by both checks below. Not a
   // member of DAEMON_TEST_ONLY_IMPORTS, which would admit every daemon test.
-  const DAEMON_SQLITE_FIXTURE_FILE = "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts";
+  // P-16/D2 (ADR 0125, decision 244): the runner suite is the second named
+  // fixture file, by exact name and for `node:sqlite` alone. Its N5 case plants
+  // the empty write-set that D2's intake now refuses, by rewriting the intake
+  // event (and every event naming the entered envelope) and recomputing the
+  // chain. Still no daemon source touches SQLite and the manifest is unchanged.
+  const DAEMON_SQLITE_FIXTURE_FILES = new Set([
+    "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+    "packages/entrypoints/daemon/test/verification-runner/index.test.ts",
+  ]);
 
   requireScope("a supervised process imports only what it is allowed", daemonSources.length);
   for (const relativePath of daemonSources) {
@@ -19779,7 +19846,7 @@ if (tracked.status === 0) {
     for (const name of importSpecifiers(content)) {
       const relative = name.startsWith("./") || name.startsWith("../");
       const spawnHere = name === "node:child_process" && SPAWN_ALLOWED_FILES.has(relativePath);
-      const sqliteFixtureHere = isTest && name === "node:sqlite" && relativePath === DAEMON_SQLITE_FIXTURE_FILE;
+      const sqliteFixtureHere = isTest && name === "node:sqlite" && DAEMON_SQLITE_FIXTURE_FILES.has(relativePath);
       const allowed =
         relative ||
         DAEMON_ALLOWED_PACKAGES.has(name) ||
@@ -19974,8 +20041,8 @@ if (tracked.status === 0) {
 
   notes.push(
     daemonSources.length +
-      " daemon sources import only what a supervised process is allowed; node:sqlite only in the test fixture " +
-      DAEMON_SQLITE_FIXTURE_FILE,
+      " daemon sources import only what a supervised process is allowed; node:sqlite only in the test fixtures " +
+      [...DAEMON_SQLITE_FIXTURE_FILES].sort().join(", "),
   );
 
   // --- L-B7S: the elector is not the walk (V2-B7S) --------------------------
@@ -22352,6 +22419,11 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "VerificationPorts",
   "VerifierPort",
   "VerifyOutcome",
+  // P-16/D2 (ADR 0125, decision 243): the recorded walk's admission before its spend,
+  // its closed words and their union. 314 -> 317.
+  "RECORDED_WALK_REFUSALS",
+  "recordedWalkRefusal",
+  "RecordedWalkRefusal",
 ];
 
 /**
@@ -29005,6 +29077,122 @@ if (tracked.status === 0) {
   }
   requireScope(LAW, scanned);
   notes.push("the commit policy is read from the envelope at both daemon walk sites, never stated");
+}
+
+// L-P16D2-1 -- a recorded walk is refused before its spend (P-16/D2, ADR 0125;
+// decisions 242 and 243).
+//
+// D-S1-2 and ND-5: the three facts every recorded walk needs -- declared checks, a
+// write-set, a writer id the elected route can issue -- are refused by name before
+// anything is appended, leased, dispatched or spent. Over comments-stripped text:
+// runtime's `recorded-task/index.ts` declares `RECORDED_WALK_REFUSALS` once, exactly the
+// three words and sorted, and defines `function recordedWalkRefusal(` once, whose body
+// calls `writerIdIssuerFor(` and spells neither `"CLI_SUBSCRIPTION"` nor
+// `"CLAUDE_CLI_SESSION"` (the issuer set is never restated); the daemon's
+// `composition/index.ts` calls `recordedWalkRefusal(` exactly once, inside the body of
+// `function recordedSubject(`, after its `readRecordedTask(` and before its first
+// `return {`, and no other tracked daemon `src` file calls it; runtime's
+// `intake/index.ts` holds `refuse("REQUEST_INVALID", "WRITE_SET_EMPTY"` once, inside the
+// body of `function preconditions(`.
+//
+// Stated limit (L-P27C-1's): a text matcher. A call through an alias, a refusal in dead
+// code, or what `stripComments` hides is not seen. The semantic guards are the runtime
+// units, the two doors' intake suites, the bin suite's `runDaemonChild` refusals and the
+// recorded drills' re-pins (zero spend).
+{
+  const LAW = "a recorded walk is refused before its spend";
+  const ADMISSION = "packages/domains/runtime/src/recorded-task/index.ts";
+  const START = "packages/entrypoints/daemon/src/composition/index.ts";
+  const INTAKE = "packages/domains/runtime/src/intake/index.ts";
+  const WORDS = ["CHECKS_UNDECLARED", "WRITER_ID_UNISSUED", "WRITE_SET_EMPTY"];
+  // The body of a declaration whose parameters may hold a type literal: the braces are
+  // counted from the first `{` after the parameter list closes.
+  const bodyAfterParameters = (source, declaration) => {
+    const at = source.indexOf(declaration);
+    if (at === -1) return null;
+    let depth = 0;
+    for (let cursor = at + declaration.length - 1; cursor < source.length; cursor += 1) {
+      if (source[cursor] === "(") depth += 1;
+      else if (source[cursor] === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          const body = functionBody(source.slice(cursor + 1), "");
+          return body === null ? null : { body, at: source.indexOf(body, cursor + 1) };
+        }
+      }
+    }
+    return null;
+  };
+  let scanned = 0;
+  const admission = stripComments(readIfPresent(ADMISSION) ?? "");
+  if (admission.trim().length > 0) scanned += 1;
+  const lists = [...admission.matchAll(/\bexport const RECORDED_WALK_REFUSALS\s*=\s*\[([^\]]*)\]\s*as const/g)];
+  if (lists.length !== 1) {
+    fail(ADMISSION + " declares RECORDED_WALK_REFUSALS " + String(lists.length) + " time(s); once, as a const list (L-P16D2-1)");
+  } else {
+    const entries = lists[0][1]
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => entry.replace(/^["'](.*)["']$/, "$1"));
+    const sorted = [...entries].sort();
+    if (JSON.stringify(entries) !== JSON.stringify(sorted) || JSON.stringify(entries) !== JSON.stringify(WORDS)) {
+      fail(ADMISSION + " RECORDED_WALK_REFUSALS is [" + entries.join(", ") + "]; exactly [" + WORDS.join(", ") + "], sorted (L-P16D2-1)");
+    }
+  }
+  const declared = admission.match(/\bfunction recordedWalkRefusal\(/g) ?? [];
+  const walkBody = bodyAfterParameters(admission, "function recordedWalkRefusal(");
+  if (declared.length !== 1 || walkBody === null) {
+    fail(ADMISSION + " defines function recordedWalkRefusal( " + String(declared.length) + " time(s); once (L-P16D2-1)");
+  } else {
+    if (!walkBody.body.includes("writerIdIssuerFor(")) {
+      fail(ADMISSION + " recordedWalkRefusal no longer asks writerIdIssuerFor(; the issuer set is the commit authorization's (L-P16D2-1)");
+    }
+    for (const restated of ['"CLI_SUBSCRIPTION"', '"CLAUDE_CLI_SESSION"']) {
+      if (walkBody.body.includes(restated)) fail(ADMISSION + " recordedWalkRefusal spells " + restated + "; the issuer is never restated (L-P16D2-1)");
+    }
+  }
+  const start = stripComments(readIfPresent(START) ?? "");
+  if (start.trim().length > 0) scanned += 1;
+  const calls = [...start.matchAll(/\brecordedWalkRefusal\(/g)];
+  const subject = bodyAfterParameters(start, "function recordedSubject(");
+  if (calls.length !== 1 || subject === null) {
+    fail(START + " calls recordedWalkRefusal( " + String(calls.length) + " time(s); once, inside recordedSubject (L-P16D2-1)");
+  } else {
+    const callAt = subject.body.indexOf("recordedWalkRefusal(");
+    const readAt = subject.body.indexOf("readRecordedTask(");
+    const returnAt = subject.body.search(/\breturn\s*\{/);
+    if (callAt === -1 || readAt === -1 || returnAt === -1 || callAt < readAt || callAt > returnAt) {
+      fail(START + " recordedSubject does not ask recordedWalkRefusal( after readRecordedTask( and before its return {; the walk is refused before its spend (L-P16D2-1)");
+    }
+  }
+  const strays = [];
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!relativePath.startsWith("packages/entrypoints/daemon/src/") || !/\.tsx?$/.test(relativePath)) continue;
+      if (relativePath === START) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      if (/\brecordedWalkRefusal\(/.test(stripComments(file))) strays.push(relativePath);
+    }
+  }
+  if (strays.length > 0) fail("recordedWalkRefusal( is called in [" + strays.join(", ") + "]; its one caller is " + START + " (L-P16D2-1)");
+  const intake = stripComments(readIfPresent(INTAKE) ?? "");
+  if (intake.trim().length > 0) scanned += 1;
+  const refusals = [...intake.matchAll(/\brefuse\(\s*"REQUEST_INVALID",\s*"WRITE_SET_EMPTY"/g)];
+  const preconditions = bodyAfterParameters(intake, "function preconditions(");
+  if (
+    refusals.length !== 1 ||
+    preconditions === null ||
+    !/\brefuse\(\s*"REQUEST_INVALID",\s*"WRITE_SET_EMPTY"/.test(preconditions.body)
+  ) {
+    fail(INTAKE + ' does not refuse("REQUEST_INVALID", "WRITE_SET_EMPTY" once, inside preconditions (L-P16D2-1)');
+  }
+  requireScope(LAW, scanned);
+  notes.push("a recorded walk is refused before its spend: " + WORDS.join(", ") + " at the start, WRITE_SET_EMPTY at the intake");
 }
 
 // --- 21c. V2-B5/R11: the telemetry export edge ------------------------------

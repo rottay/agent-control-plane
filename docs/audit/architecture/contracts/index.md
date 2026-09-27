@@ -531,7 +531,11 @@ nombran; la puerta y el fold rehúsan una referencia sin fila admisible. N03 que
 cerrado: los dos sitios de walk del daemon leen la política del envelope. El commit
 sigue sin ejecutarse (P-17), la forma V1 inline sigue apendeando beats desnudos (P-21) y
 `CHECKPOINTED` no acredita éxito: `COMPLETED` es de P-21, límite que el ADR de P-16/D
-repite.
+repite. Desde P-16/D2 (ADR 0125, decisiones 242–244) un walk registrado sin checks
+declarados, con write-set vacío o sobre una ruta sin emisor de id del writer se rehúsa
+por nombre en el arranque, tras leer la tarea y antes de todo gasto
+(`CHECKS_UNDECLARED`, `WRITE_SET_EMPTY`, `WRITER_ID_UNISSUED`); el runner y el auditor
+quedan de respaldo.
 
 | Eslabón | Precondición | Evidencia mínima | Rechazo |
 | --- | --- | --- | --- |
@@ -574,7 +578,9 @@ desde sus propios registros (§5): el writer por la derivación v5 por intento, 
 verificador y el auditor por una v5 sobre tarea, intento, rol y ordinal de spawn, con
 ese ordinal como identificador de corrida. El pid y el instante de arranque de un
 proceso son sólo evidencia. Un transporte de writer sin emisor se rehúsa por nombre
-(`WRITER_ID_UNISSUED`), un límite con dueño P-28.
+(`WRITER_ID_UNISSUED`), un límite con dueño P-28. Desde P-16/D2 un walk registrado
+sobre ese transporte se rehúsa en el arranque, antes del gasto; ensanchar los emisores
+es de P-28.
 
 **`NO_COMMIT` no es lo mismo que read-only.** `NO_COMMIT` prohíbe la autorización
 y la realización de un commit, y **permite editar archivos dentro del write-set**.
@@ -583,7 +589,9 @@ y la realización de un commit, y **permite editar archivos dentro del write-set
 produce confirmaciones ficticias. `READ_ONLY` es un valor de `workspace_mode` (§2),
 no una política de commit: los dos ejes son ortogonales (decisión 13). Hoy el
 envelope no lo lleva; lo agrega **P-17**, y agregarlo mueve `envelope_sha256` (la
-clase de la decisión 48).
+clase de la decisión 48). Hasta entonces un write-set vacío es ilícito bajo las dos
+políticas (P-16/D2, decisión 242): se rehúsa `WRITE_SET_EMPTY` en el ingreso y en el
+arranque registrado, y el camino lícito de `NO_COMMIT` es un write-set no vacío.
 
 **El límite de `COMPLETED`.** §2.1 es el destino (decisión 22): `NO_COMMIT` termina
 en `COMPLETED` desde `AUDITING`, y el camino del commit cierra con

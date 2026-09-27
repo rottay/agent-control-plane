@@ -479,6 +479,27 @@ describe("acp intake under 0.25.0: the envelope states its instruction once (P-1
   });
 });
 
+describe("acp intake refuses an empty write-set by name, before anything is published (P-16/D2, ADR 0125)", () => {
+  it("N6: a NO_COMMIT envelope with no path is WRITE_REFUSED naming WRITE_SET_EMPTY at envelope.writeSet, with no event and no publication", async () => {
+    const f = fixture();
+    const empty = envelope({ commitPolicy: "NO_COMMIT", writeSet: [] });
+    const result = await invoke(["intake", "--database", f.database, "--format", "json", "--request", f.request({ envelope: empty })]);
+    expect(result.exitCode).toBe(EXIT_INTEGRITY);
+    expect(errorOf(result)).toMatchObject({ code: "WRITE_REFUSED", detail: "envelope.writeSet" });
+    expect(errorOf(result).message).toContain("REQUEST_INVALID WRITE_SET_EMPTY");
+    expect(taskRows(f.database)).toHaveLength(0);
+    // The plane is opened before the preconditions run, so its root may exist; no artifact is recorded.
+    expect(artifactRows(f.database)).toBe(0);
+  });
+
+  it("P2: the same envelope with a one-path write-set enters, DISCOVERED", async () => {
+    const f = fixture();
+    const result = await invoke(["intake", "--database", f.database, "--request", f.request({ envelope: envelope({ writeSet: ["docs/intake.md"] }) })]);
+    expect(result.exitCode).toBe(EXIT_OK);
+    expect(TaskIntakeResponse.parse(JSON.parse(result.stdout)).task).toMatchObject({ taskId: TASK, state: "DISCOVERED" });
+  });
+});
+
 describe("acp intake names a step its version does not declare, and a version that declares none knowably (P-27 cut B)", () => {
   const VERSION = "66666666-6666-4666-8666-666666666601";
 

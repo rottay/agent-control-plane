@@ -200,6 +200,15 @@ re-submission under the version in force, through `acp intake` or
 over a planted ledger; that one test file is the only daemon file the fence lets
 import `node:sqlite`, to plant it.
 
+A task read back whole is then admitted as a walk (P-16/D2, ADR 0125): runtime's
+`recordedWalkRefusal` is asked once, after the read and before anything is appended,
+leased, dispatched or spent. A task with no declared check, an empty write-set or an
+elected route with no writer id issuer (today every transport but the Claude CLI under
+a subscription) fails the start with `the recorded walk is refused before any spend:
+CHECKS_UNDECLARED at envelope.validation.commands`, `WRITE_SET_EMPTY at
+envelope.writeSet` or `WRITER_ID_UNISSUED at route`. The task stays `DISCOVERED`. So an
+API_KEY or local recorded walk cannot run until P-28 widens the issuers.
+
 ## The verification runner and the tree hasher
 
 `src/verification-runner` (P-16/C, ADR 0123) is the daemon's fifth spawn site and the
@@ -254,8 +263,10 @@ scratch root the composition makes at `<daemon root>/verification`; an inline wa
 none and its beats stay PLAIN. Both walk sites read the envelope's `commitPolicy` (N03):
 a `NO_COMMIT` envelope walks the read-only plan. A recorded walk whose checks fail
 settles `VERIFICATION_FAILED`; one whose audit rejects settles `AUDIT_NOT_ACCEPTED`. A
-recorded walk on a transport with no writer-id issuer spends and then fails its
-verification (`WRITER_ID_UNISSUED`), a limit P-28 and P-16/D2 own.
+recorded walk on a transport with no writer-id issuer is refused at the start, before
+any spend (P-16/D2). The runner's own `WRITER_ID_UNISSUED`, `RUNNER_CHECKS_UNDECLARED`
+and `RUNNER_WRITE_SET_EMPTY` stay as a backstop; a switch landed mid-attempt onto a
+transport with no issuer still fails at the runner after spend (P-28).
 
 ## Bounds
 
@@ -296,6 +307,12 @@ restored in `finally`, then armed to refuse a late call — and no socket; the l
 talks over a real loopback socket to `test/testing/loopback-sse-server/index.mjs`, a
 tracked fixture spawned by path, the one socket these drills open. Every credential is
 a synthetic canary written into a disposable directory and swept from every sink.
+Since P-16/D2 (ADR 0125) both legs are refused at the recorded start
+(`WRITER_ID_UNISSUED`), so D-F-4 (with the 401/429 and N-E-21 cases folded in) and
+D-F-5 prove zero requests and zero spend. The result read-back through both doors
+returns when P-28 widens the issuers. The bin suite's `runDaemonChild` cases prove the
+`CHECKS_UNDECLARED` and `WRITE_SET_EMPTY` refusals at the start, and the drills prove
+the lawful `NO_COMMIT` path end to end (P3).
 
 The verification runner's suite (P-16/C) runs end to end: a task recorded through the
 real intake, a real ledger and private plane, and a real disposable sha1 repository per

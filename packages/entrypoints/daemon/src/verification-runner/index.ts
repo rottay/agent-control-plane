@@ -83,7 +83,9 @@ export type {
  *    digest and the route to the intake's resolution (`RUNNER_TASK_UNREADABLE`, the
  *    reader's word carried); not in a terminal state (`RUNNER_TASK_TERMINAL`).
  * 3. The envelope: declared checks (`RUNNER_CHECKS_UNDECLARED`), a write-set
- *    (`RUNNER_WRITE_SET_EMPTY`; the lawful `NO_COMMIT` path is P-16/D2's), a title the
+ *    (`RUNNER_WRITE_SET_EMPTY`; since P-16/D2 both are refused before spend at the
+ *    recorded start, the empty write-set at the intake too, and this is the
+ *    backstop), a title the
  *    commit body rule admits (`RUNNER_COMMIT_BODY_INVALID`), a writer label that is a
  *    worker identity other than the runner's.
  * 4. The object format, before any observation could misread a 64-hex id: `sha1` or

@@ -15,9 +15,12 @@ import type { ResolvedRoute, TaskEnvelope } from "@acp/contracts";
 import type { ArtifactReadOutcome, ArtifactReadRequest, TaskIntakeResolution } from "@acp/ledger";
 
 import type { DurableInvocation, InvocationRevision } from "../../contracts/index.js";
-import type { RECORDED_TASK_REFUSALS } from "../index.js";
+import type { RECORDED_TASK_REFUSALS, RECORDED_WALK_REFUSALS } from "../index.js";
 
 export type RecordedTaskRefusal = (typeof RECORDED_TASK_REFUSALS)[number];
+
+/** The recorded walk's admission words (P-16/D2, ADR 0125), derived from the closed set beside it. */
+export type RecordedWalkRefusal = (typeof RECORDED_WALK_REFUSALS)[number];
 
 /** The ledger surface the reader needs. Satisfied structurally by `Ledger`; read-only by shape. */
 export interface RecordedTaskLedgerPort {
@@ -69,3 +72,9 @@ export type RecordedTaskOutcome =
       /** The plane's own refusal word, carried by name when the plane refused. */
       readonly word: string | null;
     };
+
+/** A recorded walk refused before its spend: the first word, and the field it is about. Never its value. */
+export interface RecordedWalkRefused {
+  readonly refusal: RecordedWalkRefusal;
+  readonly at: string;
+}

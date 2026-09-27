@@ -14,13 +14,17 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 import type { ResolvedRoute, TaskEnvelope } from "@acp/contracts";
-import { CONTRACT_VERSION, buildInitiativeIdempotencyKey } from "@acp/contracts";
+import { CONTRACT_VERSION, ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1, buildInitiativeIdempotencyKey } from "@acp/contracts";
 import {
+  ARTIFACT_ACCESS_POLICY_IDS,
+  GENESIS_SHA256,
   artifactBlobLeaseStorePath,
   canonicalJsonStringify,
+  chainDigest,
   openArtifactBlobLeaseStore,
   openArtifactPlane,
   openLedger,
@@ -485,6 +489,109 @@ function markedWorld(extra: Omit<Declared, "commands"> = {}): { readonly world: 
   return { world, spawned: () => existsSync(path) };
 }
 
+/**
+ * P-16/D2: history before D2. The intake now refuses an empty write-set
+ * (`WRITE_SET_EMPTY`), so a task that stores one is planted over a task the real
+ * intake entered: `override` is laid over the entered envelope, whose canonical bytes
+ * are published through the task's own plane; every event of the task that names the
+ * entered envelope is repointed at them (reference and
+ * `sha256(ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1 + bytes)`), the event
+ * chain, head and watermark recomputed from genesis with the two append-only triggers
+ * taken out and put back verbatim, and the projections rebuilt (the bin suite's
+ * `plantRecorded` mould, copied here). The runner then reads it through
+ * `readRecordedTask`, as in production.
+ */
+function plantEnvelope(world: World, override: Record<string, unknown>): World {
+  const taskId = world.task.taskId;
+  const entered = world.ledger.getTaskRevision(taskId, 1);
+  if (entered === null) throw new Error("the fixture's revision is missing");
+  const read = world.plane.read({ artifactReferenceId: entered.envelopeArtifactReferenceId ?? "", scopeKind: "TASK", scopeId: taskId });
+  if (read.verb !== "READ") throw new Error("the fixture's envelope is unreadable");
+  const raw = { ...(JSON.parse(read.content.toString("utf8")) as Record<string, unknown>), ...override };
+  const canonical = canonicalJsonStringify(raw);
+  const referenceId = randomUUID();
+  const published = world.plane.publish({
+    content: Buffer.from(canonical, "utf8"),
+    declaredContentSha256: digestOf(canonical),
+    mediaType: "application/json; charset=utf-8",
+    encryptionStatus: "PLAINTEXT",
+    encryptionProfile: "local-plaintext-v1",
+    commandId: randomUUID(),
+    artifactPinId: randomUUID(),
+    reference: {
+      artifactReferenceId: referenceId,
+      artifactClass: "TASK_ENVELOPE",
+      classification: "INTERNAL",
+      scopeKind: "TASK",
+      scopeId: taskId,
+      producerIdentity: EMITTED_BY,
+      accessPolicyId: ARTIFACT_ACCESS_POLICY_IDS[0],
+      retentionClass: "PERMANENT",
+      expiresAt: null,
+    },
+    recordedBy: EMITTED_BY,
+    intention: { eventId: randomUUID(), idempotencyKey: "planted/" + taskId + "/intended", occurredAt: AT, recordedAt: AT },
+    terminal: { eventId: randomUUID(), idempotencyKey: "planted/" + taskId + "/succeeded", occurredAt: AT, recordedAt: AT },
+    holding: {
+      holder: EMITTED_BY,
+      holderPid: process.pid,
+      acquiredAt: AT,
+      expiresAt: new Date(Date.parse(AT) + 5 * 60 * 1000).toISOString(),
+    },
+  });
+  if (published.verb !== "PUBLISHED") throw new Error("the planted envelope was not published: " + published.verb);
+  const envelopeDigest = digestOf(ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1 + canonical);
+  const enteredDigest = entered.envelopeSha256;
+  const enteredReference = entered.envelopeArtifactReferenceId ?? "";
+  if (enteredDigest.length !== 64 || enteredReference === "") throw new Error("the fixture's revision names no envelope");
+  world.ledger.close();
+
+  const database = new DatabaseSync(world.ledgerPath);
+  try {
+    const triggers = database
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name IN (?, ?)")
+      .all("control_plane_events_deny_update", "control_plane_events_deny_delete") as unknown as { readonly sql: string }[];
+    expect(triggers).toHaveLength(2);
+    database.exec("DROP TRIGGER control_plane_events_deny_update; DROP TRIGGER control_plane_events_deny_delete;");
+    const rows = database
+      .prepare("SELECT sequence, event_json FROM control_plane_events ORDER BY sequence")
+      .all() as unknown as { readonly sequence: number; readonly event_json: string }[];
+    const rewrite = database.prepare("UPDATE control_plane_events SET event_json = ?, previous_sha256 = ?, event_sha256 = ? WHERE sequence = ?");
+    let previous = GENESIS_SHA256;
+    for (const row of rows) {
+      // Every event of the task that names the entered envelope (the intake and the
+      // walk's own steps, which carry the revision) is repointed at the planted one.
+      const decoded = JSON.parse(
+        row.event_json.split(enteredDigest).join(envelopeDigest).split(enteredReference).join(referenceId),
+      ) as Record<string, unknown>;
+      const rewritten = canonicalJsonStringify(decoded);
+      const next = chainDigest(previous, rewritten);
+      rewrite.run(rewritten, previous, next, row.sequence);
+      previous = next;
+    }
+    database.prepare("UPDATE ledger_meta SET value = ? WHERE key = 'head_event_sha256'").run(previous);
+    database.prepare("UPDATE projection_watermark SET source_head_sha256 = ? WHERE source_stream = ?").run(previous, "control_plane_events");
+    for (const trigger of triggers) database.exec(trigger.sql);
+  } finally {
+    database.close();
+  }
+
+  const ledger = openLedger(world.ledgerPath);
+  const leaseStore = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(world.ledgerPath), {
+    incarnationId: randomUUID(),
+    createdAt: REGISTRY_AT,
+  });
+  closers.push(() => {
+    leaseStore.close();
+    if (!ledger.closed) ledger.close();
+  });
+  ledger.rebuildReadModel();
+  expect(ledger.getTaskRevision(taskId, 1)?.envelopeSha256).toBe(envelopeDigest);
+  expect(ledger.verifyIntegrity().problems).toEqual([]);
+  const plane = openArtifactPlane({ ledger, leaseStore, ledgerPath: world.ledgerPath });
+  return { ...world, ledger, plane, context: { ...world.context, ledger } };
+}
+
 // ===========================================================================
 // Units
 // ===========================================================================
@@ -663,13 +770,16 @@ describe("N1-N7, N15: what is refused by name before any spawn", () => {
     expect(spawned()).toBe(false);
   });
 
-  it("N5: no declared check is RUNNER_CHECKS_UNDECLARED; an empty write-set is RUNNER_WRITE_SET_EMPTY", async () => {
+  it("N5: no declared check is RUNNER_CHECKS_UNDECLARED; a planted empty write-set is RUNNER_WRITE_SET_EMPTY", async () => {
     const none = recordedWorld({ commands: [] });
     expect(refused(await runVerification(inputFor(none, writerWorktree())))).toMatchObject({
       refusal: "RUNNER_CHECKS_UNDECLARED",
       at: "envelope.validation.commands",
     });
-    const { world, spawned } = markedWorld({ writeSet: [], commitPolicy: "NO_COMMIT" });
+    // P-16/D2: the intake now refuses an empty write-set, so it is planted over a
+    // one-path NO_COMMIT task the real intake entered; the runner's backstop still holds.
+    const { world: entered, spawned } = markedWorld({ writeSet: ["src/a.ts"], commitPolicy: "NO_COMMIT" });
+    const world = plantEnvelope(entered, { writeSet: [] });
     expect(refused(await runVerification(inputFor(world, writerWorktree())))).toMatchObject({
       refusal: "RUNNER_WRITE_SET_EMPTY",
       at: "envelope.writeSet",

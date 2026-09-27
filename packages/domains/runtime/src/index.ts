@@ -545,6 +545,10 @@ export type {
 // and orders nothing itself.
 export { RECORDED_TASK_REFUSALS, readRecordedTask } from "./recorded-task/index.js";
 export type { RecordedTask, RecordedTaskOutcome } from "./recorded-task/index.js";
+// P-16/D2 (ADR 0125, decision 243): the recorded walk's admission before its spend,
+// which the daemon's recorded start asks once after the read.
+export { RECORDED_WALK_REFUSALS, recordedWalkRefusal } from "./recorded-task/index.js";
+export type { RecordedWalkRefusal } from "./recorded-task/index.js";
 export { EVIDENCE_ROOT_REFUSALS, evidenceRootFor } from "./evidence-root/index.js";
 export { createExecutionChain } from "./execution-chain/index.js";
 // P-15/B kept the payload coordinate off the barrel (a module export only); the

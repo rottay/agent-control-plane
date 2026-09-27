@@ -452,6 +452,9 @@ describe("the intake's vocabulary is closed and sorted", () => {
       "WRITE_CONFLICT",
     ]);
     expect([...TASK_INTAKE_CODES]).toEqual([...TASK_INTAKE_CODES].sort());
+    // P-16/D2 (ADR 0125): thirteen, the empty write-set's word last.
+    expect(TASK_INTAKE_CODES).toHaveLength(13);
+    expect(TASK_INTAKE_CODES[TASK_INTAKE_CODES.length - 1]).toBe("WRITE_SET_EMPTY");
   });
 
   it("M-7: maps the resolver's two unreadable questions to the request, and the other seven to authority", () => {
@@ -843,6 +846,40 @@ describe("the preconditions of the request link refuse with a class, a code and 
     const on = world();
     const held = heads(on.ledger);
     expect(intake(on, { role: "reviewer" })).toEqual(refusal("REQUEST_INVALID", "ROLE_NOT_IN_ENVELOPE", "role"));
+    expect(heads(on.ledger)).toEqual(held);
+  });
+
+  it("N5 (P-16/D2): a NO_COMMIT envelope with an empty write-set is WRITE_SET_EMPTY, and nothing is published or appended", () => {
+    const on = world();
+    const held = heads(on.ledger);
+    const empty = envelope({ commitPolicy: "NO_COMMIT", writeSet: [] });
+    expect(intake(on, { envelope: empty })).toEqual(refusal("REQUEST_INVALID", "WRITE_SET_EMPTY", "envelope.writeSet"));
+    expect(heads(on.ledger)).toEqual(held);
+    expect(on.ledger.getTask(TASK_A)).toBeNull();
+    expect(on.ledger.listArtifactEvents(sha256(canonicalJsonStringify(empty)))).toEqual([]);
+    expect(on.ledger.getTaskSubmission(OPERATOR, "intake-0001")).toBeNull();
+  });
+
+  it("P2 (P-16/D2): a NO_COMMIT envelope with a write-set enters, with no check declared (the walk refuses that, not the intake)", () => {
+    const on = world();
+    const lawful = envelope({ commitPolicy: "NO_COMMIT", writeSet: ["docs/intake.md"] });
+    expect(entered(intake(on, { envelope: lawful })).task.taskId).toBe(TASK_A);
+  });
+
+  it("B4 (P-16/D2, ND-7): an empty write-set under LOCAL_COMMIT_WITH_RECEIPT keeps the contract's own refusal", () => {
+    const on = world();
+    const held = heads(on.ledger);
+    const empty = envelope({ commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", writeSet: [] });
+    expect(intake(on, { envelope: empty })).toEqual(refusal("REQUEST_INVALID", "ENVELOPE_INVALID", "envelope.commitPolicy"));
+    expect(heads(on.ledger)).toEqual(held);
+  });
+
+  it("N5 (P-16/D2): the key's comparison precedes the write-set check, so a key already recorded answers CONFLICT", () => {
+    const on = world();
+    entered(intake(on));
+    const held = heads(on.ledger);
+    const empty = envelope({ commitPolicy: "NO_COMMIT", writeSet: [] });
+    expect(intake(on, { envelope: empty })).toEqual(refusal("CONFLICT", "CLIENT_KEY_CONFLICT", "envelope"));
     expect(heads(on.ledger)).toEqual(held);
   });
 

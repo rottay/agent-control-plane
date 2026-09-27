@@ -3,7 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { CONTRACT_VERSION, SUPPORTED_CONTRACT_VERSIONS, buildInitiativeIdempotencyKey } from "@acp/contracts";
+import {
+  CONTRACT_VERSION,
+  SUPPORTED_CONTRACT_VERSIONS,
+  TaskEnvelope,
+  WRITER_ID_UNISSUED,
+  buildInitiativeIdempotencyKey,
+} from "@acp/contracts";
 import type { ResolvedRoute } from "@acp/contracts";
 import {
   LedgerValidationError,
@@ -24,7 +30,12 @@ import type { BeatContext } from "../../src/core/step-executor/index.js";
 import { SupervisorError } from "../../src/errors/index.js";
 import { intakeTask } from "../../src/intake/index.js";
 import { restateInvocation } from "../../src/lifecycle-operation/index.js";
-import { RECORDED_TASK_REFUSALS, readRecordedTask } from "../../src/recorded-task/index.js";
+import {
+  RECORDED_TASK_REFUSALS,
+  RECORDED_WALK_REFUSALS,
+  readRecordedTask,
+  recordedWalkRefusal,
+} from "../../src/recorded-task/index.js";
 import type { RecordedTaskLedgerPort, RecordedTaskOutcome, RecordedTaskPlanePort } from "../../src/recorded-task/index.js";
 import { canonicalSubmissionDigest, deriveInvocation } from "../../src/submission/index.js";
 
@@ -657,5 +668,88 @@ describe("a stored envelope's version is read before its shape (P-16/A1, ADR 012
       at: "envelope",
       word: null,
     });
+  });
+});
+
+describe("a recorded walk is refused before its spend (P-16/D2, ADR 0125; decision 243)", () => {
+  const CLI = { provider: "claude", transportKind: "CLI_SUBSCRIPTION" } as const;
+  const walkable = (change: Record<string, unknown> = {}): { envelope: TaskEnvelope } => ({
+    envelope: TaskEnvelope.parse({
+      ...envelope(),
+      validation: { commands: ["test -f docs/recorded.md"], independentVerifierRequired: false },
+      ...change,
+    }),
+  });
+
+  it("B3: closes its vocabulary at three words, sorted, the issuer word the contracts' own", () => {
+    expect([...RECORDED_WALK_REFUSALS]).toEqual(["CHECKS_UNDECLARED", "WRITER_ID_UNISSUED", "WRITE_SET_EMPTY"]);
+    expect([...RECORDED_WALK_REFUSALS]).toEqual([...RECORDED_WALK_REFUSALS].sort());
+    expect(new Set(RECORDED_WALK_REFUSALS).size).toBe(RECORDED_WALK_REFUSALS.length);
+    expect(RECORDED_WALK_REFUSALS).toContain(WRITER_ID_UNISSUED);
+  });
+
+  it("P1: a task with checks and a write-set on the Claude CLI route is admitted, under both commit policies", () => {
+    expect(recordedWalkRefusal(walkable(), CLI)).toBeNull();
+    expect(recordedWalkRefusal(walkable({ commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT" }), CLI)).toBeNull();
+    expect(recordedWalkRefusal(walkable(), ROUTE)).toBeNull();
+  });
+
+  it("B2: one command and a one-path write-set is the minimum lawful walk", () => {
+    const minimum = walkable({ writeSet: ["a"], validation: { commands: ["true"], independentVerifierRequired: false } });
+    expect(minimum.envelope.writeSet).toHaveLength(1);
+    expect(minimum.envelope.validation.commands).toHaveLength(1);
+    expect(recordedWalkRefusal(minimum, CLI)).toBeNull();
+  });
+
+  it("N1: no declared check is CHECKS_UNDECLARED at the envelope's commands", () => {
+    expect(recordedWalkRefusal(walkable({ validation: { commands: [], independentVerifierRequired: false } }), CLI)).toEqual({
+      refusal: "CHECKS_UNDECLARED",
+      at: "envelope.validation.commands",
+    });
+  });
+
+  it("N2: an empty write-set under NO_COMMIT is WRITE_SET_EMPTY at the envelope's write-set", () => {
+    const empty = walkable({ writeSet: [] });
+    expect(empty.envelope.commitPolicy).toBe("NO_COMMIT");
+    expect(recordedWalkRefusal(empty, CLI)).toEqual({ refusal: "WRITE_SET_EMPTY", at: "envelope.writeSet" });
+  });
+
+  it("N3: a route with no writer id issuer is WRITER_ID_UNISSUED at route, for each such route", () => {
+    // codex over CLI_SUBSCRIPTION never reaches this check at the real start: the
+    // composition refuses its usage source first. It is covered here at unit level only.
+    for (const route of [
+      { provider: "claude", transportKind: "API_KEY" },
+      { provider: "local", transportKind: "LOCAL_OR_SELF_HOSTED" },
+      { provider: "claude", transportKind: "LOCAL_OR_SELF_HOSTED" },
+      { provider: "codex", transportKind: "CLI_SUBSCRIPTION" },
+    ]) {
+      expect(recordedWalkRefusal(walkable(), route)).toEqual({ refusal: WRITER_ID_UNISSUED, at: "route" });
+    }
+  });
+
+  it("N4: a malformed route is WRITER_ID_UNISSUED, the producer being total", () => {
+    for (const route of [
+      { provider: 1, transportKind: "CLI_SUBSCRIPTION" },
+      { provider: "claude", transportKind: null },
+      { provider: undefined, transportKind: undefined },
+    ]) {
+      expect(recordedWalkRefusal(walkable(), route)).toEqual({ refusal: WRITER_ID_UNISSUED, at: "route" });
+    }
+  });
+
+  it("B1: every fact missing at once answers the first in the runner's order: checks, then write-set, then issuer", () => {
+    const API = { provider: "claude", transportKind: "API_KEY" };
+    const bare = walkable({ writeSet: [], validation: { commands: [], independentVerifierRequired: false } });
+    expect(recordedWalkRefusal(bare, API)).toEqual({ refusal: "CHECKS_UNDECLARED", at: "envelope.validation.commands" });
+    expect(recordedWalkRefusal(walkable({ writeSet: [] }), API)).toEqual({ refusal: "WRITE_SET_EMPTY", at: "envelope.writeSet" });
+  });
+
+  it("reads a task the intake recorded without moving the ledger, and answers its first word", () => {
+    const on = intaken();
+    const before = head(on.ledger);
+    const outcome = recorded(read(on));
+    // The fixture's envelope declares no check, and the intake admits that: the walk refuses it.
+    expect(recordedWalkRefusal(outcome.task, ROUTE)).toEqual({ refusal: "CHECKS_UNDECLARED", at: "envelope.validation.commands" });
+    expect(head(on.ledger)).toEqual(before);
   });
 });

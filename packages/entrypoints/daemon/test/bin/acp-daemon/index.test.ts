@@ -2000,7 +2000,10 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
   }
 
   /** An operator ledger with its registry, one priced catalog and one task entered through the real intake. */
-  function operatorLedger(directory: string): { readonly databasePath: string; readonly taskId: string } {
+  function operatorLedger(
+    directory: string,
+    options: { readonly commands?: readonly string[] } = {},
+  ): { readonly databasePath: string; readonly taskId: string } {
     const databasePath = join(directory, "control-plane.sqlite");
     const taskId = randomUUID();
     const ledger = openLedger(databasePath);
@@ -2082,7 +2085,8 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
         content: fixtureContent(INSTRUCTION),
         readSet: [WRITTEN],
         // P-16/D1: a recorded task declares the checks its verification runs (synthetic).
-        validation: { commands: ["test -f " + WRITTEN], independentVerifierRequired: true },
+        // P-16/D2: `commands` overrides them, so a task with none can be entered (the intake admits it).
+        validation: { commands: [...(options.commands ?? ["test -f " + WRITTEN])], independentVerifierRequired: true },
       };
       const intake = intakeTask({
         ledger,
@@ -2269,6 +2273,8 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
     envelopeVersion: string,
     eventVersion: string,
     withObjective: boolean,
+    // P-16/D2: fields laid over the entered envelope, for a task the intake now refuses.
+    override: Record<string, unknown> = {},
   ): { readonly raw: Record<string, unknown>; readonly envelopeDigest: string } {
     const ledger = openLedger(databasePath);
     const leases = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(databasePath), {
@@ -2284,7 +2290,7 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
       const read = plane.read({ artifactReferenceId: entered.envelopeArtifactReferenceId ?? "", scopeKind: "TASK", scopeId: taskId });
       if (read.verb !== "READ") throw new Error("the fixture's envelope is unreadable");
       const base = JSON.parse(read.content.toString("utf8")) as Record<string, unknown>;
-      raw = { ...base, contractVersion: envelopeVersion, ...(withObjective ? { objective: INSTRUCTION } : {}) };
+      raw = { ...base, ...override, contractVersion: envelopeVersion, ...(withObjective ? { objective: INSTRUCTION } : {}) };
       const bytes = Buffer.from(canonicalJsonStringify(raw), "utf8");
       referenceId = randomUUID();
       const published = plane.publish({
@@ -2392,11 +2398,18 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
     "RESPONSE_OCCURRENCE_RECORDED",
   ];
 
-  /** Start the recorded form over a planted ledger and hold it to zero spend. */
-  async function refusedStart(envelopeVersion: string, eventVersion: string, expected: string): Promise<void> {
+  /**
+   * Start the recorded form over a prepared ledger and hold it to zero spend. `prepare`
+   * plants over the entered task; `commands` are the entered envelope's checks.
+   */
+  async function refusedStart(
+    expected: string,
+    prepare: (databasePath: string, taskId: string) => void,
+    commands?: readonly string[],
+  ): Promise<void> {
     const home = stage();
-    const { databasePath, taskId } = operatorLedger(home);
-    plantRecorded(databasePath, taskId, envelopeVersion, eventVersion, true);
+    const { databasePath, taskId } = operatorLedger(home, commands === undefined ? {} : { commands });
+    prepare(databasePath, taskId);
     const before = trailOf(databasePath, taskId);
     const echoPath = join(stage(), "echo.txt");
     const config = parseDaemonChildConfig(recordedDocument(databasePath, taskId, fakeClaude(stage(), echoPath), worktree()));
@@ -2440,11 +2453,34 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
   });
 
   it("P-16/A1 E3: a task recorded under 2.10.0 is refused at start as ENVELOPE_VERSION_SUPERSEDED, before any walk, lease, dispatch or spend", async () => {
-    await refusedStart("2.10.0", "2.10.0", "the recorded task is refused: ENVELOPE_VERSION_SUPERSEDED at envelope.contractVersion");
+    await refusedStart("the recorded task is refused: ENVELOPE_VERSION_SUPERSEDED at envelope.contractVersion", (databasePath, taskId) => {
+      plantRecorded(databasePath, taskId, "2.10.0", "2.10.0", true);
+    });
   });
 
   it("P-16/A1 E4: an envelope stamped 2.10.0 under a 2.11.0 intake event is refused at start as ENVELOPE_VERSION_MISMATCH, with the same zero spend", async () => {
-    await refusedStart("2.10.0", CONTRACT_VERSION, "the recorded task is refused: ENVELOPE_VERSION_MISMATCH at envelope.contractVersion");
+    await refusedStart("the recorded task is refused: ENVELOPE_VERSION_MISMATCH at envelope.contractVersion", (databasePath, taskId) => {
+      plantRecorded(databasePath, taskId, "2.10.0", CONTRACT_VERSION, true);
+    });
+  });
+
+  it("P-16/D2 N7: a task entered with no declared check is refused at start as CHECKS_UNDECLARED, with no child run and zero spend", async () => {
+    await refusedStart(
+      "the recorded walk is refused before any spend: CHECKS_UNDECLARED at envelope.validation.commands",
+      () => undefined,
+      [],
+    );
+  });
+
+  it("P-16/D2 N8: a NO_COMMIT task recorded before D2 with an empty write-set is refused at start as WRITE_SET_EMPTY, with zero spend", async () => {
+    await refusedStart("the recorded walk is refused before any spend: WRITE_SET_EMPTY at envelope.writeSet", (databasePath, taskId) => {
+      // The intake refuses it now, so the history is planted over the entered task.
+      const planted = plantRecorded(databasePath, taskId, CONTRACT_VERSION, CONTRACT_VERSION, false, {
+        commitPolicy: "NO_COMMIT",
+        writeSet: [],
+      });
+      expect(planted.envelopeDigest).toBe(envelopeSha256(planted.raw));
+    });
   });
 
   it("V-C2: a database under a product checkout, in any case, is refused before anything is created there", async () => {

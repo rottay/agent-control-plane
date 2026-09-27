@@ -67,6 +67,7 @@ import {
   evidenceRootFor,
   landAccountSwitch,
   readRecordedTask,
+  recordedWalkRefusal,
   resolveScenarioRoot,
   scenarioLedgerPath,
 } from "@acp/runtime";
@@ -661,6 +662,13 @@ function usageSourceFor(route: ResolvedRoute): WalkChainFacts["usageSource"] | n
  * the refusal stops the start before anything is appended; the account is the
  * config's election, and the provider, alias and transport must agree with the
  * intake's resolution.
+ *
+ * A task read back whole is then admitted as a walk (P-16/D2, ADR 0125): runtime's
+ * `recordedWalkRefusal` is asked once, and a task with no declared checks
+ * (`CHECKS_UNDECLARED`), no write-set (`WRITE_SET_EMPTY`) or an elected route with
+ * no writer id issuer (`WRITER_ID_UNISSUED`) stops the start here too, before
+ * anything is appended, leased, dispatched or spent. The runner's own words stay
+ * its backstop.
  */
 function recordedSubject(input: {
   readonly ledger: Ledger;
@@ -702,6 +710,10 @@ function recordedSubject(input: {
     throw new StartupError("the recorded task is refused: " + read.refusal + " at " + read.at);
   }
   const task = read.task;
+  const refused = recordedWalkRefusal(task, input.execution.route);
+  if (refused !== null) {
+    throw new StartupError("the recorded walk is refused before any spend: " + refused.refusal + " at " + refused.at);
+  }
   return {
     invocation: task.invocation,
     envelope: task.envelope,

@@ -3,16 +3,21 @@ import {
   ControlPlaneEvent,
   SUPPORTED_CONTRACT_VERSIONS,
   TaskEnvelope,
+  WRITER_ID_UNISSUED,
   isSha256Hex,
 } from "@acp/contracts";
 import { TASK_INTAKE_TRANSITION_ID, envelopeSha256, isInstant, taskIntakePayloadOf } from "@acp/ledger";
 
+import { writerIdIssuerFor } from "../commit-authorization/index.js";
 import { canonicalSubmissionDigest, deriveInvocation } from "../submission/index.js";
 
 import type {
+  RecordedTask,
   RecordedTaskOutcome,
   RecordedTaskReaderInput,
   RecordedTaskRefusal,
+  RecordedWalkRefusal,
+  RecordedWalkRefused,
 } from "./types/index.js";
 
 /**
@@ -27,6 +32,8 @@ export type {
   RecordedTaskPlanePort,
   RecordedTaskReaderInput,
   RecordedTaskRefusal,
+  RecordedWalkRefusal,
+  RecordedWalkRefused,
 } from "./types/index.js";
 
 /**
@@ -74,6 +81,15 @@ export type {
  * 5. **Route agreement.** The route must agree with the intake's resolution on the
  *    provider, the model alias and the transport. The account is the caller's
  *    election: the intake records none.
+ * 6. **The recorded walk's admission (P-16/D2, ADR 0125).** A task read back whole
+ *    is not yet a walk the plane may pay for. `recordedWalkRefusal`, beside the
+ *    reader and never inside it, names the three facts every recorded walk needs
+ *    before its first spend, in the verification runner's own order: declared
+ *    checks (`CHECKS_UNDECLARED`), a write-set (`WRITE_SET_EMPTY`) and a writer id
+ *    the elected route can issue (`WRITER_ID_UNISSUED`, through `writerIdIssuerFor`,
+ *    never a restated set). The daemon's recorded start asks it once, after the
+ *    read and before anything is appended. The reader itself is unchanged, so the
+ *    runner and the auditor keep their own words as a backstop.
  */
 
 // ---------------------------------------------------------------------------
@@ -231,4 +247,49 @@ export function readRecordedTask(input: RecordedTaskReaderInput): RecordedTaskOu
       resolution: intake.resolution,
     }),
   });
+}
+
+// ---------------------------------------------------------------------------
+// The recorded walk's admission (P-16/D2, ADR 0125)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every way a recorded walk is refused before its spend, sorted (P-16/D2, ADR 0125).
+ *
+ * - `CHECKS_UNDECLARED` — the envelope declares no check command, so no
+ *   verification could run and no verdict could follow.
+ * - `WRITER_ID_UNISSUED` — the elected route has no writer id issuer (today only
+ *   the Claude CLI under a subscription has one; P-28 widens the set).
+ * - `WRITE_SET_EMPTY` — the envelope declares no path. Unlawful under both commit
+ *   policies until P-17's `workspaceMode` (decision 242).
+ *
+ * No `RUNNER_` prefix: no runner ran. The admission checks them in the runner's
+ * order -- checks, write-set, issuer -- and answers the first.
+ */
+export const RECORDED_WALK_REFUSALS = ["CHECKS_UNDECLARED", WRITER_ID_UNISSUED, "WRITE_SET_EMPTY"] as const;
+
+function refuseWalk(refusal: RecordedWalkRefusal, at: string): RecordedWalkRefused {
+  return Object.freeze({ refusal, at });
+}
+
+/**
+ * Whether a recorded task may be walked on the elected route, or the first word
+ * that refuses it (P-16/D2, ADR 0125; decision 243).
+ *
+ * Pure: it reads only the task's envelope and the route, opens nothing and reads
+ * no clock. The route is the one the composition elected -- already held equal to
+ * the intake's resolution by the reader -- and is handed to `writerIdIssuerFor` as a
+ * one-segment attempt, so the issuer set is the commit authorization's own. A switch
+ * landed mid-attempt onto another transport is not seen here; the runner's
+ * `WRITER_ID_UNISSUED` over the recorded segments stays its backstop (P-28).
+ */
+export function recordedWalkRefusal(
+  task: Pick<RecordedTask, "envelope">,
+  route: { readonly provider: unknown; readonly transportKind: unknown },
+): RecordedWalkRefused | null {
+  const envelope = task.envelope;
+  if (envelope.validation.commands.length === 0) return refuseWalk("CHECKS_UNDECLARED", "envelope.validation.commands");
+  if (envelope.writeSet.length === 0) return refuseWalk("WRITE_SET_EMPTY", "envelope.writeSet");
+  if (writerIdIssuerFor([route]) === null) return refuseWalk(WRITER_ID_UNISSUED, "route");
+  return null;
 }

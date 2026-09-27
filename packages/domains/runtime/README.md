@@ -98,6 +98,18 @@ disagree about a recovery. The split made that sharing structural rather than
 conventional — the edge imports the plan across a package boundary, so it cannot
 quietly grow one of its own.
 
+## The recorded walk's admission: refused before its spend
+
+`src/recorded-task`'s `recordedWalkRefusal(task, route)` (P-16/D2, ADR 0125, decision
+243) sits beside the reader and never inside it. It is pure. It answers `null` or the
+first of `RECORDED_WALK_REFUSALS`, in the verification runner's order:
+`CHECKS_UNDECLARED` (no check command), `WRITE_SET_EMPTY` (no path), and
+`WRITER_ID_UNISSUED` at `route` (the elected route as a one-segment attempt to
+`writerIdIssuerFor`, so the issuer set is never restated). The daemon's recorded start
+asks it once, after `readRecordedTask` and before anything is appended, so none of the
+three can spend before being refused. The runner and the auditor keep their own words
+as a backstop.
+
 ## The verification phase: steps 6 and 7 consume a verification and an audit
 
 `src/verification-phase` (P-16/D1, ADR 0124) changes what a revision-bearing walk's
@@ -456,7 +468,12 @@ nothing that dispatches. `ready/` holds two things, kept apart by body (L-P27-1)
 The intake (P-14/C) gained two refusal words with the task graph (decision 193's
 obligation): a step its linked version does not declare is `REQUEST_INVALID`
 `ROADMAP_STEP_UNKNOWN`, and a version of the cohort before steps, which declares
-nothing, is `ROADMAP_STEPS_UNDECLARED` — unknown is never zero.
+nothing, is `ROADMAP_STEPS_UNDECLARED` — unknown is never zero. P-16/D2 (ADR 0125,
+decision 242) adds a third: a `NO_COMMIT` envelope with an empty write-set is
+`REQUEST_INVALID` `WRITE_SET_EMPTY` at `envelope.writeSet`, beside
+`ROLE_NOT_IN_ENVELOPE`, so nothing is published and nothing appended. Under
+`LOCAL_COMMIT_WITH_RECEIPT` the contract refuses it first. A read-only task is P-17's
+`workspaceMode`.
 
 ### Loopback and data roots
 
@@ -510,6 +527,11 @@ negatives. The children are real processes terminated with `SIGKILL`. An
 exception caught in-process would prove nothing, because the page cache, the
 open database handle and every object survive a thrown error, which is exactly
 what a crash does not leave behind.
+
+The recorded walk's admission is unit-tested in `test/recorded-task` (the three words,
+their order, the malformed route, a task the intake recorded), and the intake's
+`WRITE_SET_EMPTY` in `test/intake` (nothing published, the key's comparison first, and
+the contract's own refusal under `LOCAL_COMMIT_WITH_RECEIPT`).
 
 The verification phase is drilled twice: over fake ports in `test/verification-phase`
 (reuse, the resume rulings, every refusal by name, the replay's own bytes, V1

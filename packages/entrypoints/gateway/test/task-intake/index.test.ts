@@ -471,6 +471,25 @@ describe("POST /api/v1/tasks refuses by the door that refused", () => {
     await app.close();
   });
 
+  it("N6 (P-16/D2, ADR 0125): a NO_COMMIT envelope with an empty write-set is 409 REQUEST_INVALID WRITE_SET_EMPTY, and nothing is published", async () => {
+    const path = temporaryDatabase();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const refused = await app.inject({
+      method: "POST",
+      url: URL,
+      headers: AUTH,
+      payload: body({ envelope: envelope({ commitPolicy: "NO_COMMIT", writeSet: [] }) }),
+    });
+    expect(refused.statusCode).toBe(409);
+    const error = ApiError.parse(refused.json()).error;
+    expect(error.code).toBe("WRITE_REFUSED");
+    expect(error.message).toContain("REQUEST_INVALID WRITE_SET_EMPTY");
+    expect(error.detail).toBe("envelope.writeSet");
+    expect(taskEventCount(path)).toBe(0);
+    expect(artifactEventCount(path)).toBe(0);
+    await app.close();
+  });
+
   it("a malformed body or a credential-shaped instruction is 400 by field, before the plane sees a byte", async () => {
     const path = temporaryDatabase();
     const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });

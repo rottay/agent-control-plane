@@ -140,6 +140,7 @@ new records from `_template.md`, which carries the required fields.
 | 0122 | [A verification is recorded by its receipt, and a verdict by its tree](0122-a-verification-is-recorded-by-its-receipt-and-a-verdict-by-its-tree.md) | accepted |
 | 0123 | [A verification is run by the plane, and its verifier is named by its spawn](0123-a-verification-is-run-by-the-plane-and-its-verifier-is-named-by-its-spawn.md) | accepted |
 | 0124 | [A walk consumes its verification and its audit](0124-a-walk-consumes-its-verification-and-its-audit.md) | accepted |
+| 0125 | [A recorded walk is refused before its spend](0125-a-recorded-walk-is-refused-before-its-spend.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is
