@@ -6,14 +6,16 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  CONTRACT_VERSION,
   CommitAuthorizationReceipt,
+  TaskEnvelope,
   VerificationReceipt,
   WRITER_ID_UNISSUED,
   buildIdempotencyKey,
   commitMessageWithReceiptTrailer,
 } from "@acp/contracts";
 import type { Lease, PathDigest } from "@acp/contracts";
-import { computeOutboxCommandId, openLedger, receiptSha256, writerWorkerIdFor } from "@acp/ledger";
+import { computeOutboxCommandId, openLedger, receiptSha256, verificationPolicySha256, writerWorkerIdFor } from "@acp/ledger";
 
 import { checkWriteSetConformance } from "../../src/enforcement/index.js";
 import type { WorktreeObservation } from "../../src/enforcement/index.js";
@@ -51,7 +53,62 @@ const TASK_ID = "33333333-3333-4333-8333-333333333333";
 /** A lowercase version 5 instance id for the verifier, other than any writer's. */
 const VERIFIER_WORKER_ID = "24a8af45-549e-5137-8d27-03eb76de8b47";
 const TREE = "89abcdef0123456789abcdef0123456789abcdef";
-const POLICY = "c".repeat(64);
+const INITIATIVE_ID = "44444444-4444-4444-8444-444444444444";
+/** The attempt's recorded route: every segment the Claude CLI under a subscription (P-17/A). */
+const CLI_SEGMENTS = [{ provider: "claude", transportKind: "CLI_SUBSCRIPTION" }] as const;
+
+/**
+ * The recorded envelope a request carries (P-17/A, ND-11): its write-set is the declared
+ * one and its three policy members give the receipt's `policySha256`.
+ */
+function envelope(overrides: Record<string, unknown> = {}): TaskEnvelope {
+  return TaskEnvelope.parse({
+    contractVersion: CONTRACT_VERSION,
+    taskId: TASK_ID,
+    initiativeId: INITIATIVE_ID,
+    title: MESSAGE,
+    content: {
+      contentContractVersion: 1,
+      blocks: [
+        {
+          kind: "text",
+          blockId: "b1",
+          mediaType: "text/plain; charset=utf-8",
+          byteLength: 11,
+          contentSha256: "0".repeat(64),
+          artifactRefId: null,
+          text: "a drill run",
+          toolCallId: null,
+          effectId: null,
+        },
+      ],
+    },
+    classification: "MECHANICAL",
+    issuedBy: AUTHORIZER,
+    issuedAt: NOW,
+    authority: [],
+    readSet: [],
+    writeSet: ["src/allowed.ts"],
+    conflictKeys: [],
+    allowedCommands: [],
+    forbiddenActions: [],
+    output: { kind: "DIFF", description: "a drill diff" },
+    validation: { commands: ["pnpm check"], independentVerifierRequired: true },
+    eligibility: { roles: ["implementer"], providers: null, requiredCapabilities: [] },
+    budget: { maxTokens: 10_000, maxWallClockSeconds: 600, reserveTokensForCheckpoint: 1_000 },
+    visualEvidenceRequired: false,
+    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    checkpointPolicy: { onEveryAtomicStep: true, maxStepsWithoutCheckpoint: 5 },
+    ...overrides,
+  });
+}
+
+/** The policy digest recomputed from the envelope's three members, as the runner does. */
+const POLICY = verificationPolicySha256({
+  commands: ["pnpm check"],
+  independentVerifierRequired: true,
+  commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+});
 
 function lease(overrides: Partial<Lease> = {}): Lease {
   return {
@@ -78,22 +135,23 @@ function observation(overrides: Partial<WorktreeObservation> = {}): WorktreeObse
 }
 
 function request(overrides: Partial<AuthorizationRequest> = {}): AuthorizationRequest {
+  const taskId = overrides.taskId ?? TASK_ID;
   return {
-    taskId: TASK_ID,
+    taskId,
     revisionNumber: 1,
     attemptNumber: 1,
     attempt: 1,
     writer: WRITER,
-    writerIdIssuer: "CLAUDE_CLI_SESSION",
+    routeSegments: CLI_SEGMENTS,
+    // The envelope is the task's own; a task id the envelope contract refuses keeps the fixture's.
+    envelope: envelope(typeof taskId === "string" && taskId.length > 0 ? { taskId } : {}),
     verifier: { identity: VERIFIER, workerId: VERIFIER_WORKER_ID, runId: 1 },
     authorizedBy: AUTHORIZER,
     authorizedAt: NOW,
     worktreePath: WORKTREE,
     lease: lease(),
-    declaredWriteSet: ["src/allowed.ts"],
     observation: observation(),
     treeSha: TREE,
-    policySha256: POLICY,
     checks: [{ command: "pnpm check", exitCode: 0, ranAt: NOW }],
     commitMessageBody: MESSAGE,
     ...overrides,
@@ -305,27 +363,131 @@ describe("the authorization decision", () => {
     expect(Object.keys(request())).not.toContain("baseSha");
   });
 
-  // ND-10: a writer transport with no id issuer is refused by name.
-  it("refuses a writer transport that issues no writer id", () => {
-    for (const issuer of [undefined, "", "CLAUDE_API", "OPENAI_CLI_SESSION", "claude_cli_session", 7]) {
-      const out = authorizeCommit(requestWith({ writerIdIssuer: issuer }));
-      expect({ issuer, reason: refusal(out).reason, at: refusal(out).at }).toEqual({
-        issuer,
+  // ND-10, since P-17/A read from the recorded segments: a writer transport with no id
+  // issuer is refused by name, at the segments.
+  it("refuses a writer transport that issues no writer id, read from the recorded segments", () => {
+    for (const segments of [
+      [],
+      [{ provider: "claude", transportKind: "API_KEY" }],
+      [{ provider: "claude", transportKind: "LOCAL_OR_SELF_HOSTED" }],
+      [{ provider: "codex", transportKind: "CLI_SUBSCRIPTION" }],
+      [...CLI_SEGMENTS, { provider: "claude", transportKind: "API_KEY" }],
+      [{ provider: "claude" }],
+      "CLAUDE_CLI_SESSION",
+      7,
+    ] as const) {
+      const out = authorizeCommit(requestWith({ routeSegments: segments }));
+      expect({ segments, reason: refusal(out).reason, at: refusal(out).at }).toEqual({
+        segments,
         reason: WRITER_ID_UNISSUED,
-        at: "request.writerIdIssuer",
+        at: "request.routeSegments",
       });
     }
     const absent = { ...request() } as Record<string, unknown>;
-    delete absent["writerIdIssuer"];
+    delete absent["routeSegments"];
     expect(refusal(authorizeCommit(absent as never)).reason).toBe("WRITER_ID_UNISSUED");
-    expect(authorizeCommit(request({ writerIdIssuer: "CLAUDE_CLI_SESSION" })).ok).toBe(true);
+    expect(authorizeCommit(request({ routeSegments: [...CLI_SEGMENTS, ...CLI_SEGMENTS] })).ok).toBe(true);
+  });
+
+  // P-17/A (ND-11 (a), A7): the issuer, the policy and the declared write-set are read,
+  // never supplied -- a caller that names one is refused at its path.
+  it("refuses a request that supplies the issuer, the policy digest or the declared write-set", () => {
+    for (const [key, value] of [
+      ["writerIdIssuer", "CLAUDE_CLI_SESSION"],
+      ["policySha256", POLICY],
+      ["declaredWriteSet", ["src/allowed.ts"]],
+    ] as const) {
+      const out = authorizeCommit(requestWith({ [key]: value }));
+      expect({ key, reason: refusal(out).reason, at: refusal(out).at }).toEqual({
+        key,
+        reason: "REQUEST_INVALID",
+        at: "request." + key,
+      });
+    }
+  });
+
+  // P-17/A (P6, ND-7): the receipt's policy is the envelope's, recomputed as the runner does.
+  it("computes the receipt's policy digest from the envelope's three members, and its write-set from the envelope", () => {
+    const out = authorizeCommit(request());
+    expect(out.ok && out.receipt.policySha256).toBe(POLICY);
+    expect(out.ok && out.receipt.declaredWriteSet).toEqual(["src/allowed.ts"]);
+    const other = authorizeCommit(
+      request({
+        envelope: envelope({ validation: { commands: ["pnpm check", "pnpm lint"], independentVerifierRequired: false } }),
+      }),
+    );
+    expect(other.ok && other.receipt.policySha256).toBe(
+      verificationPolicySha256({
+        commands: ["pnpm check", "pnpm lint"],
+        independentVerifierRequired: false,
+        commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      }),
+    );
+    expect(other.ok && other.receipt.policySha256).not.toBe(POLICY);
+  });
+
+  // P-17/A (B-4, N12): a NO_COMMIT envelope is refused by name, before independence.
+  it("refuses a NO_COMMIT envelope by name, before anything else is judged", () => {
+    const out = authorizeCommit(
+      request({
+        envelope: envelope({ commitPolicy: "NO_COMMIT" }),
+        verifier: { identity: WRITER, workerId: VERIFIER_WORKER_ID, runId: 1 },
+      }),
+    );
+    expect({ reason: refusal(out).reason, at: refusal(out).at }).toEqual({
+      reason: "COMMIT_POLICY_NO_COMMIT",
+      at: "request.envelope.commitPolicy",
+    });
+    const malformed = authorizeCommit(requestWith({ envelope: { ...envelope(), commitPolicy: "PUSH" } }));
+    expect({ reason: refusal(malformed).reason, at: refusal(malformed).at }).toEqual({
+      reason: "REQUEST_INVALID",
+      at: "request.envelope.commitPolicy",
+    });
+    const absent = { ...request() } as Record<string, unknown>;
+    delete absent["envelope"];
+    expect(refusal(authorizeCommit(absent as never)).reason).toBe("REQUEST_INVALID");
+    const otherTask = authorizeCommit(request({ envelope: envelope({ taskId: "55555555-5555-4555-8555-555555555555" }) }));
+    expect({ reason: refusal(otherTask).reason, at: refusal(otherTask).at }).toEqual({
+      reason: "REQUEST_INVALID",
+      at: "request.envelope.taskId",
+    });
+  });
+
+  // P-17/A (ND-11, B-3, N12): the four body words, each by name before the receipt parse.
+  it("names each of the four body refusals before the receipt parse", () => {
+    for (const [body, reason] of [
+      ["", "COMMIT_MESSAGE_BODY_EMPTY"],
+      [MESSAGE + "\n", "COMMIT_MESSAGE_BODY_ENDS_IN_LF"],
+      ["feat: x\r\nmore", "COMMIT_MESSAGE_BODY_HOLDS_CR"],
+      [MESSAGE + "\n\nACP-Receipt: " + A, "COMMIT_MESSAGE_BODY_HOLDS_TRAILER"],
+      ["ACP-Receipt: " + A, "COMMIT_MESSAGE_BODY_HOLDS_TRAILER"],
+    ] as const) {
+      const out = authorizeCommit(request({ commitMessageBody: body }));
+      expect({ body, reason: refusal(out).reason, at: refusal(out).at }).toEqual({
+        body,
+        reason,
+        at: "request.commitMessageBody",
+      });
+    }
+    // The boundary: 2000 characters is a body; 2001 falls through to the receipt parse.
+    expect(authorizeCommit(request({ commitMessageBody: "x".repeat(2_000) })).ok).toBe(true);
+    const long = authorizeCommit(request({ commitMessageBody: "x".repeat(2_001) }));
+    expect({ reason: refusal(long).reason, at: refusal(long).at }).toEqual({
+      reason: "RECEIPT_INVALID",
+      at: "receipt.commitMessageBody",
+    });
+    // A trailer key inside a line, not at its start, is a body.
+    expect(authorizeCommit(request({ commitMessageBody: "feat: mention ACP-Receipt: inline" })).ok).toBe(true);
   });
 
   // (p) N1: a composed refusal is carried, not flattened.
   it("carries an inner conformance refusal's own reason and path", () => {
-    const empty = authorizeCommit(request({ declaredWriteSet: [] }));
-    expect(refusal(empty).reason).toBe("WRITE_SET_EMPTY");
-    expect(refusal(empty).at).toBe("request.declaredWriteSet");
+    // Since P-17/A the declared write-set is the envelope's, and the envelope contract
+    // admits no committing packet with an empty one: that request never reaches
+    // conformance, and is refused as the envelope it is.
+    const empty = authorizeCommit(requestWith({ envelope: { ...envelope(), writeSet: [] } }));
+    expect(refusal(empty).reason).toBe("REQUEST_INVALID");
+    expect(refusal(empty).at).toBe("request.envelope.commitPolicy");
 
     const badLease = authorizeCommit(
       request({ lease: { ...lease(), leaseId: "not-a-uuid" } }),
@@ -359,20 +521,18 @@ describe("the authorization decision", () => {
 
   // (k)
   it("carries the contract parser's refusal for a malformed receipt member", () => {
-    // `policySha256` is a member no earlier guard reads, so the contract's own
-    // parser is what refuses it, and its path is carried out unchanged.
-    const out = authorizeCommit(request({ policySha256: "nope" }));
-    expect(refusal(out).reason).toBe("RECEIPT_INVALID");
-    expect(refusal(out).at).toBe("receipt.policySha256");
-
+    // `treeSha` is a member no earlier guard reads, so the contract's own parser is
+    // what refuses it, and its path is carried out unchanged. (`policySha256` was the
+    // example before P-17/A; it is computed now, never supplied.)
     const tree = authorizeCommit(request({ treeSha: "B".repeat(40) }));
+    expect(refusal(tree).reason).toBe("RECEIPT_INVALID");
     expect(refusal(tree).at).toBe("receipt.treeSha");
 
     // A body with a trailer is a receipt the authorization would refuse, so it
-    // is never issued.
+    // is never issued -- refused by its own word since P-17/A, before the parse.
     const trailered = authorizeCommit(request({ commitMessageBody: MESSAGE + "\n\nACP-Receipt: " + A }));
-    expect(refusal(trailered).reason).toBe("RECEIPT_INVALID");
-    expect(refusal(trailered).at).toBe("receipt.commitMessageBody");
+    expect(refusal(trailered).reason).toBe("COMMIT_MESSAGE_BODY_HOLDS_TRAILER");
+    expect(refusal(trailered).at).toBe("request.commitMessageBody");
 
     // The authority is not a receipt member any more: refused as the request's.
     const authority = authorizeCommit(request({ authorizedBy: "not-an-identity" }));
@@ -385,11 +545,12 @@ describe("the authorization decision", () => {
     expect(refusal(badWriter).reason).toBe("LEASE_HOLDER_MISMATCH");
   });
 
-  it("grants a body git would rewrite or refuse, a stated limit P-17/A closes (ADR 0121 Six)", () => {
+  it("grants a body git would rewrite or refuse, a stated limit P-17/B inherits (ADR 0121 Six, ADR 0126)", () => {
     // Pinned so the limit is visible, not endorsed. Git's `whitespace` cleanup
     // rewrites trailing whitespace, and git refuses a NUL even with
     // `--cleanup=verbatim`, so neither commit is ever reconciled with this
-    // receipt: it fails closed. P-17/A's body rules flip both to refusals.
+    // receipt: it fails closed. P-17/A named the four body words of execution
+    // §10.5 and no others; these two stay the writer's (P-17/B) to meet.
     for (const body of ["feat: x  ", "feat: x\u0000y"]) {
       const out = authorizeCommit(request({ commitMessageBody: body }));
       expect(out.ok, JSON.stringify(body)).toBe(true);
@@ -431,13 +592,19 @@ describe("the authorization decision", () => {
     expect([...AUTHORIZATION_REFUSALS]).toEqual([...AUTHORIZATION_REFUSALS].sort());
     expect(new Set(AUTHORIZATION_REFUSALS).size).toBe(AUTHORIZATION_REFUSALS.length);
     // P-16/A2: WRITER_ID_UNISSUED joins; BASE_HEAD_MISMATCH leaves with the
-    // bootstrap claim it answered.
+    // bootstrap claim it answered. P-17/A: the four body words and
+    // COMMIT_POLICY_NO_COMMIT join (14 -> 19).
     expect([...AUTHORIZATION_REFUSALS]).toEqual([
       "BASE_HEAD_MISSING",
       "CHECKS_MISSING",
       "CHECK_FAILED",
+      "COMMIT_MESSAGE_BODY_EMPTY",
+      "COMMIT_MESSAGE_BODY_ENDS_IN_LF",
+      "COMMIT_MESSAGE_BODY_HOLDS_CR",
+      "COMMIT_MESSAGE_BODY_HOLDS_TRAILER",
       "COMMIT_MESSAGE_MISMATCH",
       "COMMIT_PARENT_MISMATCH",
+      "COMMIT_POLICY_NO_COMMIT",
       "COMMIT_SHA_INVALID",
       "LEASE_EXPIRED",
       "LEASE_HOLDER_MISMATCH",
@@ -603,7 +770,7 @@ describe("quarantine", () => {
       observation: observation({ untrackedPaths: ["src/sneaked-in.ts"] }),
     });
     const fromThisModule = checkWriteSetConformance({
-      declaredWriteSet: req.declaredWriteSet,
+      declaredWriteSet: req.envelope.writeSet,
       observation: req.observation,
       lease: req.lease,
     });
@@ -771,8 +938,8 @@ describe("the writer id issuer, produced from an attempt's recorded route segmen
     expect(writerIdIssuerFor([cli])).toBe("CLAUDE_CLI_SESSION");
     // A handoff that stays on the one issuing route still issues.
     expect(writerIdIssuerFor([cli, { ...cli }])).toBe("CLAUDE_CLI_SESSION");
-    // The producer's answer is the one the authorization admits.
-    expect(authorizeCommit(request({ writerIdIssuer: writerIdIssuerFor([cli]) ?? "" })).ok).toBe(true);
+    // Since P-17/A the authorization asks this producer itself, over the segments.
+    expect(authorizeCommit(request({ routeSegments: [cli] })).ok).toBe(true);
   });
 
   it("N4: no segment, another transport, another provider, or a mixed handoff issues nothing", () => {

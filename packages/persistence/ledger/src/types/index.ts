@@ -881,6 +881,31 @@ export interface AuditVerdictReadModel {
 }
 
 /**
+ * One recorded commit authorization -- execution §10.5 (P-17/A, ADR 0126).
+ *
+ * Born `INTENDED` by a record-form `COMMIT_AUTHORIZED`; `authorizedAt` and
+ * `authorizedSequence` are that event's and never change, while `recordedAt` and
+ * `sequence` name the event of the row's last transition. `commitSha` is set only in
+ * `RECORDED` and `supersededByReceiptSha256` only in `SUPERSEDED` (migration 29's
+ * CHECKs); in this cut the only transition with an event is `INTENDED -> SUPERSEDED`.
+ */
+export interface CommitAuthorizationReadModel {
+  readonly taskId: string;
+  readonly receiptSha256: string;
+  readonly revisionNumber: number;
+  readonly attemptNumber: number;
+  readonly auditId: string;
+  readonly commitMessageSha256: string;
+  readonly authorizedAt: string;
+  readonly authorizedSequence: number;
+  readonly state: "INTENDED" | "RECORDED" | "OUTCOME_UNKNOWN" | "SUPERSEDED";
+  readonly commitSha: string | null;
+  readonly supersededByReceiptSha256: string | null;
+  readonly recordedAt: string;
+  readonly sequence: number;
+}
+
+/**
  * One declared measurement stream — economy §1.1 (P-32/captura B, ADR 0089).
  *
  * `measurementStreamId` is the digest of the versioned preimage of the four

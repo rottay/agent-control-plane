@@ -75,6 +75,8 @@ import {
   VERIFICATION_AUDIT_MIGRATION,
   VERIFICATION_PROJECTION,
   AUDIT_VERDICT_PROJECTION,
+  COMMIT_AUTHORIZATION_MIGRATION,
+  COMMIT_AUTHORIZATION_PROJECTION,
   checkMigrationConformance,
 } from "../../src/migrations/index.js";
 import {
@@ -224,7 +226,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     expect(SEVENTH?.version).toBe(7);
     expect(SEVENTH?.name).toBe("projection_watermark");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
     ]);
     expect(MIGRATIONS.map((migration) => migration.name)).toEqual([
       "control_plane_events",
@@ -255,11 +257,12 @@ describe("migration 7 appends the watermark table without touching the applied s
       "task_graph",
       "task_step_link",
       "verification_audit",
+      "commit_authorization",
     ]);
   });
 
   it("is the only migration that creates the watermark table", () => {
-    // Migrations 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 25, 26, 27 and 28 seed rows into it, which is what a
+    // Migrations 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 25, 26, 27, 28 and 29 seed rows into it, which is what a
     // migration that adds a projection does; none of them creates, alters or
     // drops the table.
     const creating = MIGRATIONS.filter((migration) =>
@@ -269,7 +272,7 @@ describe("migration 7 appends the watermark table without touching the applied s
     const naming = MIGRATIONS.filter((migration) =>
       migration.sql.includes("projection_watermark"),
     );
-    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 25, 26, 27, 28]);
+    expect(naming.map((migration) => migration.version)).toEqual([7, 9, 11, 12, 13, 14, 15, 17, 19, 20, 21, 25, 26, 27, 28, 29]);
   });
 
   it("declares the table STRICT and names its constraints by the §3.2 convention", () => {
@@ -353,6 +356,7 @@ describe("the closed set of watermark rows is exactly the streams under discipli
       "usage_settlement_observation_read_model@control_plane_events",
       "verification_read_model@control_plane_events",
       "audit_verdict_read_model@control_plane_events",
+      "commit_authorization_read_model@control_plane_events",
       "initiative_read_model@initiative_events",
       "roadmap_version_read_model@initiative_events",
       "roadmap_step_read_model@initiative_events",
@@ -540,6 +544,8 @@ describe("migration 8 types causality without touching the applied seven", () =>
       // P-16/B: a receipt row and a verdict row are never rewritten (ND-9).
       { type: "trigger", name: "tr_verification_read_model__insert_only" },
       { type: "trigger", name: "tr_audit_verdict_read_model__insert_only" },
+      // P-17/A: an authorization row changes only by a listed transition (ND-9).
+      { type: "trigger", name: "tr_commit_authorization_read_model__transition" },
     ]);
     // And the legacy prefix still names exactly the three streams that coined
     // it, so the rename did not quietly move one of theirs.
@@ -600,7 +606,7 @@ describe("migration 9 opens the registry stream without touching the applied eig
     expect(NINTH?.version).toBe(9);
     expect(NINTH?.name).toBe("registry_stream");
     expect(MIGRATIONS.map((migration) => migration.version)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
     ]);
   });
 
@@ -830,7 +836,7 @@ describe("the two-source projection is the only name with two watermark rows", (
     // twenty-six before P-26 cut B's two step projections, twenty-eight before P-27
     // cut A's three task graph projections, thirty-one before P-27 cut C's link, and
     // thirty-two before P-16/B's receipt and verdict.
-    expect(PROJECTION_SOURCES).toHaveLength(34);
+    expect(PROJECTION_SOURCES).toHaveLength(35);
   });
 
   it("still does not claim the account stream (D3)", () => {
@@ -1052,7 +1058,7 @@ describe("migration 12 adds the attempt's own record without touching the applie
     // added its two (P-26 cut B), fifteen until migration 26 added its one (P-27
     // cut A), sixteen until migration 27 added its one (P-27 cut C), and seventeen
     // until migration 28 added its two (P-16/B).
-    expect(triggers).toHaveLength(19);
+    expect(triggers).toHaveLength(20);
     expect(triggers.filter((object) => object.name.startsWith("tr_task_attempt"))).toEqual([]);
   });
 
@@ -1134,7 +1140,7 @@ describe("migration 14 adds the occurrences without touching the applied thirtee
     expect(statements).not.toContain("CREATE TRIGGER");
     // Eight when this migration landed; migration 16 adds the ninth, and
     // migration 22 the tenth and eleventh, and migration 28 the last two.
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(19);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(20);
   });
 
   it("names both tables' constraints by the §3.2 convention, and §8's pair verbatim", () => {
@@ -1219,7 +1225,7 @@ describe("migration 14 adds the occurrences without touching the applied thirtee
     }
     // Ten when this migration landed; the eleventh is P-14 C's client key, the
     // five after it are P-32/captura B's usage cohort, and the last two P-16/B's.
-    expect(PROJECTION_NAMES).toHaveLength(18);
+    expect(PROJECTION_NAMES).toHaveLength(19);
   });
 
   it("clears the answers before the prompts, and the prompts before the deliveries", () => {
@@ -1555,7 +1561,7 @@ describe("migration 15 rebuilds the registry stream and adds the artifact plane"
     ]);
     // Eight when this migration landed; the ninth is migration 16's, the tenth
     // and eleventh migration 22's.
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(19);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(20);
     expect(statements).not.toMatch(/CREATE TRIGGER tr_artifact/);
   });
 });
@@ -1589,7 +1595,7 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
     // Sixteen when this migration landed; the seventeenth is P-14 A's, the
     // eighteenth P-14 B's, the nineteenth P-14 C's, the twentieth P-32/captura B's
     // the twenty-first P-33/catálogo A's and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS).toHaveLength(29);
     expect(MIGRATIONS[TASK_REVISION_ENVELOPE_REFERENCE_MIGRATION]?.name).toBe("model_version_registry");
   });
 
@@ -1634,7 +1640,7 @@ describe("migration 16 names a revision's envelope by reference, by cohort, neve
       type: "trigger",
       name: "tr_task_revision_read_model__validate_envelope_reference",
     });
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(19);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(20);
   });
 
   it("freezes the cohort as a closed list, spelled as the fold spells it, and never compares versions", () => {
@@ -1687,7 +1693,7 @@ describe("migration 17 folds the model version registry from the registry stream
     // Seventeen when this migration landed; the eighteenth is P-14 B's, the
     // nineteenth P-14 C's, the twentieth P-32/captura B's and the twenty-first
     // P-33/catálogo A's, and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS).toHaveLength(29);
     expect(MIGRATIONS[MODEL_VERSION_REGISTRY_MIGRATION]?.name).toBe("initiative_registration_detail");
   });
 
@@ -1783,7 +1789,7 @@ describe("migration 17 folds the model version registry from the registry stream
       { type: "table", name: "model_version_transport" },
       { type: "index", name: "ux_model_version_transport__transport" },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(19);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(20);
   });
 });
 
@@ -1812,7 +1818,7 @@ describe("migration 18 adds the initiative projection's three columns and nothin
     // Eighteen when this migration landed; the nineteenth is P-14 C's, the
     // twentieth P-32/captura B's, the twenty-first P-33/catálogo A's and the
     // twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS).toHaveLength(29);
     expect(MIGRATIONS[INITIATIVE_REGISTRATION_MIGRATION]?.name).toBe("task_submission");
   });
 
@@ -1862,7 +1868,7 @@ describe("migration 19 gives a task's client key its one home", () => {
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION - 1]?.name).toBe("task_submission");
     // Nineteen when this migration landed; the twentieth is P-32/captura B's and
     // the twenty-first P-33/catálogo A's, and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS).toHaveLength(29);
     expect(MIGRATIONS[TASK_SUBMISSION_MIGRATION]?.name).toBe("usage_capture");
   });
 
@@ -1939,7 +1945,7 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
     expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION - 1]?.name).toBe("usage_capture");
     // Twenty when this migration landed; the twenty-first is P-33/catálogo A's
     // and the twenty-second P-07 B's.
-    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS).toHaveLength(29);
     expect(MIGRATIONS[USAGE_CAPTURE_MIGRATION]?.name).toBe("price_interval_catalog");
   });
 
@@ -2061,12 +2067,12 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
     expect(at(USAGE_MEASUREMENT_STREAM_PROJECTION)).toBeLessThan(at("effect_read_model"));
     expect(at(USAGE_OBSERVATION_PROJECTION)).toBeLessThan(at(DISPATCH_ATTEMPT_PROJECTION));
     // Sixteen when this migration landed; P-16/B's pair makes eighteen.
-    expect(PROJECTION_NAMES).toHaveLength(18);
+    expect(PROJECTION_NAMES).toHaveLength(19);
     // Twenty-five when this cohort landed; P-33/catálogo A's registry row is the
     // twenty-sixth, P-26 cut B's two step projections the next two, P-27 cut A's three
     // task graph projections the next three, P-27 cut C's link the next, and P-16/B's
     // receipt and verdict the last two.
-    expect(PROJECTION_SOURCES).toHaveLength(34);
+    expect(PROJECTION_SOURCES).toHaveLength(35);
     expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("usage_"))).toEqual([
       { type: "table", name: "usage_measurement_stream_read_model" },
       { type: "index", name: "ux_usage_measurement_stream__identity" },
@@ -2080,7 +2086,7 @@ describe("migration 20 gives usage its stream, its observation and its settlemen
       { type: "table", name: "usage_settlement_source_head_read_model" },
       { type: "table", name: "usage_settlement_observation_read_model" },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(19);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(20);
   });
 });
 
@@ -2107,7 +2113,7 @@ describe("migration 21 gives a price catalog version its one table", () => {
     expect(PRICE_INTERVAL_CATALOG_MIGRATION).toBe(21);
     expect(MIGRATIONS[PRICE_INTERVAL_CATALOG_MIGRATION - 1]?.name).toBe("price_interval_catalog");
     // Twenty-one when this migration landed; the twenty-second is P-07 B's.
-    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS).toHaveLength(29);
   });
 
   it("H-1: creates economy's table under economy's name, STRICT, and nothing else is created, altered or dropped", () => {
@@ -2184,11 +2190,11 @@ describe("migration 21 gives a price catalog version its one table", () => {
     expect(PROJECTION_SOURCES.filter((source) => source.sourceStream === REGISTRY_STREAM)).toHaveLength(7);
     // Twenty-eight until P-27 cut A's three task graph projections, thirty-one
     // until P-27 cut C's link, and thirty-two until P-16/B's receipt and verdict.
-    expect(PROJECTION_SOURCES).toHaveLength(34);
+    expect(PROJECTION_SOURCES).toHaveLength(35);
     expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.includes("price_"))).toEqual([
       { type: "table", name: PRICE_INTERVAL_PROJECTION },
     ]);
-    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(19);
+    expect(EXPECTED_SCHEMA_OBJECTS.filter((object) => object.name.startsWith("tr_"))).toHaveLength(20);
     // No kind is added: the stream has carried PRICE_TABLE since migration 9.
     expect(DOCUMENT_KINDS).toContain("PRICE_TABLE");
   });
@@ -2215,7 +2221,7 @@ describe("migration 22 names an effect's result by reference, with its outcome, 
     expect(TWENTY_SECOND?.name).toBe("effect_result_reference");
     expect(EFFECT_RESULT_REFERENCE_MIGRATION).toBe(22);
     expect(MIGRATIONS[EFFECT_RESULT_REFERENCE_MIGRATION - 1]?.name).toBe("effect_result_reference");
-    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS).toHaveLength(29);
   });
 
   it("adds three columns in place and two triggers, and creates, drops, updates and seeds nothing else", () => {
@@ -2297,7 +2303,7 @@ describe("migration 23 pins a delivery's price catalog version, by cohort", () =
     expect(TWENTY_THIRD?.name).toBe("dispatch_catalog_pin");
     expect(DISPATCH_CATALOG_PIN_MIGRATION).toBe(23);
     expect(MIGRATIONS[DISPATCH_CATALOG_PIN_MIGRATION - 1]?.name).toBe("dispatch_catalog_pin");
-    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS).toHaveLength(29);
   });
 
   it("adds three columns in place and two triggers, and creates, drops, updates and seeds nothing else", () => {
@@ -2495,7 +2501,7 @@ describe("migration 24 makes a roadmap version's number unique per initiative", 
     expect(TWENTY_FOURTH?.name).toBe("roadmap_version_uniqueness");
     expect(ROADMAP_VERSION_UNIQUENESS_MIGRATION).toBe(24);
     expect(MIGRATIONS[ROADMAP_VERSION_UNIQUENESS_MIGRATION - 1]?.name).toBe("roadmap_version_uniqueness");
-    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS).toHaveLength(29);
   });
 
   it("creates one unique index and nothing else, and the inventory names it", () => {
@@ -2573,6 +2579,14 @@ describe("migration 24 makes a roadmap version's number unique per initiative", 
   function rewindTo23(raw: Database.Database): void {
     // Migration 27 first (P-27 cut C): its table names the step table by foreign key.
     // Migration 28 first (P-16/B): a verdict names its receipt, and both name an attempt.
+    raw.exec(
+      // Migration 29 first (P-17/A): an authorization names a receipt, a verdict and an attempt.
+      "DROP TRIGGER tr_commit_authorization_read_model__transition; " +
+        "DROP INDEX ux_commit_authorization_read_model__intended_task; " +
+        "DROP INDEX ix_commit_authorization_read_model__attempt; " +
+        "DROP TABLE commit_authorization_read_model; " +
+        "DELETE FROM projection_watermark WHERE projection_name = 'commit_authorization_read_model';",
+    );
     raw.exec(
       "DROP TRIGGER tr_audit_verdict_read_model__insert_only; " +
         "DROP TRIGGER tr_verification_read_model__insert_only; " +
@@ -2675,8 +2689,8 @@ describe("migration 24 makes a roadmap version's number unique per initiative", 
   it("is present on a fresh ledger", () => {
     const path = scratch();
     openLedger(path).close();
-    // 25 when this migration's suite was written; migration 28 (P-16/B) is the tail.
-    expect(state(path)).toEqual({ applied: 28, index: 1 });
+    // 25 when this migration's suite was written; migration 29 (P-17/A) is the tail.
+    expect(state(path)).toEqual({ applied: 29, index: 1 });
   });
 
   it("upgrades a ledger at 23 holding versions 1..3, and every row is unchanged", () => {
@@ -2695,7 +2709,7 @@ describe("migration 24 makes a roadmap version's number unique per initiative", 
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     expect(rows.map((row) => row.version)).toEqual([1, 2, 3]);
-    expect(state(path)).toEqual({ applied: 28, index: 1 });
+    expect(state(path)).toEqual({ applied: 29, index: 1 });
   });
 
   it("refuses a stream holding two events with one (initiativeId, version), names the pair, and applies nothing", () => {
@@ -2796,7 +2810,7 @@ describe("migration 25 gives a roadmap version its steps", () => {
     expect(TWENTY_FIFTH?.name).toBe("roadmap_steps");
     expect(ROADMAP_STEPS_MIGRATION).toBe(25);
     // The tail until P-27 cut A's migration 26 followed it, and 27 after that.
-    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS).toHaveLength(29);
     expect(MIGRATIONS[ROADMAP_STEPS_MIGRATION]?.name).toBe("task_graph");
   });
 
@@ -3024,7 +3038,7 @@ describe("migration 26 gives a step its task graph", () => {
     expect(TASK_GRAPH_MIGRATION).toBe(26);
     expect(MIGRATIONS[TASK_GRAPH_MIGRATION - 1]?.name).toBe("task_graph");
     // The tail until P-27 cut C's migration 27 followed it.
-    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS).toHaveLength(29);
     expect(MIGRATIONS[TASK_GRAPH_MIGRATION]?.name).toBe("task_step_link");
   });
 
@@ -3073,9 +3087,10 @@ describe("migration 26 gives a step its task graph", () => {
     expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual({ type: "index", name: "ix_task_dependency_read_model__depends_on" });
     // 34 and 129 when this migration landed; P-27 cut C's migration 27 added one table,
     // and one table, one index and one trigger to the inventory; P-16/B's migration 28
-    // two tables, and two tables, two indexes and two triggers.
-    expect(DERIVED_TABLES).toHaveLength(37);
-    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(138);
+    // two tables, and two tables, two indexes and two triggers; P-17/A's migration 29 one
+    // table, and one table, two indexes and one trigger.
+    expect(DERIVED_TABLES).toHaveLength(38);
+    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(142);
   });
 
   function scratch(): string {
@@ -3131,6 +3146,14 @@ describe("migration 26 gives a step its task graph", () => {
     // before 26 by the rule that undoes 26 before 25.
     // Migration 28 first (P-16/B): a verdict names its receipt, and both name an attempt.
     raw.exec(
+      // Migration 29 first (P-17/A): an authorization names a receipt, a verdict and an attempt.
+      "DROP TRIGGER tr_commit_authorization_read_model__transition; " +
+        "DROP INDEX ux_commit_authorization_read_model__intended_task; " +
+        "DROP INDEX ix_commit_authorization_read_model__attempt; " +
+        "DROP TABLE commit_authorization_read_model; " +
+        "DELETE FROM projection_watermark WHERE projection_name = 'commit_authorization_read_model';",
+    );
+    raw.exec(
       "DROP TRIGGER tr_audit_verdict_read_model__insert_only; " +
         "DROP TRIGGER tr_verification_read_model__insert_only; " +
         "DROP INDEX ix_audit_verdict_read_model__attempt; " +
@@ -3158,7 +3181,7 @@ describe("migration 26 gives a step its task graph", () => {
     expect(watermarks(path)).toEqual([]);
 
     const migrated = openLedger(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(VERIFICATION_AUDIT_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(COMMIT_AUTHORIZATION_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     const rows = watermarks(path);
@@ -3168,7 +3191,7 @@ describe("migration 26 gives a step its task graph", () => {
       [1, 1],
     ]);
     expect(new Set(rows.map((row) => row.head)).size).toBe(1);
-    expect(head.migrations.at(-1)?.version).toBe(VERIFICATION_AUDIT_MIGRATION);
+    expect(head.migrations.at(-1)?.version).toBe(COMMIT_AUTHORIZATION_MIGRATION);
   });
 
   /** A raw handle with foreign keys ON, over a step the three tables can hang off. */
@@ -3359,7 +3382,7 @@ describe("migration 27 records a task's step links", () => {
     expect(TASK_STEP_LINK_MIGRATION).toBe(27);
     expect(MIGRATIONS[TASK_STEP_LINK_MIGRATION - 1]?.name).toBe("task_step_link");
     // The tail until P-16/B's migration 28 followed it.
-    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS).toHaveLength(29);
     expect(MIGRATIONS[TASK_STEP_LINK_MIGRATION]?.name).toBe("verification_audit");
   });
 
@@ -3405,9 +3428,9 @@ describe("migration 27 records a task's step links", () => {
       expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual(object);
     }
     // 34 + 1 and 129 + 3: the table, and the table, its index and its trigger; then
-    // migration 28's 2 and 6 (P-16/B).
-    expect(DERIVED_TABLES).toHaveLength(37);
-    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(138);
+    // migration 28's 2 and 6 (P-16/B); then migration 29's 1 and 4 (P-17/A).
+    expect(DERIVED_TABLES).toHaveLength(38);
+    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(142);
     expect(INITIATIVE_PROJECTION_NAMES).toHaveLength(8);
   });
 
@@ -3457,6 +3480,14 @@ describe("migration 27 records a task's step links", () => {
     const raw = new Database(path);
     // Migration 28 first (P-16/B): a verdict names its receipt, and both name an attempt.
     raw.exec(
+      // Migration 29 first (P-17/A): an authorization names a receipt, a verdict and an attempt.
+      "DROP TRIGGER tr_commit_authorization_read_model__transition; " +
+        "DROP INDEX ux_commit_authorization_read_model__intended_task; " +
+        "DROP INDEX ix_commit_authorization_read_model__attempt; " +
+        "DROP TABLE commit_authorization_read_model; " +
+        "DELETE FROM projection_watermark WHERE projection_name = 'commit_authorization_read_model';",
+    );
+    raw.exec(
       "DROP TRIGGER tr_audit_verdict_read_model__insert_only; " +
         "DROP TRIGGER tr_verification_read_model__insert_only; " +
         "DROP INDEX ix_audit_verdict_read_model__attempt; " +
@@ -3476,7 +3507,7 @@ describe("migration 27 records a task's step links", () => {
     expect(watermark(path)).toEqual([]);
 
     const migrated = openLedger(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(VERIFICATION_AUDIT_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(COMMIT_AUTHORIZATION_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     const rows = watermark(path);
@@ -3672,12 +3703,12 @@ describe("migration 28 records a verification by its receipt and a verdict by it
     sequence: 2,
   };
 
-  it("sits at the tail of a set whose order is fixed", () => {
+  it("sits at the position a set whose order is fixed gave it", () => {
     expect(TWENTY_EIGHTH?.version).toBe(28);
     expect(TWENTY_EIGHTH?.name).toBe("verification_audit");
     expect(VERIFICATION_AUDIT_MIGRATION).toBe(28);
     expect(MIGRATIONS[VERIFICATION_AUDIT_MIGRATION - 1]?.name).toBe("verification_audit");
-    expect(MIGRATIONS).toHaveLength(28);
+    expect(MIGRATIONS).toHaveLength(29);
   });
 
   it("adds two STRICT tables, two indexes and two triggers, alters nothing, and seeds two watermarks", () => {
@@ -3773,8 +3804,8 @@ describe("migration 28 records a verification by its receipt and a verdict by it
     ]) {
       expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual(object);
     }
-    expect(DERIVED_TABLES).toHaveLength(37);
-    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(138);
+    expect(DERIVED_TABLES).toHaveLength(38);
+    expect(EXPECTED_SCHEMA_OBJECTS).toHaveLength(142);
   });
 
   function scratch(): string {
@@ -3839,6 +3870,14 @@ describe("migration 28 records a verification by its receipt and a verdict by it
     ledger.close();
     const raw = new Database(path);
     raw.exec(
+      // Migration 29 first (P-17/A): an authorization names a receipt, a verdict and an attempt.
+      "DROP TRIGGER tr_commit_authorization_read_model__transition; " +
+        "DROP INDEX ux_commit_authorization_read_model__intended_task; " +
+        "DROP INDEX ix_commit_authorization_read_model__attempt; " +
+        "DROP TABLE commit_authorization_read_model; " +
+        "DELETE FROM projection_watermark WHERE projection_name = 'commit_authorization_read_model';",
+    );
+    raw.exec(
       "DROP TRIGGER tr_audit_verdict_read_model__insert_only; " +
         "DROP TRIGGER tr_verification_read_model__insert_only; " +
         "DROP INDEX ix_audit_verdict_read_model__attempt; " +
@@ -3852,7 +3891,7 @@ describe("migration 28 records a verification by its receipt and a verdict by it
     expect(marks(path)).toEqual([]);
 
     const migrated = openLedger(path);
-    expect(migrated.status().migrations.at(-1)?.version).toBe(VERIFICATION_AUDIT_MIGRATION);
+    expect(migrated.status().migrations.at(-1)?.version).toBe(COMMIT_AUTHORIZATION_MIGRATION);
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.close();
     expect(marks(path).map((row) => [row.name, row.sequence, row.count, row.head, row.updatedAt])).toEqual([
@@ -3994,6 +4033,310 @@ describe("migration 28 records a verification by its receipt and a verdict by it
     }
     expect(verdict(() => raw.prepare("DELETE FROM audit_verdict_read_model").run()).admit).toBe(true);
     expect(verdict(() => raw.prepare("DELETE FROM verification_read_model").run()).admit).toBe(true);
+    raw.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-17/A — migration 29: a commit authorization is recorded and revalidated (ADR 0126)
+// ---------------------------------------------------------------------------
+
+describe("migration 29 records a commit authorization, and changes it only by a listed transition", () => {
+  const TWENTY_NINTH = MIGRATIONS[28];
+  const statements = (TWENTY_NINTH?.sql ?? "")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .join("\n");
+  const HEX64 = "a".repeat(64);
+  const OTHER64 = "b".repeat(64);
+  const COLUMNS = [
+    "task_id",
+    "receipt_sha256",
+    "revision_number",
+    "attempt_number",
+    "audit_id",
+    "commit_message_sha256",
+    "authorized_at",
+    "authorized_sequence",
+    "state",
+    "commit_sha",
+    "superseded_by_receipt_sha256",
+    "recorded_at",
+    "sequence",
+  ];
+  const NULLABLE = ["commit_sha", "superseded_by_receipt_sha256"];
+  const intended: Record<string, unknown> = {
+    task_id: "t1",
+    receipt_sha256: HEX64,
+    revision_number: 1,
+    attempt_number: 1,
+    audit_id: "audit-1",
+    commit_message_sha256: HEX64,
+    authorized_at: "2026-09-27T12:00:00.000Z",
+    authorized_sequence: 5,
+    state: "INTENDED",
+    commit_sha: null,
+    superseded_by_receipt_sha256: null,
+    recorded_at: "2026-09-27T12:00:00.000Z",
+    sequence: 5,
+  };
+
+  function scratch(): string {
+    return join(mkdtempSync(join(realpathSync(tmpdir()), "acp-p17a-migration-")), "ledger.sqlite");
+  }
+
+  /** A raw handle over a fresh ledger with foreign keys OFF: the CHECKs and the trigger alone are under test. */
+  function checksOnly(): Database.Database {
+    const path = scratch();
+    openLedger(path).close();
+    const raw = new Database(path);
+    raw.pragma("foreign_keys = OFF");
+    return raw;
+  }
+
+  function outcome(write: () => void): { readonly admit: boolean; readonly message: string } {
+    try {
+      write();
+      return { admit: true, message: "" };
+    } catch (error: unknown) {
+      return { admit: false, message: String(error) };
+    }
+  }
+
+  function insert(raw: Database.Database, row: Record<string, unknown>): Database.RunResult {
+    return raw
+      .prepare(
+        "INSERT INTO commit_authorization_read_model (" +
+          COLUMNS.join(", ") +
+          ") VALUES (" +
+          COLUMNS.map(() => "?").join(", ") +
+          ")",
+      )
+      .run(...COLUMNS.map((column) => row[column]));
+  }
+
+  it("sits at the tail of a set whose order is fixed", () => {
+    expect(TWENTY_NINTH?.version).toBe(29);
+    expect(TWENTY_NINTH?.name).toBe("commit_authorization");
+    expect(COMMIT_AUTHORIZATION_MIGRATION).toBe(29);
+    expect(COMMIT_AUTHORIZATION_PROJECTION).toBe("commit_authorization_read_model");
+    expect(MIGRATIONS[COMMIT_AUTHORIZATION_MIGRATION - 1]?.name).toBe("commit_authorization");
+    expect(MIGRATIONS).toHaveLength(29);
+  });
+
+  it("A1: one STRICT table of thirteen columns, one index, one partial unique index, one trigger, one watermark", () => {
+    expect([...statements.matchAll(/CREATE TABLE (\w+)/g)].map((match) => match[1])).toEqual([
+      COMMIT_AUTHORIZATION_PROJECTION,
+    ]);
+    expect([...statements.matchAll(/CREATE TRIGGER (\w+)/g)].map((match) => match[1])).toEqual([
+      "tr_commit_authorization_read_model__transition",
+    ]);
+    expect([...statements.matchAll(/CREATE (?:UNIQUE )?INDEX (\w+)/g)].map((match) => match[1])).toEqual([
+      "ix_commit_authorization_read_model__attempt",
+      "ux_commit_authorization_read_model__intended_task",
+    ]);
+    expect(statements).toMatch(/CREATE UNIQUE INDEX ux_commit_authorization_read_model__intended_task\s+ON commit_authorization_read_model \(task_id\) WHERE state = 'INTENDED';/);
+    expect(statements).not.toMatch(/DROP |ALTER TABLE|ON CONFLICT|DEFAULT/);
+    expect(statements).toContain(") STRICT;");
+    for (const object of [
+      { type: "table", name: COMMIT_AUTHORIZATION_PROJECTION },
+      { type: "index", name: "ix_commit_authorization_read_model__attempt" },
+      { type: "index", name: "ux_commit_authorization_read_model__intended_task" },
+      { type: "trigger", name: "tr_commit_authorization_read_model__transition" },
+    ]) {
+      expect(EXPECTED_SCHEMA_OBJECTS).toContainEqual(object);
+    }
+    expect(DERIVED_TABLES.indexOf(COMMIT_AUTHORIZATION_PROJECTION)).toBeLessThan(DERIVED_TABLES.indexOf(AUDIT_VERDICT_PROJECTION));
+    expect(DERIVED_TABLES.indexOf(COMMIT_AUTHORIZATION_PROJECTION)).toBeLessThan(DERIVED_TABLES.indexOf(VERIFICATION_PROJECTION));
+    expect(PROJECTION_NAMES).toContain(COMMIT_AUTHORIZATION_PROJECTION);
+
+    const path = scratch();
+    openLedger(path).close();
+    const db = new Database(path, { readonly: true });
+    try {
+      const info = db.prepare("SELECT name, type, \"notnull\" AS required, dflt_value FROM pragma_table_info(?)").all(
+        COMMIT_AUTHORIZATION_PROJECTION,
+      ) as { readonly name: string; readonly type: string; readonly required: number; readonly dflt_value: unknown }[];
+      expect(info.map((column) => column.name)).toEqual(COLUMNS);
+      for (const column of info) {
+        expect({ column: column.name, required: column.required }).toEqual({
+          column: column.name,
+          required: NULLABLE.includes(column.name) ? 0 : 1,
+        });
+        expect(column.dflt_value, column.name).toBeNull();
+      }
+      const keys = db.prepare("SELECT \"table\" AS parent, \"from\" AS column FROM pragma_foreign_key_list(?)").all(
+        COMMIT_AUTHORIZATION_PROJECTION,
+      ) as { readonly parent: string; readonly column: string }[];
+      expect(new Set(keys.map((key) => key.parent + "(" + key.column + ")"))).toEqual(
+        new Set([
+          "verification_read_model(receipt_sha256)",
+          "audit_verdict_read_model(audit_id)",
+          "verification_read_model(superseded_by_receipt_sha256)",
+          "task_attempt_read_model(task_id)",
+          "task_attempt_read_model(revision_number)",
+          "task_attempt_read_model(attempt_number)",
+          "control_plane_events(authorized_sequence)",
+          "control_plane_events(sequence)",
+        ]),
+      );
+      const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE name = ?").get(COMMIT_AUTHORIZATION_PROJECTION) as { sql: string }).sql;
+      // Six foreign keys: four deferred, two immediate into the stream (B-1).
+      expect((sql.match(/CONSTRAINT fk_commit_authorization_read_model__\w+/g) ?? []).sort()).toEqual([
+        "CONSTRAINT fk_commit_authorization_read_model__audit_verdict_read_model",
+        "CONSTRAINT fk_commit_authorization_read_model__authorized_event",
+        "CONSTRAINT fk_commit_authorization_read_model__control_plane_events",
+        "CONSTRAINT fk_commit_authorization_read_model__superseding_receipt",
+        "CONSTRAINT fk_commit_authorization_read_model__task_attempt_read_model",
+        "CONSTRAINT fk_commit_authorization_read_model__verification_read_model",
+      ]);
+      expect((sql.match(/DEFERRABLE INITIALLY DEFERRED/g) ?? []).length).toBe(4);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("is present on a fresh ledger with its watermark at the empty task head and the epoch", () => {
+    const path = scratch();
+    openLedger(path).close();
+    const db = new Database(path, { readonly: true });
+    try {
+      expect(
+        db
+          .prepare(
+            "SELECT source_stream AS stream, applied_sequence AS sequence, event_count AS count, source_head_sha256 AS head, " +
+              "updated_at AS updatedAt FROM projection_watermark WHERE projection_name = ?",
+          )
+          .all(COMMIT_AUTHORIZATION_PROJECTION),
+      ).toEqual([{ stream: "control_plane_events", sequence: 0, count: 0, head: GENESIS_SHA256, updatedAt: "1970-01-01T00:00:00.000Z" }]);
+      expect((db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number }).v).toBe(29);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("N10: refuses a NULL in every NOT NULL column, and bites every named CHECK with its own row", () => {
+    const raw = checksOnly();
+    for (const column of COLUMNS.filter((name) => !NULLABLE.includes(name))) {
+      expect(outcome(() => insert(raw, { ...intended, [column]: null })).admit, column).toBe(false);
+    }
+    let n = 0;
+    const fresh = (overrides: Record<string, unknown>): Record<string, unknown> => {
+      n += 1;
+      return { ...intended, task_id: "t-" + String(n), ...overrides };
+    };
+    const cases: readonly (readonly [string, Record<string, unknown>])[] = [
+      ["ck_commit_authorization_read_model__revision_number_positive", { revision_number: 0 }],
+      ["ck_commit_authorization_read_model__attempt_number_positive", { attempt_number: 0 }],
+      ["ck_commit_authorization_read_model__authorized_sequence_positive", { authorized_sequence: 0 }],
+      ["ck_commit_authorization_read_model__state", { state: "intended" }],
+      ["ck_commit_authorization_read_model__state", { state: "REVOKED" }],
+      ["ck_commit_authorization_read_model__commit_sha_iff_recorded", { commit_sha: "c".repeat(40) }],
+      ["ck_commit_authorization_read_model__commit_sha_iff_recorded", { state: "RECORDED" }],
+      ["ck_commit_authorization_read_model__superseded_by_iff_superseded", { superseded_by_receipt_sha256: OTHER64 }],
+      ["ck_commit_authorization_read_model__superseded_by_iff_superseded", { state: "SUPERSEDED" }],
+      [
+        "ck_commit_authorization_read_model__superseded_by_iff_superseded",
+        { state: "RECORDED", commit_sha: "c".repeat(40), superseded_by_receipt_sha256: OTHER64 },
+      ],
+      ["ck_commit_authorization_read_model__superseded_by_distinct", { state: "SUPERSEDED", superseded_by_receipt_sha256: HEX64 }],
+      ["ck_commit_authorization_read_model__receipt_sha256_shape", { receipt_sha256: "A".repeat(64) }],
+      ["ck_commit_authorization_read_model__commit_message_sha256_shape", { commit_message_sha256: "a".repeat(63) }],
+      [
+        "ck_commit_authorization_read_model__superseded_by_receipt_sha256_shape",
+        { state: "SUPERSEDED", superseded_by_receipt_sha256: "B".repeat(64) },
+      ],
+      ["ck_commit_authorization_read_model__commit_sha_shape", { state: "RECORDED", commit_sha: "c".repeat(64) }],
+      ["ck_commit_authorization_read_model__authorized_at_shape", { authorized_at: "2026-09-27T14:00:00.000+02:00" }],
+      ["ck_commit_authorization_read_model__recorded_at_shape", { recorded_at: "2026-09-27T12:00:00Z" }],
+      ["ck_commit_authorization_read_model__sequence_positive", { sequence: 0 }],
+    ];
+    for (const [name, overrides] of cases) {
+      expect(outcome(() => insert(raw, fresh(overrides))).message, name + " " + JSON.stringify(overrides)).toContain(name);
+    }
+    // The four lawful state shapes.
+    expect(outcome(() => insert(raw, fresh({}))).admit).toBe(true);
+    expect(outcome(() => insert(raw, fresh({ state: "OUTCOME_UNKNOWN" }))).admit).toBe(true);
+    expect(outcome(() => insert(raw, fresh({ state: "RECORDED", commit_sha: "c".repeat(40) }))).admit).toBe(true);
+    expect(outcome(() => insert(raw, fresh({ state: "SUPERSEDED", superseded_by_receipt_sha256: OTHER64 }))).admit).toBe(true);
+    raw.close();
+  });
+
+  it("holds at most one INTENDED row per task (the partial unique index)", () => {
+    const raw = checksOnly();
+    insert(raw, intended);
+    expect(outcome(() => insert(raw, { ...intended, receipt_sha256: OTHER64 })).message).toContain("UNIQUE");
+    // A second row of the task in any other state is lawful.
+    expect(outcome(() => insert(raw, { ...intended, receipt_sha256: OTHER64, state: "SUPERSEDED", superseded_by_receipt_sha256: HEX64 })).admit).toBe(true);
+    raw.close();
+  });
+
+  it("N10: the trigger admits exactly the five listed transitions, and aborts every other pair and every immutable column", () => {
+    const states = ["INTENDED", "RECORDED", "OUTCOME_UNKNOWN", "SUPERSEDED"] as const;
+    const shape = (state: string): Record<string, unknown> => ({
+      state,
+      commit_sha: state === "RECORDED" ? "c".repeat(40) : null,
+      superseded_by_receipt_sha256: state === "SUPERSEDED" ? OTHER64 : null,
+    });
+    const legal = new Set([
+      "INTENDED>RECORDED",
+      "INTENDED>OUTCOME_UNKNOWN",
+      "INTENDED>SUPERSEDED",
+      "OUTCOME_UNKNOWN>RECORDED",
+      "OUTCOME_UNKNOWN>INTENDED",
+    ]);
+    const raw = checksOnly();
+    let n = 0;
+    for (const from of states) {
+      for (const to of states) {
+        n += 1;
+        const taskId = "tt-" + String(n);
+        insert(raw, { ...intended, task_id: taskId, ...shape(from) });
+        const next = shape(to);
+        const result = outcome(() =>
+          raw
+            .prepare(
+              "UPDATE commit_authorization_read_model SET state = ?, commit_sha = ?, superseded_by_receipt_sha256 = ?, " +
+                "recorded_at = ?, sequence = ? WHERE task_id = ?",
+            )
+            .run(next["state"], next["commit_sha"], next["superseded_by_receipt_sha256"], "2026-09-27T13:00:00.000Z", 9, taskId),
+        );
+        const pair = from + ">" + to;
+        expect({ pair, admit: result.admit }).toEqual({ pair, admit: legal.has(pair) });
+        if (!result.admit) expect(result.message).toContain("changes only by a listed transition");
+      }
+    }
+    // A legal pair that also moves an immutable column aborts, one column at a time.
+    const immutable: Record<string, unknown> = {
+      task_id: "moved",
+      receipt_sha256: "d".repeat(64),
+      revision_number: 2,
+      attempt_number: 2,
+      audit_id: "audit-2",
+      commit_message_sha256: "e".repeat(64),
+      authorized_at: "2026-09-27T12:30:00.000Z",
+      authorized_sequence: 6,
+    };
+    for (const [column, value] of Object.entries(immutable)) {
+      n += 1;
+      const taskId = "tm-" + String(n);
+      insert(raw, { ...intended, task_id: taskId });
+      const result = outcome(() =>
+        raw
+          .prepare(
+            "UPDATE commit_authorization_read_model SET state = 'SUPERSEDED', superseded_by_receipt_sha256 = ?, " +
+              column +
+              " = ? WHERE task_id = ?",
+          )
+          .run(OTHER64, value, taskId),
+      );
+      expect({ column, admit: result.admit }).toEqual({ column, admit: false });
+    }
+    // A same-state update with nothing changed is still not a listed transition.
+    insert(raw, { ...intended, task_id: "same" });
+    expect(outcome(() => raw.prepare("UPDATE commit_authorization_read_model SET state = state WHERE task_id = 'same'").run()).admit).toBe(false);
+    // The rebuild's DELETE is not an update and passes.
+    expect(outcome(() => raw.prepare("DELETE FROM commit_authorization_read_model").run()).admit).toBe(true);
     raw.close();
   });
 });

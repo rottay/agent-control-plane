@@ -160,8 +160,22 @@ write-set, so a read-only close can never be followed by a receipt.
 from an attempt's recorded route segments, `CLAUDE_CLI_SESSION` when every segment is
 the Claude CLI under a subscription, and `null` for no segment or any other, which the
 daemon's verification runner refuses as `WRITER_ID_UNISSUED` before any spawn. The
-issuer list stays module-private, and `authorizeCommit` still takes the issuer from its
-caller until P-17/A gives it this answer.
+issuer list stays module-private.
+
+Since P-17/A (ADR 0126; decision 246) `authorizeCommit` reads what it once took from
+its caller: the issuer is `writerIdIssuerFor(request.routeSegments)`, the attempt's
+recorded segments (`WRITER_ID_UNISSUED` at `request.routeSegments`), and the declared
+write-set and the policy digest come from `request.envelope`, the recorded envelope --
+its `writeSet`, and `verificationPolicySha256` of its three policy members, exactly as
+the verification runner computes it. A request that still names `writerIdIssuer`,
+`policySha256` or `declaredWriteSet` is `REQUEST_INVALID` at that key; a `NO_COMMIT`
+envelope is `COMMIT_POLICY_NO_COMMIT`; and the four body rules of execution §10.5 are
+named before the receipt parse -- `COMMIT_MESSAGE_BODY_EMPTY`,
+`COMMIT_MESSAGE_BODY_ENDS_IN_LF`, `COMMIT_MESSAGE_BODY_HOLDS_CR` and
+`COMMIT_MESSAGE_BODY_HOLDS_TRAILER` (the trailer's key is never spelled here; the
+receipt's own body schema decides). `AUTHORIZATION_REFUSALS` holds nineteen words. The
+recorded authorization itself is the ledger's (`commit_authorization_read_model`); this
+module still has no production caller, which is P-17/B's.
 
 The supervisor holds **no cursor**. Every decision about what to do next is read
 back out of the ledger, which is what makes "the ledger is the authority" true

@@ -596,7 +596,7 @@ describe("L4: READY reads a moved node as a known block (ADR 0116 §Four)", () =
 });
 
 describe("P-P18-2: this build opens the history the previous one wrote", () => {
-  it("a 2.11.0 history rewound to 26 migrates under 2.11.0 through 27 to 28, verifies and rebuilds identically, and takes a link on top", async () => {
+  it("a 2.11.0 history rewound to 26 migrates under 2.11.0 through 27 and 28 to 29, verifies and rebuilds identically, and takes a link on top", async () => {
     const { path, bearer, app, onA } = await world();
     expect((await app.inject({ method: "POST", url: graphUrl("A", 1), headers: AUTH, payload: graphBody(GRAPH_ONE, [onA]) })).statusCode).toBe(200);
     await app.close();
@@ -605,11 +605,17 @@ describe("P-P18-2: this build opens the history the previous one wrote", () => {
       revisions: ledger.listTaskGraphRevisions(ledger.listRoadmapVersions(INITIATIVE)[0]?.roadmapVersionId ?? "", "A"),
     }));
 
-    // Migrations 28 and 27 undone, 28 first (P-16/B): the ledger is at 26, as P-27 cut
+    // Migrations 29, 28 and 27 undone, the highest first (P-17/A, P-16/B): the ledger is
+    // at 26, as P-27 cut
     // A left it.
     const raw = new DatabaseSync(path);
     raw.exec(
-      "DROP TRIGGER tr_audit_verdict_read_model__insert_only;" +
+      "DROP TRIGGER tr_commit_authorization_read_model__transition;" +
+        "DROP INDEX ux_commit_authorization_read_model__intended_task;" +
+        "DROP INDEX ix_commit_authorization_read_model__attempt;" +
+        "DROP TABLE commit_authorization_read_model;" +
+        "DELETE FROM projection_watermark WHERE projection_name = 'commit_authorization_read_model';" +
+        "DROP TRIGGER tr_audit_verdict_read_model__insert_only;" +
         "DROP TRIGGER tr_verification_read_model__insert_only;" +
         "DROP INDEX ix_audit_verdict_read_model__attempt;" +
         "DROP INDEX ix_verification_read_model__attempt;" +
@@ -626,9 +632,9 @@ describe("P-P18-2: this build opens the history the previous one wrote", () => {
 
     // The server's handle is read-only and may not migrate; a writable open does.
     const migrated = openLedger(path);
-    // 27 when P-27 cut C wrote this; P-16/B's 28 is the tail now.
-    expect(migrated.status().migrations.at(-1)?.version).toBe(28);
-    expect(migrated.status().migrations.at(-1)?.name).toBe("verification_audit");
+    // 27 when P-27 cut C wrote this; P-17/A's 29 is the tail now.
+    expect(migrated.status().migrations.at(-1)?.version).toBe(29);
+    expect(migrated.status().migrations.at(-1)?.name).toBe("commit_authorization");
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     migrated.rebuildReadModel();
     expect(migrated.listRoadmapVersions(INITIATIVE)).toEqual(before.versions);

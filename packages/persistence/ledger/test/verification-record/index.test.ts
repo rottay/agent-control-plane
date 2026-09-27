@@ -34,7 +34,7 @@ import {
   type ArtifactPlane,
   type Ledger,
 } from "../../src/index.js";
-import { DERIVED_TABLES, VERIFICATION_AUDIT_MIGRATION } from "../../src/migrations/index.js";
+import { COMMIT_AUTHORIZATION_MIGRATION, DERIVED_TABLES, VERIFICATION_AUDIT_MIGRATION } from "../../src/migrations/index.js";
 import { receiptVerificationColumns } from "../../src/receipt-identity/index.js";
 import {
   AUDIT_VERDICT_RECORD_KEYS,
@@ -570,10 +570,21 @@ function plantChainedEvent(path: string, event: Record<string, unknown>): void {
   }
 }
 
-/** Migration 28 undone on a closed ledger: the tables, their objects, the watermarks and the row. */
+/**
+ * Migrations 29 and 28 undone on a closed ledger: the tables, their objects, the
+ * watermarks and the rows. Twenty-nine first (P-17/A): an authorization names a receipt,
+ * a verdict and an attempt, and a re-applied 29 over its own table aborts.
+ */
 function rewindTo27(path: string): void {
   const raw = new Database(path);
   try {
+    raw.exec(
+      "DROP TRIGGER tr_commit_authorization_read_model__transition; " +
+        "DROP INDEX ux_commit_authorization_read_model__intended_task; " +
+        "DROP INDEX ix_commit_authorization_read_model__attempt; " +
+        "DROP TABLE commit_authorization_read_model; " +
+        "DELETE FROM projection_watermark WHERE projection_name = 'commit_authorization_read_model';",
+    );
     raw.exec(
       "DROP TRIGGER tr_audit_verdict_read_model__insert_only; " +
         "DROP TRIGGER tr_verification_read_model__insert_only; " +
@@ -1102,7 +1113,7 @@ describe("P7: a 2.11.0 history crosses migration 28", () => {
     rewindTo27(h.path);
 
     const again = harnessAt(h.path);
-    expect(again.ledger.status().migrations.at(-1)?.version).toBe(VERIFICATION_AUDIT_MIGRATION);
+    expect(again.ledger.status().migrations.at(-1)?.version).toBe(COMMIT_AUTHORIZATION_MIGRATION);
     const marks = again.ledger
       .status()
       .projections.filter((projection) => ["verification_read_model", "audit_verdict_read_model"].includes(projection.name));
@@ -1639,6 +1650,57 @@ describe("N9: the evidence is the task's EVIDENCE, and it names the receipt", ()
       at: "payload.auditVerdict.evidenceSha256",
     });
     expect(on.h.ledger.append(auditEvent({ taskId: on.taskId, transitionId: "audit.good", record: verdictRecord(on.receipt, good) })).inserted).toBe(true);
+  });
+});
+
+describe("P-17/A N11: decision 231's N-3 re-check runs under the lock (ND-10)", () => {
+  function lapse(path: string, artifactReferenceId: string, column: "tombstoned_at" | "expires_at"): void {
+    const raw = new Database(path);
+    try {
+      const reason = column === "tombstoned_at" ? ", tombstone_reason = 'OWNER_REQUEST'" : "";
+      raw.prepare("UPDATE artifact_reference_read_model SET " + column + " = ?" + reason + " WHERE artifact_reference_id = ?").run(AT, artifactReferenceId);
+    } finally {
+      raw.close();
+    }
+  }
+
+  it("a receipt whose reference is tombstoned, or expires at or before the event's instant, is refused by its word", () => {
+    for (const [column, path] of [
+      ["tombstoned_at", "tombstonedAt"],
+      ["expires_at", "expiresAt"],
+    ] as const) {
+      const on = prepared();
+      lapse(on.h.path, on.record["artifactReferenceId"] as string, column);
+      expect(refusedCleanly(on.h, () => on.h.ledger.append(on.event))).toEqual({
+        reason: "RECEIPT_REFERENCE_INVALID",
+        at: "payload.verification.artifactReferenceId." + path,
+      });
+    }
+    // An expiry after the instant stands: compared by epoch, never as text.
+    const on = prepared();
+    const raw = new Database(on.h.path);
+    raw.prepare("UPDATE artifact_reference_read_model SET expires_at = ? WHERE artifact_reference_id = ?").run(
+      "2026-09-26T12:00:00.001Z",
+      on.record["artifactReferenceId"],
+    );
+    raw.close();
+    expect(on.h.ledger.append(on.event).inserted).toBe(true);
+  });
+
+  it("an evidence whose reference is tombstoned or expired is refused by its word", () => {
+    for (const [column, path] of [
+      ["tombstoned_at", "tombstonedAt"],
+      ["expires_at", "expiresAt"],
+    ] as const) {
+      const on = recorded();
+      const evidence = publishEvidence(on.h, on.taskId, on.receiptSha256);
+      lapse(on.h.path, evidence.artifactReferenceId, column);
+      expect(
+        refusedCleanly(on.h, () =>
+          on.h.ledger.append(auditEvent({ taskId: on.taskId, transitionId: "audit.lapsed", record: verdictRecord(on.receipt, evidence) })),
+        ),
+      ).toEqual({ reason: "EVIDENCE_REFERENCE_INVALID", at: "payload.auditVerdict.artifactReferenceId." + path });
+    }
   });
 });
 

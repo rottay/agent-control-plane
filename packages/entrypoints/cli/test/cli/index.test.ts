@@ -1323,9 +1323,14 @@ describe("integrity", () => {
     // three task graph tables children first, and their watermarks — or the
     // re-applied 26 aborts on them, and the step table they name cannot go. P-27 cut
     // C: migration 27's link table goes before them, for the same reason, and P-16/B:
-    // migration 28's two tables before that.
+    // migration 28's two tables before that, and P-17/A: migration 29's table first.
     rewind.exec(
-      "DROP TRIGGER tr_audit_verdict_read_model__insert_only;" +
+      "DROP TRIGGER tr_commit_authorization_read_model__transition;" +
+        "DROP INDEX ux_commit_authorization_read_model__intended_task;" +
+        "DROP INDEX ix_commit_authorization_read_model__attempt;" +
+        "DROP TABLE commit_authorization_read_model;" +
+        "DELETE FROM projection_watermark WHERE projection_name = 'commit_authorization_read_model';" +
+        "DROP TRIGGER tr_audit_verdict_read_model__insert_only;" +
         "DROP TRIGGER tr_verification_read_model__insert_only;" +
         "DROP INDEX ix_audit_verdict_read_model__attempt;" +
         "DROP INDEX ix_verification_read_model__attempt;" +
@@ -1419,9 +1424,9 @@ describe("integrity", () => {
     ).toHaveLength(1);
     expect(
       (reapplied.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { readonly v: number }).v,
-    ).toBe(28);
+    ).toBe(29);
     // P-27 cut A: and it re-applied 26 without aborting — the task graph tables are back
-    // (and, since P-27 cut C, 27 after it, and since P-16/B, 28).
+    // (and, since P-27 cut C, 27 after it, since P-16/B, 28, and since P-17/A, 29).
     expect(
       reapplied
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?) ORDER BY name")

@@ -3565,6 +3565,147 @@ FROM (
 );
 `,
   },
+  {
+    version: 29,
+    name: "commit_authorization",
+    sql: `
+-- A commit authorization is recorded and revalidated (P-17/A, ADR 0126; execution
+-- §10.5 and the common objects of §10).
+--
+-- **One table, new and empty.** A row is one record-form \`COMMIT_AUTHORIZED\`, keyed
+-- by its task and the receipt it authorizes, born \`INTENDED\`; the one transition
+-- this cut has an event for is \`INTENDED -> SUPERSEDED\`, on a later receipt of the
+-- task. No history before this migration holds the record form, so nothing is
+-- backfilled (ND-17).
+--
+-- **Foreign keys, the section's own.** Four are \`DEFERRABLE INITIALLY DEFERRED\` with
+-- \`ON DELETE RESTRICT\` -- the receipt, the superseding receipt, the verdict and the
+-- attempt -- and two are immediate keys into the stream, which a rebuild never clears:
+-- the event that authorized the row and the event of its last transition. RESTRICT
+-- fires at once even on a deferred key, so \`DERIVED_TABLES\` clears this table before
+-- the verdicts and the receipts it names.
+--
+-- **Every CHECK named, and spelled so a NULL cannot pass by accident.** The state
+-- CHECKs are §10.5's, verbatim: each branch names the state and the column it pairs,
+-- so a NULL satisfies neither. The instants are §10.1's GLOB, the storage guard under
+-- the door's \`isCanonicalInstant\`.
+CREATE TABLE commit_authorization_read_model (
+  task_id                      TEXT    NOT NULL,
+  receipt_sha256               TEXT    NOT NULL,
+  revision_number              INTEGER NOT NULL,
+  attempt_number               INTEGER NOT NULL,
+  audit_id                     TEXT    NOT NULL,
+  commit_message_sha256        TEXT    NOT NULL,
+  authorized_at                TEXT    NOT NULL,
+  authorized_sequence          INTEGER NOT NULL,
+  state                        TEXT    NOT NULL,
+  commit_sha                   TEXT,
+  superseded_by_receipt_sha256 TEXT,
+  recorded_at                  TEXT    NOT NULL,
+  sequence                     INTEGER NOT NULL,
+  CONSTRAINT pk_commit_authorization_read_model PRIMARY KEY (task_id, receipt_sha256),
+  CONSTRAINT fk_commit_authorization_read_model__verification_read_model
+    FOREIGN KEY (receipt_sha256) REFERENCES verification_read_model (receipt_sha256)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_commit_authorization_read_model__audit_verdict_read_model
+    FOREIGN KEY (audit_id) REFERENCES audit_verdict_read_model (audit_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_commit_authorization_read_model__superseding_receipt
+    FOREIGN KEY (superseded_by_receipt_sha256) REFERENCES verification_read_model (receipt_sha256)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_commit_authorization_read_model__task_attempt_read_model
+    FOREIGN KEY (task_id, revision_number, attempt_number)
+    REFERENCES task_attempt_read_model (task_id, revision_number, attempt_number)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_commit_authorization_read_model__authorized_event
+    FOREIGN KEY (authorized_sequence) REFERENCES control_plane_events (sequence) ON DELETE RESTRICT,
+  CONSTRAINT fk_commit_authorization_read_model__control_plane_events
+    FOREIGN KEY (sequence) REFERENCES control_plane_events (sequence) ON DELETE RESTRICT,
+  CONSTRAINT ck_commit_authorization_read_model__revision_number_positive CHECK (revision_number > 0),
+  CONSTRAINT ck_commit_authorization_read_model__attempt_number_positive CHECK (attempt_number > 0),
+  CONSTRAINT ck_commit_authorization_read_model__authorized_sequence_positive CHECK (authorized_sequence >= 1),
+  CONSTRAINT ck_commit_authorization_read_model__state
+    CHECK (state IS NOT NULL AND state IN ('INTENDED', 'RECORDED', 'OUTCOME_UNKNOWN', 'SUPERSEDED')),
+  CONSTRAINT ck_commit_authorization_read_model__commit_sha_iff_recorded CHECK (
+    (state IS NOT NULL AND state IN ('RECORDED') AND commit_sha IS NOT NULL)
+    OR (state IS NOT NULL AND state IN ('INTENDED', 'OUTCOME_UNKNOWN', 'SUPERSEDED')
+        AND commit_sha IS NULL)),
+  CONSTRAINT ck_commit_authorization_read_model__superseded_by_iff_superseded CHECK (
+    (state IS NOT NULL AND state IN ('SUPERSEDED') AND superseded_by_receipt_sha256 IS NOT NULL)
+    OR (state IS NOT NULL AND state IN ('INTENDED', 'RECORDED', 'OUTCOME_UNKNOWN')
+        AND superseded_by_receipt_sha256 IS NULL)),
+  CONSTRAINT ck_commit_authorization_read_model__superseded_by_distinct CHECK (
+    superseded_by_receipt_sha256 IS NULL
+    OR superseded_by_receipt_sha256 <> receipt_sha256),
+  CONSTRAINT ck_commit_authorization_read_model__receipt_sha256_shape
+    CHECK (length(receipt_sha256) = 64 AND receipt_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_commit_authorization_read_model__commit_message_sha256_shape
+    CHECK (length(commit_message_sha256) = 64 AND commit_message_sha256 NOT GLOB '*[^0-9a-f]*'),
+  CONSTRAINT ck_commit_authorization_read_model__superseded_by_receipt_sha256_shape
+    CHECK (superseded_by_receipt_sha256 IS NULL
+      OR (length(superseded_by_receipt_sha256) = 64 AND superseded_by_receipt_sha256 NOT GLOB '*[^0-9a-f]*')),
+  CONSTRAINT ck_commit_authorization_read_model__commit_sha_shape
+    CHECK (commit_sha IS NULL OR (length(commit_sha) = 40 AND commit_sha NOT GLOB '*[^0-9a-f]*')),
+  CONSTRAINT ck_commit_authorization_read_model__authorized_at_shape
+    CHECK (length(authorized_at) = 24 AND authorized_at GLOB
+      '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+  CONSTRAINT ck_commit_authorization_read_model__recorded_at_shape
+    CHECK (length(recorded_at) = 24 AND recorded_at GLOB
+      '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'),
+  CONSTRAINT ck_commit_authorization_read_model__sequence_positive CHECK (sequence >= 1)
+) STRICT;
+
+CREATE INDEX ix_commit_authorization_read_model__attempt
+  ON commit_authorization_read_model (task_id, revision_number, attempt_number);
+
+-- At most one INTENDED row per task: a second authorization while one stands aborts.
+CREATE UNIQUE INDEX ux_commit_authorization_read_model__intended_task
+  ON commit_authorization_read_model (task_id) WHERE state = 'INTENDED';
+
+-- The closed transitions of §10.5, and nothing else (ND-9): an update aborts unless the
+-- pair (old state, new state) is one of the five listed and every column that is not
+-- a state column is unchanged. \`IS\` compares, so a NULL cannot slip through, and the
+-- whole predicate is COALESCEd, so a NULL state cannot make it vacuous. Same-state
+-- updates are not in the list. The rebuild clears the table through \`DERIVED_TABLES\`,
+-- a DELETE, which this does not see.
+CREATE TRIGGER tr_commit_authorization_read_model__transition
+BEFORE UPDATE ON commit_authorization_read_model
+WHEN NOT COALESCE((
+  ((OLD.state = 'INTENDED' AND NEW.state IN ('RECORDED', 'OUTCOME_UNKNOWN', 'SUPERSEDED'))
+    OR (OLD.state = 'OUTCOME_UNKNOWN' AND NEW.state IN ('RECORDED', 'INTENDED')))
+  AND NEW.task_id IS OLD.task_id
+  AND NEW.receipt_sha256 IS OLD.receipt_sha256
+  AND NEW.revision_number IS OLD.revision_number
+  AND NEW.attempt_number IS OLD.attempt_number
+  AND NEW.audit_id IS OLD.audit_id
+  AND NEW.commit_message_sha256 IS OLD.commit_message_sha256
+  AND NEW.authorized_at IS OLD.authorized_at
+  AND NEW.authorized_sequence IS OLD.authorized_sequence
+), 0)
+BEGIN
+  SELECT RAISE(ABORT, 'commit_authorization_read_model changes only by a listed transition, and only its state columns');
+END;
+
+-- The watermark born at the task head, migration 28's text: no history holds the
+-- record form, so the empty fold is level with the head; the instant is the head
+-- event's own, the epoch only for an empty stream.
+INSERT INTO projection_watermark
+  (projection_name, source_stream, projector_version, applied_sequence, event_count,
+   source_head_sha256, updated_at)
+SELECT
+  'commit_authorization_read_model',
+  'control_plane_events',
+  1,
+  CAST((SELECT value FROM ledger_meta WHERE key = 'head_sequence') AS INTEGER),
+  CAST((SELECT value FROM ledger_meta WHERE key = 'event_count') AS INTEGER),
+  (SELECT value FROM ledger_meta WHERE key = 'head_event_sha256'),
+  COALESCE(
+    (SELECT recorded_at FROM control_plane_events
+      WHERE sequence = CAST((SELECT value FROM ledger_meta WHERE key = 'head_sequence') AS INTEGER)),
+    '1970-01-01T00:00:00.000Z'
+  );
+`,
+  },
 ];
 
 /** The migration set this build understands, with computed checksums. */
@@ -3618,6 +3759,10 @@ export const DERIVED_TABLES: readonly string[] = [
   // at commit rather than at the delete that caused it.
   "response_occurrence_read_model",
   "prompt_occurrence_read_model",
+  // P-17/A's authorization, before P-16/B's pair: it names a receipt, a superseding
+  // receipt, a verdict and an attempt, by deferred foreign keys that carry `ON DELETE
+  // RESTRICT`, which fires at once: a wrong order aborts the DELETE that caused it.
+  "commit_authorization_read_model",
   // P-16/B's pair, before C's cohort and children first: a verdict names its receipt,
   // and both name their attempt. Deferred foreign keys, but each carries `ON DELETE
   // RESTRICT`, which fires at once even on a deferred key: a wrong order aborts the
@@ -3693,6 +3838,8 @@ export const PROJECTION_NAMES: readonly string[] = [
   // below, in execution §10's order.
   "verification_read_model",
   "audit_verdict_read_model",
+  // And P-17/A's authorization, named `COMMIT_AUTHORIZATION_PROJECTION` below.
+  "commit_authorization_read_model",
 ];
 
 /**
@@ -4012,6 +4159,15 @@ export const VERIFICATION_PROJECTION = "verification_read_model";
 export const AUDIT_VERDICT_PROJECTION = "audit_verdict_read_model";
 
 /**
+ * The migration that records a commit authorization (P-17/A, ADR 0126), named for
+ * `VERIFICATION_AUDIT_MIGRATION`'s reasons.
+ */
+export const COMMIT_AUTHORIZATION_MIGRATION = 29;
+
+/** The projection that holds one row per recorded commit authorization (P-17/A). */
+export const COMMIT_AUTHORIZATION_PROJECTION = "commit_authorization_read_model";
+
+/**
  * The migration that creates the account integrity sidecar (P-08/A2).
  *
  * Named rather than written as a literal at the two sites that need it, because
@@ -4094,6 +4250,7 @@ export const PROJECTION_SOURCES: readonly ProjectionSource[] = [
   { projectionName: USAGE_SETTLEMENT_OBSERVATION_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: VERIFICATION_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: AUDIT_VERDICT_PROJECTION, sourceStream: TASK_STREAM },
+  { projectionName: COMMIT_AUTHORIZATION_PROJECTION, sourceStream: TASK_STREAM },
   { projectionName: "initiative_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: "roadmap_version_read_model", sourceStream: INITIATIVE_STREAM },
   { projectionName: ROADMAP_STEP_PROJECTION, sourceStream: INITIATIVE_STREAM },
@@ -4387,6 +4544,14 @@ export const EXPECTED_SCHEMA_OBJECTS: readonly SchemaObject[] = [
   { type: "table", name: "audit_verdict_read_model" },
   { type: "index", name: "ix_audit_verdict_read_model__attempt" },
   { type: "trigger", name: "tr_audit_verdict_read_model__insert_only" },
+  // P-17/A. The authorization table, its attempt lookup, the partial unique index that
+  // holds one INTENDED row per task, and the transition trigger (ND-9): dropping either
+  // leaves `schema_migrations` intact while a second authorization, or a rewritten
+  // `authorized_at`, quietly becomes possible.
+  { type: "table", name: "commit_authorization_read_model" },
+  { type: "index", name: "ix_commit_authorization_read_model__attempt" },
+  { type: "index", name: "ux_commit_authorization_read_model__intended_task" },
+  { type: "trigger", name: "tr_commit_authorization_read_model__transition" },
 ];
 
 export interface MigrationConformance {

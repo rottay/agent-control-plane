@@ -44,9 +44,19 @@ import {
   LedgerTaskGraphRefusedError,
   LedgerTaskStepLinkRefusedError,
   LedgerValidationError,
+  LedgerCommitAuthorizationRefusedError,
   LedgerVerificationRefusedError,
   type LedgerValidationIssue,
 } from "../errors/index.js";
+import {
+  assertCommitAuthorizationArtifacts,
+  decideCommitAuthorizationRecord,
+  decideCommitAuthorizationSupersession,
+  readCommitAuthorizationArtifacts,
+  type CommitAuthorizationArtifacts,
+  type CommitAuthorizationDecisionView,
+  type RecordedLeaseEvent,
+} from "../commit-authorization-record/index.js";
 import { decideRoadmapVersion } from "../roadmap-version/index.js";
 import { readRoadmapStepManifest } from "../roadmap-steps/index.js";
 import { decideTaskGraph, taskGraphLinkOf } from "../task-graph/index.js";
@@ -58,6 +68,7 @@ import {
   readVerificationArtifact,
   type VerificationArtifactRead,
   type VerificationDecisionView,
+  type VerificationReferenceRow,
 } from "../verification-record/index.js";
 import {
   ACCOUNT_INTEGRITY_MIGRATION,
@@ -167,6 +178,7 @@ import {
   taskSubmissionKey,
   ENVELOPE_ARTIFACT_REFERENCE_KEY,
   taskAttemptKey,
+  commitAuthorizationKey,
   taskRevisionKey,
   nextInitiativeProjection,
   nextRoadmapVersionProjection,
@@ -300,6 +312,7 @@ import {
   type TaskStepLinkReadModel,
   type TaskSubmissionReadModel,
   type AuditVerdictReadModel,
+  type CommitAuthorizationReadModel,
   type VerificationReadModel,
   TASK_CLIENT_KEY_PATTERN,
   type WorkerPage,
@@ -1443,6 +1456,41 @@ function auditVerdictRowToModel(row: AuditVerdictRow): AuditVerdictReadModel {
     verdict: row.verdict as AuditVerdictReadModel["verdict"],
     evidenceSha256: row.evidence_sha256,
     artifactReferenceId: row.artifact_ref_id,
+    recordedAt: row.recorded_at,
+    sequence: row.sequence,
+  };
+}
+
+/** One stored commit authorization row (P-17/A). */
+interface CommitAuthorizationRow {
+  readonly task_id: string;
+  readonly receipt_sha256: string;
+  readonly revision_number: number;
+  readonly attempt_number: number;
+  readonly audit_id: string;
+  readonly commit_message_sha256: string;
+  readonly authorized_at: string;
+  readonly authorized_sequence: number;
+  readonly state: string;
+  readonly commit_sha: string | null;
+  readonly superseded_by_receipt_sha256: string | null;
+  readonly recorded_at: string;
+  readonly sequence: number;
+}
+
+function commitAuthorizationRowToModel(row: CommitAuthorizationRow): CommitAuthorizationReadModel {
+  return {
+    taskId: row.task_id,
+    receiptSha256: row.receipt_sha256,
+    revisionNumber: row.revision_number,
+    attemptNumber: row.attempt_number,
+    auditId: row.audit_id,
+    commitMessageSha256: row.commit_message_sha256,
+    authorizedAt: row.authorized_at,
+    authorizedSequence: row.authorized_sequence,
+    state: row.state as CommitAuthorizationReadModel["state"],
+    commitSha: row.commit_sha,
+    supersededByReceiptSha256: row.superseded_by_receipt_sha256,
     recordedAt: row.recorded_at,
     sequence: row.sequence,
   };
@@ -4276,9 +4324,12 @@ export class Ledger {
     // reference before the lock and held as a value (P-16/B, ND-4): a refusal in it is
     // raised by name inside the transaction, after the replay check (B-5).
     const artifact = readVerificationArtifact(this, event);
+    // The receipt and envelope a record-form COMMIT_AUTHORIZED stands on, read on the
+    // same terms (P-17/A, ND-7): judged by name inside the transaction.
+    const authorization = readCommitAuthorizationArtifacts(this, event);
 
     const run = this.#db.transaction(
-      (): AppendResult => this.#appendInTransaction(event, canonicalJson, reference, artifact),
+      (): AppendResult => this.#appendInTransaction(event, canonicalJson, reference, artifact, authorization),
     );
     // IMMEDIATE takes the write lock at BEGIN rather than at first write, so
     // two processes serialize here instead of discovering the conflict late and
@@ -4360,6 +4411,8 @@ export class Ledger {
         causation: normalizeCausation(causations?.[index], "causations[" + String(index) + "]"),
         // `append`'s read of the private plane, one per event, before the lock (P-16/B).
         artifact: readVerificationArtifact(this, parsed.data),
+        // And its read of a commit authorization's receipt and envelope (P-17/A).
+        authorization: readCommitAuthorizationArtifacts(this, parsed.data),
       };
     });
 
@@ -4374,8 +4427,8 @@ export class Ledger {
       let predecessor: OutboxPredecessor | null = null;
       const inserted: { readonly index: number; readonly event: ControlPlaneEvent }[] = [];
 
-      for (const [index, { event, canonicalJson, causation, artifact }] of prepared.entries()) {
-        const appended = this.#appendOneInTransaction(event, canonicalJson, causation, predecessor, artifact);
+      for (const [index, { event, canonicalJson, causation, artifact, authorization }] of prepared.entries()) {
+        const appended = this.#appendOneInTransaction(event, canonicalJson, causation, predecessor, artifact, authorization);
         results.push(appended.result);
         if (appended.head === null) {
           predecessor = null;
@@ -4439,10 +4492,11 @@ export class Ledger {
     canonicalJson: string,
     causation: CausationRef | null,
     artifact: VerificationArtifactRead | null,
+    authorization: CommitAuthorizationArtifacts | null,
   ): AppendResult {
     // No predecessor: a unitary append is its own transaction, so nothing it
     // follows committed with it.
-    const appended = this.#appendOneInTransaction(event, canonicalJson, causation, null, artifact);
+    const appended = this.#appendOneInTransaction(event, canonicalJson, causation, null, artifact, authorization);
     if (appended.head === null) return appended.result;
 
     this.#writeWatermarks(TASK_WATERMARKS, {
@@ -4468,7 +4522,8 @@ export class Ledger {
    * `predecessor` is the event the same transaction inserted immediately before
    * this one, or null — the only fact about a batch an outbox intention needs.
    * `artifact` is the bytes a receipt-form or verdict-form event names, read before
-   * the lock (P-16/B), or null.
+   * the lock (P-16/B), or null; `authorization` the receipt and envelope a record-form
+   * `COMMIT_AUTHORIZED` stands on, read on the same terms (P-17/A), or null.
    */
   #appendOneInTransaction(
     event: ControlPlaneEvent,
@@ -4476,6 +4531,7 @@ export class Ledger {
     causation: CausationRef | null,
     predecessor: OutboxPredecessor | null,
     artifact: VerificationArtifactRead | null,
+    authorization: CommitAuthorizationArtifacts | null,
   ): AppendedEvent {
     const existingByKey = this.#stmt(
       "SELECT " + EVENT_COLUMNS + " FROM control_plane_events WHERE idempotency_key = ?",
@@ -4605,6 +4661,11 @@ export class Ledger {
     // writes nothing. The replay and event-id checks above ran first: an exact replay
     // returned its first record whatever the bytes read before the lock said (B-5).
     this.#assertVerificationGranted(event, expectedSequence, artifact);
+
+    // The commit authorization (P-17/A, ADR 0126). After the receipt and the verdict,
+    // because it stands on both rows, and before the insert, so a refusal writes
+    // nothing. An exact replay returned its first record above.
+    this.#assertCommitAuthorizationGranted(event, expectedSequence, authorization);
 
     const info = this.#stmt(
       "INSERT INTO control_plane_events (" +
@@ -6534,8 +6595,169 @@ export class Ledger {
     // tables with the sequence the event was given. A row held under the same key
     // and metadata is kept, with its first `sequence` and `recorded_at`.
     const verification = decideVerificationRecord(this.#verificationView(), event, sequence);
-    if (verification?.kind === "VERIFICATION" && !verification.recorded) this.#insertVerification(verification.row);
+    if (verification?.kind === "VERIFICATION" && !verification.recorded) {
+      this.#insertVerification(verification.row);
+      // A later receipt of the task supersedes its INTENDED authorization, in this same
+      // transaction (P-17/A, ND-4).
+      const superseded = decideCommitAuthorizationSupersession(this.#commitAuthorizationView(), verification.row);
+      if (superseded !== null) this.#transitionCommitAuthorization(superseded);
+    }
     if (verification?.kind === "AUDIT_VERDICT" && !verification.recorded) this.#insertAuditVerdict(verification.row);
+
+    // The commit authorization (P-17/A), last: the decision
+    // `#assertCommitAuthorizationGranted` granted, run again over the same tables. A row
+    // held under the same key and metadata is kept.
+    const authorization = decideCommitAuthorizationRecord(this.#commitAuthorizationView(), event, sequence);
+    if (authorization !== null && !authorization.recorded) this.#insertCommitAuthorization(authorization.row);
+  }
+
+  /**
+   * What the commit authorization decision asks about the history, answered from the
+   * tables and the stream this transaction keeps level (P-17/A). The fold answers the
+   * same questions from its snapshot.
+   */
+  #commitAuthorizationView(): CommitAuthorizationDecisionView {
+    const verification = this.#verificationView();
+    return {
+      commitPolicy: (taskId) => {
+        const row = this.#stmt("SELECT commit_policy FROM task_read_model WHERE task_id = ?").get(taskId) as
+          | { readonly commit_policy: string | null }
+          | undefined;
+        return row?.commit_policy ?? null;
+      },
+      verification: verification.verification,
+      auditVerdict: verification.auditVerdict,
+      lastReceipt: (taskId) => {
+        const row = this.#stmt(
+          "SELECT * FROM verification_read_model WHERE task_id = ? ORDER BY sequence DESC LIMIT 1",
+        ).get(taskId) as VerificationRow | undefined;
+        return row === undefined ? null : verificationRowToModel(row);
+      },
+      commitAuthorizations: (taskId) =>
+        (
+          this.#stmt("SELECT * FROM commit_authorization_read_model WHERE task_id = ? ORDER BY sequence ASC").all(
+            taskId,
+          ) as CommitAuthorizationRow[]
+        ).map(commitAuthorizationRowToModel),
+      // The recorded lease (ND-6): the task's own lease events, in ledger order.
+      leaseEvents: (taskId) =>
+        (
+          this.#stmt(
+            "SELECT type, event_json FROM control_plane_events " +
+              "WHERE task_id = ? AND type IN ('LEASE_ACQUIRED', 'LEASE_REVOKED') ORDER BY sequence ASC",
+          ).all(taskId) as { readonly type: string; readonly event_json: string }[]
+        ).map((row): RecordedLeaseEvent => {
+          const parsed = JSON.parse(row.event_json) as { readonly payload?: Readonly<Record<string, unknown>> };
+          return { type: row.type as RecordedLeaseEvent["type"], payload: parsed.payload ?? {} };
+        }),
+    };
+  }
+
+  /**
+   * Grant a record-form `COMMIT_AUTHORIZED`, or refuse it by name before anything is
+   * written (P-17/A, ADR 0126; L-P17A-1).
+   *
+   * The one decision first, over this transaction's tables and stream: grammar, instant,
+   * policy, receipt, verdict, last receipt, the key held, the task's other rows and the
+   * in-force predicate. Then what only bytes answer, over the values the door read before
+   * its lock: the receipt's and the envelope's references re-asserted here (decision 231
+   * N-3 included), the commit message digest, the policy digest and the write-set. Any
+   * other event passes untouched; a V1 bare `COMMIT_AUTHORIZED` is admitted byte-unchanged.
+   */
+  #assertCommitAuthorizationGranted(
+    event: ControlPlaneEvent,
+    sequence: number,
+    authorization: CommitAuthorizationArtifacts | null,
+  ): void {
+    const view = this.#commitAuthorizationView();
+    const decision = decideCommitAuthorizationRecord(view, event, sequence);
+    if (decision === null) return;
+    assertCommitAuthorizationArtifacts(
+      decision,
+      authorization,
+      {
+        verification: view.verification,
+        envelopeReferenceId: (taskId, revisionNumber) => {
+          const row = this.#stmt(
+            "SELECT envelope_artifact_reference_id FROM task_revision_read_model WHERE task_id = ? AND revision_number = ?",
+          ).get(taskId, revisionNumber) as { readonly envelope_artifact_reference_id: string | null } | undefined;
+          return row?.envelope_artifact_reference_id ?? null;
+        },
+        reference: (artifactReferenceId) => this.#referenceRow(artifactReferenceId),
+      },
+      event.recordedAt,
+    );
+  }
+
+  /**
+   * Write one authorization row, born `INTENDED` (P-17/A; L-P17A-1): no conflict clause,
+   * and migration 29's partial unique index refuses a second `INTENDED` row of a task.
+   * A key already held is kept by the decision before this is reached, and a rebuild
+   * writes into a cleared table.
+   */
+  #insertCommitAuthorization(row: CommitAuthorizationReadModel): void {
+    this.#stmt(
+      "INSERT INTO commit_authorization_read_model (" +
+        "task_id, receipt_sha256, revision_number, attempt_number, audit_id, commit_message_sha256, " +
+        "authorized_at, authorized_sequence, state, commit_sha, superseded_by_receipt_sha256, recorded_at, sequence" +
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      row.taskId,
+      row.receiptSha256,
+      row.revisionNumber,
+      row.attemptNumber,
+      row.auditId,
+      row.commitMessageSha256,
+      row.authorizedAt,
+      row.authorizedSequence,
+      row.state,
+      row.commitSha,
+      row.supersededByReceiptSha256,
+      row.recordedAt,
+      row.sequence,
+    );
+  }
+
+  /**
+   * Move one authorization row by a listed transition (P-17/A; L-P17A-1): only the state
+   * columns change, and migration 29's trigger aborts any pair outside the closed list
+   * and any change to another column. In this cut the one caller is the supersession.
+   */
+  #transitionCommitAuthorization(row: CommitAuthorizationReadModel): void {
+    this.#stmt(
+      "UPDATE commit_authorization_read_model SET state = ?, commit_sha = ?, superseded_by_receipt_sha256 = ?, " +
+        "recorded_at = ?, sequence = ? WHERE task_id = ? AND receipt_sha256 = ?",
+    ).run(row.state, row.commitSha, row.supersededByReceiptSha256, row.recordedAt, row.sequence, row.taskId, row.receiptSha256);
+  }
+
+  /**
+   * One reference row, as the verification and authorization doors assert it inside
+   * their transaction, with the two columns decision 231's N-3 re-check reads (ND-10).
+   */
+  #referenceRow(artifactReferenceId: string): VerificationReferenceRow | null {
+    const row = this.#stmt(
+      "SELECT artifact_class, content_sha256, scope_kind, scope_id, tombstoned_at, expires_at " +
+        "FROM artifact_reference_read_model WHERE artifact_reference_id = ?",
+    ).get(artifactReferenceId) as
+      | {
+          readonly artifact_class: string;
+          readonly content_sha256: string;
+          readonly scope_kind: string;
+          readonly scope_id: string | null;
+          readonly tombstoned_at: string | null;
+          readonly expires_at: string | null;
+        }
+      | undefined;
+    return row === undefined
+      ? null
+      : {
+          artifactClass: row.artifact_class,
+          contentSha256: row.content_sha256,
+          scopeKind: row.scope_kind,
+          scopeId: row.scope_id,
+          tombstonedAt: row.tombstoned_at,
+          expiresAt: row.expires_at,
+        };
   }
 
   /**
@@ -6593,27 +6815,9 @@ export class Ledger {
   #assertVerificationGranted(event: ControlPlaneEvent, sequence: number, artifact: VerificationArtifactRead | null): void {
     const decision = decideVerificationRecord(this.#verificationView(), event, sequence);
     if (decision === null) return;
-    assertVerificationArtifact(decision, artifact, (artifactReferenceId) => {
-      const row = this.#stmt(
-        "SELECT artifact_class, content_sha256, scope_kind, scope_id FROM artifact_reference_read_model " +
-          "WHERE artifact_reference_id = ?",
-      ).get(artifactReferenceId) as
-        | {
-            readonly artifact_class: string;
-            readonly content_sha256: string;
-            readonly scope_kind: string;
-            readonly scope_id: string | null;
-          }
-        | undefined;
-      return row === undefined
-        ? null
-        : {
-            artifactClass: row.artifact_class,
-            contentSha256: row.content_sha256,
-            scopeKind: row.scope_kind,
-            scopeId: row.scope_id,
-          };
-    });
+    // The reference row, with its tombstone and expiry for decision 231's N-3 re-check
+    // under the lock (P-17/A, ND-10).
+    assertVerificationArtifact(decision, artifact, (artifactReferenceId) => this.#referenceRow(artifactReferenceId));
   }
 
   /**
@@ -10216,6 +10420,10 @@ export class Ledger {
       // key, and a history the fold refused never reaches this loop.
       for (const verification of snapshot.verifications.values()) this.#insertVerification(verification);
       for (const verdict of snapshot.auditVerdicts.values()) this.#insertAuditVerdict(verdict);
+      // The authorizations (P-17/A), after the receipts and verdicts they name, each in
+      // the state the fold left it: a SUPERSEDED row is inserted as it stands, never
+      // re-transitioned.
+      for (const authorization of snapshot.commitAuthorizations.values()) this.#insertCommitAuthorization(authorization);
       // The P-32/captura B cohort, after the effects and the deliveries it hangs
       // off, parents first: the streams, the observations in the order the replay
       // recorded them — a correction after its target — and each revision's
@@ -10455,13 +10663,17 @@ export class Ledger {
       try {
         applyEventToSnapshot(snapshot, event, row.sequence, row.event_sha256);
       } catch (error: unknown) {
-        if (!(error instanceof LedgerVerificationRefusedError)) throw error;
+        if (!(error instanceof LedgerVerificationRefusedError) && !(error instanceof LedgerCommitAuthorizationRefusedError)) {
+          throw error;
+        }
         verificationRefusals.push({
           kind: "PROJECTION",
           detail:
             "task sequence " +
             String(row.sequence) +
-            " records a verification the fold refuses: " +
+            (error instanceof LedgerCommitAuthorizationRefusedError
+              ? " records a commit authorization the fold refuses: "
+              : " records a verification the fold refuses: ") +
             error.reason +
             " at " +
             error.at,
@@ -12196,6 +12408,19 @@ export class Ledger {
         ]),
       ),
     );
+    // And P-17/A's authorizations: a state flipped back to INTENDED, or an
+    // `authorized_at` moved under a row, leaves every count unchanged.
+    this.#compareRowSet(
+      problems,
+      "commit_authorization_read_model",
+      snapshot.commitAuthorizations,
+      new Map(
+        (this.#stmt("SELECT * FROM commit_authorization_read_model").all() as CommitAuthorizationRow[]).map((row) => [
+          commitAuthorizationKey(row.task_id, row.receipt_sha256),
+          commitAuthorizationRowToModel(row),
+        ]),
+      ),
+    );
 
     this.#compareUsageProjections(snapshot, problems);
 
@@ -12644,6 +12869,31 @@ export class Ledger {
           "ORDER BY sequence ASC",
       ).all(taskId, revisionNumber, attemptNumber) as VerificationRow[]
     ).map(verificationRowToModel);
+  }
+
+  /**
+   * One commit authorization by its key, or null (P-17/A, ND-13). Read-only; no route or
+   * verb exposes it.
+   */
+  getCommitAuthorization(taskId: string, receiptSha256: string): CommitAuthorizationReadModel | null {
+    this.#assertOpen("getCommitAuthorization");
+    const row = this.#stmt(
+      "SELECT * FROM commit_authorization_read_model WHERE task_id = ? AND receipt_sha256 = ?",
+    ).get(taskId, receiptSha256) as CommitAuthorizationRow | undefined;
+    return row === undefined ? null : commitAuthorizationRowToModel(row);
+  }
+
+  /**
+   * Every commit authorization of one task, in the order of their authorizing events
+   * (P-17/A, ND-13). Read-only; no route or verb exposes it.
+   */
+  listCommitAuthorizations(taskId: string): readonly CommitAuthorizationReadModel[] {
+    this.#assertOpen("listCommitAuthorizations");
+    return (
+      this.#stmt(
+        "SELECT * FROM commit_authorization_read_model WHERE task_id = ? ORDER BY authorized_sequence ASC",
+      ).all(taskId) as CommitAuthorizationRow[]
+    ).map(commitAuthorizationRowToModel);
   }
 
   /**

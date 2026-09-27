@@ -700,7 +700,7 @@ describe("production feeds named absences (readinessOf)", () => {
 });
 
 describe("P-P18-2: this build opens the history the previous one wrote", () => {
-  it("a 2.11.0 history rewound to 25 migrates under 2.11.0 through 26 and 27 to 28, verifies and rebuilds identically, and takes G1 on top", async () => {
+  it("a 2.11.0 history rewound to 25 migrates under 2.11.0 through 26, 27 and 28 to 29, verifies and rebuilds identically, and takes G1 on top", async () => {
     const { path, bearer, app, tasks } = await world();
     await app.close();
     const before = withReader(path, (ledger) => ({
@@ -708,11 +708,16 @@ describe("P-P18-2: this build opens the history the previous one wrote", () => {
       tasks: tasks.map((taskId) => ledger.getTaskRevision(taskId, 1)),
     }));
 
-    // Migrations 28, 27 and 26 undone, the highest first (P-16/B, P-27 cut C): the
+    // Migrations 29, 28, 27 and 26 undone, the highest first (P-17/A, P-16/B, P-27 cut C): the
     // ledger is at 25, as the build before P-27 cut A left it.
     const raw = new DatabaseSync(path);
     raw.exec(
-      "DROP TRIGGER tr_audit_verdict_read_model__insert_only;" +
+      "DROP TRIGGER tr_commit_authorization_read_model__transition;" +
+        "DROP INDEX ux_commit_authorization_read_model__intended_task;" +
+        "DROP INDEX ix_commit_authorization_read_model__attempt;" +
+        "DROP TABLE commit_authorization_read_model;" +
+        "DELETE FROM projection_watermark WHERE projection_name = 'commit_authorization_read_model';" +
+        "DROP TRIGGER tr_audit_verdict_read_model__insert_only;" +
         "DROP TRIGGER tr_verification_read_model__insert_only;" +
         "DROP INDEX ix_audit_verdict_read_model__attempt;" +
         "DROP INDEX ix_verification_read_model__attempt;" +
@@ -735,9 +740,9 @@ describe("P-P18-2: this build opens the history the previous one wrote", () => {
 
     // The server's handle is read-only and may not migrate; a writable open does.
     const migrated = openLedger(path);
-    // 26 when P-27 cut A wrote this; P-16/B's 28 is the tail now.
-    expect(migrated.status().migrations.at(-1)?.version).toBe(28);
-    expect(migrated.status().migrations.at(-1)?.name).toBe("verification_audit");
+    // 26 when P-27 cut A wrote this; P-17/A's 29 is the tail now.
+    expect(migrated.status().migrations.at(-1)?.version).toBe(29);
+    expect(migrated.status().migrations.at(-1)?.name).toBe("commit_authorization");
     expect(migrated.verifyIntegrity().problems).toEqual([]);
     expect(migrated.listRoadmapVersions(INITIATIVE)).toEqual(before.versions);
     migrated.rebuildReadModel();

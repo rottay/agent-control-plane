@@ -658,7 +658,12 @@ describe("POST /api/v1/tasks refuses a step the linked version does not declare 
     raw.prepare("UPDATE projection_watermark SET source_head_sha256 = ? WHERE source_stream = 'initiative_events'").run(previous);
     for (const trigger of triggers) raw.exec(trigger.sql);
     raw.exec(
-      "DROP TRIGGER tr_audit_verdict_read_model__insert_only;" +
+      "DROP TRIGGER tr_commit_authorization_read_model__transition;" +
+        "DROP INDEX ux_commit_authorization_read_model__intended_task;" +
+        "DROP INDEX ix_commit_authorization_read_model__attempt;" +
+        "DROP TABLE commit_authorization_read_model;" +
+        "DELETE FROM projection_watermark WHERE projection_name = 'commit_authorization_read_model';" +
+        "DROP TRIGGER tr_audit_verdict_read_model__insert_only;" +
         "DROP TRIGGER tr_verification_read_model__insert_only;" +
         "DROP INDEX ix_audit_verdict_read_model__attempt;" +
         "DROP INDEX ix_verification_read_model__attempt;" +

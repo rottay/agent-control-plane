@@ -198,6 +198,7 @@ seventeenth class cannot arrive without appearing here.
 | `LedgerTaskGraphRefusedError` | the batch door refuses a task graph revision by the decision's word, or the fold meets a revision the door would have refused; carries `reason` and `at` — a field path, or the nodes on a cycle by task id and revision — never content |
 | `LedgerTaskStepLinkRefusedError` | the single initiative door refuses a task's step link by the decision's word, or the fold meets a link the door would have refused; carries `reason` and `at`, a field path, never content. `rebuildReadModel()` throws it; `verifyIntegrity()` reports it |
 | `LedgerVerificationRefusedError` | the task door refuses a receipt-form `VERIFICATION_COMPLETED` or a verdict-form `AUDIT_COMPLETED` by one of the twenty-one words of `VERIFICATION_REFUSALS` (nineteen in ADR 0122, and P-16/C's `AUDITOR_NOT_REGISTERED` and `VERIFIER_NOT_REGISTERED`), or the fold meets one the door would have refused; carries `reason` and `at`, a field path, never a receipt's or an evidence's bytes nor a carried digest. `rebuildReadModel()` throws it; `verifyIntegrity()` reports it |
+| `LedgerCommitAuthorizationRefusedError` | the task door refuses a record-form `COMMIT_AUTHORIZED` by one of the twenty-six words of `COMMIT_AUTHORIZATION_REFUSALS` (P-17/A, ADR 0126), or the fold meets one the door would have refused; code `LEDGER_COMMIT_AUTHORIZATION_REFUSED`, carries `reason` and `at`, a field path, never a receipt's or an envelope's bytes nor a commit message. `rebuildReadModel()` throws it; `verifyIntegrity()` reports it |
 
 ## Tables
 
@@ -218,6 +219,7 @@ seventeenth class cannot arrive without appearing here.
 | `task_attempt_read_model` | derived | one row per `(task, revision, attempt)`: the flat assignment that goes in the legacy `attempt` column, and the invocation the attempt is in bijection with |
 | `verification_read_model` | derived | one row per verification receipt, since migration 28 (execution §10.2): keyed by the `receipt_sha256` the door recomputed from the receipt's bytes, its attempt, the writer and the verifier (identity, instance, run), the base and verified trees, the policy, write-set and checks digests, `run_status`, `all_checks_zero`, and the reference its bytes are read by. Insert-only |
 | `audit_verdict_read_model` | derived | one row per audit verdict, since migration 28 (execution §10.3): keyed by its event id, bound to a PASS receipt of the same attempt, a copy of that receipt's tree and writer, the auditor (identity, instance, run), the verdict, and the evidence's digest and reference. Insert-only |
+| `commit_authorization_read_model` | derived | one row per commit authorization, since migration 29 (execution §10.5, P-17/A): keyed by `(task_id, receipt_sha256)`, its attempt, the `ACCEPT` verdict's `audit_id`, the `commit_message_sha256` the door recomputed over the receipt's body and its one trailer, `authorized_at`/`authorized_sequence` (immutable), `state` (`INTENDED`, `RECORDED`, `OUTCOME_UNKNOWN`, `SUPERSEDED`), `commit_sha` and `superseded_by_receipt_sha256` (each set only in its state), and the instant and sequence of its last transition. At most one `INTENDED` row per task; changed only by a listed transition (the trigger) |
 | `execution_route_segment_read_model` | derived | one row per stretch of one attempt's route, with explicit lineage back to the segment that handed off to it |
 | `effect_read_model` | derived | one row per logical operation of a run, found by its logical key rather than by a physical coordinate; since migration 22, the contract version that recorded its outcome and, with the outcome, the registered `RESPONSE` reference and digest of its result |
 | `dispatch_attempt_read_model` | derived | one row per concrete external delivery of one effect, in the five states of execution §7 |
@@ -1885,6 +1887,32 @@ would have refused its bytes: a row is byte-verified only when its event was adm
 at migration 28 or later (ADR 0122 §One). `CONTRACT_VERSION` does not move (ND-1):
 no reader of recorded history recomputes a receipt's name. From migration 28 on, a change
 to the v5 writer-id rule or to either form's key grammar owes a bump with a cohort.
+
+### Migration 29
+
+One STRICT table, execution §10.5 and the §10 common block, every CHECK named and the
+three state CHECKs spelled in both directions so a `NULL` satisfies neither; thirteen
+columns, `commit_sha` and `superseded_by_receipt_sha256` the only nullable ones; four
+`DEFERRABLE INITIALLY DEFERRED` keys (the receipt, the superseding receipt, the verdict,
+the attempt) and two immediate keys into the stream (the authorizing event and the event
+of the last transition); `ix_commit_authorization_read_model__attempt`, the partial
+unique index `ux_commit_authorization_read_model__intended_task` (one `INTENDED` row per
+task) and one `BEFORE UPDATE` trigger admitting only the five listed transitions and
+only the state columns, compared with `IS`; one watermark seeded at the task head.
+Nothing is backfilled (ND-17). The door (P-17/A, ADR 0126) admits a V2 `COMMIT_AUTHORIZED`
+only in record form (`commitAuthorization: {receiptSha256, auditId,
+commitMessageSha256}`), same-state in `AUDITING`, on a `LOCAL_COMMIT_WITH_RECEIPT` task,
+over the task's last `PASS` receipt and an `ACCEPT` verdict on it, with the attempt's
+recorded lease in force (`commitAuthorizationInForce`); from bytes it recomputes the
+message digest, the policy digest from the recorded envelope and the write-set, and
+re-checks every reference it read under the lock (decision 231 N-3). A later receipt of
+the task supersedes its `INTENDED` row in the same transaction. The fold copies what the
+door admitted and never reopens a blob; a record-form event planted before 29 is
+refused or folded on the fold's own terms (ADR 0126 stated limits). `CONTRACT_VERSION`
+does not move (ND-12). The V1 bare `COMMIT_AUTHORIZED` is admitted byte-unchanged and
+projects nothing. `COMMIT_AUTHORIZATION_REFUSALS` holds twenty-six words;
+`getCommitAuthorization` and `listCommitAuthorizations` read the table, and no route or
+verb exposes it.
 
 ## Integrity
 

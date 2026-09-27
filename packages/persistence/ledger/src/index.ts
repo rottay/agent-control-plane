@@ -42,6 +42,7 @@ export {
   LedgerTaskGraphRefusedError,
   LedgerTaskStepLinkRefusedError,
   LedgerVerificationRefusedError,
+  LedgerCommitAuthorizationRefusedError,
 } from "./errors/index.js";
 
 // P8-8D-pre: the content-addressed artifact store. The Checkpoint law's twin —
@@ -379,6 +380,19 @@ export type {
 export { VERIFICATION_REFUSALS } from "./verification-record/index.js";
 export type { VerificationRefusal } from "./verification-record/index.js";
 
+// P-17/A (ADR 0126): the closed words a record-form COMMIT_AUTHORIZED is refused by, at
+// the door and in the fold, and the one in-force predicate, exported so P-17/B's writer
+// (before `update-ref`) and P-17/C's `COMMIT_RECORDED` call the same function (ND-13).
+// The decision and the door's read of the receipt and envelope stay in the module.
+export { COMMIT_AUTHORIZATION_REFUSALS, commitAuthorizationInForce } from "./commit-authorization-record/index.js";
+export type {
+  CommitAuthorizationInForce,
+  CommitAuthorizationInForceInput,
+  CommitAuthorizationRefusal,
+  CommitAuthorizationRevalidation,
+  RecordedLease,
+} from "./commit-authorization-record/index.js";
+
 // P-27 cut C (ADR 0116): a task's step link -- the decision, pure over what its caller
 // answers, with its closed refusal words; the one read of a task's current step, which
 // the task graph door and the runtime's READY adapter share; and the one producer the
@@ -586,6 +600,7 @@ export type {
   ResponseOccurrenceReadModel,
   VerificationReadModel,
   AuditVerdictReadModel,
+  CommitAuthorizationReadModel,
   LedgerEventRecord,
   LedgerIdentity,
   LedgerPragmaStatus,

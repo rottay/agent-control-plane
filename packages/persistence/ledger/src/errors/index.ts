@@ -1,3 +1,4 @@
+import type { CommitAuthorizationRefusal } from "../commit-authorization-record/index.js";
 import type { RoadmapVersionRefusal } from "../roadmap-version/index.js";
 import type { TaskGraphRefusal } from "../task-graph/index.js";
 import type { TaskStepLinkRefusal } from "../task-step-link/index.js";
@@ -34,7 +35,8 @@ export type LedgerErrorCode =
   | "LEDGER_INITIATIVE_BATCH_CONFLICT"
   | "LEDGER_TASK_GRAPH_REFUSED"
   | "LEDGER_TASK_STEP_LINK_REFUSED"
-  | "LEDGER_VERIFICATION_REFUSED";
+  | "LEDGER_VERIFICATION_REFUSED"
+  | "LEDGER_COMMIT_AUTHORIZATION_REFUSED";
 
 /** Base class for everything this package throws deliberately. */
 export class LedgerError extends Error {
@@ -410,6 +412,27 @@ export class LedgerVerificationRefusedError extends LedgerError {
   constructor(reason: VerificationRefusal, at: string) {
     super("LEDGER_VERIFICATION_REFUSED", "the verification record was refused: " + reason + " at " + at);
     this.name = "LedgerVerificationRefusedError";
+    this.reason = reason;
+    this.at = at;
+  }
+}
+
+/**
+ * The task door refused a record-form `COMMIT_AUTHORIZED`, or a later receipt's
+ * supersession of one, by the decision's word, or the fold met one the door would
+ * have refused (P-17/A, ADR 0126).
+ *
+ * `LedgerVerificationRefusedError`'s mould: the word and the field, never a value. A
+ * receipt's bytes, an envelope's bytes and a commit message never enter the message.
+ */
+export class LedgerCommitAuthorizationRefusedError extends LedgerError {
+  readonly reason: CommitAuthorizationRefusal;
+  /** The field that failed. Never content. */
+  readonly at: string;
+
+  constructor(reason: CommitAuthorizationRefusal, at: string) {
+    super("LEDGER_COMMIT_AUTHORIZATION_REFUSED", "the commit authorization was refused: " + reason + " at " + at);
+    this.name = "LedgerCommitAuthorizationRefusedError";
     this.reason = reason;
     this.at = at;
   }

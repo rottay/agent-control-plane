@@ -12929,6 +12929,65 @@ const P16D2_WRITE_SET = [
   "packages/entrypoints/daemon/README.md",
 ];
 
+/**
+ * P-17, cut A: a commit authorization is recorded and revalidated (ADR 0126; decisions
+ * 245-247; brief v1 with the DT pre-review's corrections B-1..B-4 and its rulings on
+ * ND-Q1 and ND-1 to ND-17, adopted).
+ *
+ * Migration 29 lands `commit_authorization_read_model` (execution §10.5): a record-form
+ * `COMMIT_AUTHORIZED`, same-state in `AUDITING`, is admitted through the one gate and
+ * folded by the same decision, born `INTENDED`; one in-force predicate reads the
+ * attempt's recorded lease; the authorized receipt is the task's last, `PASS`, with an
+ * `ACCEPT` verdict on it; a later receipt supersedes the row; the door recomputes the
+ * message digest, the policy and the write-set from bytes, and decision 231's N-3
+ * re-check runs under the lock. `authorizeCommit` reads its issuer from
+ * `writerIdIssuerFor` and its policy and write-set from the recorded envelope, and names
+ * the four body words and `COMMIT_POLICY_NO_COMMIT`. No Git write. Held by L-P17A-1 and
+ * L-P17A-2; L-P15I-1 and L-P15F-1 (ii) are amended in their own rows.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 186 -> **188**; `MIGRATIONS` 28 -> **29**; the
+ * ADR corpus 125 -> **126**; runtime `AUTHORIZATION_REFUSALS` 14 -> **19**. **Pins that
+ * do not.** `CONTRACT_VERSION` (2.11.0, ND-12), `API_CONTRACT_VERSION` (0.25.0),
+ * `CONTRACTS_SCHEMA_EXPORTS` (191), `RUNTIME_PUBLIC_EXPORTS` (317), `SPAWN_ALLOWED_FILES`
+ * (5), `GIT_READ_VERBS` (4), `VERIFICATION_REFUSALS` (27).
+ *
+ * **Thirty-two paths; four are new**: the module and its type leaf, its suite, and the ADR.
+ */
+const P17A_WRITE_SET = [
+  "packages/persistence/ledger/src/migrations/index.ts",
+  "packages/persistence/ledger/src/commit-authorization-record/index.ts",
+  "packages/persistence/ledger/src/commit-authorization-record/types/index.ts",
+  "packages/persistence/ledger/src/verification-record/index.ts",
+  "packages/persistence/ledger/src/verification-record/types/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/errors/index.ts",
+  "packages/persistence/ledger/src/types/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/domains/runtime/src/commit-authorization/index.ts",
+  "packages/persistence/ledger/test/commit-authorization-record/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/persistence/ledger/test/migrations/index.test.ts",
+  "packages/persistence/ledger/test/verification-record/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/gateway/test/build-server/index.test.ts",
+  "packages/entrypoints/gateway/test/task-intake/index.test.ts",
+  "packages/entrypoints/gateway/test/task-step-link/index.test.ts",
+  "packages/entrypoints/gateway/test/roadmap-write/index.test.ts",
+  "packages/entrypoints/gateway/test/task-graph/index.test.ts",
+  "packages/domains/runtime/test/commit-authorization/index.test.ts",
+  "packages/domains/runtime/test/pilots/writer/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0126-a-commit-authorization-is-recorded-and-revalidated.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "docs/audit/architecture/database/execution/index.md",
+  "packages/domains/runtime/README.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -13192,6 +13251,7 @@ const WRITE_SET = [
   ...P16C_WRITE_SET,
   ...P16D1_WRITE_SET,
   ...P16D2_WRITE_SET,
+  ...P17A_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -14849,6 +14909,18 @@ const PATH_SCOPED_LAWS = [
   {
     law: "a recorded walk is refused before its spend",
     scope: "packages/*/*/src/**",
+  },
+  // P-17/A. Two new path-shaped surfaces, so two new rows: the register and the
+  // `requireScope` call sites both move 186 -> 188 for L-P17A-1 and L-P17A-2.
+  // L-P15I-1 names migration 29's two instant GLOBs and L-P15F-1 (ii) admits the
+  // authorization reader, each amended in its own row; neither adds one.
+  {
+    law: "an authorization row has one door, and changes only by a listed transition",
+    scope: "packages/persistence/ledger/src/ledger/index.ts, packages/*/*/src/**",
+  },
+  {
+    law: "one in-force predicate, one vocabulary, and the issuer and the policy are read, never supplied",
+    scope: "packages/persistence/ledger/src/commit-authorization-record/index.ts, packages/domains/runtime/src/commit-authorization/index.ts, packages/*/*/src/**",
   },
 ];
 
@@ -29195,6 +29267,250 @@ if (tracked.status === 0) {
   notes.push("a recorded walk is refused before its spend: " + WORDS.join(", ") + " at the start, WRITE_SET_EMPTY at the intake");
 }
 
+// L-P17A-1 -- an authorization row has one door, and changes only by a listed
+// transition (P-17/A, ADR 0126; decisions 245 and 247; ND-9, ND-16).
+//
+// L-P16B-1's mould, for execution §10.5's table. Over every tracked `packages/*/*/src`
+// `.ts`/`.tsx` file, comments stripped: every write naming `commit_authorization_read_model`
+// -- an `INSERT`, a `REPLACE`, an `UPDATE` or a `DELETE FROM`, the name bare or
+// `main`-qualified, either part optionally quoted (L-P27-2's matcher) -- is in
+// `ledger/src/ledger/index.ts`; exactly one is an `INSERT`, with no conflict clause,
+// inside `#insertCommitAuthorization`; exactly one is an `UPDATE`, inside
+// `#transitionCommitAuthorization`, whose `SET` names exactly `state`, `commit_sha`,
+// `superseded_by_receipt_sha256`, `recorded_at` and `sequence` and no other column; none
+// is a `DELETE FROM` by name (the rebuild clears the table through `DERIVED_TABLES`).
+// Over the door: `this.#assertCommitAuthorizationGranted(` is called exactly once, inside
+// `#appendOneInTransaction`, before that function's `INSERT INTO control_plane_events`,
+// so a refusal writes nothing and every task event -- through `append` and through
+// `appendBatch` alike -- meets the grant.
+//
+// Stated limit: L-P27C-1's, restated (L-P16B-1's family). A text-level matcher: a table
+// name assembled by concatenation or held in a variable, a schema other than `main`, an
+// SQL comment between the keywords, a literal written with escapes, or a grant
+// neutralized while its call stays, is not seen. Migration 29's transition trigger (any
+// pair outside the five, any change to an immutable column, aborts), its CHECKs and
+// partial unique index, `verifyIntegrity()` and `test/commit-authorization-record`'s door
+// drills are the behaviour.
+{
+  const DOOR_SITE = "packages/persistence/ledger/src/ledger/index.ts";
+  const LAW = "an authorization row has one door, and changes only by a listed transition";
+  const TABLE = "commit_authorization_read_model";
+  const STATE_COLUMNS = ["state", "commit_sha", "superseded_by_receipt_sha256", "recorded_at", "sequence"];
+  const span = (code, head, close) => {
+    const start = code.indexOf(head);
+    const end = start === -1 ? -1 : code.indexOf(close, start);
+    return start === -1 || end === -1 ? { start: -1, end: -1, text: "" } : { start, end, text: code.slice(start, end) };
+  };
+  let scanned = 0;
+  const inserts = [];
+  const updates = [];
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      const code = stripComments(file);
+      const write = new RegExp(
+        "\\b(?:INSERT(?:\\s+OR\\s+\\w+)?\\s+INTO|REPLACE\\s+INTO|UPDATE|DELETE\\s+FROM)\\s+(?:[\"'`[]?main[\"'`\\]]?\\.)?[\"'`[]?" + TABLE + "\\b",
+        "gi",
+      );
+      for (const match of code.matchAll(write)) {
+        const verb = match[0];
+        if (relativePath !== DOOR_SITE) {
+          fail(relativePath + " writes " + TABLE + " (" + verb + "); only the ledger's task door does (L-P17A-1)");
+          continue;
+        }
+        const from = match.index ?? 0;
+        const to = code.indexOf(".run(", from);
+        const statement = code.slice(from, to === -1 ? code.length : to);
+        if (/^(?:INSERT\s+OR|REPLACE)/i.test(verb) || /ON CONFLICT/i.test(statement)) {
+          fail(DOOR_SITE + " writes " + TABLE + " with a conflict clause (" + verb + "); a row is born once (L-P17A-1)");
+        } else if (/^DELETE/i.test(verb)) {
+          fail(DOOR_SITE + " deletes from " + TABLE + " by name (" + verb + "); a row leaves only by a rebuild (L-P17A-1)");
+        } else if (/^UPDATE/i.test(verb)) {
+          updates.push({ from, statement });
+        } else {
+          inserts.push(from);
+        }
+      }
+    }
+  }
+  const door = readIfPresent(DOOR_SITE);
+  if (door !== null) {
+    const code = stripComments(door);
+    const insertBody = span(code, "  #insertCommitAuthorization(", "\n  }\n");
+    const insideInsert = inserts.filter((from) => insertBody.start !== -1 && from >= insertBody.start && from <= insertBody.end);
+    if (inserts.length !== 1 || insideInsert.length !== 1) {
+      fail(
+        DOOR_SITE + " inserts into " + TABLE + " " + String(inserts.length) + " time(s), " + String(insideInsert.length) +
+          " inside #insertCommitAuthorization(; the one writer of a new row is #insertCommitAuthorization( (L-P17A-1)",
+      );
+    }
+    const transitionBody = span(code, "  #transitionCommitAuthorization(", "\n  }\n");
+    const insideTransition = updates.filter(
+      (update) => transitionBody.start !== -1 && update.from >= transitionBody.start && update.from <= transitionBody.end,
+    );
+    if (updates.length !== 1 || insideTransition.length !== 1) {
+      fail(
+        DOOR_SITE + " updates " + TABLE + " " + String(updates.length) + " time(s), " + String(insideTransition.length) +
+          " inside #transitionCommitAuthorization(; a row changes only there (L-P17A-1)",
+      );
+    } else {
+      const joined = insideTransition[0].statement.replace(/["'`]\s*\+\s*["'`]/g, "");
+      const set = /\bSET\s+([\s\S]*?)\s+WHERE\b/i.exec(joined);
+      const columns = set === null ? [] : [...set[1].matchAll(/(\w+)\s*=/g)].map((match) => match[1]);
+      if (JSON.stringify(columns) !== JSON.stringify(STATE_COLUMNS)) {
+        fail(
+          DOOR_SITE + " #transitionCommitAuthorization sets [" + columns.join(", ") + "]; exactly [" + STATE_COLUMNS.join(", ") +
+            "], the state columns, and no other (L-P17A-1)",
+        );
+      }
+    }
+    const single = span(code, "  #appendOneInTransaction(", "\n  }\n");
+    const grant = single.text.indexOf("this.#assertCommitAuthorizationGranted(");
+    const insert = single.text.indexOf("INSERT INTO control_plane_events");
+    const calls = [...code.matchAll(/this\.#assertCommitAuthorizationGranted\(/g)].map((match) => match.index ?? 0);
+    if (single.start === -1 || grant === -1 || insert === -1 || grant > insert) {
+      fail(
+        DOOR_SITE +
+          " #appendOneInTransaction no longer grants a commit authorization through this.#assertCommitAuthorizationGranted( before it inserts the event (L-P17A-1)",
+      );
+    }
+    if (calls.length !== 1 || single.start === -1 || (calls[0] ?? 0) < single.start || (calls[0] ?? 0) > single.end) {
+      fail(DOOR_SITE + " #assertCommitAuthorizationGranted is called " + String(calls.length) + " time(s); once, in #appendOneInTransaction (L-P17A-1)");
+    }
+    notes.push("an authorization row has one door, is born once and changes only its state columns, granted before the event is inserted");
+  }
+  requireScope(LAW, scanned);
+}
+
+// L-P17A-2 -- one in-force predicate, one vocabulary, and the issuer and the policy are
+// read, never supplied (P-17/A, ADR 0126; decisions 245-247; ND-8, ND-11, ND-16, B-3,
+// B-4).
+//
+// Execution §10.5: "Una sola función predicado". Over every tracked `packages/*/*/src`
+// `.ts`/`.tsx` file, comments stripped: `export function commitAuthorizationInForce(` is
+// declared exactly once, in `ledger/src/commit-authorization-record/index.ts`, and called
+// (`commitAuthorizationInForce(` beyond its declaration) only there -- inside
+// `decideCommitAuthorizationRecord`, so the door and the fold reach it only through the
+// one decision; `COMMIT_AUTHORIZATION_REFUSALS` is declared there and only there, as an
+// array literal of upper-case words, sorted and without repeats; that module calls
+// `commitMessageWithReceiptTrailer(` (the trailer's one home, never a second spelling)
+// and `verificationPolicySha256(` (the policy's one producer). Over runtime's
+// `commit-authorization/index.ts`: the body of `export function authorizeCommit(` calls
+// `writerIdIssuerFor(` and `verificationPolicySha256(` and never reads
+// `request.policySha256` or `fields["policySha256"]`; `REQUEST_KEYS` names none of
+// `"writerIdIssuer"`, `"policySha256"`, `"declaredWriteSet"`; and `AUTHORIZATION_REFUSALS`
+// holds the four body words and `COMMIT_POLICY_NO_COMMIT`.
+//
+// Stated limit: L-P27C-1's "declared once" limit (only the spelling `export function
+// <name>(`) and a text matcher: a predicate re-implemented under another name, a call
+// through an alias, a word list assembled at runtime, or what `stripComments` hides is not
+// seen. The decision's unit truth tables, the door and fold negatives and the runtime
+// suite's request-key refusals are the behaviour.
+{
+  const HOME = "packages/persistence/ledger/src/commit-authorization-record/index.ts";
+  const RUNTIME = "packages/domains/runtime/src/commit-authorization/index.ts";
+  const LAW = "one in-force predicate, one vocabulary, and the issuer and the policy are read, never supplied";
+  const REMOVED_KEYS = ['"writerIdIssuer"', '"policySha256"', '"declaredWriteSet"'];
+  const RUNTIME_WORDS = [
+    "COMMIT_MESSAGE_BODY_EMPTY",
+    "COMMIT_MESSAGE_BODY_ENDS_IN_LF",
+    "COMMIT_MESSAGE_BODY_HOLDS_CR",
+    "COMMIT_MESSAGE_BODY_HOLDS_TRAILER",
+    "COMMIT_POLICY_NO_COMMIT",
+  ];
+  let scanned = 0;
+  const declarations = [];
+  const callers = new Set();
+  const vocabulary = [];
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      const code = stripComments(file);
+      const declared = code.match(/export\s+function\s+commitAuthorizationInForce\s*\(/g) ?? [];
+      for (let index = 0; index < declared.length; index += 1) declarations.push(relativePath);
+      if (/\bcommitAuthorizationInForce\s*\(/.test(code.replace(/function\s+commitAuthorizationInForce\s*\(/g, ""))) callers.add(relativePath);
+      if (/(?:const|let|var)\s+COMMIT_AUTHORIZATION_REFUSALS\b/.test(code)) vocabulary.push(relativePath);
+    }
+  }
+  if (declarations.length !== 1 || declarations[0] !== HOME) {
+    fail("commitAuthorizationInForce is declared " + String(declarations.length) + " time(s) (" + (declarations.join(", ") || "no file") + "); its one home is " + HOME + " (L-P17A-2)");
+  }
+  for (const caller of callers) {
+    if (caller !== HOME) fail(caller + " calls commitAuthorizationInForce(; the one decision in " + HOME + " is its caller (L-P17A-2)");
+  }
+  if (vocabulary.length !== 1 || vocabulary[0] !== HOME) {
+    fail("COMMIT_AUTHORIZATION_REFUSALS is declared in " + (vocabulary.join(", ") || "no file") + "; its one home is " + HOME + " (L-P17A-2)");
+  }
+  let words = [];
+  const home = readIfPresent(HOME);
+  if (home === null) {
+    fail(HOME + " is gone; the commit authorization has no home (L-P17A-2)");
+  } else {
+    const code = stripComments(home);
+    const literal = /export const COMMIT_AUTHORIZATION_REFUSALS = \[([^\]]*)\] as const;/.exec(code);
+    if (literal === null) {
+      fail(HOME + " no longer declares COMMIT_AUTHORIZATION_REFUSALS as an array literal the law can read (L-P17A-2)");
+    } else {
+      const entries = (literal[1] ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+      words = entries.map((entry) => (/^"([A-Z][A-Z_]*)"$/.exec(entry) ?? [])[1]);
+      if (words.length === 0 || words.some((word) => word === undefined)) {
+        fail(HOME + " COMMIT_AUTHORIZATION_REFUSALS holds an entry that is not an upper-case word (L-P17A-2)");
+      } else if (words.join(",") !== [...words].sort().join(",") || new Set(words).size !== words.length) {
+        fail(HOME + " COMMIT_AUTHORIZATION_REFUSALS is not sorted without repeats (L-P17A-2)");
+      }
+    }
+    const decision = functionBody(code, "export function decideCommitAuthorizationRecord(");
+    if (decision === null || !/\bcommitAuthorizationInForce\s*\(/.test(decision)) {
+      fail(HOME + " decideCommitAuthorizationRecord no longer asks commitAuthorizationInForce(; door and fold reach the predicate through the one decision (L-P17A-2)");
+    }
+    for (const call of ["commitMessageWithReceiptTrailer(", "verificationPolicySha256("]) {
+      if (!code.includes(call)) fail(HOME + " no longer calls " + call + "; the door recomputes from the one producer (L-P17A-2)");
+    }
+  }
+  const runtime = readIfPresent(RUNTIME);
+  if (runtime === null) {
+    fail(RUNTIME + " is gone; authorizeCommit has no home (L-P17A-2)");
+  } else {
+    const code = stripComments(runtime);
+    const body = functionBody(code, "export function authorizeCommit(");
+    if (body === null) {
+      fail(RUNTIME + " no longer defines authorizeCommit (L-P17A-2)");
+    } else {
+      for (const call of ["writerIdIssuerFor(", "verificationPolicySha256("]) {
+        if (!body.includes(call)) fail(RUNTIME + " authorizeCommit no longer calls " + call + "; the issuer and the policy are read, never supplied (L-P17A-2)");
+      }
+      if (/\brequest\.policySha256\b|fields\[\s*["']policySha256["']\s*\]/.test(body)) {
+        fail(RUNTIME + " authorizeCommit reads a caller's policySha256; the policy is recomputed from the envelope (L-P17A-2)");
+      }
+    }
+    const keys = /const REQUEST_KEYS\b[^=]*=\s*new Set\(\[([^\]]*)\]\)/.exec(code);
+    if (keys === null) {
+      fail(RUNTIME + " no longer declares REQUEST_KEYS as a Set literal the law can read (L-P17A-2)");
+    } else {
+      for (const removed of REMOVED_KEYS) {
+        if ((keys[1] ?? "").includes(removed)) fail(RUNTIME + " REQUEST_KEYS names " + removed + "; the caller never supplies it (L-P17A-2)");
+      }
+    }
+    const refusals = /export const AUTHORIZATION_REFUSALS\b[^=]*=\s*Object\.freeze\(\[([^\]]*)\]\)/.exec(code);
+    const listed = refusals === null ? [] : [...(refusals[1] ?? "").matchAll(/"([A-Z_]+)"/g)].map((match) => match[1]);
+    for (const word of RUNTIME_WORDS) {
+      if (!listed.includes(word)) fail(RUNTIME + " AUTHORIZATION_REFUSALS does not hold " + word + "; the body words and NO_COMMIT are refused by name (L-P17A-2)");
+    }
+  }
+  requireScope(LAW, scanned);
+  notes.push("one in-force predicate in " + HOME + "; " + String(words.length) + " refusal words, sorted and closed; authorizeCommit reads its issuer and policy");
+}
+
 // --- 21c. V2-B5/R11: the telemetry export edge ------------------------------
 //
 // Five path-scoped laws over one new package, plus a barrel pin and a record
@@ -33322,11 +33638,16 @@ const CHAIN_WALK_SITE = "packages/entrypoints/daemon/src/composition/walk/index.
 // respelled to dodge the matcher. It is a storage guard, not a second predicate: the
 // door's predicate stays `isCanonicalInstant` (RECORDED_AT_NOT_CANONICAL). The register
 // does not move.
+//
+// AMENDED by P-17/A (ADR 0126; decision 247), in its own row: migration 29's table adds
+// two instant columns, `authorized_at` and `recorded_at`, each with §10.1's GLOB, so the
+// counted exception is four -- one per instant column of migrations 28 and 29. The rest
+// of the row is unchanged.
 const CANONICAL_INSTANT_HOME = "packages/kernel/contracts/src/schemas/primitives/index.ts";
 const INSTANT_GLOB_SITE = "packages/persistence/ledger/src/migrations/index.ts";
 const INSTANT_GLOB_LITERAL =
   "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'";
-const INSTANT_GLOB_COUNT = 2;
+const INSTANT_GLOB_COUNT = 4;
 {
   let instantScanned = 0;
   const GRAMMAR = /(?:\\{1,2}d\{3\}|\[0-9\]\{3\}|(?:\\{1,2}d){3}|(?:\[0-9\]){3})(?:Z|\[Z\])/;
@@ -33351,7 +33672,7 @@ const INSTANT_GLOB_COUNT = 2;
               String(globs) +
               " time(s); L-P15I-1 admits it exactly " +
               String(INSTANT_GLOB_COUNT) +
-              " times there, one per table of migration 28, and nowhere else",
+              " times there, one per instant column of migrations 28 and 29, and nowhere else",
           );
         }
         code = code.split(INSTANT_GLOB_LITERAL).join("''");
@@ -33734,6 +34055,11 @@ const WRITER_ID_V5_SITES = [RECEIPT_IDENTITY_HOME, PROVIDERS_CRYPTO_SITE];
 // recompute its name and hold every carried column to it, and an evidence's bytes to
 // bind it to its receipt; the bytes reach that comparison and nothing else: no event,
 // response, log or error message. The register does not move.
+//
+// AMENDED by P-17/A (ADR 0126; decision 247), in its own row: (ii) admits a fifth caller,
+// `ledger/src/commit-authorization-record/index.ts`, on the same terms -- the task door
+// reads an authorization's receipt and envelope to recompute the message digest, the
+// policy and the write-set, and the bytes reach that comparison and nothing else.
 const RESULT_REFERENCE_NAMERS = [
   "packages/persistence/ledger/src/ledger/index.ts",
   "packages/persistence/ledger/src/projection/index.ts",
@@ -33756,6 +34082,9 @@ const REFERENCE_READ_CALLERS = [
   // lock and as a value, on the same terms -- a re-derivation and not a sink: the bytes
   // reach the door's comparison and nothing else.
   "packages/persistence/ledger/src/verification-record/index.ts",
+  // P-17/A (ADR 0126): the task door's read of a commit authorization's receipt and
+  // envelope, before its lock and as values -- a re-derivation and not a sink.
+  "packages/persistence/ledger/src/commit-authorization-record/index.ts",
 ];
 const EFFECT_RESULT_HOME = "packages/domains/runtime/src/operation-result/index.ts";
 const EFFECT_RESULT_CALLERS = {
@@ -33791,7 +34120,7 @@ const RESULT_READ_RECORDING_NAMES =
         if (!REFERENCE_READ_CALLERS.includes(relativePath)) {
           fail(
             relativePath +
-              " reads the private plane by reference; the objective reader, the result reader, the step manifest reader and the verification reader are its four callers",
+              " reads the private plane by reference; the objective reader, the result reader, the step manifest reader, the verification reader and the authorization reader are its five callers",
           );
         }
       }

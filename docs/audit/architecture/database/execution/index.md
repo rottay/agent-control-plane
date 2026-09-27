@@ -557,7 +557,9 @@ hoy). Migradas de `attempt` plano a `(revision_number, attempt_number)`.
 Cinco tablas: el checkpoint (§10.1), el receipt de verificación (§10.2), el
 veredicto de auditoría (§10.3), el commit observado (§10.4) y la autorización de
 commit (§10.5), que §10.4 proyecta al registrarse. §10.2 y §10.3 existen en código
-desde P-16/B (migración 28, ADR 0122, decisiones 231–233); §10.1, §10.4 y §10.5 no.
+desde P-16/B (migración 28, ADR 0122, decisiones 231–233), y §10.5 desde P-17/A
+(migración 29, ADR 0126, decisiones 245–247); §10.1 y §10.4 no (§10.4 es de P-17/C,
+decisión 245).
 Desde P-16/D1 (ADR 0124, decisiones 238–241) un walk registrado **produce** ambas:
 antes del paso 6 del plan el runner de C registra el receipt (forma receipt, en el
 mismo estado `RUNNING`), antes del paso 7 el auditor local determinista registra el
@@ -786,7 +788,11 @@ nada.
 
 ### 10.5 `commit_authorization_read_model`
 
-**Nuevo en P-16/0; no existe en código.** Es la fila de la autorización de commit:
+**Nuevo en P-16/0; existe en código desde P-17/A** (migración 29, ADR 0126, decisiones
+245–247): la forma registro de `COMMIT_AUTHORIZED` es la clave cerrada
+`commitAuthorization: {receiptSha256, auditId, commitMessageSha256}` en sujeto V2, un hecho
+en el mismo estado `AUDITING` (así se lee «sólo desde `AUDITING`», ND-3); el candidato V1
+desnudo se admite byte a byte y no proyecta. Es la fila de la autorización de commit:
 nace con `COMMIT_AUTHORIZED` y el fold la pliega desde ese evento. §10.4 es su
 proyección `RECORDED`. Tabla `STRICT`, sin defaults.
 
@@ -864,7 +870,11 @@ registra un commit ya ocurrido no la llama. La autorización está vigente si y 
    excluye la supersesión.
 2. El lease de worktree del writer existe y no venció: `authorized_at < lease.expiresAt`.
    En coordinación `expires_at` es `NULL` sii no hay lease; un lease ausente se rehúsa
-   por nombre antes de comparar y nunca se compara contra `NULL`. Los dos operandos se parsean como instantes canónicos y se comparan por epoch; la
+   por nombre antes de comparar y nunca se compara contra `NULL`. **Desde P-17/A**
+   (ND-6): el lease es el que registró su dueño en el stream de la tarea, por intento —los
+   `LEASE_ACQUIRED`/`LEASE_REVOKED` cuya coordenada del payload es la del receipt, plegados
+   con la regla de runtime `enforcement`—, y su `holder` debe ser el `writer_identity` del
+   receipt; así el predicado compara dos instantes registrados y es reproducible. Los dos operandos se parsean como instantes canónicos y se comparan por epoch; la
    igualdad cuenta como vencido. Un instante de lease no canónico (por ejemplo, con
    desplazamiento `+02:00`) se rehúsa por nombre y nunca se normaliza. El predicado
    lee el lease de su dueño ([coordinación](../coordination/index.md)) por el
@@ -888,7 +898,13 @@ pero todavía no reasignado conserva un token de fence vigente.
   siendo de P-17/A), el receipt en
   `PASS`, el veredicto `ACCEPT` sobre el mismo receipt, el lease del writer vivo,
   ningún cambio fuera del write-set y ningún `VERIFICATION_COMPLETED` de la tarea
-  posterior al del receipt: el receipt es el último de la tarea. Sin esto, un receipt
+  posterior al del receipt: el receipt es el último de la tarea. **Lectura de P-17/A**
+  (ND-5): «el último» es la fila forma receipt de la tarea con mayor `sequence`; el beat
+  consumidor del paso 6 nombra un receipt existente, siempre lo sigue, y nunca vuelve
+  último a uno anterior. La puerta y el fold juzgan las filas; los hechos derivados de
+  bytes —el digest del mensaje, la política recalculada del envelope registrado y su
+  write-set— son sólo de la puerta, que los re-afirma bajo el lock (ND-7); base y tree
+  contra Git son de P-17/B y P-17/C. Sin esto, un receipt
   anterior autorizado tras uno posterior nunca quedaría superseded (la supersesión
   sólo la dispara un evento posterior) y `ux_commit_authorization_read_model__intended_task`
   rehusaría la autorización del receipt vigente. La puerta lo comprueba y no lo supone
@@ -928,11 +944,11 @@ deja de aplicar cuando un receipt posterior la supersede.
 ### Índices / OCC / transacción / rebuild (las cinco)
 
 **§10.2 y §10.3 existen en código desde P-16/B** (migración 28, ADR 0122); §10.1,
-§10.4 y §10.5 no. El patrón de FK, «validación de referencia» y CHECK de forma se
+§10.4 no; §10.5 desde P-17/A (migración 29, ADR 0126). El patrón de FK, «validación de referencia» y CHECK de forma se
 escribió aquí por primera vez y la migración 28 lo materializa; no lo describe como un
 precedente existente («como el de checkpoint»), porque no lo había. Dueños: §10.2 y
-§10.3 aterrizaron en P-16/B, en la migración 28; §10.5, el predicado de
-vigencia y la proyección de §10.4, en P-17/A–C. Esta sección fija la forma física
+§10.3 aterrizaron en P-16/B, en la migración 28; §10.5 y el predicado de
+vigencia, en P-17/A (migración 29); la proyección de §10.4, en P-17/C (decisión 245). Esta sección fija la forma física
 antes del código (P-16/0, decisiones 225–227), para que ningún corte la diseñe en
 vuelo.
 

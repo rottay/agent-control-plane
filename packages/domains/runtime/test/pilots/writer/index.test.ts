@@ -132,8 +132,22 @@ const PILOT_VERIFIER_INSTANCE = {
   runId: 1,
 } as const;
 
-/** The verification policy's digest: supplied, its producer is P-16/C's. */
-const PILOT_POLICY_SHA256 = "c".repeat(64);
+/**
+ * The pilot's recorded envelope for a probe task (P-17/A, ND-11): the authorization reads
+ * the declared write-set and the policy digest from it, never from the caller. The happy
+ * path's envelope is the one it admitted.
+ */
+function probeEnvelope(taskId: string): ReturnType<typeof pilotEnvelope> {
+  return pilotEnvelope({
+    taskId,
+    issuedAt: WRITER_ISSUED_AT,
+    authority: [],
+    readSet: [TOY_NOTES_PATH],
+    writeSet: [TOY_NOTES_PATH],
+    conflictKeys: ["p7c:pilot:writer:probe"],
+    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+  });
+}
 
 /** A tree for the probes, which never commit; the happy path's tree is real. */
 const PROBE_TREE_SHA = "e".repeat(40);
@@ -146,7 +160,7 @@ const FIRST_ATTEMPT = {
   revisionNumber: 1,
   attemptNumber: 1,
   attempt: 1,
-  writerIdIssuer: "CLAUDE_CLI_SESSION",
+  routeSegments: [{ provider: "claude", transportKind: "CLI_SUBSCRIPTION" }],
 } as const;
 /** A wrong-but-valid-shaped parent: 40 lowercase hex characters, never the real one. */
 const WRONG_PARENT = "d".repeat(40);
@@ -585,10 +599,9 @@ describe("the writer packet, walked end to end", () => {
       authorizedAt: WRITER_AUTHORIZED_AT,
       worktreePath: toyDir,
       lease: grantedLease,
-      declaredWriteSet: [TOY_NOTES_PATH],
+      envelope,
       observation: worktreeObservation,
       treeSha,
-      policySha256: PILOT_POLICY_SHA256,
       checks,
       commitMessageBody,
     });
@@ -796,10 +809,9 @@ describe("the fail-closed probes", () => {
       authorizedAt: WRITER_AUTHORIZED_AT,
       worktreePath: toyDir,
       lease,
-      declaredWriteSet: [TOY_NOTES_PATH],
+      envelope: probeEnvelope(taskId),
       observation,
       treeSha: PROBE_TREE_SHA,
-      policySha256: PILOT_POLICY_SHA256,
       checks: [{ command: "git diff --check", exitCode: 0, ranAt: WRITER_CHECK_RAN_AT }],
       commitMessageBody: "should never be authorized",
     });
@@ -847,10 +859,9 @@ describe("the fail-closed probes", () => {
       authorizedAt: WRITER_AUTHORIZED_AT,
       worktreePath: toyDir,
       lease,
-      declaredWriteSet: [TOY_NOTES_PATH],
+      envelope: probeEnvelope(taskId),
       observation,
       treeSha: PROBE_TREE_SHA,
-      policySha256: PILOT_POLICY_SHA256,
       checks: [
         { command: "node -e process.exit(7)", exitCode: failing.status ?? 1, ranAt: WRITER_CHECK_RAN_AT },
       ],
@@ -899,10 +910,9 @@ describe("the fail-closed probes", () => {
       authorizedAt: WRITER_AUTHORIZED_AT,
       worktreePath: toyDir,
       lease,
-      declaredWriteSet: [TOY_NOTES_PATH],
+      envelope: probeEnvelope(taskId),
       observation,
       treeSha: PROBE_TREE_SHA,
-      policySha256: PILOT_POLICY_SHA256,
       checks: [{ command: "git diff --check", exitCode: 0, ranAt: WRITER_CHECK_RAN_AT }],
       commitMessageBody: "should never be authorized",
     });
@@ -953,10 +963,9 @@ describe("the fail-closed probes", () => {
       authorizedAt: WRITER_AUTHORIZED_AT,
       worktreePath: toyDir,
       lease,
-      declaredWriteSet: [TOY_NOTES_PATH],
+      envelope: probeEnvelope(taskId),
       observation,
       treeSha: PROBE_TREE_SHA,
-      policySha256: PILOT_POLICY_SHA256,
       checks: [{ command: "git diff --check", exitCode: 0, ranAt: WRITER_CHECK_RAN_AT }],
       commitMessageBody: "p7c: probe commit",
     }) as AuthorizationGranted;

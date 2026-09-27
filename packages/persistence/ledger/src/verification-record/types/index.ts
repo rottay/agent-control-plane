@@ -55,10 +55,18 @@ export type VerificationArtifactRead =
   | { readonly ok: true; readonly content: Buffer; readonly contentSha256: string }
   | { readonly ok: false; readonly refusal: ReferenceReadRefusal };
 
-/** The registry's row for one reference, as the door asserts it inside its transaction. */
+/**
+ * The registry's row for one reference, as the door asserts it inside its transaction.
+ *
+ * `tombstonedAt` and `expiresAt` are read under the lock for decision 231's N-3 re-check
+ * (P-17/A, ND-10): a reference tombstoned, or expired at or before the event's instant,
+ * between the read before the lock and the lock is refused inside the transaction.
+ */
 export interface VerificationReferenceRow {
   readonly artifactClass: string;
   readonly contentSha256: string;
   readonly scopeKind: string;
   readonly scopeId: string | null;
+  readonly tombstonedAt: string | null;
+  readonly expiresAt: string | null;
 }

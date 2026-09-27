@@ -5332,3 +5332,33 @@ describe("the verification fold refuses in the door's words (P-16/B)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// P-17/A — the fold keeps the recorded lease and the authorizations (ADR 0126)
+// ---------------------------------------------------------------------------
+
+describe("P-17/A: the fold keeps a task's recorded lease events and projects no bare authorization", () => {
+  it("folds LEASE_ACQUIRED and LEASE_REVOKED per task in ledger order, and a V1 COMMIT_AUTHORIZED projects nothing", () => {
+    const snapshot = createProjectionSnapshot();
+    expect(snapshot.commitAuthorizations.size).toBe(0);
+    expect(snapshot.leaseEvents.size).toBe(0);
+    const lease = { leaseId: "11111111-1111-4111-8111-111111111111", worktreePath: "/tmp/w", holder: EMITTED_BY };
+    const acquired = executionEvent("LEASE_ACQUIRED", { revisionNumber: 1, attemptNumber: 1, ...lease, acquiredAt: "2026-09-12T09:00:00.000Z", expiresAt: "2026-09-12T10:00:00.000Z" });
+    const revoked = executionEvent(
+      "LEASE_REVOKED",
+      { revisionNumber: 1, attemptNumber: 1, ...lease, cause: "released" },
+      { eventId: "00000002-0000-4000-8000-000000000000" },
+    );
+    const bare = executionEvent(
+      "COMMIT_AUTHORIZED",
+      { taskId: EFFECT_TASK, receiptSha256: "a".repeat(64), authorizedBy: EMITTED_BY },
+      { eventId: "00000003-0000-4000-8000-000000000000" },
+    );
+    applyEventToSnapshot(snapshot, acquired, 1, "1".repeat(64));
+    applyEventToSnapshot(snapshot, revoked, 2, "2".repeat(64));
+    applyEventToSnapshot(snapshot, bare, 3, "3".repeat(64));
+    expect(snapshot.leaseEvents.get(EFFECT_TASK)?.map((event) => event.type)).toEqual(["LEASE_ACQUIRED", "LEASE_REVOKED"]);
+    expect(snapshot.leaseEvents.get(EFFECT_TASK)?.[0]?.payload).toEqual(acquired.payload);
+    expect(snapshot.commitAuthorizations.size).toBe(0);
+  });
+});

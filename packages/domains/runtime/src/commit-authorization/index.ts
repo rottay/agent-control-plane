@@ -38,12 +38,19 @@ import {
   CONTRACT_VERSION,
   CanonicalInstant,
   CommitAuthorizationReceipt,
+  TaskEnvelope,
   VerificationReceipt,
   WRITER_ID_UNISSUED,
   commitMessageWithReceiptTrailer,
 } from "@acp/contracts";
 import { ControlPlaneEvent, Lease, PathDigest, WorkerIdentityString, buildIdempotencyKey } from "@acp/contracts";
-import { LedgerValidationError, computeOutboxCommandId, receiptSha256, writerWorkerIdFor } from "@acp/ledger";
+import {
+  LedgerValidationError,
+  computeOutboxCommandId,
+  receiptSha256,
+  verificationPolicySha256,
+  writerWorkerIdFor,
+} from "@acp/ledger";
 
 import { checkWriteSetConformance } from "../enforcement/index.js";
 import type {
@@ -70,14 +77,24 @@ export type AuthorizationRefusal =
   | "RECEIPT_INVALID"
   | "COMMIT_PARENT_MISMATCH"
   | "COMMIT_MESSAGE_MISMATCH"
-  | "COMMIT_SHA_INVALID";
+  | "COMMIT_SHA_INVALID"
+  | "COMMIT_MESSAGE_BODY_EMPTY"
+  | "COMMIT_MESSAGE_BODY_ENDS_IN_LF"
+  | "COMMIT_MESSAGE_BODY_HOLDS_CR"
+  | "COMMIT_MESSAGE_BODY_HOLDS_TRAILER"
+  | "COMMIT_POLICY_NO_COMMIT";
 
 export const AUTHORIZATION_REFUSALS: readonly AuthorizationRefusal[] = Object.freeze([
   "BASE_HEAD_MISSING",
   "CHECKS_MISSING",
   "CHECK_FAILED",
+  "COMMIT_MESSAGE_BODY_EMPTY",
+  "COMMIT_MESSAGE_BODY_ENDS_IN_LF",
+  "COMMIT_MESSAGE_BODY_HOLDS_CR",
+  "COMMIT_MESSAGE_BODY_HOLDS_TRAILER",
   "COMMIT_MESSAGE_MISMATCH",
   "COMMIT_PARENT_MISMATCH",
+  "COMMIT_POLICY_NO_COMMIT",
   "COMMIT_SHA_INVALID",
   "LEASE_EXPIRED",
   "LEASE_HOLDER_MISMATCH",
@@ -171,8 +188,8 @@ const CLAUDE_CLI_ROUTE = Object.freeze({ provider: "claude", transportKind: "CLI
  * the caller refuses `WRITER_ID_UNISSUED` by name. Pure, and total over its input:
  * a segment that is not an object with those two strings is an "other".
  *
- * `authorizeCommit` still takes the issuer from its caller; P-17/A gives it this
- * function's answer.
+ * Since P-17/A (ADR 0126; decision 246) `authorizeCommit` takes its issuer from this
+ * function over the attempt's recorded segments, never from its caller.
  */
 export function writerIdIssuerFor(
   segments: readonly { readonly provider: unknown; readonly transportKind: unknown }[],
@@ -193,6 +210,10 @@ export function writerIdIssuerFor(
  * A key outside it is refused by its own path rather than ignored, so a caller
  * still speaking the V1 request (`initialCommit`, `receiptId`, `branch`,
  * `commitMessage`), or one that supplies a writer id of its own, fails loudly.
+ * Since P-17/A (ADR 0126; ND-11 (a)) the issuer, the policy digest and the declared
+ * write-set are not keys either: they are read from the attempt's recorded route
+ * segments and the recorded envelope, and a caller that supplies one is refused at
+ * its path.
  */
 const REQUEST_KEYS: ReadonlySet<string> = new Set([
   "taskId",
@@ -200,20 +221,45 @@ const REQUEST_KEYS: ReadonlySet<string> = new Set([
   "attemptNumber",
   "attempt",
   "writer",
-  "writerIdIssuer",
+  "routeSegments",
+  "envelope",
   "verifier",
   "authorizedBy",
   "authorizedAt",
   "worktreePath",
   "lease",
-  "declaredWriteSet",
   "observation",
   "treeSha",
-  "policySha256",
   "checks",
   "commitMessageBody",
   "audit",
 ]);
+
+/** The one policy under which a commit may be authorized. */
+const LOCAL_COMMIT = "LOCAL_COMMIT_WITH_RECEIPT";
+
+/** The receipt's own body schema, reached through the contract: the body rules' one home. */
+const RECEIPT_BODY = VerificationReceipt.shape.commitMessageBody;
+
+/** The contract's bound on a body, which a longer body fails for that reason alone. */
+const BODY_MAX = 2_000;
+
+/**
+ * The four body words of execution §10.5, before the receipt is parsed (ND-11, B-3): an
+ * empty body, one ending in a line feed, one holding a carriage return, and -- when the
+ * body is within the contract's bound and the receipt's own body schema still refuses
+ * it -- one already carrying the trailer line, the only rule left. The trailer's key is
+ * never spelled here (L-P16A2-1): its one home is contracts. An over-long body falls
+ * through to the receipt parse, `RECEIPT_INVALID`. Null when the body passes.
+ */
+function commitMessageBodyRefusal(body: unknown): AuthorizationRefusal | null {
+  if (typeof body !== "string") return null;
+  if (body === "") return "COMMIT_MESSAGE_BODY_EMPTY";
+  if (body.endsWith("\n")) return "COMMIT_MESSAGE_BODY_ENDS_IN_LF";
+  if (body.includes("\r")) return "COMMIT_MESSAGE_BODY_HOLDS_CR";
+  if (body.length <= BODY_MAX && !RECEIPT_BODY.safeParse(body).success) return "COMMIT_MESSAGE_BODY_HOLDS_TRAILER";
+  return null;
+}
 
 /**
  * Everything the receipt needs, all of it injected but the two derived identities.
@@ -242,10 +288,17 @@ export interface AuthorizationRequest {
   /** The writer's identity label. */
   readonly writer: string;
   /**
-   * The writer's transport, as the route records it. Caller-supplied until
-   * P-16/C's runner wires it: a stated limit.
+   * The attempt's recorded route segments (`listRouteSegments`), from which the writer
+   * id's issuer is read by `writerIdIssuerFor` (P-17/A, ND-11). No caller names the
+   * issuer.
    */
-  readonly writerIdIssuer: string;
+  readonly routeSegments: readonly { readonly provider: unknown; readonly transportKind: unknown }[];
+  /**
+   * The recorded envelope, as `readRecordedTask` returns it (P-17/A, ND-11): its
+   * write-set is the declared one, its three policy members give `policySha256`
+   * (`verificationPolicySha256`), and a `NO_COMMIT` envelope is refused by name.
+   */
+  readonly envelope: TaskEnvelope;
   /**
    * The verifier's label, instance id and run. Supplied; P-16/C's runner fills it
    * from its own spawn record.
@@ -261,12 +314,9 @@ export interface AuthorizationRequest {
   readonly worktreePath: string;
   /** The lease the writer holds, so a violation names what to revoke. */
   readonly lease: Lease;
-  readonly declaredWriteSet: readonly string[];
   readonly observation: WorktreeObservation;
   /** The verified tree. Supplied; P-16/C's tree hasher produces it. */
   readonly treeSha: string;
-  /** The digest of the verification policy applied. Supplied; P-16/C's. */
-  readonly policySha256: string;
   readonly checks: readonly RecordedCheck[];
   /** The message body. The trailer is added at the commit, never here. */
   readonly commitMessageBody: string;
@@ -288,12 +338,14 @@ export type AuthorizationOutcome = AuthorizationGranted | AuthorizationRefused;
  * Decide whether this commit may be authorized, and build the receipt if so.
  *
  * The order of the checks is the order of the laws: the request's own key set;
- * then independence, by label and then by instance against the writer id the
+ * then the recorded envelope, parsed, and its policy (`COMMIT_POLICY_NO_COMMIT` for a
+ * `NO_COMMIT` envelope, P-17/A B-4); then independence, by label and then by instance against the writer id the
  * plane derives, because a receipt signed by its own writer is not evidence of
  * anything; then the recorded checks; then the lease; then the shape of the
  * authority and of the optional audit; then conformance, composed
- * from P6A rather than re-implemented; then the base; then the writer id's
- * issuer; and only then the contract's own parser, whose refusal is carried
+ * from P6A rather than re-implemented, over the envelope's write-set; then the base;
+ * then the writer id's issuer, read from the recorded segments; then the four body
+ * words (P-17/A); and only then the contract's own parser, whose refusal is carried
  * rather than re-worded. Each input is parsed before it is compared, so a
  * malformed verifier id is `REQUEST_INVALID`, never `VERIFIER_NOT_INDEPENDENT`.
  */
@@ -305,6 +357,16 @@ export function authorizeCommit(request: AuthorizationRequest): AuthorizationOut
   for (const key of Object.keys(fields)) {
     if (!REQUEST_KEYS.has(key)) return refuse("REQUEST_INVALID", "request." + key);
   }
+
+  // The recorded envelope, parsed before anything reads it: the declared write-set and
+  // the policy are its facts, not the caller's (P-17/A, ND-11).
+  const envelopeParse = TaskEnvelope.safeParse(fields["envelope"]);
+  if (!envelopeParse.success) {
+    const path = envelopeParse.error.issues[0]?.path ?? [];
+    return refuse("REQUEST_INVALID", ["request", "envelope", ...path.map(String)].join("."));
+  }
+  const envelope = envelopeParse.data;
+  if (envelope.commitPolicy !== LOCAL_COMMIT) return refuse("COMMIT_POLICY_NO_COMMIT", "request.envelope.commitPolicy");
 
   const writer: unknown = fields["writer"];
   if (typeof writer !== "string") return refuse("REQUEST_INVALID", "request.writer");
@@ -334,6 +396,8 @@ export function authorizeCommit(request: AuthorizationRequest): AuthorizationOut
   if (verifier.workerId === writerWorkerId) {
     return refuse("VERIFIER_NOT_INDEPENDENT", "request.verifier.workerId");
   }
+  // One task: an envelope recorded for another task is not this receipt's authority.
+  if (envelope.taskId !== fields["taskId"]) return refuse("REQUEST_INVALID", "request.envelope.taskId");
 
   const checks: unknown = fields["checks"];
   if (!Array.isArray(checks)) return refuse("REQUEST_INVALID", "request.checks");
@@ -409,7 +473,7 @@ export function authorizeCommit(request: AuthorizationRequest): AuthorizationOut
   // implementation of "outside the declared set", called from both places that
   // need it.
   const conformance = checkWriteSetConformance({
-    declaredWriteSet: request.declaredWriteSet,
+    declaredWriteSet: envelope.writeSet,
     observation: request.observation,
     lease: request.lease,
   });
@@ -425,11 +489,32 @@ export function authorizeCommit(request: AuthorizationRequest): AuthorizationOut
 
   // The writer id above is a derivation any caller could run. It names the
   // writer only where the transport ran the writer under it, and today that is
-  // the Claude CLI session alone.
-  const writerIdIssuer: unknown = fields["writerIdIssuer"];
-  if (typeof writerIdIssuer !== "string" || !WRITER_ID_ISSUERS.includes(writerIdIssuer)) {
-    return refuse(WRITER_ID_UNISSUED, "request.writerIdIssuer");
+  // the Claude CLI session alone -- read from the attempt's recorded segments.
+  const writerIdIssuer = writerIdIssuerFor(fields["routeSegments"] as AuthorizationRequest["routeSegments"]);
+  if (writerIdIssuer === null || !WRITER_ID_ISSUERS.includes(writerIdIssuer)) {
+    return refuse(WRITER_ID_UNISSUED, "request.routeSegments");
   }
+
+  // The policy digest, recomputed from the envelope exactly as the verification runner
+  // computes it: its three members and nothing else (P-17/A, ND-7).
+  let policySha256: string;
+  try {
+    policySha256 = verificationPolicySha256({
+      commands: envelope.validation.commands,
+      independentVerifierRequired: envelope.validation.independentVerifierRequired,
+      commitPolicy: envelope.commitPolicy,
+    });
+  } catch (error) {
+    if (error instanceof LedgerValidationError) {
+      return refuse("REQUEST_INVALID", "request.envelope." + (error.issues[0]?.path ?? "validation"));
+    }
+    throw error;
+  }
+
+  // The four body words, each by name before the receipt parse would fold them into
+  // one `RECEIPT_INVALID` (execution §10.5; P-17/A B-3).
+  const bodyRefusal = commitMessageBodyRefusal(fields["commitMessageBody"]);
+  if (bodyRefusal !== null) return refuse(bodyRefusal, "request.commitMessageBody");
 
   const receipt = CommitAuthorizationReceipt.safeParse({
     contractVersion: CONTRACT_VERSION,
@@ -439,8 +524,8 @@ export function authorizeCommit(request: AuthorizationRequest): AuthorizationOut
     baseSha,
     treeSha: request.treeSha,
     objectFormat: "sha1",
-    policySha256: request.policySha256,
-    declaredWriteSet: [...request.declaredWriteSet],
+    policySha256,
+    declaredWriteSet: [...envelope.writeSet],
     observedTrackedChanges: request.observation.trackedChanges.map((entry) => ({ ...entry })),
     observedUntrackedPaths: [...request.observation.untrackedPaths],
     writer: { identity: writer, workerId: writerWorkerId },

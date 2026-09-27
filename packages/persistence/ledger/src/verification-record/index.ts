@@ -210,6 +210,24 @@ function refuse(reason: VerificationRefusal, at: string): never {
   throw new LedgerVerificationRefusedError(reason, at);
 }
 
+/**
+ * Decision 231's N-3 re-check, over a reference row read under the door's lock (P-17/A,
+ * ADR 0126; ND-10): the column that makes the reference lapsed at the event's instant,
+ * or null while it stands. A tombstone lapses it; so does an expiry at or before the
+ * instant, compared by epoch and never as text (an unparseable expiry lapses it too,
+ * closed). The ledger reads no clock: the instant is the event's own `recordedAt`.
+ * Shared with the commit authorization's door, which re-asserts its receipt and envelope
+ * references on the same terms.
+ */
+export function lapsedReferenceColumn(
+  row: { readonly tombstonedAt: string | null; readonly expiresAt: string | null },
+  at: string,
+): "tombstonedAt" | "expiresAt" | null {
+  if (row.tombstonedAt !== null) return "tombstonedAt";
+  if (row.expiresAt !== null && !(Date.parse(row.expiresAt) > Date.parse(at))) return "expiresAt";
+  return null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -577,7 +595,9 @@ function parsedJson(content: Buffer): unknown {
 /**
  * Judge the bytes a granted decision's record names, inside the door's transaction.
  *
- * For a receipt: the registry's row is a `RECEIPT` scoped to this task and pins the
+ * For a receipt: the registry's row is a `RECEIPT` scoped to this task, neither
+ * tombstoned nor expired at the event's instant (decision 231 N-3, re-checked under the
+ * lock since P-17/A, at `…artifactReferenceId.tombstonedAt` / `.expiresAt`), and pins the
  * bytes that were read (`RECEIPT_REFERENCE_INVALID`); the bytes were read and are a
  * `VerificationReceipt` (`RECEIPT_UNREADABLE`); the receipt's name, recomputed from
  * them, is the carried one (`RECEIPT_DIGEST_MISMATCH`); its coordinate is the event's
@@ -585,7 +605,8 @@ function parsedJson(content: Buffer): unknown {
  * (`RECEIPT_FIELD_MISMATCH`, at the column's path). The artifact's `content_sha256` and
  * `receipt_sha256` are different digests and are never compared to each other.
  *
- * For a verdict: the registry's row is an `EVIDENCE` scoped to this task whose digest
+ * For a verdict: the registry's row is an `EVIDENCE` scoped to this task, not lapsed on
+ * the receipt's terms (`EVIDENCE_REFERENCE_INVALID`), whose digest
  * is the carried `evidenceSha256`, and it produced the bytes read
  * (`EVIDENCE_REFERENCE_INVALID`); the bytes are a JSON object whose string member
  * `receiptSha256` is the verdict's (`EVIDENCE_RECEIPT_MISMATCH`, ND-5); they are one
@@ -604,6 +625,8 @@ export function assertVerificationArtifact(
     if (held?.artifactClass !== "EVIDENCE" || held.scopeKind !== "TASK" || held.scopeId !== row.taskId) {
       refuse("EVIDENCE_REFERENCE_INVALID", at + ".artifactReferenceId");
     }
+    const lapsedEvidence = lapsedReferenceColumn(held, row.recordedAt);
+    if (lapsedEvidence !== null) refuse("EVIDENCE_REFERENCE_INVALID", at + ".artifactReferenceId." + lapsedEvidence);
     if (held.contentSha256 !== row.evidenceSha256) refuse("EVIDENCE_REFERENCE_INVALID", at + ".evidenceSha256");
     if (read === null || !read.ok || read.contentSha256 !== held.contentSha256) {
       refuse("EVIDENCE_REFERENCE_INVALID", at + ".artifactReferenceId");
@@ -635,6 +658,8 @@ export function assertVerificationArtifact(
   if (held?.artifactClass !== "RECEIPT" || held.scopeKind !== "TASK" || held.scopeId !== row.taskId) {
     refuse("RECEIPT_REFERENCE_INVALID", at + ".artifactReferenceId");
   }
+  const lapsedReceipt = lapsedReferenceColumn(held, row.recordedAt);
+  if (lapsedReceipt !== null) refuse("RECEIPT_REFERENCE_INVALID", at + ".artifactReferenceId." + lapsedReceipt);
   if (!read?.ok) refuse("RECEIPT_UNREADABLE", at + ".artifactReferenceId");
   if (read.contentSha256 !== held.contentSha256) refuse("RECEIPT_REFERENCE_INVALID", at + ".artifactReferenceId");
   let columns;

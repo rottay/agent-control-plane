@@ -36,6 +36,12 @@ import {
   LedgerValidationError,
   type LedgerValidationIssue,
 } from "../errors/index.js";
+import {
+  decideCommitAuthorizationRecord,
+  decideCommitAuthorizationSupersession,
+  type CommitAuthorizationDecisionView,
+  type RecordedLeaseEvent,
+} from "../commit-authorization-record/index.js";
 import { decideVerificationRecord } from "../verification-record/index.js";
 import {
   OUTBOX_COMMAND_KINDS,
@@ -69,6 +75,7 @@ import type {
   ArtifactBlobReadModel,
   ArtifactFoldView,
   AuditVerdictReadModel,
+  CommitAuthorizationReadModel,
   VerificationReadModel,
   ArtifactPinReadModel,
   ArtifactProjectionSnapshot,
@@ -3483,6 +3490,17 @@ export interface ProjectionSnapshot {
    */
   readonly verifications: Map<string, VerificationReadModel>;
   readonly auditVerdicts: Map<string, AuditVerdictReadModel>;
+  /**
+   * P-17/A's authorizations, keyed by `commitAuthorizationKey(taskId, receiptSha256)`:
+   * born `INTENDED` and **replaced** when a later receipt of the task supersedes one --
+   * the one transition this cut has an event for.
+   */
+  readonly commitAuthorizations: Map<string, CommitAuthorizationReadModel>;
+  /**
+   * The task stream's recorded lease events, per task, in ledger order (ND-6): what the
+   * in-force predicate folds. Not a projection and never compared or written.
+   */
+  readonly leaseEvents: Map<string, RecordedLeaseEvent[]>;
 }
 
 export function createProjectionSnapshot(): ProjectionSnapshot {
@@ -3514,6 +3532,31 @@ export function createProjectionSnapshot(): ProjectionSnapshot {
     usageEffectSettlements: new Map<string, UsageSettlementReadModel[]>(),
     verifications: new Map<string, VerificationReadModel>(),
     auditVerdicts: new Map<string, AuditVerdictReadModel>(),
+    commitAuthorizations: new Map<string, CommitAuthorizationReadModel>(),
+    leaseEvents: new Map<string, RecordedLeaseEvent[]>(),
+  };
+}
+
+/** The key of one commit authorization row, for the snapshot and the comparison (P-17/A). */
+export function commitAuthorizationKey(taskId: string, receiptSha256: string): string {
+  return taskId + " " + receiptSha256;
+}
+
+/** What the commit authorization decision asks, answered from the snapshot being filled. */
+function commitAuthorizationSnapshotView(snapshot: ProjectionSnapshot): CommitAuthorizationDecisionView {
+  return {
+    commitPolicy: (taskId) => snapshot.tasks.get(taskId)?.commitPolicy ?? null,
+    verification: (receiptSha256) => snapshot.verifications.get(receiptSha256) ?? null,
+    auditVerdict: (auditId) => snapshot.auditVerdicts.get(auditId) ?? null,
+    lastReceipt: (taskId) => {
+      let last: VerificationReadModel | null = null;
+      for (const row of snapshot.verifications.values()) {
+        if (row.taskId === taskId && (last === null || row.sequence > last.sequence)) last = row;
+      }
+      return last;
+    },
+    commitAuthorizations: (taskId) => [...snapshot.commitAuthorizations.values()].filter((row) => row.taskId === taskId),
+    leaseEvents: (taskId) => snapshot.leaseEvents.get(taskId) ?? [],
   };
 }
 
@@ -4074,9 +4117,36 @@ export function applyEventToSnapshot(
   );
   if (verification?.kind === "VERIFICATION" && !verification.recorded) {
     snapshot.verifications.set(verification.row.receiptSha256, verification.row);
+    // A later receipt supersedes the task's INTENDED authorization (P-17/A, ND-4), as the
+    // door does in the same transaction.
+    const superseded = decideCommitAuthorizationSupersession(commitAuthorizationSnapshotView(snapshot), verification.row);
+    if (superseded !== null) {
+      snapshot.commitAuthorizations.set(commitAuthorizationKey(superseded.taskId, superseded.receiptSha256), superseded);
+    }
   }
   if (verification?.kind === "AUDIT_VERDICT" && !verification.recorded) {
     snapshot.auditVerdicts.set(verification.row.auditId, verification.row);
+  }
+
+  // P-17/A's authorization, last, through the decision the door calls (decision 56): it
+  // reads the receipts and verdicts folded before, the task's recorded policy and its
+  // recorded lease events, and never a byte -- the door recomputed the message digest,
+  // the policy and the write-set, and the fold copies them (ND-7).
+  const authorization = decideCommitAuthorizationRecord(commitAuthorizationSnapshotView(snapshot), event, sequence);
+  if (authorization !== null && !authorization.recorded) {
+    snapshot.commitAuthorizations.set(
+      commitAuthorizationKey(authorization.row.taskId, authorization.row.receiptSha256),
+      authorization.row,
+    );
+  }
+
+  // The recorded lease events the predicate folds (ND-6), kept after the decision: a
+  // lease event is never itself an authorization, so the door's view before its insert
+  // and this one agree.
+  if (event.type === "LEASE_ACQUIRED" || event.type === "LEASE_REVOKED") {
+    const leases = snapshot.leaseEvents.get(event.taskId) ?? [];
+    leases.push({ type: event.type, payload: event.payload });
+    snapshot.leaseEvents.set(event.taskId, leases);
   }
 }
 
