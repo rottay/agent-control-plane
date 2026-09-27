@@ -169,6 +169,7 @@ export {
   ControlPlaneEvent,
 } from "./control-plane-event/index.js";
 export {
+  AuditEvidence,
   CommitAuthorizationReceipt,
   VerificationReceipt,
   WRITER_ID_UNISSUED,

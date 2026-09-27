@@ -204,13 +204,18 @@ import `node:sqlite`, to plant it.
 
 `src/verification-runner` (P-16/C, ADR 0123) is the daemon's fifth spawn site and the
 plane's first real verification. `runVerification` is internal: off the barrel, with no
-route, verb or beat yet (P-16/D1 wires it). It runs **only the check commands the
+route or verb; since P-16/D1 (ADR 0124) the recorded walk's verification phase calls
+it before step 6, through the runner-backed `VerifierPort` `composition/walk` builds. It runs **only the check commands the
 recorded envelope declares**, read back through runtime's `readRecordedTask`; its input
 has no command field. Everything that can refuse does so by name before the first
 spawn: the scratch root, the task and its state, the declared checks and write-set,
 the object format (`OBJECT_FORMAT_UNSUPPORTED` for anything but sha1), the observation
 (`BASE_HEAD_MISSING`, `RUNNER_WRITE_SET_VIOLATION`) and the writer id's issuer
-(`WRITER_ID_UNISSUED`). The checks run in a disposable copy under one per-run directory
+(`WRITER_ID_UNISSUED`). P-16/D1 folds in C's verifier notes: the worktree must be its
+repository's root (`RUNNER_WORKTREE_NOT_ROOT`, NB-3), and every index path the
+observation did not report as changed must hash to the index's own mode and object id
+(`RUNNER_INDEX_DIVERGED`, NB-2: an `assume-unchanged` or `skip-worktree` flag cannot
+hide a change from the tree). The checks run in a disposable copy under one per-run directory
 (`tree`, `home`, `tmp`) beneath a caller-given scratch root, and the directory is
 removed afterwards. The copy holds exactly the tree the receipt names: index paths and
 observed untracked paths, minus deletions, no-follow, never `.git`.
@@ -226,12 +231,41 @@ spawn registry's (`supervisedWorkerIdFor`, run id = next ordinal of the attempt)
 `src/tree-hasher` computes the receipt's `treeSha` in process (sha1 blob and tree
 objects in git's order), reads the copy no-follow, and spawns and writes nothing. Its
 oracle is the test's: `git write-tree` over the same content in disposable repositories.
+`indexPaths` carries each index record's mode and object id beside its path (P-16/D1).
+
+## The auditor, and the phase in the recorded walk
+
+`src/auditor` (P-16/D1, ADR 0124) is the plane's first auditor, and it is a rule engine,
+not a model: `createLocalAuditor({ledger, plane, route})` implements runtime's
+`AuditorPort`, off the barrel. It spawns nothing, runs no Git, reaches no provider or
+network, and writes only through the plane and the ledger. One audit reads the receipt
+row (it must be `PASS`), the task (not terminal) and the receipt's bytes by reference;
+takes the coordinate's next reviewer ordinal and its registry id before publishing
+anything; applies six closed rules (`RECEIPT_BYTES_MATCH`, `RECEIPT_PASS`,
+`CHANGES_WITHIN_WRITE_SET`, `POLICY_MATCHES_ENVELOPE`, `INDEPENDENT_IDS`,
+`DIFF_PRESENT_FOR_COMMIT`); answers `ACCEPT` iff all pass and `REJECT` otherwise;
+publishes contracts' `AuditEvidence` as a private `EVIDENCE` of the task; and appends
+the verdict-form `AUDIT_COMPLETED` in the same state under `audit.run.<runId>`. Its label
+is `acp/deterministic-auditor/reviewer/01`. A refusal is by name (`AUDITOR_*`), never a
+verdict.
+
+`composition/walk` hands both ports to a recorded walk only (`chain` present), with the
+scratch root the composition makes at `<daemon root>/verification`; an inline walk gets
+none and its beats stay PLAIN. Both walk sites read the envelope's `commitPolicy` (N03):
+a `NO_COMMIT` envelope walks the read-only plan. A recorded walk whose checks fail
+settles `VERIFICATION_FAILED`; one whose audit rejects settles `AUDIT_NOT_ACCEPTED`. A
+recorded walk on a transport with no writer-id issuer spends and then fails its
+verification (`WRITER_ID_UNISSUED`), a limit P-28 and P-16/D2 own.
 
 ## Bounds
 
 The verification runner bounds each check's wall time and its stdout and stderr bytes
 together, counted raw as they arrive, and the run's total wall time. Exceeding one
-kills the check's whole process group and records `137`. A check that cannot start
+kills the check's whole process group, destroys both pipes and records `137` at once. A
+check that exits settles with its own code when both pipes close or at its deadline,
+whichever comes first, so a grandchild that left the group and holds a pipe cannot hold
+the run past its bound (it is not reaped: P-25). The per-run directory is made
+owner-writable by a no-follow walk before it is removed. A check that cannot start
 records `127`, and one ended by a signal records `128 +` its number, or `255` for a
 signal outside the closed list. Every one of these is `FAIL`. Check output is counted
 and discarded, never logged or stored.
@@ -272,6 +306,19 @@ parent canary never reaches a check), that a check's output reaches no file of t
 ledger, and that the copy, the original worktree and the checkout's own `.git` are
 untouched. That last proof runs only in a checkout nobody else runs Git in. The tree
 hasher's suite holds it to `git write-tree` for every fixture shape.
+
+P-16/D1 adds the runner's fold-in cases (an escapee holding the pipes returns within the
+bound; `assume-unchanged` and `skip-worktree` are `RUNNER_INDEX_DIVERGED`; a
+subdirectory is `RUNNER_WORKTREE_NOT_ROOT`; a `chmod 000` directory leaves no run
+behind; the orphan `RECEIPT` of a refused record stays), the auditor's suite (every
+audit over a receipt the real runner recorded, its verdict through the real door, its
+evidence read back and parsed), and the recorded drills through the real doors: `acp
+intake`, then the packaged entry, to one `PASS` receipt, one `ACCEPT` verdict and the
+two consumer beats naming them, plus N1-N3 (a failing check, no declared check, a
+writer that changed nothing). The drills' worktree builder leaves one change inside the
+write-set after its base commit, the writer's work the audit wants under
+`LOCAL_COMMIT_WITH_RECEIPT`; PC-D3's inline worktree is its own and its pin is
+unchanged.
 
 ## The packaged entry
 

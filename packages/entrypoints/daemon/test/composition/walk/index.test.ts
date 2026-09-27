@@ -33,6 +33,7 @@ import type { BeatContext, DurableInvocation, RecordedTask, ScenarioRoot } from 
 import {
   INTENT_STEP,
   LIFECYCLE_PLAN,
+  READ_ONLY_PLAN,
   appendPlanStep,
   deriveInvocation,
   deterministicUuid,
@@ -568,13 +569,14 @@ function walkOf(
   composed: Composed,
   events: readonly ExecutionEvent[],
   landing: { readonly generation: number; readonly landed: boolean },
+  envelope: TaskEnvelope = envelopeFor(composed.invocation.taskId),
 ): ReturnType<typeof runComposedSqliteWalk> {
   return runComposedSqliteWalk({
     ledger: composed.ledger,
     ledgerPath: scenarioLedgerPath(composed.root),
     invocation: composed.invocation,
     execution: composed.execution,
-    envelope: envelopeFor(composed.invocation.taskId),
+    envelope,
     scenarioRoot: composed.root,
     worktreePath: composed.worktreePath,
     port: fakePort({ events }, composed.requests),
@@ -594,6 +596,7 @@ function walkOf(
     promptSha256: INSTRUCTIONS_SHA256,
     promptBytes: Buffer.byteLength(INSTRUCTIONS, "utf8"),
     chain: null,
+    verificationScratchRoot: null,
   });
 }
 
@@ -626,6 +629,17 @@ describe("the one walk composition, drilled through the wrapper", () => {
   const PLAN_TYPES = LIFECYCLE_PLAN.map((step) => step.eventType);
   /** Riders on the task's thread: recorded against the walk, never steps of it. */
   const RIDERS = ["TOKEN_USAGE_RECORDED"];
+
+  it("N03 (P-16/D1): a NO_COMMIT envelope walks the read-only plan, read from the envelope and never stated", async () => {
+    const composed = await compose("p16d1-n03-read-only", "c13f0000-0000-4000-8000-0000000000d1");
+    const envelope = { ...envelopeFor(composed.invocation.taskId), commitPolicy: "NO_COMMIT" } as unknown as TaskEnvelope;
+    const result = await walkOf(composed, COMPLETING_TRAIL, { generation: 0, landed: false }, envelope);
+    expect(result).toEqual({ verdict: "CONSISTENT", finalState: "CHECKPOINTED", appended: READ_ONLY_PLAN.length, replayed: 0 });
+    const types = rowsOf(composed.ledger).filter((row) => !RIDERS.includes(row.type)).map((row) => row.type);
+    expect(types).toEqual(READ_ONLY_PLAN.map((step) => step.eventType));
+    expect(types.filter((type) => type.startsWith("COMMIT_"))).toEqual([]);
+    expect(rowsOf(composed.ledger).map((row) => row.transitionId)).not.toContain("ready-to-commit");
+  });
 
   it("walk único: the singular form walks to its checkpoint, and the checkpoint names this worktree", async () => {
     const composed = await compose(
@@ -1246,7 +1260,13 @@ describe("P-15/D3: the recorded walk records its chain, and never the legacy row
         ],
       }),
     );
-    const envelope = { ...envelopeFor(V2_TASK), initiativeId: V2_INITIATIVE, readSet: [DECLARED_PATH] };
+    // P-16/D1: a recorded task declares the checks its verification runs (synthetic).
+    const envelope = {
+      ...envelopeFor(V2_TASK),
+      initiativeId: V2_INITIATIVE,
+      readSet: [DECLARED_PATH],
+      validation: { commands: ["test -f " + DECLARED_PATH], independentVerifierRequired: true },
+    };
     const intake = intakeTask({
       ledger,
       plane,
@@ -1415,6 +1435,11 @@ describe("P-15/D3: the recorded walk records its chain, and never the legacy row
   it("walks a recorded task to its checkpoint, the chain between its INTENT and OUTCOME and no TOKEN_USAGE_RECORDED", async () => {
     const on = recordedWorld();
     const worktreePath = worktree();
+    // P-16/D1 (B-3): the writer's one in-write-set change, made before verification,
+    // so the auditor's DIFF_PRESENT_FOR_COMMIT has an observed difference to pass.
+    writeFileSync(join(worktreePath, DECLARED_PATH), "export const walked = \"verified\";\n", "utf8");
+    const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "acp-d1-scratch-")));
+    worktrees.push(scratchRoot);
     const hold = await leaseOver(on.ledger, on.task.invocation, worktreePath);
     const requests: ExecutionRequest[] = [];
     const gateCalls: number[] = [];
@@ -1451,9 +1476,22 @@ describe("P-15/D3: the recorded walk records its chain, and never the legacy row
         usageSource: USAGE_SOURCE,
         holderPid: 5151,
       },
+      verificationScratchRoot: scratchRoot,
     });
 
     expect(result.finalState).toBe("CHECKPOINTED");
+    // P-16/D1: the runner's PASS receipt and the auditor's ACCEPT, each named by its beat.
+    const [receipt] = on.ledger.listVerifications(V2_TASK, 1, 1);
+    const [verdict] = on.ledger.listAuditVerdicts(receipt?.receiptSha256 ?? "");
+    expect([receipt?.runStatus, receipt?.verifierRunId, verdict?.verdict, verdict?.auditorRunId]).toEqual(["PASS", 1, "ACCEPT", 1]);
+    const events = on.ledger.listEvents({ taskId: V2_TASK, limit: 200 }).events.map((record) => record.event);
+    expect(events.find((event) => event.transitionId === "verified")?.payload["verifiedReceipt"]).toEqual({
+      receiptSha256: receipt?.receiptSha256,
+    });
+    expect(events.find((event) => event.transitionId === "audited")?.payload["auditedVerdict"]).toEqual({
+      auditId: verdict?.auditId,
+      receiptSha256: receipt?.receiptSha256,
+    });
     const types = on.ledger.listEvents({ taskId: V2_TASK, limit: 200 }).events.map((record) => record.event.type);
     const intentAt = types.indexOf("RUN_STARTED");
     const chainTypes = [

@@ -163,6 +163,13 @@ export interface ComposedSqliteWalkInput {
   readonly promptBytes: number;
   /** The recorded walk's chain facts, or null for an inline walk (P-15 escalón D3). */
   readonly chain: WalkChainFacts | null;
+  /**
+   * Where a recorded walk's verification runs make their per-run directories (P-16/D1,
+   * ADR 0124; ND-9): `<daemon root>/verification`, 0700 and realpath'd, made by the
+   * composition. Present exactly when `chain` is, and null for an inline walk, which
+   * verifies nothing (its beats stay PLAIN, ND-3).
+   */
+  readonly verificationScratchRoot: string | null;
 }
 
 /**

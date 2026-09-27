@@ -95,6 +95,7 @@ export {
   ControlPlaneEvent,
   CommitAuthorizationReceipt,
   VerificationReceipt,
+  AuditEvidence,
   WRITER_ID_UNISSUED,
   WRITER_WORKER_ID_UUID_NAMESPACE,
   SUPERVISED_WORKER_ID_UUID_NAMESPACE,

@@ -20,7 +20,7 @@ import {
   OUTCOME_STEP,
   READ_ONLY_PLAN,
 } from "../../../src/core/lifecycle/index.js";
-import { PostconditionUnknownError, SupervisorError } from "../../../src/errors/index.js";
+import { PostconditionUnknownError, SupervisorError, VerificationPhaseError } from "../../../src/errors/index.js";
 import { ExecutionEffectError } from "../../../src/execution-effects/index.js";
 import { executeSwitchPlan } from "../../../src/switch-executor/index.js";
 import type { SwitchPort } from "../../../src/switch-executor/index.js";
@@ -2067,6 +2067,50 @@ describe("F4d P6: the supervisor forks before it settles", () => {
     ).rejects.toBeInstanceOf(PostconditionUnknownError);
 
     expect(asked).toBe(0);
+  });
+});
+
+describe("P-16/D1 B-5: a verification phase that failed never reaches the switch port", () => {
+  it("settles its own reason and never consults a port that would play, where an execution failure would ask it", async () => {
+    // The fork keys on the error, not on the pressure the attempt observed: a FAIL
+    // receipt or a verdict other than ACCEPT is a verdict on the work, and a switch
+    // would run the same work again under another account.
+    for (const [index, reason] of (["VERIFICATION_FAILED", "AUDIT_NOT_ACCEPTED"] as const).entries()) {
+      const taskId = "b5b5b5b5-0000-4000-8000-00000000000" + String(index + 1);
+      const root = scenario("p16d1-b5-" + String(index));
+      const ledger = track(openLedger(scenarioLedgerPath(root)));
+      const inv = invocationFor(taskId);
+      const failure = new VerificationPhaseError(reason, "RECEIPT_FAIL");
+      let asked = 0;
+      const thrown = await new SqliteSupervisor({
+        ledger,
+        invocation: inv,
+        effects: {
+          apply: () => Promise.reject(failure),
+          probe: (operation) => Promise.resolve(probeEffect(root, operation)),
+        },
+        checkpoints: drillCheckpoints({ ledger, invocation: inv, emittedBy: EMITTED_BY, ledgerPath: scenarioLedgerPath(root), worktree: root }),
+        emittedBy: EMITTED_BY,
+        commitPolicy: "NO_COMMIT",
+        initiativeId: TEST_INITIATIVE_ID,
+        route: TEST_ROUTE,
+        switchPort: {
+          consider: () => {
+            asked += 1;
+            return Promise.resolve({ kind: "SWITCHED", startedEventId: "ev-would-play" });
+          },
+        },
+      })
+        .runToCheckpoint()
+        .then(() => null, (error: unknown) => error);
+
+      expect(thrown).toBe(failure);
+      expect(asked).toBe(0);
+      const failures = ledger.listEvents({ taskId, limit: 200 }).events.filter((entry) => entry.event.type === "TASK_FAILED");
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.event.payload["reason"]).toBe(reason);
+      expect(ledger.getTask(taskId)?.currentState).toBe("FAILED");
+    }
   });
 });
 

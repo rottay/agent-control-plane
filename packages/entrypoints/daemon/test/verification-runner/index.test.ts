@@ -496,6 +496,10 @@ describe("the vocabulary, the bounds and the exit code (ND-3)", () => {
     for (const word of ["OBJECT_FORMAT_UNSUPPORTED", "BASE_HEAD_MISSING", "WRITER_ID_UNISSUED", "RUNNER_WRITE_SET_EMPTY"]) {
       expect(RUNNER_REFUSALS).toContain(word);
     }
+    // P-16/D1 (ND-12, NB-3): nineteen, the two new words in their sorted places.
+    expect(RUNNER_REFUSALS).toHaveLength(19);
+    expect(RUNNER_REFUSALS.indexOf("RUNNER_INDEX_DIVERGED")).toBe(RUNNER_REFUSALS.indexOf("RUNNER_COPY_FAILED") + 1);
+    expect(RUNNER_REFUSALS.indexOf("RUNNER_WORKTREE_NOT_ROOT")).toBe(RUNNER_REFUSALS.indexOf("RUNNER_WRITE_SET_EMPTY") - 1);
     expect(Object.isFrozen(RUNNER_BOUNDS)).toBe(true);
     expect(VERIFIER_IDENTITY).toBe("acp/verification-runner/verifier/01");
   });
@@ -919,5 +923,121 @@ describe("B1, B5, N20: at the bounds, and a refusal of the door", () => {
     });
     expect(world.ledger.listVerifications(world.task.taskId, 1, 1)).toHaveLength(1);
     expect(readdirSync(root)).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// P-16/D1 (ADR 0124; decision 240): the C verifier's notes, folded in
+// ===========================================================================
+
+/** Wait for a pid to be gone, and kill it if it outlives the wait (the test owns its escapee). */
+async function reap(pidFile: string): Promise<void> {
+  let pid = 0;
+  for (let tries = 0; tries < 100 && pid === 0; tries += 1) {
+    try {
+      pid = Number(readFileSync(pidFile, "utf8").trim());
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  if (!Number.isSafeInteger(pid) || pid <= 0) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already gone.
+  }
+}
+
+describe("P-16/D1: NB-1..NB-4 and NB-6, folded into the runner", () => {
+  it("N11 / NB-1: an escapee that left the group and holds the pipes cannot hold the run past its bound", async () => {
+    const holder = scratch("acp-p16d1-escapee-");
+    const pidFile = join(holder, "escapee.pid");
+    const escapee = "/usr/bin/perl -e 'use POSIX; POSIX::setsid(); open(my $f, \">\", \"" + pidFile + "\"); print $f $$; close $f; sleep 30'";
+    try {
+      // In the foreground: the shell waits on it, the bound kills the group, the pipes are destroyed, 137.
+      const bound = recordedWorld({ commands: [escapee] });
+      const started = Date.now();
+      const killed = recorded(await runVerification(inputFor(bound, writerWorktree(), { bounds: { checkTimeoutMs: 500, runTimeoutMs: 1_000 } })));
+      expect(Date.now() - started).toBeLessThan(8_000);
+      expect(killed).toMatchObject({ runStatus: "FAIL", checks: [{ exitCode: 137 }] });
+    } finally {
+      await reap(pidFile);
+    }
+    const second = join(holder, "escapee-2.pid");
+    try {
+      // In the background: the shell exits 0 and the escapee keeps the pipes; the exit's own code stands (ND-14).
+      const exits = recordedWorld({ commands: ["(" + escapee.replace(pidFile, second) + " &) ; exit 0"] });
+      const started = Date.now();
+      const kept = recorded(await runVerification(inputFor(exits, writerWorktree(), { bounds: { checkTimeoutMs: 500, runTimeoutMs: 1_000 } })));
+      expect(Date.now() - started).toBeLessThan(8_000);
+      expect(kept).toMatchObject({ runStatus: "PASS", checks: [{ exitCode: 0 }] });
+    } finally {
+      await reap(second);
+    }
+  }, 30_000);
+
+  it("N10 / NB-2: a change hidden by assume-unchanged or skip-worktree is RUNNER_INDEX_DIVERGED, before any spawn", async () => {
+    for (const flag of ["--assume-unchanged", "--skip-worktree"]) {
+      const { world, spawned } = markedWorld();
+      const repo = writerWorktree();
+      // The index lists README.md, src/a.ts, src/b.ts: the hidden path is index[2].
+      git(repo, ["update-index", flag, "src/b.ts"]);
+      writeFileSync(join(repo, "src/b.ts"), "export const b = 20;\n");
+      const outcome = refused(await runVerification(inputFor(world, repo)));
+      expect({ flag, refusal: outcome.refusal, at: outcome.at }).toEqual({ flag, refusal: "RUNNER_INDEX_DIVERGED", at: "index[2]" });
+      expect(spawned()).toBe(false);
+      expect(world.ledger.listVerifications(world.task.taskId, 1, 1)).toEqual([]);
+    }
+    // The control: the same flag on an unmodified path hides nothing, and the run passes.
+    const { world } = markedWorld();
+    const repo = writerWorktree();
+    git(repo, ["update-index", "--assume-unchanged", "src/b.ts"]);
+    expect(recorded(await runVerification(inputFor(world, repo))).runStatus).toBe("PASS");
+  });
+
+  it("N9 / NB-3: a subdirectory of the repository, or a plain directory inside it, is RUNNER_WORKTREE_NOT_ROOT, zero spawns", async () => {
+    const repo = writerWorktree();
+    const plain = join(repo, "plain");
+    mkdirSync(plain);
+    for (const worktreePath of [join(repo, "src"), plain]) {
+      const { world, spawned } = markedWorld();
+      const outcome = refused(await runVerification(inputFor(world, worktreePath)));
+      expect([outcome.refusal, outcome.at]).toEqual(["RUNNER_WORKTREE_NOT_ROOT", "worktreePath"]);
+      expect(spawned()).toBe(false);
+    }
+  });
+
+  it("N12 / NB-4: a check that removes its own bits from a directory in its copy cannot leave the run behind", async () => {
+    const world = recordedWorld({ commands: ["mkdir -p locked/inner && touch locked/inner/f && chmod 000 locked/inner locked"] });
+    const root = scratchRoot(world);
+    writeFileSync(join(root, "sentinel"), "untouched\n");
+    const outcome = recorded(await runVerification(inputFor(world, writerWorktree(), { scratchRoot: root })));
+    expect(outcome.runStatus).toBe("PASS");
+    expect(readdirSync(root)).toEqual(["sentinel"]);
+    expect(readFileSync(join(root, "sentinel"), "utf8")).toBe("untouched\n");
+  });
+
+  it("N13 / NB-6: a record refused after its publication leaves the published RECEIPT in place, and says so", async () => {
+    const world = recordedWorld({ commands: ["sleep 0.3"] });
+    const repo = writerWorktree();
+    const root = scratchRoot(world);
+    // Each run's ids in the order it mints them: the run directory, then the reference.
+    const minted: string[][] = [[], []];
+    const minter = (bucket: string[]) => (): string => {
+      const id = randomUUID();
+      bucket.push(id);
+      return id;
+    };
+    const outcomes = await Promise.all([
+      runVerification(inputFor(world, repo, { scratchRoot: root, mintId: minter(minted[0] ?? []) })),
+      runVerification(inputFor(world, repo, { scratchRoot: root, mintId: minter(minted[1] ?? []) })),
+    ]);
+    const loser = outcomes.findIndex((outcome) => !outcome.ok);
+    expect(loser).toBeGreaterThanOrEqual(0);
+    expect(outcomes[loser]).toMatchObject({ refusal: "RUNNER_RECORD_REFUSED", word: "LEDGER_IDEMPOTENCY_CONFLICT" });
+    const orphan = world.ledger.getArtifactReference(minted[loser]?.[1] ?? "");
+    expect(orphan?.artifactClass).toBe("RECEIPT");
+    expect(orphan?.scopeId).toBe(world.task.taskId);
+    expect(world.ledger.listVerifications(world.task.taskId, 1, 1)).toHaveLength(1);
   });
 });

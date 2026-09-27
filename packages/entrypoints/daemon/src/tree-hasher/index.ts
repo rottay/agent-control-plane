@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import type {
   CopyTreeOutcome,
+  IndexEntry,
   IndexPathsOutcome,
   TreeBlobMode,
   TreeEntry,
@@ -17,6 +18,7 @@ import type {
  */
 export type {
   CopyTreeOutcome,
+  IndexEntry,
   IndexPathsOutcome,
   TreeBlobMode,
   TreeEntry,
@@ -173,11 +175,14 @@ export function treeSha(entries: readonly TreeEntry[]): { readonly ok: true; rea
  * Each record is `<mode> <object id> <stage>\t<path>`, NUL-terminated. A stage other
  * than 0 is `TREE_INDEX_CONFLICTED`; a gitlink is `TREE_ENTRY_UNSUPPORTED`; a record
  * this parser cannot read, or a path it cannot state, is `TREE_PATH_UNSUPPORTED`. The
- * index's modes and ids are not carried: the tree is hashed from the copy's bytes, the
- * ones the checks ran over.
+ * tree is hashed from the copy's bytes, the ones the checks ran over; the index's mode
+ * and object id of each path are carried beside it (P-16/D1, ND-12, NB-2), so the
+ * runner can hold every path the observation did not report as changed to what the
+ * index says it is, before any check runs.
  */
 export function indexPaths(stdout: string): IndexPathsOutcome {
   const paths: string[] = [];
+  const entries: IndexEntry[] = [];
   const records = stdout.split("\0");
   for (const [index, record] of records.entries()) {
     if (record === "") continue;
@@ -191,8 +196,9 @@ export function indexPaths(stdout: string): IndexPathsOutcome {
     if (mode === GITLINK_MODE) return refuse("TREE_ENTRY_UNSUPPORTED", at);
     if (!isTreePath(path)) return refuse("TREE_PATH_UNSUPPORTED", at);
     paths.push(path);
+    entries.push(Object.freeze({ path, mode, sha1: id }));
   }
-  return { ok: true, paths };
+  return { ok: true, paths, entries: Object.freeze(entries) };
 }
 
 /**

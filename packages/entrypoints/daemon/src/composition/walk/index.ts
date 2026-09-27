@@ -31,7 +31,7 @@
  * the pressure sink and the gate the per-literal laws read.
  */
 
-import type { EffectPort } from "@acp/runtime";
+import type { EffectPort, VerificationPorts, VerifierPort } from "@acp/runtime";
 import {
   SupervisorError,
   createExecutionChain,
@@ -42,8 +42,10 @@ import {
   usageTransitionId,
 } from "@acp/runtime";
 
+import { createLocalAuditor } from "../../auditor/index.js";
 import type { SqliteModeResult } from "../../mode-sqlite/index.js";
 import { runSqliteMode } from "../../mode-sqlite/index.js";
+import { runVerification } from "../../verification-runner/index.js";
 import { checkpointsFor, switchPortFor } from "../ports/index.js";
 import type { ComposedSqliteWalkInput, WalkEffectsInput } from "../types/index.js";
 
@@ -206,9 +208,11 @@ export function buildWalkEffects(input: WalkEffectsInput): EffectPort {
  * `buildWalkEffects` above; the checkpoint port composes this walk's ledger,
  * envelope and admitted worktree; the switch port — when the config admitted
  * an authorization and this attempt has not landed — closes over the lease
- * this process actually holds. The commit policy is the explicit
- * `LOCAL_COMMIT_WITH_RECEIPT` both inline sites used to state, said once, in
- * one place a reader can find.
+ * this process actually holds. The commit policy is the walked envelope's own,
+ * read and never stated (N03; P-16/D1, ADR 0124): a `NO_COMMIT` envelope walks the
+ * read-only plan. A recorded walk (`chain` present) also gets its verification
+ * ports: the runner over the admitted worktree and the scratch root, and the
+ * deterministic local auditor, both over the operator ledger and its plane.
  */
 export async function runComposedSqliteWalk(input: ComposedSqliteWalkInput): Promise<SqliteModeResult> {
   const effects = buildWalkEffects({
@@ -251,13 +255,67 @@ export async function runComposedSqliteWalk(input: ComposedSqliteWalkInput): Pro
       lease: input.hold.lease,
       landed: input.landed,
     }),
+    verification: verificationPortsFor(input),
     emittedBy: input.emittedBy,
-    // Today's behaviour, said out loud. The daemon supervises packets that
-    // may commit locally under a receipt; a read-only packet is a policy
-    // this process has never been asked to run, and when it is, the policy
-    // will arrive with the packet rather than be assumed here.
-    commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    // N03 (P-16/D1): the policy arrives with the packet, read from its envelope,
+    // never assumed here. A `NO_COMMIT` envelope walks the read-only plan.
+    commitPolicy: input.envelope.commitPolicy,
     initiativeId: input.initiativeId,
     route: input.route,
   });
+}
+
+/**
+ * The two ports a recorded walk's steps 6 and 7 consume, or none for an inline walk
+ * (P-16/D1, ADR 0124; decision 238).
+ *
+ * The verifier reads the coordinate's receipt rows and runs `runVerification` over the
+ * admitted worktree, the composition's scratch root and the walk's own label as the
+ * writer's; the auditor is `createLocalAuditor` over the same ledger and plane. A
+ * recorded walk without its scratch root is refused by name, never walked unverified.
+ */
+function verificationPortsFor(input: ComposedSqliteWalkInput): VerificationPorts | undefined {
+  const chain = input.chain;
+  if (chain === null) return undefined;
+  const scratchRoot = input.verificationScratchRoot;
+  if (scratchRoot === null) {
+    throw new SupervisorError("refusing to compose a recorded walk without its verification scratch root");
+  }
+  const { ledger, route } = input;
+  const receipts = (coordinate: Parameters<VerifierPort["verify"]>[0]) =>
+    ledger.listVerifications(coordinate.taskId, coordinate.revisionNumber, coordinate.attemptNumber);
+  const verifier: VerifierPort = {
+    recordedPass: (coordinate) => {
+      let best: { readonly receiptSha256: string; readonly runId: number } | null = null;
+      for (const row of receipts(coordinate)) {
+        if (row.runStatus !== "PASS") continue;
+        if (best === null || row.verifierRunId > best.runId) best = { receiptSha256: row.receiptSha256, runId: row.verifierRunId };
+      }
+      return best?.receiptSha256 ?? null;
+    },
+    latest: (coordinate) => {
+      let best: { readonly receiptSha256: string; readonly runStatus: "PASS" | "FAIL"; readonly runId: number } | null = null;
+      for (const row of receipts(coordinate)) {
+        if (best === null || row.verifierRunId > best.runId) {
+          best = { receiptSha256: row.receiptSha256, runStatus: row.runStatus, runId: row.verifierRunId };
+        }
+      }
+      return best === null ? null : { receiptSha256: best.receiptSha256, runStatus: best.runStatus };
+    },
+    verify: async (coordinate) => {
+      const outcome = await runVerification({
+        ledger,
+        plane: chain.plane,
+        taskId: coordinate.taskId,
+        route,
+        worktreePath: input.worktreePath,
+        scratchRoot,
+        writerIdentity: input.emittedBy,
+      });
+      return outcome.ok
+        ? { ok: true, runStatus: outcome.runStatus, receiptSha256: outcome.receiptSha256 }
+        : { ok: false, refusal: outcome.refusal, at: outcome.at };
+    },
+  };
+  return { verifier, auditor: createLocalAuditor({ ledger, plane: chain.plane, route }) };
 }

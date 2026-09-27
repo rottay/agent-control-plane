@@ -180,6 +180,9 @@ export {
 // and an effect whose recorded outcome is a failure. Both settle EXECUTION_FAILED,
 // and a drill tells them apart by class.
 export { DispatchRefusedError, OperationFailedError } from "./errors/index.js";
+// P-16/D1 (ADR 0124, decision 238): a recorded walk's verification phase that ended
+// without its gate; it settles VERIFICATION_FAILED or AUDIT_NOT_ACCEPTED.
+export { VerificationPhaseError } from "./errors/index.js";
 export type { RuntimeErrorCode } from "./errors/index.js";
 
 export {
@@ -564,3 +567,13 @@ export { CREDENTIAL_REFUSALS, resolveCredential } from "./credentials/index.js";
 // feeds it from the rows that exist and names every absence. Nothing dispatches.
 export { READY_UNKNOWN_REASONS, READY_UNSATISFIED_REASONS, evaluateReady, readinessOf } from "./ready/index.js";
 export type { CredentialResolution } from "./credentials/index.js";
+// P-16/D1 (ADR 0124, decision 238): the two ports a recorded walk's steps 6 and 7
+// consume, bound together, and what each answers. The daemon implements both (the
+// runner and the local auditor); the phase itself stays off the barrel.
+export type {
+  AuditOutcome,
+  AuditorPort,
+  VerificationPorts,
+  VerifierPort,
+  VerifyOutcome,
+} from "./verification-phase/index.js";

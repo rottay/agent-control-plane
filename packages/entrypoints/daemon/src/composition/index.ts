@@ -36,7 +36,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { PRODUCT_PATH_MARKERS, findCredentialViolations } from "@acp/contracts";
@@ -82,7 +82,7 @@ import { createPsInspector, ownIdentity } from "../identity-probe/index.js";
 import type { DaemonMode, UnwindOutcome } from "../lifecycle/index.js";
 import { UnwindStack, assertReservedPortsFree, classify, isDaemonMode } from "../lifecycle/index.js";
 import { createLogger } from "../log/index.js";
-import { existingDaemonRoot, redactPath, resolveDaemonRoot } from "../paths/index.js";
+import { assertOwnerOnlyDirectory, existingDaemonRoot, redactPath, resolveDaemonRoot } from "../paths/index.js";
 import { startRestateMode, superviseRestate } from "../mode-restate/index.js";
 import { WALK_CONCURRENCY_MAX, admitWalks, runAdmitted } from "../scheduler/index.js";
 import type { ScheduledWalk, SchedulerPorts } from "../scheduler/index.js";
@@ -604,6 +604,29 @@ function admitEvidenceRoot(ledgerPath: string): ScenarioRoot {
     throw new StartupError("the evidence root admitted is not the directory beside the ledger");
   }
   return admitted.root;
+}
+
+/**
+ * The scratch root a recorded walk's verification runs make their per-run directories
+ * under (P-16/D1, ADR 0124; ND-9): `<daemon root>/verification`, created 0700 when
+ * absent, realpath'd, and held owner-only.
+ *
+ * Inside the daemon root, so outside every writer worktree the runner admits; the
+ * segment is spelled here, once. Stated limit: the daemon root lives inside this
+ * checkout, so a recorded task whose worktree IS this checkout is refused
+ * `RUNNER_SCRATCH_ROOT_INVALID` by the runner (P-21).
+ */
+function verificationScratchRootIn(root: string): string {
+  const directory = join(root, "verification");
+  try {
+    mkdirSync(directory, { mode: 0o700 });
+  } catch (error: unknown) {
+    const code = (error as { readonly code?: unknown }).code;
+    if (code !== "EEXIST") throw new StartupError("the verification scratch root could not be created (" + String(code) + ")");
+  }
+  const real = realpathSync(directory);
+  assertOwnerOnlyDirectory(real);
+  return real;
 }
 
 /**
@@ -1153,6 +1176,8 @@ async function startWalks(options: DaemonOptions | Parameters<typeof startRecord
           emittedBy: options.emittedBy,
           initiativeId: walked.initiativeId,
           chain: walked.chain,
+          // A recorded walk verifies and audits before steps 6 and 7 (P-16/D1, ND-9).
+          verificationScratchRoot: walked.chain === null ? null : verificationScratchRootIn(root),
         };
         const result = await runComposedSqliteWalk(walkInput);
         publish("RECONCILED", null);
@@ -1199,9 +1224,9 @@ async function startWalks(options: DaemonOptions | Parameters<typeof startRecord
           invocation,
           scenarioRoot,
           emittedBy: options.emittedBy,
-          // The same explicit policy as the SQLite site above, for the same
-          // reason: one place a reader can find it, and no default anywhere.
-          commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+          // N03 (P-16/D1): the walked envelope's own policy, read and never
+          // stated, as at the SQLite site; no default anywhere.
+          commitPolicy: walked.envelope.commitPolicy,
           initiativeId: walked.initiativeId,
           effects,
           checkpoints: checkpointsFactory,
@@ -1470,8 +1495,10 @@ async function startWalks(options: DaemonOptions | Parameters<typeof startRecord
             attempt: walk.spec.attempt,
             emittedBy: walk.spec.emittedBy,
             initiativeId: walk.spec.initiativeId,
-            // Scheduled walks are inline: V1 coordinates, the legacy usage sink.
+            // Scheduled walks are inline: V1 coordinates, the legacy usage sink,
+            // and no verification (their beats stay PLAIN, P-16/D1 ND-3).
             chain: null,
+            verificationScratchRoot: null,
           };
           const result = await runComposedSqliteWalk(walkInput);
           return result.finalState;

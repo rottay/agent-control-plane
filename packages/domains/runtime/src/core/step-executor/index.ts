@@ -21,6 +21,8 @@ import {
 import { INTENT_STEP, OUTCOME_STEP, planStep } from "../lifecycle/index.js";
 import type { PlanStep } from "../lifecycle/index.js";
 import { LifecyclePlanError, PostconditionUnknownError, SupervisorError } from "../../errors/index.js";
+import { consumerReference } from "../../verification-phase/index.js";
+import type { VerificationPorts } from "../../verification-phase/index.js";
 
 /**
  * The one beat executor. Both drivers walk the plan through this module.
@@ -124,6 +126,18 @@ export interface BeatContext {
    * the drill children compose the two and hand the result in.
    */
   readonly checkpoints?: CheckpointPort | undefined;
+  /**
+   * The verifier and the auditor a recorded walk's steps 6 and 7 consume (P-16/D1, ADR
+   * 0124; decision 238).
+   *
+   * **Optional, and the optionality is the refusal**, exactly as `checkpoints` above:
+   * a revision-bearing walk with no ports cannot name the receipt or the verdict its
+   * consumer beat stands on, so `appendPlanStep` refuses that beat instead of
+   * appending a bare one. A V1 walk never reads it: its beats stay PLAIN (ND-3). The
+   * lifecycle verbs bind none, so a lifecycle-verb `advance` of a V2 task past step 5
+   * refuses on it too.
+   */
+  readonly verification?: VerificationPorts | undefined;
 }
 
 /** What one durable beat did. Small, canonical, and safe to journal. */
@@ -429,6 +443,19 @@ export function appendPlanStep(context: BeatContext, step: PlanStep): BeatResult
   }
 
   assertCausalPredecessor(context, step, event.causationId);
+
+  // P-16/D1 (ADR 0124): on a revision-bearing walk, steps 6 and 7 are consumer beats.
+  // Their one extra key names the row the verification phase produced, read back
+  // through the ports; with no ports the beat is refused here, before the append, in
+  // the `CHECKPOINT_WRITTEN` mould below. V1 and every other step answer null.
+  const reference = consumerReference(context, step);
+  if (reference !== null) {
+    const result = context.ledger.append({
+      ...event,
+      payload: { ...event.payload, [reference.key]: { ...reference.value } },
+    });
+    return { event: result.inserted ? result.record.event : null, inserted: result.inserted };
+  }
 
   if (step.eventType === "CHECKPOINT_WRITTEN") {
     const persisted = persistCheckpoint(context, step);

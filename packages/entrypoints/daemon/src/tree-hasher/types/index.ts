@@ -28,8 +28,24 @@ export interface TreeHashRefused {
   readonly at: string;
 }
 
-/** The index's paths, stage 0 and no gitlink, in the order the index lists them. */
-export type IndexPathsOutcome = { readonly ok: true; readonly paths: readonly string[] } | TreeHashRefused;
+/**
+ * One index record as `ls-files -s` states it: the path, its mode and its object id
+ * (P-16/D1, ND-12). The mode is carried as written; the runner compares it and the id
+ * with the copy's own entry.
+ */
+export interface IndexEntry {
+  readonly path: string;
+  readonly mode: string;
+  readonly sha1: string;
+}
+
+/**
+ * The index's paths, stage 0 and no gitlink, in the order the index lists them, and
+ * the same records with their modes and object ids.
+ */
+export type IndexPathsOutcome =
+  | { readonly ok: true; readonly paths: readonly string[]; readonly entries: readonly IndexEntry[] }
+  | TreeHashRefused;
 
 /** The tree of a copy: its sha1 tree id and the entries it was built from, in path order. */
 export type CopyTreeOutcome =

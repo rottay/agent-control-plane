@@ -173,7 +173,12 @@ describe("N18: what a tree may not hold is refused by name", () => {
     git(repo, ["init", "-q", "--object-format=sha1", "."]);
     const blob = git(repo, ["hash-object", "-w", "--stdin"], Buffer.from("x\n")).trim();
     git(repo, ["update-index", "--add", "--cacheinfo", "100644," + blob + ",plain.txt"]);
-    expect(indexPaths(git(repo, ["ls-files", "-s", "-z"]))).toEqual({ ok: true, paths: ["plain.txt"] });
+    // P-16/D1 (ND-12, NB-2): each index record's mode and object id travel with its path.
+    expect(indexPaths(git(repo, ["ls-files", "-s", "-z"]))).toEqual({
+      ok: true,
+      paths: ["plain.txt"],
+      entries: [{ path: "plain.txt", mode: "100644", sha1: blob }],
+    });
 
     git(repo, ["update-index", "--add", "--cacheinfo", "160000," + "1".repeat(40) + ",sub"]);
     expect(indexPaths(git(repo, ["ls-files", "-s", "-z"]))).toEqual({ ok: false, refusal: "TREE_ENTRY_UNSUPPORTED", at: "index[1]" });

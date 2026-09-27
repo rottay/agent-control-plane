@@ -70,9 +70,10 @@ export const TERMINAL_OUTCOME_TYPES: readonly string[] = Object.freeze([
  * `MISSING_TOKENS_USED` and `MISSING_VERDICT` each answer a payload field that
  * is *present and malformed*, never one that is absent — absence is now a
  * counted fact (`routing.unreported`, `acceptance.unreported`) rather than a
- * stop. The walk writes `TASK_CLASSIFIED` and `AUDIT_COMPLETED` as PLAIN beats
- * carrying neither field, and the recorder that writes `TOKEN_USAGE_RECORDED`
- * always writes `tokens`, so reaching any of the three requires a chain
+ * stop. The walk writes `TASK_CLASSIFIED` as a PLAIN beat carrying no reason, and a
+ * V1 walk writes `AUDIT_COMPLETED` as a PLAIN beat carrying no verdict (a recorded
+ * walk's verdict is in `auditVerdict`, P-16/D1), and the recorder that writes
+ * `TOKEN_USAGE_RECORDED` always writes `tokens`, so reaching any of the three requires a chain
  * hand-built to carry a broken field. They are retained rather than retired
  * because a synthetic chain is exactly what the shadow ledger replays, and a
  * measure that silently accepted a malformed artifact there would be the
@@ -177,11 +178,12 @@ export interface AcceptanceBaseline {
   /**
    * Audits carrying no verdict at all.
    *
-   * The same distinction `routing.unreported` draws, for the same reason. The
-   * walk's `AUDIT_COMPLETED` is a PLAIN beat; the one emitter that does write a
-   * verdict (`authorizeCommit`) produces an `AuthorizationEvent` rather than a
-   * `ControlPlaneEvent` and never reaches a ledger, so a real chain's audits
-   * land here.
+   * The same distinction `routing.unreported` draws, for the same reason. A V1
+   * walk's `AUDIT_COMPLETED` is a PLAIN beat and lands here. Since P-16/D1 (ADR
+   * 0124, ND-17) a recorded walk's audit is a verdict-form `AUDIT_COMPLETED`, counted
+   * by `auditVerdict.verdict` under `audits`, and its step-7 consumer beat (which
+   * names that verdict under `auditedVerdict`) is not an audit and is not counted
+   * at all.
    */
   readonly unreported: number;
   /** Sorted by verdict. */
@@ -342,14 +344,23 @@ export function computeBaseline(events: readonly ControlPlaneEvent[]): Baseline 
         break;
       }
       case "AUDIT_COMPLETED": {
-        // Absent is tolerated and counted, exactly as for `reason` above; a
-        // verdict that is present but empty, non-string or outside the closed
-        // set still stops.
-        if (!Object.hasOwn(payload, "verdict")) {
+        // P-16/D1 (ND-17): a step-7 consumer beat names a verdict recorded
+        // elsewhere in the stream, so counting it would count one audit twice.
+        if (Object.hasOwn(payload, "auditedVerdict")) break;
+        // The verdict form carries its verdict inside its record; the walk's V1
+        // beat carries none. Absent is tolerated and counted, exactly as for
+        // `reason` above; a verdict that is present but empty, non-string or
+        // outside the closed set still stops.
+        const record = payload["auditVerdict"];
+        const source: Record<string, unknown> =
+          Object.hasOwn(payload, "auditVerdict") && typeof record === "object" && record !== null && !Array.isArray(record)
+            ? (record as Record<string, unknown>)
+            : payload;
+        if (!Object.hasOwn(source, "verdict")) {
           auditsUnreported += 1;
           break;
         }
-        const verdict = payload["verdict"];
+        const verdict = source["verdict"];
         if (typeof verdict !== "string" || verdict === "") {
           throw new BaselineStopError("MISSING_VERDICT", event.type, taskId);
         }

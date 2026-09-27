@@ -1806,9 +1806,9 @@ derived and no existing shape gains a cohort (ND-1).
 ## A verification by its receipt, and a verdict by its tree (P-16/B, ADR 0122)
 
 `VERIFICATION_COMPLETED` and `AUDIT_COMPLETED` have two forms each. A **beat** -- what
-the daemon's walk emits today, `{submissionDigest, [revisionNumber, attemptNumber],
-beat, planIndex}` or an observation-style top-level `verdict` -- is admitted
-byte-unchanged and projects nothing. A `VERIFICATION_COMPLETED` whose payload holds the
+a V1 walk emits, `{submissionDigest, beat, planIndex}` or an observation-style
+top-level `verdict` -- is admitted byte-unchanged and projects nothing. On a V2 subject
+the walk's beats are **consumer beats** since P-16/D1 (below). A `VERIFICATION_COMPLETED` whose payload holds the
 key `verification` is in **receipt form**, and an `AUDIT_COMPLETED` holding
 `auditVerdict` is in **verdict form**. Both are closed at every level:
 
@@ -1854,6 +1854,23 @@ The fold and `verifyIntegrity()` copy what the door admitted and never reopen a 
 A second event naming the same receipt with the same metadata keeps the first row, its
 `sequence` and its `recorded_at`; other metadata is `RECEIPT_METADATA_CONFLICT`. A
 verdict's `audit_id` is its own event id.
+
+**The consumer forms (P-16/D1, ADR 0124).** On a V2 subject, a walk's state-changing
+`VERIFICATION_COMPLETED` (step 6) carries exactly `verifiedReceipt: {receiptSha256}` and
+its `AUDIT_COMPLETED` (step 7) exactly `auditedVerdict: {auditId, receiptSha256}`. The
+decision holds each to the view: a `PASS` receipt of the same coordinate, an `ACCEPT`
+verdict of the same coordinate on that receipt. No key, or a V2 bare beat in place, is
+`CONSUMER_REFERENCE_ABSENT`; a malformed key, one on a same-state event, on a V1
+subject, under the other type or beside a producer key, `CONSUMER_REFERENCE_INVALID`;
+no admissible row, `CONSUMER_REFERENCE_UNRECORDED`. A consumer event projects no row.
+The producer forms are facts recorded in place: one on a state-changing event is
+`RECORD_FORM_MISPLACED` at `toState`, and a producer key under the other type is the
+same word at its key (ADR 0122's open question, closed). The evidence is contracts'
+`AuditEvidence` in canonical JSON: after B's binding, bytes that are not one are
+`EVIDENCE_UNREADABLE`, and a `treeSha`, `auditor` or `verdict` other than the record's is
+`EVIDENCE_FIELD_MISMATCH`. `VERIFICATION_REFUSALS` holds twenty-seven words. Of two
+concurrent runs of one attempt, the second append is refused
+`LEDGER_IDEMPOTENCY_CONFLICT` (P-18).
 
 ### Migration 28
 

@@ -27,6 +27,7 @@ import {
   ReconciliationError,
   SupervisorError,
   ToyBoundaryError,
+  VerificationPhaseError,
 } from "../../src/errors/index.js";
 import { ExecutionEffectError } from "../../src/execution-effects/index.js";
 import {
@@ -358,8 +359,25 @@ describe("N4/N5: the failure payload is a digest and a closed reason", () => {
   it("keeps the verdict and reason vocabularies closed", () => {
     expect([...FAILURE_VERDICTS].sort()).toEqual(["FAILED", "POSTCONDITION_UNKNOWN", "TASK_TERMINAL"]);
     // One member per trigger that earned it: B7T's bounded convergence guard,
-    // and B7R's classified step failure. A reason is never added in advance.
-    expect([...FAILURE_REASONS]).toEqual(["BOUND_EXHAUSTED", "EXECUTION_FAILED"]);
+    // B7R's classified step failure, and P-16/D1's two verification phases (ADR
+    // 0124). A reason is never added in advance, and the list stays sorted.
+    expect([...FAILURE_REASONS]).toEqual(["AUDIT_NOT_ACCEPTED", "BOUND_EXHAUSTED", "EXECUTION_FAILED", "VERIFICATION_FAILED"]);
+    expect([...FAILURE_REASONS]).toEqual([...FAILURE_REASONS].sort());
+  });
+
+  it("P-16/D1: a verification phase that ended without its gate settles under its own reason, before any broader class", () => {
+    expect(classifyFailure(new VerificationPhaseError("VERIFICATION_FAILED", "RUNNER_CHECKS_UNDECLARED"))).toEqual({
+      settle: true,
+      reason: "VERIFICATION_FAILED",
+    });
+    expect(classifyFailure(new VerificationPhaseError("AUDIT_NOT_ACCEPTED", "REJECT"))).toEqual({
+      settle: true,
+      reason: "AUDIT_NOT_ACCEPTED",
+    });
+    const error = new VerificationPhaseError("VERIFICATION_FAILED", "RECEIPT_FAIL");
+    expect(error.code).toBe("VERIFICATION_PHASE");
+    expect(error.word).toBe("RECEIPT_FAIL");
+    expect(error.message).toBe("the verification phase ended VERIFICATION_FAILED (RECEIPT_FAIL)");
   });
 });
 

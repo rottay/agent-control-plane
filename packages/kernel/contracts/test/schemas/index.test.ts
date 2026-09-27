@@ -25,6 +25,7 @@ import {
   OUTBOX_FAILURE_CODES,
   SUPPORTED_CONTRACT_VERSIONS,
   V2_IDEMPOTENCY_NAMESPACE,
+  AuditEvidence,
   Checkpoint,
   CommitAuthorizationReceipt,
   ControlPlaneEvent,
@@ -1369,6 +1370,53 @@ describe("CommitAuthorizationReceipt", () => {
     for (const key of ["revisionNumber", "attemptNumber"]) {
       expect(VerificationReceipt.safeParse(receipt({ [key]: -0 })).success, key).toBe(false);
     }
+  });
+});
+
+describe("the audit evidence grammar (P-16/D1, ADR 0124; ND-7)", () => {
+  const RULES = [
+    "CHANGES_WITHIN_WRITE_SET",
+    "DIFF_PRESENT_FOR_COMMIT",
+    "INDEPENDENT_IDS",
+    "POLICY_MATCHES_ENVELOPE",
+    "RECEIPT_BYTES_MATCH",
+    "RECEIPT_PASS",
+  ];
+  const evidence = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    evidenceVersion: "acp/audit-evidence/v1",
+    receiptSha256: SHA256,
+    treeSha: "89abcdef0123456789abcdef0123456789abcdef",
+    auditor: { identity: "acp/deterministic-auditor/reviewer/01", workerId: "4d1f6a3c-5c83-5b0e-9d6e-2f3b8a1c0e7d", runId: 1 },
+    verdict: "ACCEPT",
+    rules: RULES.map((rule) => ({ rule, outcome: "PASS" })),
+    ...overrides,
+  });
+
+  it("admits the deterministic auditor's evidence at its limits: every rule once, sorted, and one rule alone", () => {
+    expect(AuditEvidence.safeParse(evidence()).success).toBe(true);
+    expect(AuditEvidence.safeParse(evidence({ rules: [{ rule: "RECEIPT_PASS", outcome: "PASS" }] })).success).toBe(true);
+    const failed = RULES.map((rule, index) => ({ rule, outcome: index === 1 ? "FAIL" : "PASS" }));
+    for (const verdict of ["REJECT", "ACCEPT_WITH_CORRECTIONS"]) {
+      expect(AuditEvidence.safeParse(evidence({ verdict, rules: failed })).success, verdict).toBe(true);
+    }
+  });
+
+  it("refuses an ACCEPT over a failed rule, an unsorted or repeated rule, an unknown word, and any extra member", () => {
+    const failed = RULES.map((rule, index) => ({ rule, outcome: index === 0 ? "FAIL" : "PASS" }));
+    const cases: readonly Record<string, unknown>[] = [
+      evidence({ rules: failed }),
+      evidence({ rules: [...RULES].reverse().map((rule) => ({ rule, outcome: "PASS" })) }),
+      evidence({ rules: [{ rule: "RECEIPT_PASS", outcome: "PASS" }, { rule: "RECEIPT_PASS", outcome: "PASS" }] }),
+      evidence({ rules: [{ rule: "TESTS_GREEN", outcome: "PASS" }] }),
+      evidence({ rules: [] }),
+      evidence({ verdict: "MAYBE" }),
+      evidence({ evidenceVersion: "acp/audit-evidence/v2" }),
+      evidence({ receiptSha256: SHA256.toUpperCase() }),
+      evidence({ auditor: { identity: "acp/deterministic-auditor/reviewer/01", workerId: "4D1F6A3C-5C83-5B0E-9D6E-2F3B8A1C0E7D", runId: 1 } }),
+      evidence({ auditor: { identity: "acp/deterministic-auditor/reviewer/01", workerId: "4d1f6a3c-5c83-5b0e-9d6e-2f3b8a1c0e7d", runId: 0 } }),
+      evidence({ finding: "free text" }),
+    ];
+    for (const value of cases) expect(AuditEvidence.safeParse(value).success, JSON.stringify(value)).toBe(false);
   });
 });
 

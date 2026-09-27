@@ -204,6 +204,44 @@ describe("what the walk never writes is counted, never silently zeroed", () => {
     expect(baseline.acceptance.byVerdict).toEqual([{ verdict: "ACCEPT", count: 1 }]);
   });
 
+  it("P-16/D1 (ND-17): counts a verdict-form audit by its record, skips the consumer beat, and keeps a V1 beat unreported", () => {
+    const auditId = randomUUID();
+    const baseline = computeBaseline([
+      // The auditor's verdict form: the verdict is inside `auditVerdict`.
+      event({
+        taskId: TASK_A,
+        transitionId: "audit.run.1",
+        type: "AUDIT_COMPLETED",
+        fromState: "VERIFYING",
+        toState: "VERIFYING",
+        payload: { revisionNumber: 1, attemptNumber: 1, auditVerdict: { receiptSha256: "a".repeat(64), verdict: "ACCEPT" } },
+      }),
+      // Step 7, the consumer beat naming that verdict: not a second audit.
+      event({
+        taskId: TASK_A,
+        transitionId: "audited",
+        type: "AUDIT_COMPLETED",
+        fromState: "VERIFYING",
+        toState: "AUDITING",
+        occurredAt: "2026-08-27T12:00:10.000Z",
+        payload: { revisionNumber: 1, attemptNumber: 1, beat: "PLAIN", auditedVerdict: { auditId, receiptSha256: "a".repeat(64) } },
+      }),
+      // A V1 walk's bare beat: no verdict anywhere, counted as unreported.
+      event({ taskId: TASK_B, transitionId: "audited", type: "AUDIT_COMPLETED", toState: "AUDITING", occurredAt: "2026-08-27T12:00:20.000Z", payload: { beat: "PLAIN" } }),
+    ]);
+    expect(baseline.acceptance.audits).toBe(1);
+    expect(baseline.acceptance.unreported).toBe(1);
+    expect(baseline.acceptance.byVerdict).toEqual([{ verdict: "ACCEPT", count: 1 }]);
+  });
+
+  it("stops on a verdict-form record whose verdict is outside the closed set", () => {
+    expect(() =>
+      computeBaseline([
+        event({ taskId: TASK_A, type: "AUDIT_COMPLETED", toState: "DISCOVERED", payload: { auditVerdict: { verdict: "MAYBE" } } }),
+      ]),
+    ).toThrow();
+  });
+
   it("reads spend off the recorded usage row, and off no other type", () => {
     const baseline = computeBaseline([
       // The plan's OUTCOME beat. It carries a content digest and a

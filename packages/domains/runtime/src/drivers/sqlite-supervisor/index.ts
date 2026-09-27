@@ -30,8 +30,10 @@ import {
 import type { BeatContext, BeatResult, EffectPort } from "../../core/step-executor/index.js";
 import type { CheckpointPort } from "../../checkpoint/index.js";
 import type { SwitchPort } from "../../switch-executor/index.js";
-import { SupervisorError } from "../../errors/index.js";
+import { SupervisorError, VerificationPhaseError } from "../../errors/index.js";
 import { classifyFailure, settleFailure } from "../../failure/index.js";
+import { produceBeforeStep } from "../../verification-phase/index.js";
+import type { VerificationPorts } from "../../verification-phase/index.js";
 
 /**
  * The SQLite supervisor: a single process walking the shared plan.
@@ -116,6 +118,16 @@ export interface SqliteSupervisorOptions {
    */
   readonly switchPort?: SwitchPort | undefined;
   /**
+   * The verifier and the auditor a recorded walk's steps 6 and 7 consume (P-16/D1,
+   * ADR 0124; decision 238).
+   *
+   * Optional, and **the optionality is the refusal**, exactly as `checkpoints` above:
+   * a revision-bearing walk constructed with none refuses at step 6 and appends
+   * nothing past step 5. A V1 walk never asks it (ND-3). The daemon composes both
+   * over the operator ledger for a recorded walk; the drills hand in fakes.
+   */
+  readonly verification?: VerificationPorts | undefined;
+  /**
    * Deliberate interruption seam, for the kill/restart drills only.
    *
    * Rollback and recovery are claims that cannot be verified by reading code.
@@ -196,6 +208,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
   readonly #route: ResolvedRoute;
   readonly #checkpoints: CheckpointPort | undefined;
   readonly #switchPort: SwitchPort | undefined;
+  readonly #verification: VerificationPorts | undefined;
   readonly #faultPoint: FaultPoint | undefined;
   readonly #onFault: (() => void) | undefined;
   /** True when this object was built for the lifecycle verbs and may not walk. */
@@ -217,6 +230,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
     this.#route = options.route;
     this.#checkpoints = options.checkpoints;
     this.#switchPort = options.switchPort;
+    this.#verification = options.verification;
     this.#faultPoint = options.__faultPoint;
     this.#onFault = options.__onFault;
   }
@@ -464,10 +478,11 @@ export class SqliteSupervisor implements OrchestrationDriver {
 
       // V2-B1f/F4d. The fork, and it is deliberately narrow.
       //
-      // `classifyFailure` is **not** edited: it is the shared decision both
-      // drivers ask, so editing it would change Restate's verdicts too. What
-      // happens here instead is that a failure which *would* settle is offered
-      // to the switch port first. A port that played a switch means the walk
+      // The fork itself is not in `classifyFailure`: that is the shared decision
+      // both drivers ask, so a switch there would change Restate's verdicts too
+      // (P-16/D1 gives `classifyFailure` one class, `VerificationPhaseError`, and
+      // no fork). What happens here instead is that a failure which *would* settle
+      // is offered to the switch port first. A port that played a switch means the walk
       // must NOT settle — the attempt is now blocked awaiting a landing, and a
       // terminal event would foreclose it. `SWITCHED` means *do not settle*;
       // it never means *do not fail*, which is why the original error is still
@@ -475,8 +490,12 @@ export class SqliteSupervisor implements OrchestrationDriver {
       //
       // The gate on `decision.settle` is what keeps this out of the way of
       // everything else: a plan failure, a postcondition unknown, a bound
-      // exhaustion — none of them reaches the port at all.
-      if (decision.settle && this.#switchPort !== undefined) {
+      // exhaustion — none of them reaches the port at all. Nor does a verification
+      // phase that ended without its gate (P-16/D1, B-5): a `FAIL` receipt or a
+      // verdict other than `ACCEPT` is a verdict on the work, not pressure on the
+      // account, and switching accounts would run the same work again. It settles
+      // with its own reason and the port is never consulted.
+      if (decision.settle && this.#switchPort !== undefined && !(error instanceof VerificationPhaseError)) {
         const played = await this.#switchPort.consider(context);
         if (played.kind === "SWITCHED") throw error;
       }
@@ -521,6 +540,7 @@ export class SqliteSupervisor implements OrchestrationDriver {
       initiativeId: this.#initiativeId,
       route: this.#route,
       checkpoints: this.#checkpoints,
+      verification: this.#verification,
     };
   }
 
@@ -551,6 +571,10 @@ export class SqliteSupervisor implements OrchestrationDriver {
       return closed;
     }
 
+    // P-16/D1 (ADR 0124): the row a consumer beat names is produced first, awaited,
+    // and the append stays synchronous. A no-op for V1, for every step but 6 and 7,
+    // and for a beat already recorded.
+    await produceBeforeStep(context, step);
     return appendPlanStep(context, step);
   }
 

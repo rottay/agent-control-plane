@@ -523,10 +523,15 @@ localizado: existe el store de bytes y falta el consumidor.
 
 ## 12. Verificación, auditoría y commit
 
-Las cuatro son **efectos con receipt propio**, no eventos `PLAIN`. Hoy la
-verificación, la auditoría y el commit se apendean sin que ningún código los
-ejecute, y la política de commit está fijada en el daemon en lugar de leerse del
-envelope (N03).
+Las cuatro son **efectos con receipt propio**, no eventos `PLAIN`. Desde P-16/D1
+(ADR 0124, decisiones 238–241) la verificación y la auditoría se **ejecutan** en un walk
+registrado: antes del paso 6 el runner registra el receipt y antes del paso 7 un auditor
+local determinista registra el veredicto, y los dos pasos son beats consumidores que los
+nombran; la puerta y el fold rehúsan una referencia sin fila admisible. N03 queda
+cerrado: los dos sitios de walk del daemon leen la política del envelope. El commit
+sigue sin ejecutarse (P-17), la forma V1 inline sigue apendeando beats desnudos (P-21) y
+`CHECKPOINTED` no acredita éxito: `COMPLETED` es de P-21, límite que el ADR de P-16/D
+repite.
 
 | Eslabón | Precondición | Evidencia mínima | Rechazo |
 | --- | --- | --- | --- |

@@ -2081,6 +2081,8 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
         ...envelopeFor(taskId, INITIATIVE, [WRITTEN]),
         content: fixtureContent(INSTRUCTION),
         readSet: [WRITTEN],
+        // P-16/D1: a recorded task declares the checks its verification runs (synthetic).
+        validation: { commands: ["test -f " + WRITTEN], independentVerifierRequired: true },
       };
       const intake = intakeTask({
         ledger,
@@ -2116,7 +2118,12 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
     return { databasePath, taskId };
   }
 
-  /** A git worktree holding the one path the envelope declares, committed. */
+  /**
+   * A git worktree holding the one path the envelope declares, committed, then changed
+   * once inside the write-set (P-16/D1, B-3): the recorded walk's audit wants, under
+   * `LOCAL_COMMIT_WITH_RECEIPT`, one observed difference, and the fake child writes
+   * nothing into its cwd, so the fixture leaves the writer's change before the start.
+   */
   function worktree(): string {
     const directory = stage();
     const git = (...args: string[]): void => {
@@ -2129,6 +2136,7 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
     writeFileSync(join(directory, WRITTEN), "recorded\n", "utf8");
     git("add", "-A");
     git("commit", "-q", "-m", "fixture base");
+    writeFileSync(join(directory, WRITTEN), "recorded, and changed by the writer\n", "utf8");
     return directory;
   }
 
@@ -2209,6 +2217,10 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
     const ledger = openLedger(databasePath);
     try {
       expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
+      // P-16/D1: one PASS receipt and one ACCEPT verdict, each named by its beat.
+      const [receipt] = ledger.listVerifications(taskId, 1, 1);
+      expect(receipt?.runStatus).toBe("PASS");
+      expect(ledger.listAuditVerdicts(receipt?.receiptSha256 ?? "").map((row) => row.verdict)).toEqual(["ACCEPT"]);
       const types = ledger.listEvents({ taskId, limit: 200 }).events.map((record) => record.event.type);
       const at = types.indexOf("RUN_STARTED");
       expect(types.slice(at + 1, at + 9)).toEqual([

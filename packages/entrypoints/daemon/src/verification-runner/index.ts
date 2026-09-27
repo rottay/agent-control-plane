@@ -1,6 +1,17 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, constants, copyFileSync, lstatSync, mkdirSync, readlinkSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import {
+  chmodSync,
+  constants,
+  copyFileSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 import {
@@ -58,7 +69,8 @@ export type {
  * worktree, under an environment it builds, within bounds, and its one product is a
  * private `RECEIPT` artifact and the receipt-form `VERIFICATION_COMPLETED` that the
  * ledger's door admits into `verification_read_model`. It is a daemon-internal
- * function: no route, no verb and no beat reaches it yet (P-16/D1 wires it).
+ * function: no route and no verb reaches it; the recorded walk's verification phase
+ * calls it before step 6 (P-16/D1, ADR 0124).
  *
  * ## The order is the design
  *
@@ -75,7 +87,9 @@ export type {
  *    commit body rule admits (`RUNNER_COMMIT_BODY_INVALID`), a writer label that is a
  *    worker identity other than the runner's.
  * 4. The object format, before any observation could misread a 64-hex id: `sha1` or
- *    `OBJECT_FORMAT_UNSUPPORTED`, class `CAPABILITY_UNSUPPORTED` (P-38 owns sha256).
+ *    `OBJECT_FORMAT_UNSUPPORTED`, class `CAPABILITY_UNSUPPORTED` (P-38 owns sha256);
+ *    and the worktree is its repository's root, realpath-equal to `rev-parse
+ *    --show-toplevel` (`RUNNER_WORKTREE_NOT_ROOT`, P-16/D1 NB-3).
  * 5. The observation, through the one git read authority: a HEAD
  *    (`BASE_HEAD_MISSING`), and no change outside the declared write-set
  *    (`RUNNER_WRITE_SET_VIOLATION`: no receipt, the quarantine is the conformance
@@ -83,14 +97,19 @@ export type {
  * 6. The writer id's issuer from the attempt's recorded segments
  *    (`WRITER_ID_UNISSUED`), and the verifier's run id: the next ordinal of the
  *    attempt, its id `supervisedWorkerIdFor(task, flat, "verifier", runId)`.
- * 7. The copy (below) and its tree, hashed in process.
+ * 7. The copy (below) and its tree, hashed in process; every index path the
+ *    observation did not report as changed or untracked must hash to the index's own
+ *    mode and object id (`RUNNER_INDEX_DIVERGED`: an `assume-unchanged` or
+ *    `skip-worktree` flag hid a change, P-16/D1 NB-2).
  * 8. The checks, in declared order, failing fast: the first nonzero or killed check
  *    ends the run `FAIL`, and the receipt lists the checks that ran.
- * 9. The original worktree observed again: any difference is `FAIL` (ND-16).
+ * 9. The original worktree observed again: any observed difference is `FAIL` (ND-16).
  * 10. The receipt, parsed by `VerificationReceipt`, published through the plane, and
  *     its event appended through `Ledger.append`; a refusal of either is carried
  *     (`RUNNER_PUBLICATION_REFUSED`, `RUNNER_RECORD_REFUSED`).
- * 11. The per-run directory removed, in `finally`, and only it.
+ * 11. The per-run directory removed, in `finally`, and only it: made owner-writable
+ *     first by a no-follow walk, so a check that removed its own write bits cannot
+ *     leave it behind (P-16/D1 NB-4).
  *
  * ## The copy
  *
@@ -118,8 +137,11 @@ export type {
  *
  * Per-check wall time, per-check output bytes (stdout and stderr counted raw, as
  * they arrive: `maxBuffer` does nothing on `spawn`), and the run's total wall time.
- * Exceeding one kills the check's whole process group, grandchildren included, and
- * records `137`. A check that could not be started records `127`, one ended by a
+ * Exceeding one kills the check's whole process group, grandchildren included, destroys
+ * both pipes and records `137` at once. A check that exits is settled with its own code
+ * when both pipes close or at its deadline, whichever comes first, so a grandchild that
+ * left the group (`setsid`) and holds a pipe cannot hold the run past its bound; that
+ * escapee is not reaped, a limit P-25 owns (P-16/D1 NB-1, ND-14). A check that could not be started records `127`, one ended by a
  * signal `128 +` its number (an unmapped signal `255`), all `FAIL`. The output is
  * counted and discarded: it reaches no row, event, stream, log, error or artifact.
  */
@@ -132,6 +154,7 @@ export const RUNNER_REFUSALS = [
   "RUNNER_COMMIT_BODY_INVALID",
   "RUNNER_COPY_BOUND_EXCEEDED",
   "RUNNER_COPY_FAILED",
+  "RUNNER_INDEX_DIVERGED",
   "RUNNER_INPUT_INVALID",
   "RUNNER_OBSERVATION_FAILED",
   "RUNNER_PUBLICATION_REFUSED",
@@ -140,6 +163,7 @@ export const RUNNER_REFUSALS = [
   "RUNNER_SCRATCH_ROOT_INVALID",
   "RUNNER_TASK_TERMINAL",
   "RUNNER_TASK_UNREADABLE",
+  "RUNNER_WORKTREE_NOT_ROOT",
   "RUNNER_WRITE_SET_EMPTY",
   "RUNNER_WRITE_SET_VIOLATION",
   "WRITER_ID_UNISSUED",
@@ -370,7 +394,10 @@ function runCheck(
     let killedByBound = false;
     let spawnFailed = false;
     let counted = 0;
+    let exited: { readonly code: number | null; readonly signal: string | null } | null = null;
     const group = child.pid;
+    const stdout = child.stdout;
+    const stderr = child.stderr;
     const killGroup = (): void => {
       if (group === undefined) return;
       try {
@@ -379,38 +406,69 @@ function runCheck(
         // The group is already gone.
       }
     };
-    const bound = (): void => {
-      if (killedByBound) return;
-      killedByBound = true;
-      killGroup();
-    };
-    const timer = setTimeout(bound, Math.max(0, Math.min(bounds.checkTimeoutMs, deadline - Date.now())));
-    const count = (chunk: Buffer): void => {
-      counted += chunk.length;
-      if (counted > bounds.checkOutputBytes) bound();
-    };
     const finish = (code: number | null, signal: string | null): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       killGroup();
+      // Never wait on a pipe a process outside the group may hold (NB-1, ND-14).
+      stdout.destroy();
+      stderr.destroy();
       settle({ spawnFailed, killedByBound, code, signal });
     };
-    child.stdout.on("data", count);
-    child.stderr.on("data", count);
+    // A bound settles at once: the group is killed, the pipes destroyed, 137 recorded.
+    const bound = (): void => {
+      if (killedByBound || settled) return;
+      killedByBound = true;
+      killGroup();
+      finish(null, "SIGKILL");
+    };
+    // The deadline: a check that already exited keeps its own code; one still running is bound.
+    const timer = setTimeout(
+      () => {
+        if (exited !== null) finish(exited.code, exited.signal);
+        else bound();
+      },
+      Math.max(0, Math.min(bounds.checkTimeoutMs, deadline - Date.now())),
+    );
+    const count = (chunk: Buffer): void => {
+      counted += chunk.length;
+      if (counted > bounds.checkOutputBytes) bound();
+    };
+    stdout.on("data", count);
+    stderr.on("data", count);
     child.on("error", () => {
       spawnFailed = group === undefined;
       finish(null, null);
     });
-    // The shell is gone: its group goes with it, so a background grandchild holding
-    // the pipes open cannot outlive the check.
-    child.on("exit", () => {
+    // The shell is gone: its group goes with it, so a background grandchild that stayed
+    // in the group cannot outlive the check. One that left it may still hold a pipe, so
+    // the exit is remembered and settled on `close` or at the deadline, whichever first.
+    child.on("exit", (code, signal) => {
+      exited = { code, signal };
       killGroup();
     });
     child.on("close", (code, signal) => {
-      finish(code, signal);
+      finish(exited?.code ?? code, exited?.signal ?? signal);
     });
   });
+}
+
+/**
+ * Give the owner back its bits on every directory under `directory`, no-follow (NB-4):
+ * a check that `chmod 000`ed a directory in its copy cannot leave the run behind. A
+ * link is never followed and a file's mode is not touched; best effort, since `rmSync`
+ * is the step that reports.
+ */
+function ownerWritable(directory: string): void {
+  try {
+    const stats = lstatSync(directory);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) return;
+    chmodSync(directory, (stats.mode & 0o7777) | 0o700);
+    for (const name of readdirSync(directory)) ownerWritable(join(directory, name));
+  } catch {
+    // Gone, or not ours to open: the removal below is the step that answers.
+  }
 }
 
 /** The observation's comparable form: the same bytes before and after, or a difference. */
@@ -464,6 +522,17 @@ export async function runVerification(input: VerificationRunInput): Promise<Veri
   const format = git({ verb: "rev-parse", args: ["--show-object-format"] });
   if (!format.ok) return refuse("RUNNER_OBSERVATION_FAILED", "objectFormat");
   if (format.stdout.trim() !== "sha1") return refuse("OBJECT_FORMAT_UNSUPPORTED", "objectFormat");
+  // The worktree is its repository's root: a subdirectory, or a plain directory inside
+  // another repository, would observe and copy a tree the receipt does not name (NB-3).
+  const toplevel = git({ verb: "rev-parse", args: ["--show-toplevel"] });
+  if (!toplevel.ok) return refuse("RUNNER_OBSERVATION_FAILED", "toplevel");
+  try {
+    if (realpathSync(toplevel.stdout.replace(/\n$/, "")) !== realpathSync(worktreePath)) {
+      return refuse("RUNNER_WORKTREE_NOT_ROOT", "worktreePath");
+    }
+  } catch {
+    return refuse("RUNNER_WORKTREE_NOT_ROOT", "worktreePath");
+  }
 
   // 5. The observation: a HEAD, and nothing outside the write-set.
   const observed = observeWorktree(git, worktreePath);
@@ -509,6 +578,18 @@ export async function runVerification(input: VerificationRunInput): Promise<Veri
     if (!copy.ok) return copy;
     const tree = hashCopyTree(copyRoot, copy.paths);
     if (!tree.ok) return refuse(tree.refusal, tree.at);
+    // Every index path the observation reported as neither changed nor untracked is
+    // held to the index's own mode and object id, before any check runs (NB-2): a
+    // flag that hid a change from the observation cannot hide it from the tree.
+    const reported = new Set([...observation.trackedChanges.map((change) => change.path), ...observation.untrackedPaths]);
+    const hashed = new Map(tree.entries.map((entry) => [entry.path, entry]));
+    for (const [position, entry] of index.entries.entries()) {
+      if (reported.has(entry.path)) continue;
+      const copied = hashed.get(entry.path);
+      if (copied?.mode !== entry.mode || copied.sha1 !== entry.sha1) {
+        return refuse("RUNNER_INDEX_DIVERGED", "index[" + String(position) + "]");
+      }
+    }
 
     // 8. The checks, in declared order, failing fast.
     const env = builtEnvironment(runDirectory, scratchRoot);
@@ -672,6 +753,7 @@ export async function runVerification(input: VerificationRunInput): Promise<Veri
       try {
         const stats = lstatSync(runDirectory);
         if (stats.isDirectory() && stats.dev === made.dev && stats.ino === made.ino && dirname(runDirectory) === scratchRoot) {
+          ownerWritable(runDirectory);
           rmSync(runDirectory, { recursive: true, force: true });
         }
       } catch {

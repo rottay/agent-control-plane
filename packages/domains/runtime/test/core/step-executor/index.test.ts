@@ -1,12 +1,21 @@
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { CONTRACT_VERSION, ControlPlaneEvent, buildIdempotencyKey, buildV2IdempotencyKey } from "@acp/contracts";
+import {
+  AuditEvidence,
+  CONTRACT_VERSION,
+  ControlPlaneEvent,
+  VerificationReceipt,
+  buildIdempotencyKey,
+  buildV2IdempotencyKey,
+} from "@acp/contracts";
 import type { Checkpoint, ResolvedRoute } from "@acp/contracts";
 import {
   LedgerIdempotencyConflictError,
   LedgerValidationError,
+  artifactBlobLeaseStorePath,
   artifactRootFor,
   canonicalJsonStringify,
   createCheckpointStore,
@@ -15,15 +24,21 @@ import {
   hasArtifact,
   logicalOperationSha256,
   readArtifact,
+  openArtifactBlobLeaseStore,
+  openArtifactPlane,
   openLedger,
+  receiptVerificationColumns,
   requestSha256,
   sha256Hex,
+  supervisedWorkerIdFor,
+  writerWorkerIdFor,
 } from "@acp/ledger";
 import type { Ledger } from "@acp/ledger";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { DurableInvocation, OperationCoordinate, PostconditionVerdict } from "../../../src/contracts/index.js";
-import { PostconditionUnknownError, SupervisorError } from "../../../src/errors/index.js";
+import { PostconditionUnknownError, SupervisorError, VerificationPhaseError } from "../../../src/errors/index.js";
+import type { VerificationPorts } from "../../../src/verification-phase/index.js";
 import {
   removeScenarioRoot,
   resolveScenarioRoot,
@@ -872,6 +887,214 @@ function caught(action: () => unknown): unknown {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// P-16/D1 (ADR 0124): the ports a revision-bearing walk's steps 6 and 7 consume
+// ---------------------------------------------------------------------------
+
+const PHASE_AT = "2026-09-26T12:00:00.000Z";
+const PHASE_VERIFIER = "acp/verification-runner/verifier/01";
+const PHASE_AUDITOR = "acp/deterministic-auditor/reviewer/01";
+const phaseClosers: (() => void)[] = [];
+
+afterEach(() => {
+  for (const close of phaseClosers.splice(0)) close();
+});
+
+interface PhaseCalls {
+  verify: number;
+  audit: number;
+}
+
+/**
+ * Ports that record real rows: a receipt and a verdict the ledger's door admits, their
+ * bytes published through a real plane over the walk's own ledger. A fake of the runner
+ * and the auditor, never of the door: the consumer beats they feed are judged by the
+ * real one. `crash` makes a port record its row and then stop without settling (a
+ * `SupervisorError`), the shape of a process killed between the record and the beat.
+ */
+function recordingPorts(
+  ledger: Ledger,
+  ledgerPath: string,
+  options: {
+    readonly runStatus?: "PASS" | "FAIL";
+    readonly verdict?: "ACCEPT" | "REJECT";
+    readonly calls?: PhaseCalls;
+    readonly crash?: "VERIFY" | "AUDIT";
+  } = {},
+): VerificationPorts {
+  const leaseStore = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(ledgerPath), {
+    incarnationId: randomUUID(),
+    createdAt: PHASE_AT,
+  });
+  phaseClosers.push(() => {
+    leaseStore.close();
+  });
+  const plane = openArtifactPlane({ ledger, leaseStore, ledgerPath });
+  const calls = options.calls ?? { verify: 0, audit: 0 };
+  const publish = (content: Buffer, artifactClass: "RECEIPT" | "EVIDENCE", taskId: string, producer: string) => {
+    const commandId = randomUUID();
+    const outcome = plane.publish({
+      content,
+      mediaType: "application/json",
+      encryptionStatus: "PLAINTEXT",
+      encryptionProfile: "local-plaintext-v1",
+      commandId,
+      artifactPinId: randomUUID(),
+      reference: {
+        artifactReferenceId: randomUUID(),
+        artifactClass,
+        classification: "INTERNAL",
+        scopeKind: "TASK",
+        scopeId: taskId,
+        producerIdentity: producer,
+        accessPolicyId: "SCOPE_EQUALITY_V1",
+        retentionClass: "PERMANENT",
+        expiresAt: null,
+      },
+      recordedBy: producer,
+      intention: { eventId: randomUUID(), idempotencyKey: "phase/" + commandId + "/intended", occurredAt: PHASE_AT, recordedAt: PHASE_AT },
+      terminal: { eventId: randomUUID(), idempotencyKey: "phase/" + commandId + "/succeeded", occurredAt: PHASE_AT, recordedAt: PHASE_AT },
+      holding: { holder: producer, holderPid: 4242, acquiredAt: PHASE_AT, expiresAt: "2026-12-31T00:00:00.000Z" },
+    });
+    if (outcome.verb !== "PUBLISHED") throw new Error("expected a publication, got " + outcome.verb);
+    return { artifactReferenceId: outcome.reference.artifactReferenceId, contentSha256: outcome.contentSha256 };
+  };
+  type Coordinate = Parameters<VerificationPorts["verifier"]["verify"]>[0];
+  const append = (
+    coordinate: Coordinate,
+    type: "VERIFICATION_COMPLETED" | "AUDIT_COMPLETED",
+    transitionId: string,
+    eventId: string,
+    emittedBy: string,
+    record: Record<string, unknown>,
+  ): void => {
+    const state = ledger.getTask(coordinate.taskId)?.currentState ?? "RUNNING";
+    ledger.append({
+      contractVersion: CONTRACT_VERSION,
+      eventId,
+      taskId: coordinate.taskId,
+      attempt: coordinate.attempt,
+      transitionId,
+      idempotencyKey: buildV2IdempotencyKey({
+        stream: "control_plane_events",
+        taskId: coordinate.taskId,
+        revisionNumber: coordinate.revisionNumber,
+        attemptNumber: coordinate.attemptNumber,
+        transitionId,
+      }),
+      type,
+      fromState: state,
+      toState: state,
+      emittedBy,
+      occurredAt: PHASE_AT,
+      recordedAt: PHASE_AT,
+      correlationId: null,
+      causationId: null,
+      payload: { revisionNumber: coordinate.revisionNumber, attemptNumber: coordinate.attemptNumber, ...record },
+    });
+  };
+  const receipts = (coordinate: Coordinate) =>
+    ledger.listVerifications(coordinate.taskId, coordinate.revisionNumber, coordinate.attemptNumber);
+  const verdicts = (coordinate: Coordinate, receiptSha256: string) =>
+    ledger.listAuditVerdicts(receiptSha256).filter((row) => row.taskId === coordinate.taskId);
+  const largest = <T,>(rows: readonly T[], runId: (row: T) => number): T | null =>
+    rows.reduce<T | null>((best, row) => (best === null || runId(row) > runId(best) ? row : best), null);
+  return {
+    verifier: {
+      recordedPass: (coordinate) =>
+        largest(receipts(coordinate).filter((row) => row.runStatus === "PASS"), (row) => row.verifierRunId)?.receiptSha256 ?? null,
+      latest: (coordinate) => {
+        const row = largest(receipts(coordinate), (candidate) => candidate.verifierRunId);
+        return row === null ? null : { receiptSha256: row.receiptSha256, runStatus: row.runStatus };
+      },
+      verify: (coordinate) => {
+        calls.verify += 1;
+        const runStatus = options.runStatus ?? "PASS";
+        const runId = receipts(coordinate).reduce((last, row) => Math.max(last, row.verifierRunId), 0) + 1;
+        const receipt = VerificationReceipt.parse({
+          contractVersion: CONTRACT_VERSION,
+          taskId: coordinate.taskId,
+          revisionNumber: coordinate.revisionNumber,
+          attemptNumber: coordinate.attemptNumber,
+          baseSha: "0123456789abcdef0123456789abcdef01234567",
+          treeSha: "89abcdef0123456789abcdef0123456789abcdef",
+          objectFormat: "sha1",
+          policySha256: "c".repeat(64),
+          declaredWriteSet: ["docs/d1.md"],
+          observedTrackedChanges: [{ path: "docs/d1.md", sha256: "a".repeat(64) }],
+          observedUntrackedPaths: [],
+          writer: { identity: EMITTED_BY, workerId: writerWorkerIdFor(coordinate.taskId, coordinate.attempt) },
+          verifier: { identity: PHASE_VERIFIER, workerId: supervisedWorkerIdFor(coordinate.taskId, coordinate.attempt, "verifier", runId), runId },
+          runStatus,
+          checks: [{ command: "test -f docs/d1.md", exitCode: runStatus === "PASS" ? 0 : 1, ranAt: PHASE_AT }],
+          commitMessageBody: "feat(runtime): a verified change",
+          pushAuthorized: false,
+        });
+        const published = publish(Buffer.from(canonicalJsonStringify(receipt), "utf8"), "RECEIPT", coordinate.taskId, PHASE_VERIFIER);
+        const columns = receiptVerificationColumns(receipt);
+        append(coordinate, "VERIFICATION_COMPLETED", "verification.run." + String(runId), randomUUID(), PHASE_VERIFIER, {
+          verification: {
+            receiptSha256: columns.receiptSha256,
+            artifactReferenceId: published.artifactReferenceId,
+            baseSha: columns.baseSha,
+            treeSha: columns.treeSha,
+            policySha256: columns.policySha256,
+            writeSetSha256: columns.writeSetSha256,
+            checksSha256: columns.checksSha256,
+            runStatus: columns.runStatus,
+            allChecksZero: columns.allChecksZero,
+            writer: { ...columns.writer },
+            verifier: { ...columns.verifier },
+          },
+        });
+        if (options.crash === "VERIFY") return Promise.reject(new SupervisorError("killed after the receipt was recorded"));
+        return Promise.resolve({ ok: true, runStatus, receiptSha256: columns.receiptSha256 });
+      },
+    },
+    auditor: {
+      recordedAccept: (coordinate, receiptSha256) =>
+        largest(verdicts(coordinate, receiptSha256).filter((row) => row.verdict === "ACCEPT"), (row) => row.auditorRunId)?.auditId ?? null,
+      latest: (coordinate, receiptSha256) => {
+        const row = largest(verdicts(coordinate, receiptSha256), (candidate) => candidate.auditorRunId);
+        return row === null ? null : { auditId: row.auditId, verdict: row.verdict };
+      },
+      audit: (coordinate, receiptSha256) => {
+        calls.audit += 1;
+        const verdict = options.verdict ?? "ACCEPT";
+        const row = ledger.getVerification(receiptSha256);
+        if (row === null) return Promise.resolve({ ok: false, refusal: "AUDITOR_RECEIPT_UNKNOWN", at: "receiptSha256" });
+        const runId = receipts(coordinate)
+          .flatMap((receipt) => verdicts(coordinate, receipt.receiptSha256))
+          .reduce((last, verdictRow) => Math.max(last, verdictRow.auditorRunId), 0) + 1;
+        const auditor = { identity: PHASE_AUDITOR, workerId: supervisedWorkerIdFor(coordinate.taskId, coordinate.attempt, "reviewer", runId), runId };
+        const evidence = AuditEvidence.parse({
+          evidenceVersion: "acp/audit-evidence/v1",
+          receiptSha256,
+          treeSha: row.treeSha,
+          auditor,
+          verdict,
+          rules: [{ rule: "RECEIPT_PASS", outcome: verdict === "ACCEPT" ? "PASS" : "FAIL" }],
+        });
+        const published = publish(Buffer.from(canonicalJsonStringify(evidence), "utf8"), "EVIDENCE", coordinate.taskId, PHASE_AUDITOR);
+        const auditId = randomUUID();
+        append(coordinate, "AUDIT_COMPLETED", "audit.run." + String(runId), auditId, PHASE_AUDITOR, {
+          auditVerdict: {
+            receiptSha256,
+            treeSha: row.treeSha,
+            writerWorkerId: row.writerWorkerId,
+            auditor,
+            verdict,
+            evidenceSha256: published.contentSha256,
+            artifactReferenceId: published.artifactReferenceId,
+          },
+        });
+        if (options.crash === "AUDIT") return Promise.reject(new SupervisorError("killed after the verdict was recorded"));
+        return Promise.resolve({ ok: true, verdict, auditId });
+      },
+    },
+  };
+}
+
 describe("P-G-1: the real walk speaks the V2 coordinate end to end", () => {
   it("runs a revision-bearing invocation to CHECKPOINTED through the supervisor, opening first", async () => {
     const taskId = "40404040-4040-4040-8040-404040404001";
@@ -887,6 +1110,8 @@ describe("P-G-1: the real walk speaks the V2 coordinate end to end", () => {
       invocation,
       effects: recordingEffects(root, []),
       checkpoints: drillCheckpoints({ ledger, invocation, emittedBy: EMITTED_BY, ledgerPath, worktree: root }),
+      // P-16/D1 (ADR 0124): a V2 walk consumes a recorded verification and audit.
+      verification: recordingPorts(ledger, ledgerPath),
       emittedBy: EMITTED_BY,
       commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
       initiativeId: TEST_INITIATIVE_ID,
@@ -894,13 +1119,19 @@ describe("P-G-1: the real walk speaks the V2 coordinate end to end", () => {
     });
     const run = await supervisor.runToCheckpoint();
 
-    // One more append than a V1 walk: the opening, and nothing else.
+    // One more append than a V1 walk: the opening, and nothing else. The receipt
+    // and the verdict are the ports' appends, not the walk's steps.
     expect(run).toEqual({ finalState: "CHECKPOINTED", appended: LIFECYCLE_PLAN.length + 1, replayed: 0 });
 
     const events = ledger.listEvents({ taskId }).events;
+    const planIds = LIFECYCLE_PLAN.map((step) => step.transitionId);
     expect(events.map((entry) => entry.event.transitionId)).toEqual([
       ATTEMPT_OPENING_STEP.transitionId,
-      ...LIFECYCLE_PLAN.map((step) => step.transitionId),
+      ...planIds.slice(0, 6),
+      "verification.run.1",
+      planIds[6],
+      "audit.run.1",
+      ...planIds.slice(7),
     ]);
     // The task's first event is the opening, which is what continuity rebuilds.
     expect(ledger.getTask(taskId)?.firstSequence).toBe(events[0]?.sequence);
@@ -962,6 +1193,7 @@ describe("P-G-1: the real walk speaks the V2 coordinate end to end", () => {
       invocation,
       effects: recordingEffects(root, []),
       checkpoints: drillCheckpoints({ ledger, invocation, emittedBy: EMITTED_BY, ledgerPath, worktree: root }),
+      verification: recordingPorts(ledger, ledgerPath),
       emittedBy: EMITTED_BY,
       commitPolicy: "NO_COMMIT",
       initiativeId: TEST_INITIATIVE_ID,
@@ -996,6 +1228,162 @@ describe("P-G-1: the real walk speaks the V2 coordinate end to end", () => {
     expect(nextStep(context, "DISCOVERED")).toBe(planStep(0));
     // A V1 walk never enters the revision branch at all.
     expect(nextStep({ ...context, invocation: invocationFor("40404040-4040-4040-8040-404040404012") }, "DISCOVERED")).toBe(planStep(1));
+  });
+});
+
+describe("P-16/D1: steps 6 and 7 consume a recorded verification and audit (ADR 0124)", () => {
+  function phased(name: string, taskId: string): { ledger: Ledger; ledgerPath: string; root: ScenarioRoot; invocation: DurableInvocation } {
+    const root = scenario(name);
+    const ledgerPath = scenarioLedgerPath(root);
+    const ledger = openLedger(ledgerPath);
+    ledgers.push(ledger);
+    plantEnvelopeReference(ledger, taskId);
+    return { ledger, ledgerPath, root, invocation: v2InvocationFor(taskId) };
+  }
+
+  function supervisorOver(
+    walk: { ledger: Ledger; ledgerPath: string; root: ScenarioRoot; invocation: DurableInvocation },
+    verification: VerificationPorts | undefined,
+  ): SqliteSupervisor {
+    return new SqliteSupervisor({
+      ledger: walk.ledger,
+      invocation: walk.invocation,
+      effects: recordingEffects(walk.root, []),
+      checkpoints: drillCheckpoints({
+        ledger: walk.ledger,
+        invocation: walk.invocation,
+        emittedBy: EMITTED_BY,
+        ledgerPath: walk.ledgerPath,
+        worktree: walk.root,
+      }),
+      ...(verification === undefined ? {} : { verification }),
+      emittedBy: EMITTED_BY,
+      commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      initiativeId: TEST_INITIATIVE_ID,
+      route: TEST_ROUTE,
+    });
+  }
+
+  function eventOf(ledger: Ledger, taskId: string, transitionId: string): ControlPlaneEvent | undefined {
+    return ledger.listEvents({ taskId, limit: 200 }).events.find((entry) => entry.event.transitionId === transitionId)?.event;
+  }
+
+  it("P1: the receipt precedes step 6, the verdict step 7, and each beat names its row; the rebuild is identical", async () => {
+    const taskId = "d1d1d1d1-0000-4000-8000-000000000001";
+    const walk = phased("p16d1-p1", taskId);
+    const run = await supervisorOver(walk, recordingPorts(walk.ledger, walk.ledgerPath)).runToCheckpoint();
+    expect(run.finalState).toBe("CHECKPOINTED");
+
+    const [receipt] = walk.ledger.listVerifications(taskId, 1, 1);
+    const [verdict] = walk.ledger.listAuditVerdicts(receipt?.receiptSha256 ?? "");
+    expect(receipt?.runStatus).toBe("PASS");
+    expect(verdict?.verdict).toBe("ACCEPT");
+    expect(eventOf(walk.ledger, taskId, "verified")?.payload["verifiedReceipt"]).toEqual({ receiptSha256: receipt?.receiptSha256 });
+    expect(eventOf(walk.ledger, taskId, "audited")?.payload["auditedVerdict"]).toEqual({
+      auditId: verdict?.auditId,
+      receiptSha256: receipt?.receiptSha256,
+    });
+    // The producer forms are facts recorded in place: the receipt at RUNNING, the verdict at VERIFYING.
+    const receiptEvent = eventOf(walk.ledger, taskId, "verification.run.1");
+    const verdictEvent = eventOf(walk.ledger, taskId, "audit.run.1");
+    expect([receiptEvent?.fromState, receiptEvent?.toState]).toEqual(["RUNNING", "RUNNING"]);
+    expect([verdictEvent?.fromState, verdictEvent?.toState]).toEqual(["VERIFYING", "VERIFYING"]);
+
+    const status = walk.ledger.status();
+    walk.ledger.rebuildReadModel();
+    expect(walk.ledger.status().headEventSha256).toBe(status.headEventSha256);
+    expect(walk.ledger.listVerifications(taskId, 1, 1)).toEqual([receipt]);
+    expect(walk.ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("P2: a walk killed after the receipt resumes without a second run, and its step 6 is the uninterrupted walk's bytes", async () => {
+    const taskId = "d1d1d1d1-0000-4000-8000-000000000002";
+    const straight = phased("p16d1-p2-straight", taskId);
+    await supervisorOver(straight, recordingPorts(straight.ledger, straight.ledgerPath)).runToCheckpoint();
+
+    const killed = phased("p16d1-p2-killed", taskId);
+    const first = await supervisorOver(killed, recordingPorts(killed.ledger, killed.ledgerPath, { crash: "VERIFY" }))
+      .runToCheckpoint()
+      .then(() => null, (error: unknown) => error);
+    expect(first).toBeInstanceOf(SupervisorError);
+    expect(killed.ledger.getTask(taskId)?.currentState).toBe("RUNNING");
+    expect(eventOf(killed.ledger, taskId, "verified")).toBeUndefined();
+
+    const calls = { verify: 0, audit: 0 };
+    const resumed = await supervisorOver(killed, recordingPorts(killed.ledger, killed.ledgerPath, { calls })).runToCheckpoint();
+    expect(resumed.finalState).toBe("CHECKPOINTED");
+    expect(calls).toEqual({ verify: 0, audit: 1 });
+    expect(eventOf(killed.ledger, taskId, "verified")).toEqual(eventOf(straight.ledger, taskId, "verified"));
+
+    // The same after step 7: a finished walk resumes to nothing, and asks no port.
+    const again = { verify: 0, audit: 0 };
+    const replay = await supervisorOver(killed, recordingPorts(killed.ledger, killed.ledgerPath, { calls: again })).runToCheckpoint();
+    expect(replay).toEqual({ finalState: "CHECKPOINTED", appended: 0, replayed: 0 });
+    expect(again).toEqual({ verify: 0, audit: 0 });
+  });
+
+  it("N1: a FAIL receipt settles VERIFICATION_FAILED from RUNNING, with no step 6 and no audit", async () => {
+    const taskId = "d1d1d1d1-0000-4000-8000-000000000003";
+    const walk = phased("p16d1-n1", taskId);
+    const calls = { verify: 0, audit: 0 };
+    const thrown = await supervisorOver(walk, recordingPorts(walk.ledger, walk.ledgerPath, { runStatus: "FAIL", calls }))
+      .runToCheckpoint()
+      .then(() => null, (error: unknown) => error);
+    expect(thrown).toBeInstanceOf(VerificationPhaseError);
+    expect(calls).toEqual({ verify: 1, audit: 0 });
+    const failed = eventOf(walk.ledger, taskId, "failed");
+    expect([failed?.fromState, failed?.payload["reason"]]).toEqual(["RUNNING", "VERIFICATION_FAILED"]);
+    expect(eventOf(walk.ledger, taskId, "verified")).toBeUndefined();
+    expect(walk.ledger.listVerifications(taskId, 1, 1).map((row) => row.runStatus)).toEqual(["FAIL"]);
+    expect(walk.ledger.verifyIntegrity().ok).toBe(true);
+  });
+
+  it("ND-4: a walk killed between a FAIL receipt and its settlement settles on resume, without a new run", async () => {
+    const taskId = "d1d1d1d1-0000-4000-8000-000000000004";
+    const walk = phased("p16d1-nd4", taskId);
+    await supervisorOver(walk, recordingPorts(walk.ledger, walk.ledgerPath, { runStatus: "FAIL", crash: "VERIFY" }))
+      .runToCheckpoint()
+      .then(() => null, () => null);
+    expect(walk.ledger.getTask(taskId)?.currentState).toBe("RUNNING");
+    const calls = { verify: 0, audit: 0 };
+    const thrown = await supervisorOver(walk, recordingPorts(walk.ledger, walk.ledgerPath, { calls }))
+      .runToCheckpoint()
+      .then(() => null, (error: unknown) => error);
+    expect(thrown).toBeInstanceOf(VerificationPhaseError);
+    expect(calls).toEqual({ verify: 0, audit: 0 });
+    expect(eventOf(walk.ledger, taskId, "failed")?.payload["reason"]).toBe("VERIFICATION_FAILED");
+  });
+
+  it("N3: a REJECT settles AUDIT_NOT_ACCEPTED from VERIFYING, with the verdict row kept and no step 7", async () => {
+    const taskId = "d1d1d1d1-0000-4000-8000-000000000005";
+    const walk = phased("p16d1-n3", taskId);
+    const thrown = await supervisorOver(walk, recordingPorts(walk.ledger, walk.ledgerPath, { verdict: "REJECT" }))
+      .runToCheckpoint()
+      .then(() => null, (error: unknown) => error);
+    expect(thrown).toBeInstanceOf(VerificationPhaseError);
+    const failed = eventOf(walk.ledger, taskId, "failed");
+    expect([failed?.fromState, failed?.payload["reason"]]).toEqual(["VERIFYING", "AUDIT_NOT_ACCEPTED"]);
+    expect(eventOf(walk.ledger, taskId, "audited")).toBeUndefined();
+    const [receipt] = walk.ledger.listVerifications(taskId, 1, 1);
+    expect(walk.ledger.listAuditVerdicts(receipt?.receiptSha256 ?? "").map((row) => row.verdict)).toEqual(["REJECT"]);
+
+    // ND-4 again: resumed, the latest REJECT settles nothing new and runs no second audit.
+    const calls = { verify: 0, audit: 0 };
+    await supervisorOver(walk, recordingPorts(walk.ledger, walk.ledgerPath, { calls })).runToCheckpoint().then(() => null, () => null);
+    expect(calls).toEqual({ verify: 0, audit: 0 });
+  });
+
+  it("N8: a V2 walk with no ports refuses at step 6 and appends nothing past step 5; advance() refuses the same", async () => {
+    const taskId = "d1d1d1d1-0000-4000-8000-000000000006";
+    const walk = phased("p16d1-n8", taskId);
+    const thrown = await supervisorOver(walk, undefined).runToCheckpoint().then(() => null, (error: unknown) => error);
+    expect(thrown).toBeInstanceOf(SupervisorError);
+    expect((thrown as Error).message).toContain("no verification ports");
+    const events = walk.ledger.listEvents({ taskId, limit: 200 }).events;
+    expect(events.at(-1)?.event.transitionId).toBe(OUTCOME_STEP.transitionId);
+    expect(events.some((entry) => entry.event.type === "TASK_FAILED")).toBe(false);
+    await expect(supervisorOver(walk, undefined).advance(walk.invocation, "RUNNING")).rejects.toBeInstanceOf(SupervisorError);
+    expect(walk.ledger.listEvents({ taskId, limit: 200 }).events).toHaveLength(events.length);
   });
 });
 

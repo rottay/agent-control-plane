@@ -42,6 +42,7 @@ import {
   readArtifact,
   requestSha256,
   sha256Hex,
+  supervisedWorkerIdFor,
 } from "@acp/ledger";
 import type { ArtifactPlane, ArtifactPlaneTestFaults, ExecutionRouteReadModel, Ledger } from "@acp/ledger";
 import { admitBinary, admitConfigRoot, admitWorkdir, claudeAdapter, createExecutionPort, executionSessionId } from "@acp/providers";
@@ -5728,6 +5729,8 @@ function d4ThroughTheDoors(options: {
   readonly transport?: ResolvedRoute["transportKind"];
   /** P-15/A4: the role the task is routed to and emitted as; implementer by default. */
   readonly role?: "implementer" | "reviewer";
+  /** P-16/D1: the checks the recorded envelope declares; two synthetic ones by default. */
+  readonly commands?: readonly string[];
 }): {
   readonly databasePath: string;
   readonly taskId: string;
@@ -5820,6 +5823,9 @@ function d4ThroughTheDoors(options: {
       ...envelopeFor(taskId, D4_INITIATIVE, [D4_WRITTEN]),
       content: fixtureContent(instruction),
       readSet: [D4_WRITTEN],
+      // P-16/D1: a recorded task declares the checks its verification runs. Synthetic:
+      // they read the copy and spend nothing.
+      validation: { commands: [...(options.commands ?? ["test -f " + D4_WRITTEN, "exit 0"])], independentVerifierRequired: true },
       ...(role === "reviewer" ? { eligibility: { roles: [role], providers: null, requiredCapabilities: [] } } : {}),
     },
     clientScope: D4_OPERATOR,
@@ -5845,8 +5851,18 @@ function d4ThroughTheDoors(options: {
   return { databasePath, taskId, intakeRequest, worker };
 }
 
-/** A git worktree holding the one path the envelope declares, committed. */
-function d4Worktree(): string {
+/**
+ * A git worktree holding the one path the envelope declares, committed, and then
+ * changed once inside the write-set (P-16/D1, B-3).
+ *
+ * The recorded walk now verifies and audits before its steps 6 and 7, and the
+ * deterministic auditor's `DIFF_PRESENT_FOR_COMMIT` wants, under
+ * `LOCAL_COMMIT_WITH_RECEIPT`, one observed difference: the writer's work. The fake
+ * children write nothing into their cwd, so the drill makes that change itself, after
+ * the intake and before the start (the config is built between the two). PC-D3's
+ * inline worktree is its own and is not built here, so its trail pin is untouched.
+ */
+function d4Worktree(writerChange = true): string {
   const directory = d4Directory();
   const git = (...args: string[]): void => {
     spawnSync("/usr/bin/git", args, { cwd: directory, encoding: "utf8" });
@@ -5858,6 +5874,7 @@ function d4Worktree(): string {
   writeFileSync(join(directory, D4_WRITTEN), "the door-to-result drill\n", "utf8");
   git("add", "-A");
   git("commit", "-q", "-m", "fixture base");
+  if (writerChange) writeFileSync(join(directory, D4_WRITTEN), "the door-to-result drill, as the writer left it\n", "utf8");
   return directory;
 }
 
@@ -5918,6 +5935,7 @@ function d4ConfigFile(
   catalogDocumentId: string,
   outputBudgetBytes = 65_536,
   emittedBy = D4_OPERATOR,
+  writerChange = true,
 ): string {
   const directory = d4Directory();
   return d4Write(directory, "daemon.json", {
@@ -5943,7 +5961,7 @@ function d4ConfigFile(
           provider: "claude",
           binary,
           configRoot: d4Directory(),
-          workdir: d4Worktree(),
+          workdir: d4Worktree(writerChange),
           limits: { timeoutMs: 20_000, outputBudgetBytes, interruptGraceMs: 200, termGraceMs: 200 },
         },
       ],
@@ -6071,6 +6089,28 @@ describe("P-15/D4: a recorded task, from its door to its result (parallelism :14
     const before = readModels();
     ledger.rebuildReadModel();
     expect(readModels()).toBe(before);
+
+    // P-16/D1 P1 (D1-9): one PASS receipt (verifier run 1) and one ACCEPT verdict
+    // (reviewer run 1), each named by its consumer beat, in the stream's order.
+    const flat = ledger.getTask(taskId)?.latestAttempt ?? 0;
+    const receipts = ledger.listVerifications(taskId, 1, 1);
+    expect(receipts.map((row) => [row.runStatus, row.verifierRunId, row.verifierWorkerId])).toEqual([
+      ["PASS", 1, supervisedWorkerIdFor(taskId, flat, "verifier", 1)],
+    ]);
+    const receiptSha256 = receipts[0]?.receiptSha256 ?? "";
+    const verdicts = ledger.listAuditVerdicts(receiptSha256);
+    expect(verdicts.map((row) => [row.verdict, row.auditorRunId, row.auditorWorkerId, row.treeSha, row.writerWorkerId])).toEqual([
+      ["ACCEPT", 1, supervisedWorkerIdFor(taskId, flat, "reviewer", 1), receipts[0]?.treeSha, receipts[0]?.writerWorkerId],
+    ]);
+    const stream = ledger.listEvents({ taskId, limit: 500 }).events.map((record) => record.event);
+    const at = (transitionId: string): number => stream.findIndex((event) => event.transitionId === transitionId);
+    expect([at("verification.run.1") < at("verified"), at("verified") < at("audit.run.1"), at("audit.run.1") < at("audited")]).toEqual([true, true, true]);
+    expect(at("audited") < stream.findIndex((event) => event.type === "CHECKPOINT_WRITTEN")).toBe(true);
+    expect(stream[at("verified")]?.payload["verifiedReceipt"]).toEqual({ receiptSha256 });
+    expect(stream[at("audited")]?.payload["auditedVerdict"]).toEqual({ auditId: verdicts[0]?.auditId, receiptSha256 });
+    ledger.rebuildReadModel();
+    expect(ledger.listAuditVerdicts(receiptSha256)).toEqual(verdicts);
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
     ledger.close();
 
     // PC-D2, ND-D4-1: a replay on the same {L, taskId} appends only its own lease
@@ -6086,6 +6126,32 @@ describe("P-15/D4: a recorded task, from its door to its result (parallelism :14
     expect(replayed.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
     expect(replayed.verifyIntegrity().problems).toEqual([]);
   }, 180_000);
+
+  it("P-16/D1 N1-N3 through the door: a failing check, no declared check, and a writer that changed nothing", async () => {
+    const cases = [
+      { name: "N1", commands: ["exit 1"], writerChange: true, reason: "VERIFICATION_FAILED", word: "RECEIPT_FAIL", receipts: ["FAIL"], verdicts: [] },
+      { name: "N2", commands: [], writerChange: true, reason: "VERIFICATION_FAILED", word: "RUNNER_CHECKS_UNDECLARED", receipts: [], verdicts: [] },
+      { name: "N3", commands: ["exit 0"], writerChange: false, reason: "AUDIT_NOT_ACCEPTED", word: "REJECT", receipts: ["PASS"], verdicts: ["REJECT"] },
+    ] as const;
+    for (const each of cases) {
+      const { databasePath, taskId } = d4ThroughTheDoors({ priced: true, commands: each.commands });
+      const child = d4EchoChild({ isError: false });
+      const config = d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG, undefined, undefined, each.writerChange);
+      await expect(runPackagedEntry([config]), each.name).rejects.toMatchObject({ name: "VerificationPhaseError", reason: each.reason, word: each.word });
+      const ledger = openLedger(databasePath);
+      ledgers.push(ledger);
+      const receipts = ledger.listVerifications(taskId, 1, 1);
+      expect(receipts.map((row) => row.runStatus), each.name).toEqual([...each.receipts]);
+      expect(receipts.flatMap((row) => ledger.listAuditVerdicts(row.receiptSha256)).map((row) => row.verdict), each.name).toEqual([...each.verdicts]);
+      const events = d4Events(ledger, taskId);
+      expect(events.find((event) => event.type === "TASK_FAILED")?.payload, each.name).toMatchObject({ reason: each.reason });
+      const transitions = ledger.listEvents({ taskId, limit: 500 }).events.map((record) => record.event.transitionId);
+      expect(transitions.includes("verified"), each.name).toBe(each.name === "N3");
+      expect(transitions.includes("audited"), each.name).toBe(false);
+      expect(ledger.getTask(taskId)?.currentState, each.name).toBe("FAILED");
+      expect(ledger.verifyIntegrity().problems, each.name).toEqual([]);
+    }
+  }, 300_000);
 
   it("N-D10: a catalog that prices nothing in force refuses before any spend, and the task settles FAILED", async () => {
     const { databasePath, taskId } = d4ThroughTheDoors({ priced: false });
@@ -7380,7 +7446,12 @@ describe("P-15/E: the real clients, from the doors to the result, with a credent
         headers: { "content-type": "text/event-stream" },
       });
     });
-    expect(run.outcome).toEqual({ code: 0, error: null });
+    // P-16/D1 (ND-5 (a), a declared limit): an API_KEY transport has no writer-id
+    // issuer (P-28), so the recorded walk's verification refuses WRITER_ID_UNISSUED
+    // after the spend and the task settles VERIFICATION_FAILED; the result chain below
+    // is unchanged, and only the final state moved. The pre-spend refusal is P-16/D2's.
+    expect(run.outcome.code).toBeNull();
+    expect(run.outcome.error).toMatchObject({ name: "VerificationPhaseError", reason: "VERIFICATION_FAILED", word: "WRITER_ID_UNISSUED" });
 
     // The transport's positive control (C-E9.3): one call, the exact request, the canary once.
     expect(run.substitute.strays).toEqual([]);
@@ -7412,7 +7483,8 @@ describe("P-15/E: the real clients, from the doors to the result, with a credent
       cacheReadTokens: 13,
       totalTokens: 36,
     });
-    expect(types).toContain("CHECKPOINT_WRITTEN");
+    expect(types).not.toContain("CHECKPOINT_WRITTEN");
+    expect(events.find((event) => event.type === "TASK_FAILED")?.payload).toMatchObject({ reason: "VERIFICATION_FAILED" });
 
     // Read back through both doors: RESULT/SUCCEEDED, the sentinel where it may be.
     const read = await eReadBack(server, databasePath, taskId);
@@ -7442,7 +7514,10 @@ describe("P-15/E: the real clients, from the doors to the result, with a credent
           ...(accountsFile === undefined ? {} : { accountsFile }),
         }),
       );
-      expect(run.outcome).toEqual({ code: 0, error: null });
+      // P-16/D1 (ND-5 (a)): a local transport has no writer-id issuer either; the walk
+      // spends, its verification refuses, and the task settles VERIFICATION_FAILED.
+      expect(run.outcome.code).toBeNull();
+      expect(run.outcome.error).toMatchObject({ name: "VerificationPhaseError", reason: "VERIFICATION_FAILED", word: "WRITER_ID_UNISSUED" });
 
       // The transport's positive control: the socket saw exactly one request, and the
       // bearer header exactly when the auth is CREDENTIAL.
@@ -7461,6 +7536,7 @@ describe("P-15/E: the real clients, from the doors to the result, with a credent
         const usage = observation.payload["usageObservation"] as Record<string, unknown>;
         for (const key of ["inputTokens", "outputTokens", "cacheWriteTokens", "cacheReadTokens"]) expect(usage[key]).not.toBe(0);
       }
+      expect(events.find((event) => event.type === "TASK_FAILED")?.payload).toMatchObject({ reason: "VERIFICATION_FAILED" });
 
       const server = await fServer(databasePath, { bearer: true, ...(accountsFile === undefined ? {} : { accountsFile }) });
       const read = await eReadBack(server, databasePath, taskId);

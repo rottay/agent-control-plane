@@ -13,7 +13,8 @@ export type RuntimeErrorCode =
   | "SUPERVISOR"
   | "RECONCILIATION"
   | "DISPATCH_REFUSED"
-  | "OPERATION_FAILED";
+  | "OPERATION_FAILED"
+  | "VERIFICATION_PHASE";
 
 export class RuntimeError extends Error {
   readonly code: RuntimeErrorCode;
@@ -119,5 +120,28 @@ export class OperationFailedError extends RuntimeError {
     super("OPERATION_FAILED", message);
     this.name = "OperationFailedError";
     this.reason = reason;
+  }
+}
+
+/**
+ * The verification phase of a recorded walk ended without its gate (P-16/D1, ADR
+ * 0124; decision 238).
+ *
+ * Raised before the consumer beat of step 6 or step 7 is appended: the runner
+ * refused or recorded a `FAIL` receipt (`VERIFICATION_FAILED`), or the auditor
+ * refused or recorded a verdict other than `ACCEPT` (`AUDIT_NOT_ACCEPTED`). Both are
+ * definitive answers rather than uncertainties, so the walk settles `FAILED` under
+ * the reason. `word` is the runner's, the auditor's or the verdict's closed word,
+ * carried by name and never a value; it rides the message only (P-18 owns causes).
+ */
+export class VerificationPhaseError extends RuntimeError {
+  readonly reason: "AUDIT_NOT_ACCEPTED" | "VERIFICATION_FAILED";
+  readonly word: string;
+
+  constructor(reason: "AUDIT_NOT_ACCEPTED" | "VERIFICATION_FAILED", word: string) {
+    super("VERIFICATION_PHASE", "the verification phase ended " + reason + " (" + word + ")");
+    this.name = "VerificationPhaseError";
+    this.reason = reason;
+    this.word = word;
   }
 }

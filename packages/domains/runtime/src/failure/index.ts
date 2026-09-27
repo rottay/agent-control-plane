@@ -15,6 +15,7 @@ import {
   ReconciliationError,
   SupervisorError,
   ToyBoundaryError,
+  VerificationPhaseError,
 } from "../errors/index.js";
 import { deliveryIsOpen } from "../execution-chain/index.js";
 import { ExecutionEffectError } from "../execution-effects/index.js";
@@ -78,8 +79,14 @@ export const FAILURE_TRANSITION_ID = "failed";
  * its own drill needs it — never in advance, and never as free text. The
  * payload therefore carries a classified code and can never carry provider
  * output, a transcript or an exception string from a lower layer.
+ *
+ * P-16/D1 (ADR 0124, decision 238) adds two, sorted, each with its drill: a recorded
+ * walk whose verification refused or recorded `FAIL` (`VERIFICATION_FAILED`), and one
+ * whose audit refused or recorded a verdict other than `ACCEPT`
+ * (`AUDIT_NOT_ACCEPTED`). The runner's or auditor's own word is not persisted beyond
+ * the reason (P-18 owns causes).
  */
-export const FAILURE_REASONS = ["BOUND_EXHAUSTED", "EXECUTION_FAILED"] as const;
+export const FAILURE_REASONS = ["AUDIT_NOT_ACCEPTED", "BOUND_EXHAUSTED", "EXECUTION_FAILED", "VERIFICATION_FAILED"] as const;
 export type FailureReason = (typeof FAILURE_REASONS)[number];
 
 /**
@@ -156,7 +163,10 @@ export type FailureDecision =
  * version in force covers the segment, and `OperationFailedError`, an effect whose
  * recorded outcome is a failure. Each is a definitive "this cannot run" or "this
  * ran and failed", not an uncertainty, and both are tested first, before
- * `LedgerError` and the rest, so no broader class can claim them.
+ * `LedgerError` and the rest, so no broader class can claim them. P-16/D1 (ADR 0124,
+ * decision 238) adds `VerificationPhaseError`, tested first of all: a verification
+ * that refused or failed, or an audit that did not accept, is a definitive verdict
+ * on the work and settles under its own reason.
  *
  * **The "probe first" row of the design table is not a third disposition.**
  * `settleFailure` already probes an open intent unconditionally and refuses on
@@ -168,6 +178,7 @@ export type FailureDecision =
 export function classifyFailure(error: unknown): FailureDecision {
   // Order matters only where the hierarchy overlaps: every class below extends
   // `RuntimeError`, so the specific ones are tested before anything broader.
+  if (error instanceof VerificationPhaseError) return { settle: true, reason: error.reason };
   if (error instanceof DispatchRefusedError) return { settle: true, reason: "EXECUTION_FAILED" };
   if (error instanceof OperationFailedError) return { settle: true, reason: "EXECUTION_FAILED" };
   if (error instanceof PostconditionUnknownError) {

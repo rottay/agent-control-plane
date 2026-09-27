@@ -12800,6 +12800,83 @@ const P16C_WRITE_SET = [
   "packages/domains/runtime/README.md",
 ];
 
+/**
+ * P-16, cut D1: a walk consumes its verification and its audit (ADR 0124; decisions
+ * 238-241; brief v1 with the DT pre-review's corrections B-1..B-5 and its rulings on
+ * ND-1 to ND-18, adopted).
+ *
+ * A recorded (V2) walk verifies and audits between its writer's outcome and its
+ * steps 6 and 7: runtime's `verification-phase` asks two injected ports before the
+ * append (the runner's receipt, then the deterministic local auditor's verdict on it)
+ * and the two beats become consumer beats at their unchanged indices, carrying
+ * `verifiedReceipt` and `auditedVerdict`; the ledger's door and fold refuse a consumer
+ * reference that names no admissible row, a producer form on a state-changing event
+ * and a producer key under the other type (six new words). The auditor lives in the
+ * daemon, spawns nothing, and publishes contracts' `AuditEvidence`. A failed phase
+ * settles `VERIFICATION_FAILED` or `AUDIT_NOT_ACCEPTED`, never through the switch
+ * port. N03: both daemon walk sites read the envelope's commit policy. The runner
+ * folds in C's verifier notes NB-1..NB-4. Held by L-P16D1-1, L-P16D1-2 and L-P16D1-3.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 182 -> **185**; `RUNTIME_PUBLIC_EXPORTS` 308
+ * -> **314**; `CONTRACTS_SCHEMA_EXPORTS` 190 -> **191**; the ADR corpus 123 ->
+ * **124**. **Pins that do not.** `CONTRACT_VERSION` (2.11.0, ND-11 (a) with its
+ * condition), `API_CONTRACT_VERSION` (0.25.0), `MIGRATIONS` (28; no DDL),
+ * `SPAWN_ALLOWED_FILES` (5: the auditor spawns nothing), `DAEMON_PUBLIC_EXPORTS` and
+ * `COMPOSITION_PUBLIC_EXPORTS` (the auditor stays off the barrels),
+ * `DAEMON_ALLOWED_BUILTINS`, `PROVIDERS_PUBLIC_EXPORTS` (97).
+ *
+ * **Forty-six paths; seven are new**: the phase and its types leaf, the auditor and
+ * its types leaf, their two suites, and the ADR.
+ */
+const P16D1_WRITE_SET = [
+  "packages/domains/runtime/src/verification-phase/index.ts",
+  "packages/domains/runtime/src/verification-phase/types/index.ts",
+  "packages/domains/runtime/src/core/step-executor/index.ts",
+  "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts",
+  "packages/domains/runtime/src/failure/index.ts",
+  "packages/domains/runtime/src/errors/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/test/verification-phase/index.test.ts",
+  "packages/domains/runtime/test/drivers/sqlite-supervisor/index.test.ts",
+  "packages/domains/runtime/test/failure/index.test.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/persistence/ledger/src/verification-record/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/verification-record/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/kernel/contracts/src/schemas/commit-authorization/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/entrypoints/daemon/src/auditor/index.ts",
+  "packages/entrypoints/daemon/src/auditor/types/index.ts",
+  "packages/entrypoints/daemon/src/verification-runner/index.ts",
+  "packages/entrypoints/daemon/src/tree-hasher/index.ts",
+  "packages/entrypoints/daemon/src/tree-hasher/types/index.ts",
+  "packages/entrypoints/daemon/src/composition/walk/index.ts",
+  "packages/entrypoints/daemon/src/composition/types/index.ts",
+  "packages/entrypoints/daemon/src/composition/index.ts",
+  "packages/entrypoints/daemon/src/mode-sqlite/index.ts",
+  "packages/entrypoints/daemon/test/auditor/index.test.ts",
+  "packages/entrypoints/daemon/test/verification-runner/index.test.ts",
+  "packages/entrypoints/daemon/test/tree-hasher/index.test.ts",
+  "packages/entrypoints/daemon/test/composition/walk/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/domains/observation/src/baseline/index.ts",
+  "packages/domains/observation/test/baseline/index.test.ts",
+  "packages/domains/observation/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0124-a-walk-consumes-its-verification-and-its-audit.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "docs/audit/architecture/database/execution/index.md",
+  "docs/audit/architecture/contracts/index.md",
+  "packages/entrypoints/daemon/README.md",
+  "packages/domains/runtime/README.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -13061,6 +13138,7 @@ const WRITE_SET = [
   ...P16A2_WRITE_SET,
   ...P16B_WRITE_SET,
   ...P16C_WRITE_SET,
+  ...P16D1_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -14697,6 +14775,21 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the verifier and the auditor are named by their spawn, and the door checks it",
     scope: "packages/*/*/src/**",
+  },
+  // P-16/D1. Three new path-shaped surfaces, so three new rows: the register and the
+  // `requireScope` call sites both move 182 -> 185 for L-P16D1-1, L-P16D1-2 and
+  // L-P16D1-3. L-P16C-1 holds for the runner's fold-ins as written; it adds none.
+  {
+    law: "a lifecycle beat consumes a recorded verification and audit",
+    scope: "packages/*/*/src/**",
+  },
+  {
+    law: "one auditor, deterministic, local and read-only, and one evidence grammar",
+    scope: "packages/*/*/src/**",
+  },
+  {
+    law: "the commit policy is read, never stated",
+    scope: "packages/entrypoints/daemon/src/**",
   },
 ];
 
@@ -22249,6 +22342,16 @@ const RUNTIME_PUBLIC_EXPORTS = [
   // P-16/C (ADR 0123, decision 236): the writer id issuer's producer, from an attempt's
   // recorded route segments. 307 -> 308.
   "writerIdIssuerFor",
+  // P-16/D1 (ADR 0124, decision 238): the verification phase's error, which settles
+  // VERIFICATION_FAILED or AUDIT_NOT_ACCEPTED, and the two ports a recorded walk's steps
+  // 6 and 7 consume, bound together, with what each answers. The phase itself and its
+  // coordinate type stay off the barrel. 308 -> 314.
+  "VerificationPhaseError",
+  "AuditOutcome",
+  "AuditorPort",
+  "VerificationPorts",
+  "VerifierPort",
+  "VerifyOutcome",
 ];
 
 /**
@@ -22798,6 +22901,10 @@ if (accountsIndex === null) {
   // P-16/C (ADR 0123, decision 236): the namespace the supervised verifier and auditor
   // ids are derived under (its computation is the ledger's). 189 -> 190.
   "SUPERVISED_WORKER_ID_UUID_NAMESPACE",
+  // P-16/D1 (ADR 0124, decision 239): the evidence a verdict-form AUDIT_COMPLETED names,
+  // which the auditor publishes and the ledger's door parses. Its rule words are its own
+  // enum, not an export. 190 -> 191.
+  "AuditEvidence",
 ];
 
   const schemasBarrel = readIfPresent("packages/kernel/contracts/src/schemas/index.ts");
@@ -28718,6 +28825,186 @@ if (tracked.status === 0) {
   }
   requireScope(LAW, scanned);
   notes.push("the verifier and the auditor are named by their spawn: one namespace in " + NAMESPACE_HOME + ", one derivation in " + DERIVATION_HOME + ", checked in " + RECORD);
+}
+
+// L-P16D1-1 -- a lifecycle beat consumes a recorded verification and audit (P-16/D1,
+// ADR 0124; decision 238; ND-1, ND-2, ND-18, B-4).
+//
+// Over every tracked `packages/*/*/src/` `.ts` and `.tsx` file, comments stripped: the
+// two consumer keys, spelled `"verifiedReceipt"` and `"auditedVerdict"`, appear only in
+// runtime's `verification-phase` (the producer of the reference, where each is declared
+// once), the ledger's `verification-record` (the door and the fold) and observation's
+// `baseline` (the one reader, which skips a consumer beat, ND-17). The door refuses by
+// `CONSUMER_REFERENCE_ABSENT` and `CONSUMER_REFERENCE_UNRECORDED`, and a producer form on
+// a state-changing event by `refuse("RECORD_FORM_MISPLACED", "toState")`. The SQLite
+// supervisor's `#executeStep` awaits `produceBeforeStep(context, step)` exactly once, and
+// the step executor asks `consumerReference(context, step)` exactly once. The phase names
+// no `child_process`, no `/usr/bin/git`, no `@acp/providers` and no `.append(`: every
+// write is its ports'.
+//
+// Stated limit: L-P27C-1's, a text matcher. A reference built under another spelling,
+// or a state check moved behind a helper, is not seen. The semantic guards are the
+// ledger's consumer-form suites (N4-N6, door and fold, including a producer form made
+// state-changing) and the phase's own suite.
+{
+  const LAW = "a lifecycle beat consumes a recorded verification and audit";
+  const PHASE = "packages/domains/runtime/src/verification-phase/index.ts";
+  const RECORD = "packages/persistence/ledger/src/verification-record/index.ts";
+  const READER = "packages/domains/observation/src/baseline/index.ts";
+  const SUPERVISOR = "packages/domains/runtime/src/drivers/sqlite-supervisor/index.ts";
+  const EXECUTOR = "packages/domains/runtime/src/core/step-executor/index.ts";
+  const HOMES = [PHASE, READER, RECORD];
+  let scanned = 0;
+  const holders = new Set();
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      const code = stripComments(file);
+      if (code.includes('"verifiedReceipt"') || code.includes('"auditedVerdict"')) holders.add(relativePath);
+    }
+  }
+  const strays = [...holders].filter((relativePath) => !HOMES.includes(relativePath));
+  if (strays.length > 0) {
+    fail("the consumer keys are spelled in [" + strays.join(", ") + "]; their homes are " + HOMES.join(", ") + " (L-P16D1-1)");
+  }
+  const phase = stripComments(readIfPresent(PHASE) ?? "");
+  for (const declaration of ['const VERIFIED_RECEIPT_KEY = "verifiedReceipt";', 'const AUDITED_VERDICT_KEY = "auditedVerdict";']) {
+    if (phase.split(declaration).length - 1 !== 1) fail(PHASE + " does not declare " + declaration + " once; the reference has one producer (L-P16D1-1)");
+  }
+  for (const forbidden of ["child_process", "/usr/bin/git", "@acp/providers", ".append("]) {
+    if (phase.includes(forbidden)) fail(PHASE + " names " + forbidden + "; the phase spawns nothing and writes nothing of its own (L-P16D1-1)");
+  }
+  const record = stripComments(readIfPresent(RECORD) ?? "");
+  for (const word of ['refuse("CONSUMER_REFERENCE_ABSENT"', 'refuse("CONSUMER_REFERENCE_UNRECORDED"', 'refuse("RECORD_FORM_MISPLACED", "toState")']) {
+    if (!record.includes(word)) fail(RECORD + " no longer refuses by " + word.slice(8) + "; the door holds the consumer forms (L-P16D1-1)");
+  }
+  const supervisor = stripComments(readIfPresent(SUPERVISOR) ?? "");
+  const executeStep = functionBody(supervisor, "async #executeStep(") ?? "";
+  if ((supervisor.match(/\bproduceBeforeStep\s*\(/g) ?? []).length !== 1 || !executeStep.includes("await produceBeforeStep(context, step);")) {
+    fail(SUPERVISOR + " does not await produceBeforeStep(context, step) exactly once, in #executeStep; the phase runs before the append (L-P16D1-1)");
+  }
+  const executor = stripComments(readIfPresent(EXECUTOR) ?? "");
+  if ((executor.match(/\bconsumerReference\(context, step\)/g) ?? []).length !== 1) {
+    fail(EXECUTOR + " does not ask consumerReference(context, step) exactly once; the consumer beat carries its reference (L-P16D1-1)");
+  }
+  requireScope(LAW, scanned);
+  notes.push("steps 6 and 7 consume a recorded verification and audit: the reference produced in " + PHASE + ", judged in " + RECORD);
+}
+
+// L-P16D1-2 -- one auditor, deterministic, local and read-only, and one evidence grammar
+// (P-16/D1, ADR 0124; decision 239; ND-6, ND-7, ND-8).
+//
+// Over every tracked `packages/*/*/src/` `.ts` and `.tsx` file, comments stripped:
+// `function createLocalAuditor(` is declared once, in `daemon/src/auditor/index.ts`, and
+// `const AuditEvidence = z` once, in contracts' `commit-authorization`. The auditor is not
+// in `SPAWN_ALLOWED_FILES`; it names none of `spawn`, `child_process`, `@acp/providers`,
+// `fetch(`, `node:http`, `console.`, `appendFileSync`, `writeFileSync`,
+// `createWriteStream`, `/usr/bin/git` or an import of the daemon's log; every
+// `artifactClass:` it names is `"EVIDENCE"`, at least once; and it parses its evidence by
+// `AuditEvidence.parse(`. The ledger's `verification-record` imports `AuditEvidence` from
+// `@acp/contracts` and judges the bytes by `AuditEvidence.safeParse(`.
+//
+// Stated limit: a text matcher. A write through a handle, or a second grammar spelled
+// without `z`, is not seen. The semantic guards are the auditor's suite (its evidence
+// bytes read back and parsed) and the ledger's N7 (the door's two evidence words).
+{
+  const LAW = "one auditor, deterministic, local and read-only, and one evidence grammar";
+  const AUDITOR = "packages/entrypoints/daemon/src/auditor/index.ts";
+  const GRAMMAR = "packages/kernel/contracts/src/schemas/commit-authorization/index.ts";
+  const RECORD = "packages/persistence/ledger/src/verification-record/index.ts";
+  let scanned = 0;
+  const auditors = [];
+  const grammars = [];
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      const code = stripComments(file);
+      for (let index = 0; index < (code.match(/\bfunction\s+createLocalAuditor\s*\(/g) ?? []).length; index += 1) auditors.push(relativePath);
+      for (let index = 0; index < (code.match(/\bconst\s+AuditEvidence\s*=\s*z\b/g) ?? []).length; index += 1) grammars.push(relativePath);
+    }
+  }
+  if (auditors.length !== 1 || auditors[0] !== AUDITOR) {
+    fail("function createLocalAuditor( is declared " + String(auditors.length) + " time(s) (" + (auditors.join(", ") || "no file") + "); its one home is " + AUDITOR + " (L-P16D1-2)");
+  }
+  if (grammars.length !== 1 || grammars[0] !== GRAMMAR) {
+    fail("the evidence grammar AuditEvidence is declared " + String(grammars.length) + " time(s) (" + (grammars.join(", ") || "no file") + "); its one home is " + GRAMMAR + " (L-P16D1-2)");
+  }
+  if (SPAWN_ALLOWED_FILES.has(AUDITOR)) fail(AUDITOR + " is a spawn site; the auditor spawns nothing (L-P16D1-2)");
+  const auditor = readIfPresent(AUDITOR);
+  if (auditor === null) {
+    fail(AUDITOR + " is gone; the auditor has no home (L-P16D1-2)");
+  } else {
+    const code = stripComments(auditor);
+    for (const forbidden of ["spawn", "child_process", "@acp/providers", "fetch(", "node:http", "console.", "appendFileSync", "writeFileSync", "createWriteStream", "/usr/bin/git"]) {
+      if (code.includes(forbidden)) fail(AUDITOR + " names " + forbidden + "; the auditor is local, deterministic and read-only (L-P16D1-2)");
+    }
+    if (/from\s*["']\.\.\/log\//.test(code)) fail(AUDITOR + " imports the daemon's log (L-P16D1-2)");
+    const classes = code.match(/artifactClass:\s*"[A-Z_]+"/g) ?? [];
+    if (classes.length === 0 || classes.some((entry) => !entry.endsWith('"EVIDENCE"'))) {
+      fail(AUDITOR + " publishes [" + classes.join(", ") + "]; the auditor publishes only EVIDENCE (L-P16D1-2)");
+    }
+    if (!code.includes("AuditEvidence.parse(")) fail(AUDITOR + " no longer parses its evidence by the one grammar, AuditEvidence.parse( (L-P16D1-2)");
+  }
+  const record = stripComments(readIfPresent(RECORD) ?? "");
+  if (!/import\s*\{[^}]*\bAuditEvidence\b[^}]*\}\s*from\s*["']@acp\/contracts["']/.test(record) || !record.includes("AuditEvidence.safeParse(")) {
+    fail(RECORD + " does not judge the evidence by contracts' AuditEvidence.safeParse( (L-P16D1-2)");
+  }
+  requireScope(LAW, scanned);
+  notes.push("one deterministic auditor in " + AUDITOR + ", spawning nothing, publishing only EVIDENCE in the one grammar of " + GRAMMAR);
+}
+
+// L-P16D1-3 -- the commit policy is read, never stated (N03; P-16/D1, ADR 0124;
+// decision 240).
+//
+// Over every tracked `packages/entrypoints/daemon/src/` `.ts` file, comments stripped: no
+// `commitPolicy:` property takes a string literal (`"LOCAL_COMMIT_WITH_RECEIPT"`,
+// `"NO_COMMIT"` or any other); the one `runSqliteMode({` literal passes
+// `commitPolicy: input.envelope.commitPolicy,` and the Restate site
+// `commitPolicy: walked.envelope.commitPolicy,`.
+//
+// Stated limit: a text matcher; a policy stated through a constant is not seen. The
+// semantic guard is the composition suite's N03 case (a NO_COMMIT envelope walks the
+// read-only plan).
+{
+  const LAW = "the commit policy is read, never stated";
+  const WALK = "packages/entrypoints/daemon/src/composition/walk/index.ts";
+  const ROOT = "packages/entrypoints/daemon/src/composition/index.ts";
+  let scanned = 0;
+  const stated = [];
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!relativePath.startsWith("packages/entrypoints/daemon/src/") || !relativePath.endsWith(".ts")) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      if (/\bcommitPolicy\s*:\s*["'`]/.test(stripComments(file))) stated.push(relativePath);
+    }
+  }
+  if (stated.length > 0) {
+    fail("a commit policy is stated in [" + stated.join(", ") + "]; the walk reads the envelope's own (N03, L-P16D1-3)");
+  }
+  const walk = stripComments(readIfPresent(WALK) ?? "");
+  if ((walk.match(/\bcommitPolicy: input\.envelope\.commitPolicy,/g) ?? []).length !== 1) {
+    fail(WALK + " does not pass commitPolicy: input.envelope.commitPolicy once to runSqliteMode (L-P16D1-3)");
+  }
+  const root = stripComments(readIfPresent(ROOT) ?? "");
+  if ((root.match(/\bcommitPolicy: walked\.envelope\.commitPolicy,/g) ?? []).length !== 1) {
+    fail(ROOT + " does not pass commitPolicy: walked.envelope.commitPolicy once at the Restate site (L-P16D1-3)");
+  }
+  requireScope(LAW, scanned);
+  notes.push("the commit policy is read from the envelope at both daemon walk sites, never stated");
 }
 
 // --- 21c. V2-B5/R11: the telemetry export edge ------------------------------

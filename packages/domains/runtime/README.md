@@ -98,6 +98,31 @@ disagree about a recovery. The split made that sharing structural rather than
 conventional — the edge imports the plan across a package boundary, so it cannot
 quietly grow one of its own.
 
+## The verification phase: steps 6 and 7 consume a verification and an audit
+
+`src/verification-phase` (P-16/D1, ADR 0124) changes what a revision-bearing walk's
+steps 6 (`verified`) and 7 (`audited`) stand on, and nothing of the plan table. Before
+the synchronous append of a PLAIN step, the SQLite supervisor awaits
+`produceBeforeStep`: for step 6 it asks the injected `VerifierPort` for the
+coordinate's largest-run `PASS` receipt, reusing one already recorded and otherwise
+running once; for step 7 it asks the `AuditorPort` for an `ACCEPT` verdict on the
+receipt step 6's recorded event names, read back from the ledger. `appendPlanStep` then
+adds one closed key naming the row, `verifiedReceipt: {receiptSha256}` or
+`auditedVerdict: {auditId, receiptSha256}`; a beat already recorded is rebuilt from its
+own reference, so a replay rebuilds the same bytes. The ports are optional on
+`SqliteSupervisorOptions` and `BeatContext`, and the optionality is the refusal: a V2
+walk with none refuses at step 6 and appends nothing past step 5, through `advance()`
+too. A V1 walk never asks them; its beats stay PLAIN, byte for byte.
+
+A runner refusal or a `FAIL` receipt throws `VerificationPhaseError` with
+`VERIFICATION_FAILED`; an auditor refusal or a verdict other than `ACCEPT`, with
+`AUDIT_NOT_ACCEPTED`. `classifyFailure` settles that class under its reason, and the
+switch fork never offers it to the switch port: a verdict on the work is not pressure on
+the account. On a resume a latest `FAIL`, or a latest non-`ACCEPT` verdict, settles
+without a new run. The phase spawns nothing, runs no Git and writes nothing of its own;
+the daemon implements both ports (the runner and the deterministic local auditor), and
+the Restate driver, which walks V1 only, is untouched.
+
 That is also why the second plan is **derived rather than written twice**.
 `READ_ONLY_PLAN` is the writer plan's own frozen steps 0-7 plus one closing step
 that takes its transition id, event type and target state from the writer plan's
@@ -485,6 +510,14 @@ negatives. The children are real processes terminated with `SIGKILL`. An
 exception caught in-process would prove nothing, because the page cache, the
 open database handle and every object survive a thrown error, which is exactly
 what a crash does not leave behind.
+
+The verification phase is drilled twice: over fake ports in `test/verification-phase`
+(reuse, the resume rulings, every refusal by name, the replay's own bytes, V1
+untouched), and over ports that record real rows through the ledger's real door in the
+step executor's suite (the receipt before step 6 and the verdict before step 7, a walk
+killed after its receipt resuming without a second run, a `FAIL` or a `REJECT`
+settling its reason, a V2 walk with no ports refused at step 6). The supervisor's suite
+holds the switch fork away from a `VerificationPhaseError`.
 
 Each drill asserts the same things after restart: final state `CHECKPOINTED`,
 the effect applied exactly once, `verifyIntegrity().ok`, no duplicate

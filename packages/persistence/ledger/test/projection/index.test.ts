@@ -5241,6 +5241,53 @@ describe("the verification fold refuses in the door's words (P-16/B)", () => {
     ).toEqual({ reason: "AUDIT_RECEIPT_NOT_PASS", at: "payload.auditVerdict.receiptSha256" });
   });
 
+  it("P-16/D1 (fold): a consumer beat names a row it holds, and a producer form stays in place (ND-2, B-4, ND-18)", () => {
+    const snapshot = folded();
+    const record = receipt(1, 1);
+    applyEventToSnapshot(snapshot, event("VERIFICATION_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, verification: record }), 3, "3".repeat(64));
+    const auditId = "7e7e7e7e-0000-4000-8000-00000000fffe";
+    applyEventToSnapshot(
+      snapshot,
+      event("AUDIT_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, auditVerdict: verdictOf(record) }, { eventId: auditId }),
+      4,
+      "4".repeat(64),
+    );
+    const moving = (type: ControlPlaneEvent["type"], payload: Record<string, unknown>, toState: string): ControlPlaneEvent =>
+      ({ ...event(type, 1, { revisionNumber: 1, attemptNumber: 1, ...payload }), toState }) as unknown as ControlPlaneEvent;
+    // Admitted, and no row: the fold copies nothing for a consumer beat.
+    applyEventToSnapshot(snapshot, moving("VERIFICATION_COMPLETED", { verifiedReceipt: { receiptSha256: record["receiptSha256"] } }, "VERIFYING"), 5, "5".repeat(64));
+    applyEventToSnapshot(
+      snapshot,
+      moving("AUDIT_COMPLETED", { auditedVerdict: { auditId, receiptSha256: record["receiptSha256"] } }, "AUDITING"),
+      6,
+      "6".repeat(64),
+    );
+    expect(snapshot.verifications.size).toBe(1);
+    expect(snapshot.auditVerdicts.size).toBe(1);
+    const cases: readonly (readonly [ControlPlaneEvent, string, string])[] = [
+      [moving("VERIFICATION_COMPLETED", {}, "VERIFYING"), "CONSUMER_REFERENCE_ABSENT", "payload.verifiedReceipt"],
+      [
+        moving("VERIFICATION_COMPLETED", { verifiedReceipt: { receiptSha256: "f".repeat(64) } }, "VERIFYING"),
+        "CONSUMER_REFERENCE_UNRECORDED",
+        "payload.verifiedReceipt.receiptSha256",
+      ],
+      [
+        moving("AUDIT_COMPLETED", { auditedVerdict: { auditId: "7e7e7e7e-0000-4000-8000-00000000fffd", receiptSha256: record["receiptSha256"] } }, "AUDITING"),
+        "CONSUMER_REFERENCE_UNRECORDED",
+        "payload.auditedVerdict.auditId",
+      ],
+      [moving("VERIFICATION_COMPLETED", { verification: record }, "VERIFYING"), "RECORD_FORM_MISPLACED", "toState"],
+      [moving("AUDIT_COMPLETED", { verification: record }, "DISCOVERED"), "RECORD_FORM_MISPLACED", "payload.verification"],
+    ];
+    for (const [candidate, reason, at] of cases) {
+      expect(
+        refusal(() => {
+          applyEventToSnapshot(snapshot, candidate, 9, "9".repeat(64));
+        }),
+      ).toEqual({ reason, at });
+    }
+  });
+
   it("N12/N13 (fold): refuses a verifier or an auditor the spawn registry did not name (P-16/C)", () => {
     const snapshot = folded();
     // Run 2 of the verifier when the fold holds no run of this attempt.

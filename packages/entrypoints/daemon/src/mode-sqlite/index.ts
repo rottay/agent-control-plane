@@ -1,6 +1,6 @@
 import type { CommitPolicy, ResolvedRoute } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
-import type { CheckpointPort, DurableInvocation, EffectPort, SwitchPort } from "@acp/runtime";
+import type { CheckpointPort, DurableInvocation, EffectPort, SwitchPort, VerificationPorts } from "@acp/runtime";
 import { SqliteSupervisor } from "@acp/runtime";
 
 import { ModeError } from "../errors/index.js";
@@ -75,6 +75,13 @@ export interface SqliteModeInput {
    * second holder's claim on the same grant.
    */
   readonly switchPort?: SwitchPort | undefined;
+  /**
+   * The verifier and the auditor a recorded walk's steps 6 and 7 consume (P-16/D1, ADR
+   * 0124). Passed through exactly as `checkpoints` is, and optional for its reason: a
+   * revision-bearing walk invoked without them refuses at step 6, and an inline walk
+   * never asks them.
+   */
+  readonly verification?: VerificationPorts | undefined;
 }
 
 export interface SqliteModeResult {
@@ -96,6 +103,7 @@ export async function runSqliteMode(input: SqliteModeInput): Promise<SqliteModeR
     route: input.route,
     checkpoints: input.checkpoints,
     switchPort: input.switchPort,
+    verification: input.verification,
   });
 
   const report = await supervisor.reconcile();

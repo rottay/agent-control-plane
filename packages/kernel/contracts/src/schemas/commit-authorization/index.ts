@@ -302,6 +302,76 @@ export const CommitAuthorizationReceipt = VerificationReceipt.superRefine((value
 export type CommitAuthorizationReceipt = z.infer<typeof CommitAuthorizationReceipt>;
 
 /**
+ * The evidence a verdict-form `AUDIT_COMPLETED` names (P-16/D1, ADR 0124; execution
+ * §10.3 `evidence_sha256`; ND-7).
+ *
+ * One strict object, published as a private `EVIDENCE` artifact in canonical JSON:
+ * the receipt it audits and that receipt's tree, the auditor (its label, the
+ * registry's instance id and its run), the verdict, and the rules it applied, each
+ * with its outcome. `evidence_sha256` is the artifact's `content_sha256`; since the
+ * bytes contain `receiptSha256`, the digest binds the verdict to its receipt. The
+ * ledger's door parses these bytes (`EVIDENCE_UNREADABLE`) and holds `treeSha`,
+ * `auditor` and `verdict` to the record (`EVIDENCE_FIELD_MISMATCH`); the fold never
+ * reopens them (execution §10.1).
+ *
+ * The rules are a closed vocabulary, each named at most once, in sorted order, and
+ * the verdict answers them: `ACCEPT` only when every rule applied `PASS`es, and any
+ * `FAIL` is a verdict other than `ACCEPT`. The rule words are declared here and
+ * nowhere else; the deterministic auditor reads them through this schema.
+ */
+export const AuditEvidence = z
+  .strictObject({
+    evidenceVersion: z.literal("acp/audit-evidence/v1"),
+    receiptSha256: Sha256Hex,
+    treeSha: GitCommitSha,
+    auditor: z.strictObject({
+      identity: WorkerIdentityString,
+      workerId: WorkerInstanceId,
+      runId: z.number().int().min(1),
+    }),
+    verdict: z.enum(["ACCEPT", "ACCEPT_WITH_CORRECTIONS", "REJECT"]),
+    rules: z
+      .array(
+        z.strictObject({
+          rule: z.enum([
+            "CHANGES_WITHIN_WRITE_SET",
+            "DIFF_PRESENT_FOR_COMMIT",
+            "INDEPENDENT_IDS",
+            "POLICY_MATCHES_ENVELOPE",
+            "RECEIPT_BYTES_MATCH",
+            "RECEIPT_PASS",
+          ]),
+          outcome: z.enum(["PASS", "FAIL"]),
+        }),
+      )
+      .min(1)
+      .max(6),
+  })
+  .superRefine((value, ctx) => {
+    attachGuards(value, ctx, { transcript: false });
+    for (let index = 1; index < value.rules.length; index += 1) {
+      const previous = value.rules[index - 1];
+      const current = value.rules[index];
+      if (previous !== undefined && current !== undefined && !(previous.rule < current.rule)) {
+        ctx.addIssue({
+          code: "custom",
+          message: "the rules are named at most once each, in sorted order",
+          path: ["rules", index, "rule"],
+        });
+      }
+    }
+    const failed = value.rules.some((rule) => rule.outcome === "FAIL");
+    if (value.verdict === "ACCEPT" && failed) {
+      ctx.addIssue({
+        code: "custom",
+        message: "an ACCEPT verdict has every applied rule PASS",
+        path: ["verdict"],
+      });
+    }
+  });
+export type AuditEvidence = z.infer<typeof AuditEvidence>;
+
+/**
  * The exact bytes of an authorized commit message (execution §10.5):
  *
  *     body + "\n\nACP-Receipt: " + receiptSha256 + "\n"

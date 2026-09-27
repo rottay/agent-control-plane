@@ -177,6 +177,8 @@ interface EventInput {
   readonly flat: number;
   readonly payload: Record<string, unknown>;
   readonly fromState?: string | null;
+  /** P-16/D1: a consumer beat changes state; every other fixture stays in place. */
+  readonly toState?: string;
   readonly eventId?: string;
   readonly recordedAt?: string;
 }
@@ -202,7 +204,7 @@ function taskEvent(input: EventInput): Record<string, unknown> {
       : buildIdempotencyKey({ taskId: input.taskId, attempt: input.flat, transitionId: input.transitionId }),
     type: input.type,
     fromState: input.fromState === undefined ? STATE : input.fromState,
-    toState: STATE,
+    toState: input.toState ?? STATE,
     emittedBy: COORDINATOR,
     occurredAt: AT,
     recordedAt: input.recordedAt ?? AT,
@@ -361,6 +363,37 @@ function auditEvent(input: FormInput & { readonly record: unknown }): Record<str
   });
 }
 
+/** The evidence's own fields a verdict record must repeat (P-16/D1, ND-7). */
+interface EvidenceFields {
+  readonly treeSha?: string;
+  readonly auditor?: { readonly identity: string; readonly workerId: string; readonly runId: number };
+  readonly verdict?: string;
+}
+
+/**
+ * Contracts' `AuditEvidence` naming one receipt, in canonical JSON (P-16/D1, ND-7):
+ * restamped from B's minimal `{receiptSha256}` evidence, its defaults the ones
+ * `verdictRecord` carries by default, so a record and its evidence agree unless a test
+ * says otherwise.
+ */
+function evidenceBytes(taskId: string, receiptSha256: unknown, fields: EvidenceFields = {}): Buffer {
+  const verdict = fields.verdict ?? "ACCEPT";
+  const rules = ["CHANGES_WITHIN_WRITE_SET", "DIFF_PRESENT_FOR_COMMIT", "INDEPENDENT_IDS", "POLICY_MATCHES_ENVELOPE", "RECEIPT_BYTES_MATCH", "RECEIPT_PASS"].map(
+    (rule, index) => ({ rule, outcome: verdict !== "ACCEPT" && index === 0 ? "FAIL" : "PASS" }),
+  );
+  return Buffer.from(
+    canonicalJsonStringify({
+      evidenceVersion: "acp/audit-evidence/v1",
+      receiptSha256,
+      treeSha: fields.treeSha ?? "89abcdef0123456789abcdef0123456789abcdef",
+      auditor: fields.auditor ?? { identity: AUDITOR, workerId: auditorIdOf(taskId), runId: 1 },
+      verdict,
+      rules,
+    }),
+    "utf8",
+  );
+}
+
 /** Publish evidence naming one receipt; its reference id and content digest. */
 function publishEvidence(
   h: Harness,
@@ -369,14 +402,9 @@ function publishEvidence(
   artifactReferenceId = "ref-evidence-" + randomUUID(),
   artifactClass = "EVIDENCE",
   scopeId = taskId,
+  fields: EvidenceFields = {},
 ): { readonly artifactReferenceId: string; readonly evidenceSha256: string } {
-  const evidenceSha256 = publish(
-    h,
-    json({ receiptSha256, finding: "the tree matches the declared write-set" }),
-    artifactReferenceId,
-    artifactClass,
-    scopeId,
-  );
+  const evidenceSha256 = publish(h, evidenceBytes(taskId, receiptSha256, fields), artifactReferenceId, artifactClass, scopeId);
   return { artifactReferenceId, evidenceSha256 };
 }
 
@@ -566,7 +594,7 @@ function rewindTo27(path: string): void {
 // ===========================================================================
 
 describe("the vocabulary, the keys and the barrel", () => {
-  it("is one sorted, repeat-free list, frozen with RECORDED_AT_NOT_CANONICAL and P-16/C's two registry words in it", () => {
+  it("is one sorted, repeat-free list, frozen with RECORDED_AT_NOT_CANONICAL, P-16/C's two registry words and P-16/D1's six in it", () => {
     expect([...VERIFICATION_REFUSALS]).toEqual([...VERIFICATION_REFUSALS].sort());
     expect(new Set(VERIFICATION_REFUSALS).size).toBe(VERIFICATION_REFUSALS.length);
     expect(VERIFICATION_REFUSALS).toEqual([
@@ -577,8 +605,13 @@ describe("the vocabulary, the keys and the barrel", () => {
       "AUDIT_RECORD_INVALID",
       "AUDIT_TREE_MISMATCH",
       "AUDIT_WRITER_MISMATCH",
+      "CONSUMER_REFERENCE_ABSENT",
+      "CONSUMER_REFERENCE_INVALID",
+      "CONSUMER_REFERENCE_UNRECORDED",
+      "EVIDENCE_FIELD_MISMATCH",
       "EVIDENCE_RECEIPT_MISMATCH",
       "EVIDENCE_REFERENCE_INVALID",
+      "EVIDENCE_UNREADABLE",
       "RECEIPT_ATTEMPT_UNOPENED",
       "RECEIPT_COORDINATE_MISMATCH",
       "RECEIPT_DIGEST_MISMATCH",
@@ -588,6 +621,7 @@ describe("the vocabulary, the keys and the barrel", () => {
       "RECEIPT_REFERENCE_INVALID",
       "RECEIPT_UNREADABLE",
       "RECORDED_AT_NOT_CANONICAL",
+      "RECORD_FORM_MISPLACED",
       "VERIFIER_NOT_INDEPENDENT",
       "VERIFIER_NOT_REGISTERED",
       "WRITER_ID_MISMATCH",
@@ -638,18 +672,20 @@ describe("the decision, pure over the event and what its caller answers", () => 
   const receipt = receiptValue({ taskId });
   const record = recordOf(receipt, "ref-receipt");
 
-  it("answers null for every beat and every other type, and reads no byte for one", () => {
+  it("answers null for every V1 beat and every other type, and reads no byte for one", () => {
+    // P-16/D1 (ADR 0124): a V2 bare beat of either type is no longer a beat, and a
+    // producer key under the other type is RECORD_FORM_MISPLACED; both are below.
     const beats = [
-      taskEvent({ taskId, type: "VERIFICATION_COMPLETED", transitionId: "b1", flat: 1, payload: { submissionDigest: "a".repeat(64), revisionNumber: 1, attemptNumber: 1, beat: "verify", planIndex: 0 } }),
+      taskEvent({ taskId, type: "VERIFICATION_COMPLETED", transitionId: "b1", flat: 1, payload: { submissionDigest: "a".repeat(64), beat: "verify", planIndex: 0 } }),
       taskEvent({ taskId, type: "AUDIT_COMPLETED", transitionId: "b2", flat: 1, payload: { submissionDigest: "a".repeat(64), beat: "audit", planIndex: 1, verdict: "ACCEPT" } }),
-      // The receipt key on the wrong type is not a form: it is a beat of that type.
-      taskEvent({ taskId, type: "AUDIT_COMPLETED", transitionId: "b3", flat: 1, payload: { verification: record } }),
       taskEvent({ taskId, type: "TASK_DISCOVERED", transitionId: "b4", flat: 1, payload: {} }),
     ];
     for (const beat of beats) {
       expect(decide(view(taskId), beat)).toBeNull();
       expect(readVerificationArtifact(harness().ledger, beat as unknown as ControlPlaneEvent)).toBeNull();
     }
+    const misplaced = taskEvent({ taskId, type: "AUDIT_COMPLETED", transitionId: "b3", flat: 1, payload: { verification: record } });
+    expect(refusalOf(() => decide(view(taskId), misplaced))).toEqual({ reason: "RECORD_FORM_MISPLACED", at: "payload.verification" });
   });
 
   it("grants a receipt row with every column from the record and the envelope", () => {
@@ -909,7 +945,8 @@ describe("P1-P5: the door records a receipt and a verdict, and the fold reproduc
     const on = recorded();
     const words = ["ACCEPT", "ACCEPT_WITH_CORRECTIONS", "REJECT"];
     for (const [index, verdict] of words.entries()) {
-      const evidence = publishEvidence(on.h, on.taskId, on.receiptSha256);
+      const auditor = { identity: AUDITOR, workerId: auditorIdOf(on.taskId, 1, index + 1), runId: index + 1 };
+      const evidence = publishEvidence(on.h, on.taskId, on.receiptSha256, undefined, undefined, undefined, { verdict, auditor });
       on.h.ledger.append(
         auditEvent({
           taskId: on.taskId,
@@ -917,7 +954,7 @@ describe("P1-P5: the door records a receipt and a verdict, and the fold reproduc
           // Each audit is its own spawn: run ids 1, 2, 3 of the attempt (P-16/C).
           record: verdictRecord(on.receipt, evidence, {
             verdict,
-            auditor: { identity: AUDITOR, workerId: auditorIdOf(on.taskId, 1, index + 1), runId: index + 1 },
+            auditor,
           }),
         }),
       );
@@ -959,8 +996,8 @@ describe("P1-P5: the door records a receipt and a verdict, and the fold reproduc
   });
 });
 
-describe("P6 / A7: the walk's beats are admitted byte-unchanged and project nothing", () => {
-  it("V2 and V1 beats of both types, and an observation-style verdict beat", () => {
+describe("P6 / A7: the walk's V1 beats are admitted byte-unchanged and project nothing", () => {
+  it("V1 beats of both types, and an observation-style verdict beat; a V2 bare beat is refused by name (P-16/D1)", () => {
     const h = harness();
     const taskId = randomUUID();
     openAttempt(h, taskId, { flat: 1 });
@@ -968,16 +1005,9 @@ describe("P6 / A7: the walk's beats are admitted byte-unchanged and project noth
       taskEvent({
         taskId,
         type: "VERIFICATION_COMPLETED",
-        transitionId: "beat.verify",
+        transitionId: "beat.verify.v1",
         flat: 1,
-        payload: { submissionDigest: "a".repeat(64), revisionNumber: 1, attemptNumber: 1, beat: "verify", planIndex: 2 },
-      }),
-      taskEvent({
-        taskId,
-        type: "AUDIT_COMPLETED",
-        transitionId: "beat.audit",
-        flat: 1,
-        payload: { submissionDigest: "a".repeat(64), revisionNumber: 1, attemptNumber: 1, beat: "audit", planIndex: 3 },
+        payload: { submissionDigest: "a".repeat(64), beat: "verify", planIndex: 2 },
       }),
       taskEvent({
         taskId,
@@ -992,45 +1022,59 @@ describe("P6 / A7: the walk's beats are admitted byte-unchanged and project noth
       expect(appended.inserted).toBe(true);
       expect(appended.record.event.payload).toEqual(beat["payload"]);
     }
+    // ND-2: a V2 event of either type that is neither a same-state producer form nor
+    // a state-changing consumer form is CONSUMER_REFERENCE_ABSENT, and writes nothing.
+    for (const type of ["VERIFICATION_COMPLETED", "AUDIT_COMPLETED"] as const) {
+      const bare = taskEvent({
+        taskId,
+        type,
+        transitionId: "beat.v2." + type,
+        flat: 1,
+        payload: { submissionDigest: "a".repeat(64), revisionNumber: 1, attemptNumber: 1, beat: "PLAIN", planIndex: 6 },
+      });
+      expect(refusedCleanly(h, () => h.ledger.append(bare))).toEqual({ reason: "CONSUMER_REFERENCE_ABSENT", at: "payload" });
+    }
     expect(count(h.path, "verification_read_model")).toBe(0);
     expect(count(h.path, "audit_verdict_read_model")).toBe(0);
     expect(h.ledger.verifyIntegrity().problems).toEqual([]);
   });
 
-  it("NB-1 (ADR 0122 Two): a form key under the other type is a beat of that type, and projects no row", () => {
+  it("ND-18 (ADR 0122's open question, closed by 0124): a form key under the other type is RECORD_FORM_MISPLACED", () => {
     // A form is its type AND its key. The receipt key on AUDIT_COMPLETED and the
-    // verdict key on VERIFICATION_COMPLETED are beats: admitted byte-unchanged, no
-    // byte read, no row, even when the record they carry would be granted under its
-    // own type. Authorization reads the two tables, never a payload key (P-17/A).
+    // verdict key on VERIFICATION_COMPLETED were beats under B (a silent half-record);
+    // P-16/D1 refuses both by name at the door, before any byte is read, and the fold
+    // refuses the same history in the same word.
     const on = recorded();
     const evidence = publishEvidence(on.h, on.taskId, on.receiptSha256);
     const crossed = [
-      taskEvent({
-        taskId: on.taskId,
-        type: "AUDIT_COMPLETED",
-        transitionId: "crossed.audit",
-        flat: 1,
-        payload: { revisionNumber: 1, attemptNumber: 1, verification: on.record },
-      }),
-      taskEvent({
-        taskId: on.taskId,
-        type: "VERIFICATION_COMPLETED",
-        transitionId: "crossed.verify",
-        flat: 1,
-        payload: { revisionNumber: 1, attemptNumber: 1, auditVerdict: verdictRecord(on.receipt, evidence) },
-      }),
+      {
+        event: taskEvent({
+          taskId: on.taskId,
+          type: "AUDIT_COMPLETED",
+          transitionId: "crossed.audit",
+          flat: 1,
+          payload: { revisionNumber: 1, attemptNumber: 1, verification: on.record },
+        }),
+        at: "payload.verification",
+      },
+      {
+        event: taskEvent({
+          taskId: on.taskId,
+          type: "VERIFICATION_COMPLETED",
+          transitionId: "crossed.verify",
+          flat: 1,
+          payload: { revisionNumber: 1, attemptNumber: 1, auditVerdict: verdictRecord(on.receipt, evidence) },
+        }),
+        at: "payload.auditVerdict",
+      },
     ];
-    for (const beat of crossed) {
-      expect(decide(view(on.taskId), beat)).toBeNull();
-      expect(readVerificationArtifact(on.h.ledger, beat as unknown as ControlPlaneEvent)).toBeNull();
-      const appended = on.h.ledger.append(beat);
-      expect(appended.inserted).toBe(true);
-      expect(appended.record.event.payload).toEqual(beat["payload"]);
+    for (const { event, at } of crossed) {
+      expect(refusalOf(() => decide(view(on.taskId), event))).toEqual({ reason: "RECORD_FORM_MISPLACED", at });
+      expect(refusedCleanly(on.h, () => on.h.ledger.append(event))).toEqual({ reason: "RECORD_FORM_MISPLACED", at });
     }
     // Only the receipt recorded by its own form stands; no verdict row exists.
     expect(count(on.h.path, "verification_read_model")).toBe(1);
     expect(count(on.h.path, "audit_verdict_read_model")).toBe(0);
-    expect(on.h.ledger.listAuditVerdicts(on.receiptSha256)).toEqual([]);
     const before = dump(on.h.path);
     expect(on.h.ledger.verifyIntegrity().problems).toEqual([]);
     on.h.ledger.rebuildReadModel();
@@ -1049,7 +1093,8 @@ describe("P7: a 2.11.0 history crosses migration 28", () => {
         type: "VERIFICATION_COMPLETED",
         transitionId: "beat.verify",
         flat: 1,
-        payload: { submissionDigest: "a".repeat(64), revisionNumber: 1, attemptNumber: 1, beat: "verify", planIndex: 2 },
+        // A V1 beat: since P-16/D1 a V2 bare beat is refused by name (ND-2).
+        payload: { submissionDigest: "a".repeat(64), beat: "verify", planIndex: 2 },
       }),
     );
     const head = h.ledger.status();
@@ -1407,7 +1452,11 @@ describe("N12-N14: the verifier and the auditor are named by their spawn (P-16/C
       at: "payload.auditVerdict.auditor.runId",
     });
     const second = { identity: AUDITOR, workerId: auditorIdOf(on.taskId, 1, 2), runId: 2 };
-    on.h.ledger.append(auditEvent({ taskId: on.taskId, transitionId: "audit.r2", record: verdictRecord(on.receipt, evidence, { auditor: second }) }));
+    // The evidence names its own auditor (P-16/D1, ND-7): run 2's is its own.
+    const secondEvidence = publishEvidence(on.h, on.taskId, on.receiptSha256, undefined, undefined, undefined, { auditor: second });
+    on.h.ledger.append(
+      auditEvent({ taskId: on.taskId, transitionId: "audit.r2", record: verdictRecord(on.receipt, secondEvidence, { auditor: second }) }),
+    );
     expect(on.h.ledger.listAuditVerdicts(on.receiptSha256).map((row) => row.auditorRunId)).toEqual([1, 2]);
     expect(on.h.ledger.verifyIntegrity().problems).toEqual([]);
   });
@@ -1806,13 +1855,245 @@ describe("B1-B5", () => {
       [on.receipt, on.receiptSha256, "audit.first", 1],
       [second, secondSha, "audit.second", 2],
     ] as const) {
-      const evidence = publishEvidence(on.h, on.taskId, sha);
       const auditor = { identity: AUDITOR, workerId: auditorIdOf(on.taskId, 1, runId), runId };
+      const evidence = publishEvidence(on.h, on.taskId, sha, undefined, undefined, undefined, { auditor });
       on.h.ledger.append(auditEvent({ taskId: on.taskId, transitionId, record: verdictRecord(receipt, evidence, { auditor }) }));
     }
     expect(on.h.ledger.listAuditVerdicts(on.receiptSha256)).toHaveLength(1);
     expect(on.h.ledger.listAuditVerdicts(secondSha)).toHaveLength(1);
     expect(count(on.h.path, "verification_read_model")).toBe(2);
     expect(on.h.ledger.verifyIntegrity().problems).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// P-16/D1 (ADR 0124; decisions 238-239): the consumer forms, the producer forms'
+// placement, and the evidence grammar
+// ===========================================================================
+
+/** A walk-shaped step 6 or 7 on a V2 subject: state-changing, carrying `extra`. */
+function consumerEvent(
+  taskId: string,
+  type: "VERIFICATION_COMPLETED" | "AUDIT_COMPLETED",
+  extra: Record<string, unknown>,
+  options: { readonly toState?: string; readonly v2?: boolean; readonly transitionId?: string } = {},
+): Record<string, unknown> {
+  const v2 = options.v2 ?? true;
+  return taskEvent({
+    taskId,
+    type,
+    transitionId: options.transitionId ?? (type === "VERIFICATION_COMPLETED" ? "verified" : "audited"),
+    flat: 1,
+    toState: options.toState ?? (type === "VERIFICATION_COMPLETED" ? "VERIFYING" : "AUDITING"),
+    payload: {
+      submissionDigest: "a".repeat(64),
+      ...(v2 ? { revisionNumber: 1, attemptNumber: 1 } : {}),
+      beat: "PLAIN",
+      planIndex: type === "VERIFICATION_COMPLETED" ? 6 : 7,
+      ...extra,
+    },
+  });
+}
+
+/** A recorded receipt with one ACCEPT verdict on it; the verdict's audit id. */
+function accepted(): Recorded & { readonly auditId: string } {
+  const on = recorded();
+  const evidence = publishEvidence(on.h, on.taskId, on.receiptSha256);
+  const audit = auditEvent({ taskId: on.taskId, record: verdictRecord(on.receipt, evidence) });
+  on.h.ledger.append(audit);
+  return { ...on, auditId: audit["eventId"] as string };
+}
+
+describe("P-16/D1: a consumer beat names a row the door admitted (ND-2)", () => {
+  it("P: step 6 on a PASS receipt and step 7 on an ACCEPT verdict are admitted, project nothing, and rebuild identical", () => {
+    const on = accepted();
+    const step6 = consumerEvent(on.taskId, "VERIFICATION_COMPLETED", { verifiedReceipt: { receiptSha256: on.receiptSha256 } });
+    expect(decide(view(on.taskId, 1, on.h.ledger.getVerification(on.receiptSha256)), step6)).toBeNull();
+    expect(readVerificationArtifact(on.h.ledger, step6 as unknown as ControlPlaneEvent)).toBeNull();
+    expect(on.h.ledger.append(step6).inserted).toBe(true);
+    const step7 = consumerEvent(
+      on.taskId,
+      "AUDIT_COMPLETED",
+      { auditedVerdict: { auditId: on.auditId, receiptSha256: on.receiptSha256 } },
+      { transitionId: "audited" },
+    );
+    (step7 as { fromState: string }).fromState = "VERIFYING";
+    expect(on.h.ledger.append(step7).inserted).toBe(true);
+    expect(on.h.ledger.getTask(on.taskId)?.currentState).toBe("AUDITING");
+    expect(count(on.h.path, "verification_read_model")).toBe(1);
+    expect(count(on.h.path, "audit_verdict_read_model")).toBe(1);
+    const before = dump(on.h.path);
+    expect(on.h.ledger.verifyIntegrity().problems).toEqual([]);
+    on.h.ledger.rebuildReadModel();
+    expect(dump(on.h.path)).toEqual(before);
+  });
+
+  it("N4 (door): a step 6 with no reference, an unknown, FAIL or foreign receipt, or a malformed or misplaced key", () => {
+    const on = recorded();
+    const other = recorded();
+    const failing = recorded({ runStatus: "FAIL" });
+    const refuse = (event: Record<string, unknown>) => refusedCleanly(on.h, () => on.h.ledger.append(event));
+    const verified = (value: unknown, options?: { toState?: string; v2?: boolean }) =>
+      consumerEvent(on.taskId, "VERIFICATION_COMPLETED", { verifiedReceipt: value }, options);
+    expect(refuse(consumerEvent(on.taskId, "VERIFICATION_COMPLETED", {}))).toEqual({
+      reason: "CONSUMER_REFERENCE_ABSENT",
+      at: "payload.verifiedReceipt",
+    });
+    for (const sha of ["f".repeat(64), other.receiptSha256]) {
+      expect(refuse(verified({ receiptSha256: sha }))).toEqual({
+        reason: "CONSUMER_REFERENCE_UNRECORDED",
+        at: "payload.verifiedReceipt.receiptSha256",
+      });
+    }
+    // A FAIL receipt of this very coordinate is not a gate either.
+    const onFail = (event: Record<string, unknown>) => refusedCleanly(failing.h, () => failing.h.ledger.append(event));
+    expect(
+      onFail(consumerEvent(failing.taskId, "VERIFICATION_COMPLETED", { verifiedReceipt: { receiptSha256: failing.receiptSha256 } })),
+    ).toEqual({ reason: "CONSUMER_REFERENCE_UNRECORDED", at: "payload.verifiedReceipt.receiptSha256" });
+    expect(refuse(verified({ receiptSha256: on.receiptSha256, extra: 1 }))).toEqual({
+      reason: "CONSUMER_REFERENCE_INVALID",
+      at: "payload.verifiedReceipt",
+    });
+    expect(refuse(verified({ receiptSha256: on.receiptSha256.toUpperCase() }))).toEqual({
+      reason: "CONSUMER_REFERENCE_INVALID",
+      at: "payload.verifiedReceipt.receiptSha256",
+    });
+    // The key on a same-state event, and on a V1 subject.
+    expect(refuse(verified({ receiptSha256: on.receiptSha256 }, { toState: STATE }))).toEqual({
+      reason: "CONSUMER_REFERENCE_INVALID",
+      at: "payload.verifiedReceipt",
+    });
+    expect(refuse(verified({ receiptSha256: on.receiptSha256 }, { v2: false }))).toEqual({
+      reason: "CONSUMER_REFERENCE_INVALID",
+      at: "payload.verifiedReceipt",
+    });
+    // The other type's consumer key, and a producer key beside a consumer key.
+    expect(refuse(consumerEvent(on.taskId, "VERIFICATION_COMPLETED", { auditedVerdict: { auditId: randomUUID(), receiptSha256: on.receiptSha256 } }))).toEqual({
+      reason: "CONSUMER_REFERENCE_INVALID",
+      at: "payload.auditedVerdict",
+    });
+    const both = verificationEvent({ taskId: on.taskId, transitionId: "verify.both", record: on.record });
+    (both["payload"] as Record<string, unknown>)["verifiedReceipt"] = { receiptSha256: on.receiptSha256 };
+    expect(refuse(both)).toEqual({ reason: "CONSUMER_REFERENCE_INVALID", at: "payload.verifiedReceipt" });
+    expect(on.h.ledger.getTask(on.taskId)?.currentState).toBe(STATE);
+  });
+
+  it("N5 (door): a step 7 naming a REJECT verdict, a verdict on another receipt, an unknown or malformed audit id", () => {
+    const on = accepted();
+    const rejectAuditor = { identity: AUDITOR, workerId: auditorIdOf(on.taskId, 1, 2), runId: 2 };
+    const rejectEvidence = publishEvidence(on.h, on.taskId, on.receiptSha256, undefined, undefined, undefined, {
+      verdict: "REJECT",
+      auditor: rejectAuditor,
+    });
+    const reject = auditEvent({
+      taskId: on.taskId,
+      transitionId: "audit.reject",
+      record: verdictRecord(on.receipt, rejectEvidence, { verdict: "REJECT", auditor: rejectAuditor }),
+    });
+    on.h.ledger.append(reject);
+    const refuse = (value: unknown) =>
+      refusedCleanly(on.h, () => on.h.ledger.append(consumerEvent(on.taskId, "AUDIT_COMPLETED", { auditedVerdict: value })));
+    for (const value of [
+      { auditId: reject["eventId"], receiptSha256: on.receiptSha256 },
+      { auditId: on.auditId, receiptSha256: "f".repeat(64) },
+      { auditId: randomUUID(), receiptSha256: on.receiptSha256 },
+    ]) {
+      expect(refuse(value)).toEqual({ reason: "CONSUMER_REFERENCE_UNRECORDED", at: "payload.auditedVerdict.auditId" });
+    }
+    expect(refuse({ auditId: on.auditId.toUpperCase(), receiptSha256: on.receiptSha256 })).toEqual({
+      reason: "CONSUMER_REFERENCE_INVALID",
+      at: "payload.auditedVerdict.auditId",
+    });
+    expect(refuse({ auditId: on.auditId })).toEqual({
+      reason: "CONSUMER_REFERENCE_INVALID",
+      at: "payload.auditedVerdict.receiptSha256",
+    });
+  });
+
+  it("N6 / B-4 (door): a producer form on a state-changing event is RECORD_FORM_MISPLACED at toState", () => {
+    const on = prepared();
+    const moving = { ...on.event, toState: "VERIFYING" };
+    expect(refusedCleanly(on.h, () => on.h.ledger.append(moving))).toEqual({ reason: "RECORD_FORM_MISPLACED", at: "toState" });
+    on.h.ledger.append(on.event);
+    const evidence = publishEvidence(on.h, on.taskId, on.receiptSha256);
+    const verdict = { ...auditEvent({ taskId: on.taskId, record: verdictRecord(on.receipt, evidence) }), toState: "AUDITING" };
+    expect(refusedCleanly(on.h, () => on.h.ledger.append(verdict))).toEqual({ reason: "RECORD_FORM_MISPLACED", at: "toState" });
+    expect(on.h.ledger.getTask(on.taskId)?.currentState).toBe(STATE);
+  });
+
+  it("N4-N6 (fold): the same histories planted past the door are refused by the fold in the door's words", () => {
+    const planted = (event: (on: Recorded) => Record<string, unknown>) => {
+      const on = recorded();
+      on.h.close();
+      plantChainedEvent(on.h.path, event(on));
+      const again = harnessAt(on.h.path);
+      expect(again.ledger.verifyIntegrity().ok).toBe(false);
+      return refusalOf(() => again.ledger.rebuildReadModel());
+    };
+    expect(planted((on) => consumerEvent(on.taskId, "VERIFICATION_COMPLETED", { verifiedReceipt: { receiptSha256: "f".repeat(64) } }))).toEqual({
+      reason: "CONSUMER_REFERENCE_UNRECORDED",
+      at: "payload.verifiedReceipt.receiptSha256",
+    });
+    expect(planted((on) => consumerEvent(on.taskId, "VERIFICATION_COMPLETED", {}))).toEqual({
+      reason: "CONSUMER_REFERENCE_ABSENT",
+      at: "payload.verifiedReceipt",
+    });
+    expect(planted((on) => ({ ...verificationEvent({ taskId: on.taskId, transitionId: "verify.again", record: on.record }), toState: "VERIFYING" }))).toEqual({
+      reason: "RECORD_FORM_MISPLACED",
+      at: "toState",
+    });
+  });
+});
+
+describe("P-16/D1: the evidence is one AuditEvidence, and it repeats the record (ND-7)", () => {
+  it("N7: bytes that are not one, or not canonical, are EVIDENCE_UNREADABLE; a differing field is EVIDENCE_FIELD_MISMATCH", () => {
+    const on = recorded();
+    const refuse = (evidence: { artifactReferenceId: string; evidenceSha256: string }, overrides: Record<string, unknown> = {}) =>
+      refusedCleanly(on.h, () =>
+        on.h.ledger.append(
+          auditEvent({ taskId: on.taskId, transitionId: "audit." + randomUUID(), record: verdictRecord(on.receipt, evidence, overrides) }),
+        ),
+      );
+    // B's minimal evidence binds its receipt, and is no longer an AuditEvidence.
+    const minimalId = "ref-ev-minimal";
+    const minimal = publish(on.h, json({ receiptSha256: on.receiptSha256 }), minimalId, "EVIDENCE", on.taskId);
+    expect(refuse({ artifactReferenceId: minimalId, evidenceSha256: minimal })).toEqual({
+      reason: "EVIDENCE_UNREADABLE",
+      at: "payload.auditVerdict.evidenceSha256",
+    });
+    // The same object, not in canonical JSON.
+    const loose = JSON.parse(evidenceBytes(on.taskId, on.receiptSha256).toString("utf8")) as Record<string, unknown>;
+    const looseId = "ref-ev-loose";
+    const looseSha = publish(on.h, Buffer.from(JSON.stringify(loose, null, 2), "utf8"), looseId, "EVIDENCE", on.taskId);
+    expect(refuse({ artifactReferenceId: looseId, evidenceSha256: looseSha })).toEqual({
+      reason: "EVIDENCE_UNREADABLE",
+      at: "payload.auditVerdict.evidenceSha256",
+    });
+    // An ACCEPT with a failed rule is no AuditEvidence either.
+    const lyingId = "ref-ev-lying";
+    const lying = { ...loose, rules: [{ rule: "RECEIPT_PASS", outcome: "FAIL" }] };
+    const lyingSha = publish(on.h, Buffer.from(canonicalJsonStringify(lying), "utf8"), lyingId, "EVIDENCE", on.taskId);
+    expect(refuse({ artifactReferenceId: lyingId, evidenceSha256: lyingSha })).toEqual({
+      reason: "EVIDENCE_UNREADABLE",
+      at: "payload.auditVerdict.evidenceSha256",
+    });
+    // Each repeated field, differing.
+    const cases: readonly (readonly [EvidenceFields, string])[] = [
+      [{ treeSha: "fedcba9876543210fedcba9876543210fedcba98" }, "treeSha"],
+      [{ auditor: { identity: "claude/sonnet/reviewer/02", workerId: auditorIdOf(on.taskId), runId: 1 } }, "auditor.identity"],
+      [{ auditor: { identity: AUDITOR, workerId: auditorIdOf(on.taskId, 1, 7), runId: 1 } }, "auditor.workerId"],
+      [{ auditor: { identity: AUDITOR, workerId: auditorIdOf(on.taskId), runId: 2 } }, "auditor.runId"],
+      [{ verdict: "REJECT" }, "verdict"],
+    ];
+    for (const [fields, path] of cases) {
+      const evidence = publishEvidence(on.h, on.taskId, on.receiptSha256, undefined, undefined, undefined, fields);
+      expect(refuse(evidence)).toEqual({ reason: "EVIDENCE_FIELD_MISMATCH", at: "payload.auditVerdict." + path });
+    }
+    // B's binding still comes first: another receipt's evidence is EVIDENCE_RECEIPT_MISMATCH.
+    expect(refuse(publishEvidence(on.h, on.taskId, "8".repeat(64)))).toEqual({
+      reason: "EVIDENCE_RECEIPT_MISMATCH",
+      at: "payload.auditVerdict.evidenceSha256",
+    });
+    expect(count(on.h.path, "audit_verdict_read_model")).toBe(0);
   });
 });

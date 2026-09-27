@@ -209,8 +209,12 @@ mean different things, so spend and hold stay apart here for the reason they
 stay apart in the rollup.
 
 **`reason` and `verdict` are absent-tolerant, and absence is stated.** The walk
-writes `TASK_CLASSIFIED` and `AUDIT_COMPLETED` as PLAIN beats carrying neither
-field, so a real chain now measures instead of stopping. It does not measure
+writes `TASK_CLASSIFIED` as a PLAIN beat carrying no reason, and a V1 walk writes
+`AUDIT_COMPLETED` as a PLAIN beat carrying no verdict, so a real chain measures
+instead of stopping. Since P-16/D1 (ADR 0124, ND-17) a recorded walk's audit is a
+verdict-form `AUDIT_COMPLETED`, counted by its `auditVerdict.verdict` under
+`acceptance.audits`; its step-7 consumer beat, which only names that verdict under
+`auditedVerdict`, is not an audit and is not counted at all. It does not measure
 silently: `routing.unreported` and `acceptance.unreported` carry the counts, so
 "no classification happened" and "every classification happened without saying
 why" never collapse into one zero. A field that is *present and broken* — an
