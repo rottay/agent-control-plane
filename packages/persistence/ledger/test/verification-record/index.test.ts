@@ -28,6 +28,7 @@ import {
   openArtifactBlobLeaseStore,
   openArtifactPlane,
   openLedger,
+  supervisedWorkerIdFor,
   writerWorkerIdFor,
   type ArtifactBlobLeaseStore,
   type ArtifactPlane,
@@ -66,10 +67,17 @@ const PUBLISHER = "claude/opus/implementer/01";
 const WRITER = "claude/opus/implementer/01";
 const VERIFIER = "claude/sonnet/verifier/01";
 const AUDITOR = "claude/sonnet/reviewer/01";
-/** `uuid.uuid5(NAMESPACE, "verifier/1")`: the receipt-identity suite's verifier. */
-const VERIFIER_ID = "24a8af45-549e-5137-8d27-03eb76de8b47";
-/** Any lowercase v5 that is neither the writer's nor the verifier's. */
-const AUDITOR_ID = writerWorkerIdFor("00000000-0000-4000-8000-0000000000aa", 7);
+/**
+ * The spawn registry's ids (P-16/C, ADR 0123): the verifier and the auditor are named by
+ * their spawn, `supervisedWorkerIdFor(task, flat, role, runId)`, and the door refuses
+ * any other. Restamped by derivation from B's fixed ids, never by lifting a value.
+ */
+function verifierIdOf(taskId: string, flat = 1, runId = 1): string {
+  return supervisedWorkerIdFor(taskId, flat, "verifier", runId);
+}
+function auditorIdOf(taskId: string, flat = 1, runId = 1): string {
+  return supervisedWorkerIdFor(taskId, flat, "reviewer", runId);
+}
 const ENVELOPE_REFERENCE = "ref-envelope";
 const STATE = "DISCOVERED";
 
@@ -281,7 +289,7 @@ function receiptValue(input: ReceiptInput): Record<string, unknown> {
     observedTrackedChanges: [{ path: "src/a.ts", sha256: "a".repeat(64) }],
     observedUntrackedPaths: [],
     writer: { identity: WRITER, workerId: writerWorkerIdFor(input.taskId, input.flat ?? 1) },
-    verifier: { identity: VERIFIER, workerId: VERIFIER_ID, runId: 1 },
+    verifier: { identity: VERIFIER, workerId: verifierIdOf(input.taskId, input.flat ?? 1), runId: 1 },
     runStatus: "PASS",
     checks: [
       { command: "pnpm check", exitCode: 0, ranAt: "2026-09-26T11:00:00.000Z" },
@@ -382,7 +390,7 @@ function verdictRecord(
     receiptSha256: record["receiptSha256"],
     treeSha: record["treeSha"],
     writerWorkerId: (record["writer"] as { workerId: string }).workerId,
-    auditor: { identity: AUDITOR, workerId: AUDITOR_ID, runId: 1 },
+    auditor: { identity: AUDITOR, workerId: auditorIdOf(receipt["taskId"] as string), runId: 1 },
     verdict: "ACCEPT",
     evidenceSha256: evidence.evidenceSha256,
     artifactReferenceId: evidence.artifactReferenceId,
@@ -558,11 +566,12 @@ function rewindTo27(path: string): void {
 // ===========================================================================
 
 describe("the vocabulary, the keys and the barrel", () => {
-  it("is one sorted, repeat-free list, frozen with RECORDED_AT_NOT_CANONICAL in it", () => {
+  it("is one sorted, repeat-free list, frozen with RECORDED_AT_NOT_CANONICAL and P-16/C's two registry words in it", () => {
     expect([...VERIFICATION_REFUSALS]).toEqual([...VERIFICATION_REFUSALS].sort());
     expect(new Set(VERIFICATION_REFUSALS).size).toBe(VERIFICATION_REFUSALS.length);
     expect(VERIFICATION_REFUSALS).toEqual([
       "AUDITOR_NOT_INDEPENDENT",
+      "AUDITOR_NOT_REGISTERED",
       "AUDIT_RECEIPT_NOT_PASS",
       "AUDIT_RECEIPT_UNKNOWN",
       "AUDIT_RECORD_INVALID",
@@ -580,6 +589,7 @@ describe("the vocabulary, the keys and the barrel", () => {
       "RECEIPT_UNREADABLE",
       "RECORDED_AT_NOT_CANONICAL",
       "VERIFIER_NOT_INDEPENDENT",
+      "VERIFIER_NOT_REGISTERED",
       "WRITER_ID_MISMATCH",
     ]);
   });
@@ -595,9 +605,11 @@ describe("the vocabulary, the keys and the barrel", () => {
   it("exports the words and the error, and keeps the decision and the door's read in the module", () => {
     expect(ledgerBarrel.VERIFICATION_REFUSALS).toBe(VERIFICATION_REFUSALS);
     expect(ledgerBarrel.LedgerVerificationRefusedError).toBe(LedgerVerificationRefusedError);
-    for (const name of ["decideVerificationRecord", "readVerificationArtifact", "assertVerificationArtifact", "receiptVerificationColumns"]) {
+    for (const name of ["decideVerificationRecord", "readVerificationArtifact", "assertVerificationArtifact"]) {
       expect(Object.keys(ledgerBarrel), name).not.toContain(name);
     }
+    // P-16/C: the column reading leaves the module for its second caller, the runner.
+    expect(ledgerBarrel.receiptVerificationColumns).toBe(receiptVerificationColumns);
     const error = new LedgerVerificationRefusedError("RECEIPT_DIGEST_MISMATCH", "payload.verification.receiptSha256");
     expect(error.code).toBe("LEDGER_VERIFICATION_REFUSED");
     expect(error.message).toBe(
@@ -613,6 +625,7 @@ function view(taskId: string, legacy: number | null = 1, receipt: ReturnType<Ver
       task === taskId && revisionNumber === 1 && attemptNumber === 1 ? legacy : null,
     verification: () => receipt,
     auditVerdict: () => null,
+    lastRunId: () => 0,
   };
 }
 
@@ -650,7 +663,7 @@ describe("the decision, pure over the event and what its caller answers", () => 
         revisionNumber: 1,
         attemptNumber: 1,
         verifierIdentity: VERIFIER,
-        verifierWorkerId: VERIFIER_ID,
+        verifierWorkerId: verifierIdOf(taskId),
         verifierRunId: 1,
         writerIdentity: WRITER,
         writerWorkerId: writerWorkerIdFor(taskId, 1),
@@ -669,7 +682,7 @@ describe("the decision, pure over the event and what its caller answers", () => 
   });
 
   it("refuses the verifier by label and by instance (VERIFIER_NOT_INDEPENDENT)", () => {
-    const byLabel = { ...record, verifier: { identity: WRITER, workerId: VERIFIER_ID, runId: 1 } };
+    const byLabel = { ...record, verifier: { identity: WRITER, workerId: verifierIdOf(taskId), runId: 1 } };
     expect(refusalOf(() => decide(view(taskId), verificationEvent({ taskId, record: byLabel })))).toEqual({
       reason: "VERIFIER_NOT_INDEPENDENT",
       at: "payload.verification.verifier.identity",
@@ -704,6 +717,7 @@ describe("the decision, pure over the event and what its caller answers", () => 
           legacyAttempt: () => 1,
           verification: () => null,
           auditVerdict: () => null,
+          lastRunId: () => 0,
         },
         verificationEvent({ taskId, record, revisionNumber, attemptNumber: revisionNumber }),
       );
@@ -729,7 +743,7 @@ describe("N8: a half form is refused at its path, at either level", () => {
     receiptSha256: record["receiptSha256"],
     treeSha: record["treeSha"],
     writerWorkerId: writerWorkerIdFor(taskId, 1),
-    auditor: { identity: AUDITOR, workerId: AUDITOR_ID, runId: 1 },
+    auditor: { identity: AUDITOR, workerId: auditorIdOf(taskId), runId: 1 },
     verdict: "ACCEPT",
     evidenceSha256: "d".repeat(64),
     artifactReferenceId: "ref-evidence",
@@ -752,9 +766,9 @@ describe("N8: a half form is refused at its path, at either level", () => {
       [{ ...record, allChecksZero: false }, "payload.verification.allChecksZero"],
       [{ ...record, writer: { identity: WRITER } }, "payload.verification.writer.workerId"],
       [{ ...record, writer: { ...(record["writer"] as object), runId: 1 } }, "payload.verification.writer"],
-      [{ ...record, verifier: { identity: VERIFIER, workerId: VERIFIER_ID, runId: 0 } }, "payload.verification.verifier.runId"],
-      [{ ...record, verifier: { identity: VERIFIER, workerId: VERIFIER_ID.toUpperCase(), runId: 1 } }, "payload.verification.verifier.workerId"],
-      [{ ...record, verifier: { identity: "Claude/Sonnet/verifier/01", workerId: VERIFIER_ID, runId: 1 } }, "payload.verification.verifier.identity"],
+      [{ ...record, verifier: { identity: VERIFIER, workerId: verifierIdOf(taskId), runId: 0 } }, "payload.verification.verifier.runId"],
+      [{ ...record, verifier: { identity: VERIFIER, workerId: verifierIdOf(taskId).toUpperCase(), runId: 1 } }, "payload.verification.verifier.workerId"],
+      [{ ...record, verifier: { identity: "Claude/Sonnet/verifier/01", workerId: verifierIdOf(taskId), runId: 1 } }, "payload.verification.verifier.identity"],
       [[record], "payload.verification"],
       // The content-block word is not this record's: renamed, the reference is
       // missing; added, it is an unknown key (the stop ruling on L-P06C-1).
@@ -785,8 +799,8 @@ describe("N8: a half form is refused at its path, at either level", () => {
       [{ ...verdict, treeSha: "b".repeat(64) }, "payload.auditVerdict.treeSha"],
       [{ ...verdict, writerWorkerId: "not-a-uuid" }, "payload.auditVerdict.writerWorkerId"],
       [{ ...verdict, evidenceSha256: null }, "payload.auditVerdict.evidenceSha256"],
-      [{ ...verdict, auditor: { identity: AUDITOR, workerId: AUDITOR_ID } }, "payload.auditVerdict.auditor.runId"],
-      [{ ...verdict, auditor: { identity: AUDITOR, workerId: AUDITOR_ID, runId: 1.5 } }, "payload.auditVerdict.auditor.runId"],
+      [{ ...verdict, auditor: { identity: AUDITOR, workerId: auditorIdOf(taskId) } }, "payload.auditVerdict.auditor.runId"],
+      [{ ...verdict, auditor: { identity: AUDITOR, workerId: auditorIdOf(taskId), runId: 1.5 } }, "payload.auditVerdict.auditor.runId"],
       [{ ...without(verdict, "artifactReferenceId"), artifactRefId: "ref-evidence" }, "payload.auditVerdict.artifactReferenceId"],
       [{ ...verdict, artifactRefId: "ref-evidence" }, "payload.auditVerdict"],
       ["ACCEPT", "payload.auditVerdict"],
@@ -829,7 +843,7 @@ describe("P1-P5: the door records a receipt and a verdict, and the fold reproduc
       revisionNumber: 1,
       attemptNumber: 1,
       verifierIdentity: VERIFIER,
-      verifierWorkerId: VERIFIER_ID,
+      verifierWorkerId: verifierIdOf(on.taskId),
       verifierRunId: 1,
       writerIdentity: WRITER,
       writerWorkerId: writerWorkerIdFor(on.taskId, 1),
@@ -870,7 +884,7 @@ describe("P1-P5: the door records a receipt and a verdict, and the fold reproduc
       treeSha: on.receipt["treeSha"],
       writerWorkerId: writerWorkerIdFor(on.taskId, 1),
       auditorIdentity: AUDITOR,
-      auditorWorkerId: AUDITOR_ID,
+      auditorWorkerId: auditorIdOf(on.taskId),
       auditorRunId: 1,
       verdict: "ACCEPT",
       evidenceSha256: evidence.evidenceSha256,
@@ -897,7 +911,15 @@ describe("P1-P5: the door records a receipt and a verdict, and the fold reproduc
     for (const [index, verdict] of words.entries()) {
       const evidence = publishEvidence(on.h, on.taskId, on.receiptSha256);
       on.h.ledger.append(
-        auditEvent({ taskId: on.taskId, transitionId: "audit." + String(index), record: verdictRecord(on.receipt, evidence, { verdict }) }),
+        auditEvent({
+          taskId: on.taskId,
+          transitionId: "audit." + String(index),
+          // Each audit is its own spawn: run ids 1, 2, 3 of the attempt (P-16/C).
+          record: verdictRecord(on.receipt, evidence, {
+            verdict,
+            auditor: { identity: AUDITOR, workerId: auditorIdOf(on.taskId, 1, index + 1), runId: index + 1 },
+          }),
+        }),
       );
     }
     const verdicts = on.h.ledger.listAuditVerdicts(on.receiptSha256);
@@ -1082,9 +1104,7 @@ describe("N1-N4: the door reads the receipt by reference and believes nothing it
       [{ writeSetSha256: "2".repeat(64) }, "writeSetSha256"],
       [{ checksSha256: "3".repeat(64) }, "checksSha256"],
       [{ runStatus: "FAIL" }, "runStatus"],
-      [{ verifier: { identity: "claude/haiku/verifier/02", workerId: VERIFIER_ID, runId: 1 } }, "verifier.identity"],
-      [{ verifier: { identity: VERIFIER, workerId: AUDITOR_ID, runId: 1 } }, "verifier.workerId"],
-      [{ verifier: { identity: VERIFIER, workerId: VERIFIER_ID, runId: 2 } }, "verifier.runId"],
+      [{ verifier: { identity: "claude/haiku/verifier/02", workerId: "__registry__", runId: 1 } }, "verifier.identity"],
       [{ writer: { identity: "claude/opus/implementer/02", workerId: "__derived__" } }, "writer.identity"],
     ];
     for (const [overrides, path] of cases) {
@@ -1092,6 +1112,9 @@ describe("N1-N4: the door reads the receipt by reference and believes nothing it
       const record = { ...on.record, ...overrides };
       if ((record["writer"] as { workerId: string }).workerId === "__derived__") {
         record["writer"] = { identity: "claude/opus/implementer/02", workerId: writerWorkerIdFor(on.taskId, 1) };
+      }
+      if ((record["verifier"] as { workerId: string }).workerId === "__registry__") {
+        record["verifier"] = { identity: "claude/haiku/verifier/02", workerId: verifierIdOf(on.taskId), runId: 1 };
       }
       expect(refusedCleanly(on.h, () => on.h.ledger.append(verificationEvent({ taskId: on.taskId, record }))), path).toEqual({
         reason: "RECEIPT_FIELD_MISMATCH",
@@ -1112,13 +1135,30 @@ describe("N1-N4: the door reads the receipt by reference and believes nothing it
     const h = harness();
     const taskId = randomUUID();
     openAttempt(h, taskId, { flat: 1 });
-    const foreign = receiptValue({ taskId, overrides: { writer: { identity: WRITER, workerId: AUDITOR_ID } } });
+    const foreign = receiptValue({ taskId, overrides: { writer: { identity: WRITER, workerId: auditorIdOf(taskId) } } });
     publish(h, json(foreign), "ref-foreign-writer", "RECEIPT", taskId);
     const record = { ...recordOf(foreign, "ref-foreign-writer"), writer: { identity: WRITER, workerId: writerWorkerIdFor(taskId, 1) } };
     expect(refusedCleanly(h, () => h.ledger.append(verificationEvent({ taskId, record })))).toEqual({
       reason: "RECEIPT_FIELD_MISMATCH",
       at: "payload.verification.writer.workerId",
     });
+
+    // verifier.workerId and verifier.runId (P-16/C): the receipt names a verifier the
+    // registry never spawned, and the record carries the registry's: the record passes
+    // the registry, the bytes do not.
+    for (const [verifier, path] of [
+      [{ identity: VERIFIER, workerId: auditorIdOf(taskId), runId: 1 }, "verifier.workerId"],
+      [{ identity: VERIFIER, workerId: verifierIdOf(taskId), runId: 2 }, "verifier.runId"],
+    ] as const) {
+      const bytes = receiptValue({ taskId, overrides: { verifier } });
+      const reference = "ref-foreign-" + path;
+      publish(h, json(bytes), reference, "RECEIPT", taskId);
+      const carried = { ...recordOf(bytes, reference), verifier: { identity: VERIFIER, workerId: verifierIdOf(taskId), runId: 1 } };
+      expect(refusedCleanly(h, () => h.ledger.append(verificationEvent({ taskId, record: carried }))), path).toEqual({
+        reason: "RECEIPT_FIELD_MISMATCH",
+        at: "payload.verification." + path,
+      });
+    }
   });
 
   it("N3: an absent, misclassed, foreign or unreadable reference is refused inside the transaction", () => {
@@ -1192,7 +1232,13 @@ describe("N1-N4: the door reads the receipt by reference and believes nothing it
       at: "payload.attemptNumber",
     });
     // The receipt names another task, published under this one.
-    const otherTask = receiptValue({ taskId: randomUUID(), overrides: { writer: { identity: WRITER, workerId: writerWorkerIdFor(taskId, 1) } } });
+    const otherTask = receiptValue({
+      taskId: randomUUID(),
+      overrides: {
+        writer: { identity: WRITER, workerId: writerWorkerIdFor(taskId, 1) },
+        verifier: { identity: VERIFIER, workerId: verifierIdOf(taskId), runId: 1 },
+      },
+    });
     publish(h, json(otherTask), "ref-other-task-receipt", "RECEIPT", taskId);
     expect(
       refusedCleanly(h, () => h.ledger.append(verificationEvent({ taskId, record: recordOf(otherTask, "ref-other-task-receipt") }))),
@@ -1278,6 +1324,140 @@ describe("N5: the coordinate names its flat attempt, and the writer's id is deri
   });
 });
 
+describe("N12-N14: the verifier and the auditor are named by their spawn (P-16/C, ADR 0123)", () => {
+  it("P6: the registry's four ids are Python's uuid5 vectors under the supervised namespace", () => {
+    // Python: uuid.uuid5(uuid.UUID("370c3107-1424-5cc1-b7ca-74d37eb0fb68"), name).
+    const task = "00000000-0000-4000-8000-0000000000aa";
+    expect(verifierIdOf(task, 1, 1)).toBe("423f2d9b-71cd-575b-bc4c-8c3b68be0479");
+    expect(auditorIdOf(task, 1, 1)).toBe("fe8388d4-c82a-5d4a-a9f7-dc3cc41e3ec3");
+  });
+
+  it("N12 (door): a verifier id or run id the registry did not spawn is VERIFIER_NOT_REGISTERED, and writes nothing", () => {
+    const cases: readonly (readonly [(taskId: string) => Record<string, unknown>, string])[] = [
+      // Under the writer's namespace, not the supervised one.
+      [(taskId) => ({ identity: VERIFIER, workerId: writerWorkerIdFor(taskId, 5), runId: 1 }), "verifier.workerId"],
+      // The id of another run, carried under run 1.
+      [(taskId) => ({ identity: VERIFIER, workerId: verifierIdOf(taskId, 1, 2), runId: 1 }), "verifier.workerId"],
+      // The reviewer's id, carried by a verifier.
+      [(taskId) => ({ identity: VERIFIER, workerId: auditorIdOf(taskId, 1, 1), runId: 1 }), "verifier.workerId"],
+      // Run 2 when the next is 1, even with run 2's own id.
+      [(taskId) => ({ identity: VERIFIER, workerId: verifierIdOf(taskId, 1, 2), runId: 2 }), "verifier.runId"],
+    ];
+    for (const [verifier, path] of cases) {
+      const h = harness();
+      const taskId = randomUUID();
+      openAttempt(h, taskId, { flat: 1 });
+      const receipt = receiptValue({ taskId, overrides: { verifier: verifier(taskId) } });
+      publish(h, json(receipt), "ref-unregistered", "RECEIPT", taskId);
+      const event = verificationEvent({ taskId, record: recordOf(receipt, "ref-unregistered") });
+      expect(refusedCleanly(h, () => h.ledger.append(event)), path).toEqual({
+        reason: "VERIFIER_NOT_REGISTERED",
+        at: "payload.verification." + path,
+      });
+    }
+
+    // Repeating: run 1 is held, and another receipt claims run 1 again.
+    const on = recorded();
+    const again = receiptValue({
+      taskId: on.taskId,
+      overrides: { checks: [{ command: "pnpm check", exitCode: 0, ranAt: "2026-09-26T11:30:00.000Z" }] },
+    });
+    publish(on.h, json(again), "ref-again", "RECEIPT", on.taskId);
+    expect(
+      refusedCleanly(on.h, () =>
+        on.h.ledger.append(verificationEvent({ taskId: on.taskId, transitionId: "verify.2", record: recordOf(again, "ref-again") })),
+      ),
+    ).toEqual({ reason: "VERIFIER_NOT_REGISTERED", at: "payload.verification.verifier.runId" });
+  });
+
+  it("B4: run id 1 and a history holding run 3 make the next 4, per attempt and per role", () => {
+    const decideAt = (last: number, runId: number) => {
+      const taskId = "00000000-0000-4000-8000-00000000000a";
+      const receipt = receiptValue({ taskId, overrides: { verifier: { identity: VERIFIER, workerId: verifierIdOf(taskId, 1, runId), runId } } });
+      return decide(
+        { ...view(taskId), lastRunId: (role) => (role === "verifier" ? last : 0) },
+        verificationEvent({ taskId, record: recordOf(receipt, "ref") }),
+      );
+    };
+    expect(decideAt(0, 1)?.row).toMatchObject({ verifierRunId: 1 });
+    expect(decideAt(3, 4)?.row).toMatchObject({ verifierRunId: 4 });
+    expect(refusalOf(() => decideAt(3, 3))).toEqual({ reason: "VERIFIER_NOT_REGISTERED", at: "payload.verification.verifier.runId" });
+    expect(refusalOf(() => decideAt(3, 5))).toEqual({ reason: "VERIFIER_NOT_REGISTERED", at: "payload.verification.verifier.runId" });
+  });
+
+  it("N13 (door): an auditor id or run id the registry did not spawn is AUDITOR_NOT_REGISTERED", () => {
+    const on = recorded();
+    const evidence = publishEvidence(on.h, on.taskId, on.receiptSha256);
+    const refuse = (auditor: Record<string, unknown>) =>
+      refusedCleanly(on.h, () =>
+        on.h.ledger.append(auditEvent({ taskId: on.taskId, record: verdictRecord(on.receipt, evidence, { auditor }) })),
+      );
+    expect(refuse({ identity: AUDITOR, workerId: verifierIdOf(on.taskId, 1, 1), runId: 1 })).toEqual({
+      reason: "AUDITOR_NOT_REGISTERED",
+      at: "payload.auditVerdict.auditor.workerId",
+    });
+    expect(refuse({ identity: AUDITOR, workerId: auditorIdOf(on.taskId, 1, 2), runId: 2 })).toEqual({
+      reason: "AUDITOR_NOT_REGISTERED",
+      at: "payload.auditVerdict.auditor.runId",
+    });
+    // P7: the registry's own verdict on the same receipt is admitted, run 1, then run 2.
+    on.h.ledger.append(auditEvent({ taskId: on.taskId, transitionId: "audit.r1", record: verdictRecord(on.receipt, evidence) }));
+    expect(refuse({ identity: AUDITOR, workerId: auditorIdOf(on.taskId, 1, 1), runId: 1 })).toEqual({
+      reason: "AUDITOR_NOT_REGISTERED",
+      at: "payload.auditVerdict.auditor.runId",
+    });
+    const second = { identity: AUDITOR, workerId: auditorIdOf(on.taskId, 1, 2), runId: 2 };
+    on.h.ledger.append(auditEvent({ taskId: on.taskId, transitionId: "audit.r2", record: verdictRecord(on.receipt, evidence, { auditor: second }) }));
+    expect(on.h.ledger.listAuditVerdicts(on.receiptSha256).map((row) => row.auditorRunId)).toEqual([1, 2]);
+    expect(on.h.ledger.verifyIntegrity().problems).toEqual([]);
+  });
+
+  it("N14: the same receipt again with the same metadata is a replay, and its ordinal is not judged again", () => {
+    const on = recorded();
+    const first = on.h.ledger.getVerification(on.receiptSha256);
+    // A second event, a new event id and transition, carrying the same receipt.
+    const replay = verificationEvent({ taskId: on.taskId, transitionId: "verify.replay", record: on.record });
+    expect(on.h.ledger.append(replay).inserted).toBe(true);
+    expect(on.h.ledger.getVerification(on.receiptSha256)).toEqual(first);
+    expect(count(on.h.path, "verification_read_model")).toBe(1);
+    on.h.ledger.rebuildReadModel();
+    expect(on.h.ledger.getVerification(on.receiptSha256)).toEqual(first);
+    expect(on.h.ledger.verifyIntegrity().problems).toEqual([]);
+  });
+
+  it("N12/N13 (fold): the same histories planted past the door are refused by the fold in the door's words", () => {
+    // A receipt whose verifier the registry did not spawn.
+    const h = harness();
+    const taskId = randomUUID();
+    openAttempt(h, taskId, { flat: 1 });
+    const wrong = receiptValue({ taskId, overrides: { verifier: { identity: VERIFIER, workerId: verifierIdOf(taskId, 1, 2), runId: 2 } } });
+    publish(h, json(wrong), "ref-wrong-run", "RECEIPT", taskId);
+    h.close();
+    plantChainedEvent(h.path, verificationEvent({ taskId, record: recordOf(wrong, "ref-wrong-run") }));
+    const again = harnessAt(h.path);
+    expect(again.ledger.verifyIntegrity().problems.map((problem) => problem.detail).join("\n")).toContain(
+      "records a verification the fold refuses: VERIFIER_NOT_REGISTERED at payload.verification.verifier.runId",
+    );
+    expect(refusalOf(() => again.ledger.rebuildReadModel())).toEqual({
+      reason: "VERIFIER_NOT_REGISTERED",
+      at: "payload.verification.verifier.runId",
+    });
+
+    // A verdict whose auditor the registry did not spawn, on a lawful receipt.
+    const on = recorded();
+    const evidence = publishEvidence(on.h, on.taskId, on.receiptSha256);
+    on.h.close();
+    const auditor = { identity: AUDITOR, workerId: writerWorkerIdFor(on.taskId, 9), runId: 1 };
+    plantChainedEvent(on.h.path, auditEvent({ taskId: on.taskId, record: verdictRecord(on.receipt, evidence, { auditor }) }));
+    const planted = harnessAt(on.h.path);
+    expect(planted.ledger.verifyIntegrity().ok).toBe(false);
+    expect(refusalOf(() => planted.ledger.rebuildReadModel())).toEqual({
+      reason: "AUDITOR_NOT_REGISTERED",
+      at: "payload.auditVerdict.auditor.workerId",
+    });
+  });
+});
+
 describe("N6: a verdict is bound to a PASS receipt of its attempt, its tree and its writer", () => {
   it("refuses an unknown receipt, a foreign attempt, a FAIL receipt, another tree, another writer and a dependent auditor", () => {
     const on = recorded();
@@ -1293,7 +1473,7 @@ describe("N6: a verdict is bound to a PASS receipt of its attempt, its tree and 
       reason: "AUDIT_TREE_MISMATCH",
       at: "payload.auditVerdict.treeSha",
     });
-    expect(refuse(verdictRecord(on.receipt, evidence, { writerWorkerId: AUDITOR_ID }))).toEqual({
+    expect(refuse(verdictRecord(on.receipt, evidence, { writerWorkerId: auditorIdOf(on.taskId) }))).toEqual({
       reason: "AUDIT_WRITER_MISMATCH",
       at: "payload.auditVerdict.writerWorkerId",
     });
@@ -1305,7 +1485,7 @@ describe("N6: a verdict is bound to a PASS receipt of its attempt, its tree and 
         }),
       ),
     ).toEqual({ reason: "AUDITOR_NOT_INDEPENDENT", at: "payload.auditVerdict.auditor.workerId" });
-    expect(refuse(verdictRecord(on.receipt, evidence, { auditor: { identity: WRITER, workerId: AUDITOR_ID, runId: 1 } }))).toEqual({
+    expect(refuse(verdictRecord(on.receipt, evidence, { auditor: { identity: WRITER, workerId: auditorIdOf(on.taskId), runId: 1 } }))).toEqual({
       reason: "AUDITOR_NOT_INDEPENDENT",
       at: "payload.auditVerdict.auditor.identity",
     });
@@ -1609,21 +1789,26 @@ describe("B1-B5", () => {
 
   it("B5: two receipts of one attempt are both recorded, and each verdict binds to its own", () => {
     const on = recorded();
+    // The second is its own spawn: run id 2 and its own registry id (P-16/C).
     const second = receiptValue({
       taskId: on.taskId,
-      overrides: { checks: [{ command: "pnpm check", exitCode: 0, ranAt: "2026-09-26T11:30:00.000Z" }] },
+      overrides: {
+        checks: [{ command: "pnpm check", exitCode: 0, ranAt: "2026-09-26T11:30:00.000Z" }],
+        verifier: { identity: VERIFIER, workerId: verifierIdOf(on.taskId, 1, 2), runId: 2 },
+      },
     });
     publish(on.h, json(second), "ref-second", "RECEIPT", on.taskId);
     const secondRecord = recordOf(second, "ref-second");
     on.h.ledger.append(verificationEvent({ taskId: on.taskId, transitionId: "verify.2", record: secondRecord }));
     const secondSha = secondRecord["receiptSha256"] as string;
     expect(secondSha).not.toBe(on.receiptSha256);
-    for (const [receipt, sha, transitionId] of [
-      [on.receipt, on.receiptSha256, "audit.first"],
-      [second, secondSha, "audit.second"],
+    for (const [receipt, sha, transitionId, runId] of [
+      [on.receipt, on.receiptSha256, "audit.first", 1],
+      [second, secondSha, "audit.second", 2],
     ] as const) {
       const evidence = publishEvidence(on.h, on.taskId, sha);
-      on.h.ledger.append(auditEvent({ taskId: on.taskId, transitionId, record: verdictRecord(receipt, evidence) }));
+      const auditor = { identity: AUDITOR, workerId: auditorIdOf(on.taskId, 1, runId), runId };
+      on.h.ledger.append(auditEvent({ taskId: on.taskId, transitionId, record: verdictRecord(receipt, evidence, { auditor }) }));
     }
     expect(on.h.ledger.listAuditVerdicts(on.receiptSha256)).toHaveLength(1);
     expect(on.h.ledger.listAuditVerdicts(secondSha)).toHaveLength(1);

@@ -119,6 +119,13 @@ reached from it: `authorizeCommit` and `recordCommit` belong to the writer plan
 by construction, since the task envelope refuses a commit policy on an empty
 write-set, so a read-only close can never be followed by a receipt.
 
+`writerIdIssuerFor(segments)` (P-16/C, ADR 0123) is the writer id issuer's producer:
+from an attempt's recorded route segments, `CLAUDE_CLI_SESSION` when every segment is
+the Claude CLI under a subscription, and `null` for no segment or any other, which the
+daemon's verification runner refuses as `WRITER_ID_UNISSUED` before any spawn. The
+issuer list stays module-private, and `authorizeCommit` still takes the issuer from its
+caller until P-17/A gives it this answer.
+
 The supervisor holds **no cursor**. Every decision about what to do next is read
 back out of the ledger, which is what makes "the ledger is the authority" true
 rather than aspirational. `RUNNING` is the one ambiguous state, because both the

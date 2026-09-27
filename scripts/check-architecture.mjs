@@ -12735,6 +12735,71 @@ const P16B_WRITE_SET = [
   "docs/audit/architecture/database/execution/index.md",
 ];
 
+/**
+ * P-16, cut C: a verification is run by the plane, and its verifier is named by its
+ * spawn (ADR 0123; decisions 234-237; brief v1 with the DT pre-review's corrections B1
+ * to B4 and its rulings on ND-1 to ND-19, adopted).
+ *
+ * The daemon gains the fifth spawn site, `verification-runner`: it runs only the check
+ * commands the recorded envelope declares, in a disposable copy of the worktree under
+ * a built environment (Git confined by `GIT_CEILING_DIRECTORIES`, B1), bounded in time
+ * and output with a group kill, and its one product is a private `RECEIPT` and the
+ * receipt-form `VERIFICATION_COMPLETED` B's door admits. The daemon's `tree-hasher`
+ * computes the receipt's `treeSha` in process, proven against `git write-tree` in
+ * disposable repositories; a non-sha1 repository is `OBJECT_FORMAT_UNSUPPORTED`. The
+ * ledger derives the supervised verifier's and auditor's ids (`supervisedWorkerIdFor`,
+ * under contracts' `SUPERVISED_WORKER_ID_UUID_NAMESPACE`) and its door and fold refuse
+ * any other (`VERIFIER_NOT_REGISTERED`, `AUDITOR_NOT_REGISTERED`); `policy_sha256` has
+ * its object (`verificationPolicySha256`); runtime exports the writer id issuer's
+ * producer (`writerIdIssuerFor`). Held by L-P16C-1, L-P16C-2 and L-P16C-3; L-P16A2-1
+ * gains the fourth prefix and the two new functions, amended in its own row.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 179 -> **182**; `SPAWN_ALLOWED_FILES` 4 ->
+ * **5**; `CONTRACTS_SCHEMA_EXPORTS` 189 -> **190**; `RUNTIME_PUBLIC_EXPORTS` 307 ->
+ * **308**; the ADR corpus 122 -> **123**. **Pins that do not.** `CONTRACT_VERSION`
+ * (2.11.0, ND-13 (a) with its condition), `API_CONTRACT_VERSION` (0.25.0), `MIGRATIONS`
+ * (28; no DDL), `PROVIDERS_PUBLIC_EXPORTS` (97), `DAEMON_PUBLIC_EXPORTS` (the runner and
+ * the hasher stay off the daemon barrel), `DAEMON_ALLOWED_BUILTINS` (no `node:os`: the
+ * signal numbers are a closed literal, B4).
+ *
+ * **Thirty-two paths; seven are new**: the runner and its types leaf, the hasher and
+ * its types leaf, their two suites, and the ADR.
+ */
+const P16C_WRITE_SET = [
+  "packages/entrypoints/daemon/src/verification-runner/index.ts",
+  "packages/entrypoints/daemon/src/verification-runner/types/index.ts",
+  "packages/entrypoints/daemon/src/tree-hasher/index.ts",
+  "packages/entrypoints/daemon/src/tree-hasher/types/index.ts",
+  "packages/entrypoints/daemon/test/verification-runner/index.test.ts",
+  "packages/entrypoints/daemon/test/tree-hasher/index.test.ts",
+  "packages/persistence/ledger/src/receipt-identity/index.ts",
+  "packages/persistence/ledger/src/receipt-identity/types/index.ts",
+  "packages/persistence/ledger/src/verification-record/index.ts",
+  "packages/persistence/ledger/src/verification-record/types/index.ts",
+  "packages/persistence/ledger/src/ledger/index.ts",
+  "packages/persistence/ledger/src/projection/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/persistence/ledger/test/receipt-identity/index.test.ts",
+  "packages/persistence/ledger/test/verification-record/index.test.ts",
+  "packages/persistence/ledger/test/projection/index.test.ts",
+  "packages/kernel/contracts/src/schemas/commit-authorization/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/domains/runtime/src/commit-authorization/index.ts",
+  "packages/domains/runtime/src/index.ts",
+  "packages/domains/runtime/test/commit-authorization/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0123-a-verification-is-run-by-the-plane-and-its-verifier-is-named-by-its-spawn.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "docs/audit/architecture/database/execution/index.md",
+  "packages/entrypoints/daemon/README.md",
+  "packages/domains/runtime/README.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -12995,6 +13060,7 @@ const WRITE_SET = [
   ...P16A1_WRITE_SET,
   ...P16A2_WRITE_SET,
   ...P16B_WRITE_SET,
+  ...P16C_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -14615,6 +14681,22 @@ const PATH_SCOPED_LAWS = [
   {
     law: "the door recomputes the receipt's name, and the words live in one home",
     scope: "packages/persistence/ledger/src/verification-record/index.ts, packages/*/*/src/**",
+  },
+  // P-16/C. Three new path-shaped surfaces, so three new rows: the register and the
+  // `requireScope` call sites both move 179 -> 182 for L-P16C-1, L-P16C-2 and L-P16C-3.
+  // L-P16A2-1 gains the fourth prefix and two functions, amended in its own row; it
+  // adds none.
+  {
+    law: "one bounded runner: it spawns only declared checks, with a built environment, and prints nothing",
+    scope: "packages/entrypoints/daemon/src/**",
+  },
+  {
+    law: "one tree hasher, in-process, sha1, and it cannot write",
+    scope: "packages/*/*/src/**",
+  },
+  {
+    law: "the verifier and the auditor are named by their spawn, and the door checks it",
+    scope: "packages/*/*/src/**",
   },
 ];
 
@@ -17691,13 +17773,13 @@ const RUNTIME_TEST_ONLY_IMPORTS = new Set([
 const HTTP2_ALLOWED_FILE = "packages/edges/durability/src/drivers/restate-endpoint/index.ts";
 
 /**
- * The only two production files that may start a subprocess, by exact path and
- * stated purpose.
+ * The only production files that may start a subprocess, by exact path and
+ * stated purpose (five since P-16/C, ADR 0123).
  *
  * Through P2C the server handle was classified test-only, because a production
  * module that spawned a process would have been a daemon and P2D was not
  * authorised. P2D authorises it, so the classification is replaced rather than
- * merely deleted: the allowance is still file-scoped, still two entries long,
+ * merely deleted: the allowance is still file-scoped, entry by entry,
  * and each entry is separately checked for the properties that make it safe.
  *
  * Duplicating either spawner elsewhere is the thing being prevented. Two
@@ -17709,6 +17791,7 @@ const SPAWN_ALLOWED_FILES = new Map([
   ["packages/entrypoints/daemon/src/identity-probe/index.ts", "reading process identity via /bin/ps"],
   ["packages/edges/providers/src/process/spawn/index.ts", "the single provider spawn authority"],
   ["packages/entrypoints/daemon/src/git-observer/index.ts", "the single git read authority"],
+  ["packages/entrypoints/daemon/src/verification-runner/index.ts", "the single bounded verification runner"],
 ]);
 
 // Anything that could listen, connect or fan out. None of these belongs in a
@@ -18950,7 +19033,7 @@ if (tracked.status === 0) {
     const content = readIfPresent(relativePath);
     if (content === null) continue;
     if (importSpecifiers(content).includes("node:child_process")) {
-      fail(relativePath + " spawns a process; only the two allow-listed sites may do that");
+      fail(relativePath + " spawns a process; only the allow-listed sites of SPAWN_ALLOWED_FILES may do that");
     }
   }
 
@@ -22163,6 +22246,9 @@ const RUNTIME_PUBLIC_EXPORTS = [
   "READY_UNSATISFIED_REASONS",
   "READY_UNKNOWN_REASONS",
   "readinessOf",
+  // P-16/C (ADR 0123, decision 236): the writer id issuer's producer, from an attempt's
+  // recorded route segments. 307 -> 308.
+  "writerIdIssuerFor",
 ];
 
 /**
@@ -22709,6 +22795,9 @@ if (accountsIndex === null) {
   "WRITER_WORKER_ID_UUID_NAMESPACE",
   "WRITER_ID_UNISSUED",
   "commitMessageWithReceiptTrailer",
+  // P-16/C (ADR 0123, decision 236): the namespace the supervised verifier and auditor
+  // ids are derived under (its computation is the ledger's). 189 -> 190.
+  "SUPERVISED_WORKER_ID_UUID_NAMESPACE",
 ];
 
   const schemasBarrel = readIfPresent("packages/kernel/contracts/src/schemas/index.ts");
@@ -28427,6 +28516,210 @@ if (tracked.status === 0) {
   notes.push("the verification door recomputes a receipt's name in " + HOME + "; " + String(words.length) + " refusal words, sorted and closed");
 }
 
+// L-P16C-1 -- one bounded runner: it spawns only declared checks, with a built
+// environment, and prints nothing (P-16/C, ADR 0123; decision 234; B1, B4, ND-1..7).
+//
+// Over `daemon/src/verification-runner/index.ts`, comments stripped: (i) it declares
+// `const CHECK_SHELL = "/bin/sh";`, names `"/bin/sh"` once, and spawns exactly once, as
+// `spawn(CHECK_SHELL, ["-c", command], {` with `shell: false`, `detached: true` and a
+// `stdio` literal whose first member is `"ignore"`; (ii) it never names `process.env`;
+// (iii) the environment is `builtEnvironment(runDirectory, scratchRoot)`, whose body is
+// one frozen object literal of constants plus those two -- no spread, no `process` --
+// and it holds `GIT_CEILING_DIRECTORIES: scratchRoot`, `GIT_CONFIG_NOSYSTEM` and
+// `GIT_CONFIG_GLOBAL` (B1); (iv) the command is bound by
+// `for (const command of envelope.validation.commands)` and `runCheck(command,` is
+// called once, and its input type (`./types/index.ts`) names no `commands`; (v) it names
+// no `console.`, no `appendFileSync`, `writeFileSync` or `createWriteStream`, and no
+// import of the daemon's log; (vi) it names no `/usr/bin/git` (L-C-4a's, re-checked).
+// Over every tracked `daemon/src` `.ts` file: `runVerification` is declared once, there.
+//
+// Stated limit: L-P27C-1's limits, a text matcher. A spawn reached through an alias, an
+// environment mutated after it is built, or output written through a sink not named
+// here is not seen. The semantic guards are the runner suite's N8-N11, N16 and N21.
+{
+  const RUNNER = "packages/entrypoints/daemon/src/verification-runner/index.ts";
+  const RUNNER_TYPES = "packages/entrypoints/daemon/src/verification-runner/types/index.ts";
+  const LAW = "one bounded runner: it spawns only declared checks, with a built environment, and prints nothing";
+  let scanned = 0;
+  const declared = [];
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!relativePath.startsWith("packages/entrypoints/daemon/src/") || !relativePath.endsWith(".ts")) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      const found = stripComments(file).match(/export\s+async\s+function\s+runVerification\s*\(/g) ?? [];
+      for (let index = 0; index < found.length; index += 1) declared.push(relativePath);
+    }
+  }
+  if (declared.length !== 1 || declared[0] !== RUNNER) {
+    fail("runVerification is declared " + String(declared.length) + " time(s) (" + (declared.join(", ") || "no file") + "); its one home is " + RUNNER + " (L-P16C-1)");
+  }
+  const runner = readIfPresent(RUNNER);
+  if (runner === null) {
+    fail(RUNNER + " is gone; the verification runner has no home (L-P16C-1)");
+  } else {
+    const code = stripComments(runner);
+    if (!code.includes('const CHECK_SHELL = "/bin/sh";') || code.split('"/bin/sh"').length - 1 !== 1) {
+      fail(RUNNER + " does not name \"/bin/sh\" exactly once, as CHECK_SHELL; a check runs under one shell by absolute path (L-P16C-1)");
+    }
+    const spawns = code.match(/\bspawn\s*\(/g) ?? [];
+    if (spawns.length !== 1 || !/\bspawn\(CHECK_SHELL, \["-c", command\], \{/.test(code)) {
+      fail(RUNNER + " spawns " + String(spawns.length) + " time(s); once, as spawn(CHECK_SHELL, [\"-c\", command], { (L-P16C-1)");
+    }
+    const options = functionBody(code, "function runCheck(") ?? "";
+    for (const needed of ["shell: false", "detached: true", 'stdio: ["ignore",']) {
+      if (!options.includes(needed)) fail(RUNNER + " runCheck no longer spawns with " + needed + " (L-P16C-1)");
+    }
+    if (code.includes("process.env")) {
+      fail(RUNNER + " names process.env; a check's environment is built, never inherited (L-P16C-1)");
+    }
+    const built = functionBody(code, "function builtEnvironment(runDirectory: string, scratchRoot: string)");
+    if (built === null || built.includes("...") || built.includes("process") || !/return Object\.freeze\(\{/.test(built)) {
+      fail(RUNNER + " builtEnvironment is not one frozen literal of constants, the run directory and the scratch root (L-P16C-1)");
+    } else {
+      for (const needed of ["GIT_CEILING_DIRECTORIES: scratchRoot", 'GIT_CONFIG_NOSYSTEM: "1"', 'GIT_CONFIG_GLOBAL: "/dev/null"', "PATH: CHECK_PATH"]) {
+        if (!built.includes(needed)) fail(RUNNER + " builtEnvironment does not hold " + needed + "; Git is confined to the copy (L-P16C-1)");
+      }
+    }
+    if ((code.match(/const env = builtEnvironment\(runDirectory, scratchRoot\);/g) ?? []).length !== 1) {
+      fail(RUNNER + " does not bind the checks' environment once, from builtEnvironment(runDirectory, scratchRoot) (L-P16C-1)");
+    }
+    if (!code.includes("for (const command of envelope.validation.commands)") || (code.match(/\brunCheck\(command, /g) ?? []).length !== 1) {
+      fail(RUNNER + " does not take its commands from envelope.validation.commands alone; a runner runs only declared checks (L-P16C-1)");
+    }
+    for (const sink of ["console.", "appendFileSync", "writeFileSync", "createWriteStream", "/usr/bin/git"]) {
+      if (code.includes(sink)) fail(RUNNER + " names " + sink + "; a check's output is counted and discarded, and Git is the observer's (L-P16C-1)");
+    }
+    if (/from\s*["']\.\.\/log\//.test(code)) fail(RUNNER + " imports the daemon's log; a check's output reaches no log (L-P16C-1)");
+  }
+  const types = readIfPresent(RUNNER_TYPES);
+  if (types === null || /\bcommands\b/.test(stripComments(types))) {
+    fail(RUNNER_TYPES + " is gone or names commands; the runner's input carries no command (L-P16C-1)");
+  }
+  requireScope(LAW, scanned);
+  notes.push("one verification runner in " + RUNNER + ": declared checks only, a built environment, output counted and discarded");
+}
+
+// L-P16C-2 -- one tree hasher, in-process, sha1, and it cannot write (P-16/C, ADR
+// 0123; decision 235).
+//
+// Over every tracked `packages/*/*/src/` `.ts` and `.tsx` file, comments stripped:
+// `function treeSha(` appears once, in `daemon/src/tree-hasher/index.ts`; over the
+// daemon's `src`, `createHash("sha1")` appears only there; and the hasher names none of
+// `spawn`, `child_process`, `writeFileSync`, `appendFileSync`, `rmSync`, `unlinkSync`,
+// `renameSync`, `mkdirSync`, `copyFileSync` or `symlinkSync`.
+//
+// Stated limit: a text matcher; a hash reached under another name, or a write through
+// a handle, is not seen. The semantic guard is the oracle: the hasher's suite holds it
+// to `git write-tree` for every fixture shape.
+{
+  const HASHER = "packages/entrypoints/daemon/src/tree-hasher/index.ts";
+  const LAW = "one tree hasher, in-process, sha1, and it cannot write";
+  let scanned = 0;
+  const homes = [];
+  const sha1Sites = [];
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      const code = stripComments(file);
+      const found = code.match(/\bfunction\s+treeSha\s*\(/g) ?? [];
+      for (let index = 0; index < found.length; index += 1) homes.push(relativePath);
+      if (relativePath.startsWith("packages/entrypoints/daemon/src/") && /createHash\(\s*["']sha1["']\s*\)/.test(code)) {
+        sha1Sites.push(relativePath);
+      }
+    }
+  }
+  if (homes.length !== 1 || homes[0] !== HASHER) {
+    fail("function treeSha( is declared " + String(homes.length) + " time(s) (" + (homes.join(", ") || "no file") + "); its one home is " + HASHER + " (L-P16C-2)");
+  }
+  if (sha1Sites.join(", ") !== HASHER) {
+    fail("createHash(\"sha1\") is named in daemon src at [" + sha1Sites.join(", ") + "]; the one in-process git hasher is " + HASHER + " (L-P16C-2)");
+  }
+  const hasher = readIfPresent(HASHER);
+  if (hasher !== null) {
+    const code = stripComments(hasher);
+    for (const forbidden of ["spawn", "child_process", "writeFileSync", "appendFileSync", "rmSync", "unlinkSync", "renameSync", "mkdirSync", "copyFileSync", "symlinkSync"]) {
+      if (code.includes(forbidden)) fail(HASHER + " names " + forbidden + "; the hasher reads a copy and returns a value (L-P16C-2)");
+    }
+  }
+  requireScope(LAW, scanned);
+  notes.push("one tree hasher, in process, in " + HASHER + ", and it cannot write");
+}
+
+// L-P16C-3 -- the verifier and the auditor are named by their spawn, and the door
+// checks it (P-16/C, ADR 0123; decision 236; ND-8, ND-9).
+//
+// Over every tracked `packages/*/*/src/` `.ts` and `.tsx` file, comments stripped and
+// compared case-insensitively: the supervised namespace's literal
+// `370c3107-1424-5cc1-b7ca-74d37eb0fb68` appears in exactly one file, contracts'
+// `commit-authorization`, once; `function supervisedWorkerIdFor(` appears once, in the
+// ledger's `receipt-identity`, which imports `SUPERVISED_WORKER_ID_UUID_NAMESPACE` from
+// `@acp/contracts` and names it again after the import; and the ledger's
+// `verification-record` imports `supervisedWorkerIdFor` from
+// `../receipt-identity/index.js` and calls it at least twice (a receipt and a verdict)
+// and refuses by both words.
+//
+// Stated limit: a text matcher, L-P16A2-2's. The semantic guard is the vectors: the
+// receipt-identity suite pins four Python `uuid.uuid5` values, and the door and fold
+// negatives N12-N13 drive both words.
+{
+  const LAW = "the verifier and the auditor are named by their spawn, and the door checks it";
+  const LITERAL = "370c3107-1424-5cc1-b7ca-74d37eb0fb68";
+  const RECORD = "packages/persistence/ledger/src/verification-record/index.ts";
+  // Spelled here rather than read from L-P16A2-1's constants, which are declared later
+  // in this file: the same two homes.
+  const NAMESPACE_HOME = "packages/kernel/contracts/src/schemas/commit-authorization/index.ts";
+  const DERIVATION_HOME = "packages/persistence/ledger/src/receipt-identity/index.ts";
+  let scanned = 0;
+  const holders = [];
+  const homes = [];
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\/.*\.tsx?$/.test(relativePath)) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      const code = stripComments(file);
+      const found = code.toLowerCase().split(LITERAL).length - 1;
+      if (found > 0) holders.push(relativePath + (found === 1 ? "" : " (x" + String(found) + ")"));
+      const declared = code.match(/\bfunction\s+supervisedWorkerIdFor\s*\(/g) ?? [];
+      for (let index = 0; index < declared.length; index += 1) homes.push(relativePath);
+    }
+  }
+  if (holders.join(", ") !== NAMESPACE_HOME) {
+    fail("the supervised namespace is spelled in [" + holders.join(", ") + "]; it is declared once, in " + NAMESPACE_HOME + " (L-P16C-3)");
+  }
+  if (homes.length !== 1 || homes[0] !== DERIVATION_HOME) {
+    fail("function supervisedWorkerIdFor( is declared " + String(homes.length) + " time(s) (" + (homes.join(", ") || "no file") + "); its one home is " + DERIVATION_HOME + " (L-P16C-3)");
+  }
+  const identity = stripComments(readIfPresent(DERIVATION_HOME) ?? "");
+  const importsNamespace = /import\s*\{[^}]*\bSUPERVISED_WORKER_ID_UUID_NAMESPACE\b[^}]*\}\s*from\s*["']@acp\/contracts["']/.test(identity);
+  if (!importsNamespace || (identity.match(/\bSUPERVISED_WORKER_ID_UUID_NAMESPACE\b/g) ?? []).length < 2) {
+    fail(DERIVATION_HOME + " does not import SUPERVISED_WORKER_ID_UUID_NAMESPACE from @acp/contracts and derive under it (L-P16C-3)");
+  }
+  const record = stripComments(readIfPresent(RECORD) ?? "");
+  const importsDerivation = /import\s*\{[^}]*\bsupervisedWorkerIdFor\b[^}]*\}\s*from\s*["']\.\.\/receipt-identity\/index\.js["']/.test(record);
+  const calls = (record.match(/\bsupervisedWorkerIdFor\s*\(/g) ?? []).length;
+  if (!importsDerivation || calls < 2) {
+    fail(RECORD + " does not import supervisedWorkerIdFor from ../receipt-identity/index.js and call it for a receipt and a verdict (" + String(calls) + " call(s)); the door and the fold check the registry (L-P16C-3)");
+  }
+  for (const word of ['refuse("VERIFIER_NOT_REGISTERED"', 'refuse("AUDITOR_NOT_REGISTERED"']) {
+    if (!record.includes(word)) fail(RECORD + " no longer refuses by " + word.slice(8) + " (L-P16C-3)");
+  }
+  requireScope(LAW, scanned);
+  notes.push("the verifier and the auditor are named by their spawn: one namespace in " + NAMESPACE_HOME + ", one derivation in " + DERIVATION_HOME + ", checked in " + RECORD);
+}
+
 // --- 21c. V2-B5/R11: the telemetry export edge ------------------------------
 //
 // Five path-scoped laws over one new package, plus a barrel pin and a record
@@ -32778,6 +33071,19 @@ const RECEIPT_TRAILER_HOME = "packages/kernel/contracts/src/schemas/commit-autho
     { label: "acp/receipt-write-set/v1", home: RECEIPT_IDENTITY_HOME, count: (code) => code.split("acp/receipt-write-set/v1").length - 1 },
     { label: "function receiptSha256(", home: RECEIPT_IDENTITY_HOME, count: (code) => (code.match(/\bfunction\s+receiptSha256\s*\(/g) ?? []).length },
     { label: "function writerWorkerIdFor(", home: RECEIPT_IDENTITY_HOME, count: (code) => (code.match(/\bfunction\s+writerWorkerIdFor\s*\(/g) ?? []).length },
+    // P-16/C (ADR 0123), this row's amendment: the fourth prefix, the policy digest and
+    // the supervised id have the same one home.
+    { label: "acp/verification-policy/v1", home: RECEIPT_IDENTITY_HOME, count: (code) => code.split("acp/verification-policy/v1").length - 1 },
+    {
+      label: "function verificationPolicySha256(",
+      home: RECEIPT_IDENTITY_HOME,
+      count: (code) => (code.match(/\bfunction\s+verificationPolicySha256\s*\(/g) ?? []).length,
+    },
+    {
+      label: "function supervisedWorkerIdFor(",
+      home: RECEIPT_IDENTITY_HOME,
+      count: (code) => (code.match(/\bfunction\s+supervisedWorkerIdFor\s*\(/g) ?? []).length,
+    },
     { label: "ACP-Receipt:", home: RECEIPT_TRAILER_HOME, count: (code) => code.split("ACP-Receipt:").length - 1 },
     {
       label: "function commitMessageWithReceiptTrailer(",

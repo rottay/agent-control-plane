@@ -77,6 +77,7 @@ export {
   buildQuarantineBatch,
   quarantineWorktree,
   recordCommit,
+  writerIdIssuerFor,
 } from "./commit-authorization/index.js";
 export type {
   AuthorizationEvent,

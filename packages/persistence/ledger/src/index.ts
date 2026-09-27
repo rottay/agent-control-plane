@@ -139,6 +139,24 @@ export {
 } from "./receipt-identity/index.js";
 
 /**
+ * P-16/C: the supervised verifier's and auditor's instance id, and the digest of the
+ * verification policy a run applied (ADR 0123). `supervisedWorkerIdFor` is the spawn
+ * registry's derivation, which the verification door and fold recompute;
+ * `verificationPolicySha256` is `policy_sha256`'s one producer, recomputable from the
+ * recorded envelope alone. `receiptVerificationColumns` leaves the module for its second
+ * caller, the daemon's verification runner, which carries the record the door
+ * recomputes from the same function.
+ */
+export {
+  VERIFICATION_POLICY_PREIMAGE_PREFIX_V1,
+  receiptVerificationColumns,
+  supervisedWorkerIdFor,
+  verificationPolicySha256,
+} from "./receipt-identity/index.js";
+export type { ReceiptVerificationColumns } from "./receipt-identity/index.js";
+export type { SupervisedRole, VerificationPolicy } from "./receipt-identity/index.js";
+
+/**
  * V2 concurrency C1: the worktree arbitration store.
  *
  * A separate database from the ledger, answering the one question history

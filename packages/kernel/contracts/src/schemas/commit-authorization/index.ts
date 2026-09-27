@@ -71,6 +71,21 @@ import { WorkerIdentityString } from "../worker-identity/index.js";
 export const WRITER_WORKER_ID_UUID_NAMESPACE = "7108affe-18e1-427e-8a44-493bb4a3af92";
 
 /**
+ * The namespace every supervised verifier and auditor instance id is derived under
+ * (P-16/C, ADR 0123; execution §10.2 `verifier_worker_id`, §10.3 `auditor_worker_id`:
+ * "bajo su propio espacio de nombres").
+ *
+ * Itself a version 5 UUID with no randomness: `uuid5(WRITER_WORKER_ID_UUID_NAMESPACE,
+ * "acp/supervised-worker-id/v1")`. The name derived under it is
+ * `taskId + "/" + flatAttempt + "/" + role + "/" + ordinal`, the role one of the
+ * `WORKER_ROLES` literals `verifier` or `reviewer` (an auditor is a reviewer) and the
+ * ordinal the spawn's run id. The rule lives here and its one computation is
+ * `@acp/ledger`'s `supervisedWorkerIdFor`, the writer id's split. The literal appears
+ * in this one source file (L-P16C-3).
+ */
+export const SUPERVISED_WORKER_ID_UUID_NAMESPACE = "370c3107-1424-5cc1-b7ca-74d37eb0fb68";
+
+/**
  * The refusal of a writer transport that has no id issuer (execution §10.2,
  * contracts §12 "Quién llena el campo"; decision 227).
  *

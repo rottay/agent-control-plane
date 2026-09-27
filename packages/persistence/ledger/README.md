@@ -91,6 +91,10 @@ ledger.close();
 | `receiptSha256(value)` | Pure. `receipt_sha256`, the name of a verification receipt (P-16/A2, ADR 0121); parses `VerificationReceipt` before it hashes, so a `CommitAuthorizationReceipt` digests the same. The one computation site. |
 | `receiptIdentityPreimageV1(value)` | Pure. The bytes that digest is taken over: the versioned prefix and the canonical JSON of the thirteen members execution §10.2 names. |
 | `writerWorkerIdFor(taskId, attempt)` | Pure. The writer's instance id: the RFC 4122 v5 UUID over `taskId + "/" + attempt` under contracts' `WRITER_WORKER_ID_UUID_NAMESPACE`, with the flat per-task attempt. Byte-identical to the Claude CLI session name. Refuses a bad argument with `LedgerValidationError`, naming it. |
+| `supervisedWorkerIdFor(taskId, attempt, role, ordinal)` | Pure. A supervised verifier's or auditor's instance id (P-16/C, ADR 0123): the v5 over `taskId/attempt/role/ordinal` under contracts' `SUPERVISED_WORKER_ID_UUID_NAMESPACE`, role `verifier` or `reviewer`, ordinal the spawn's run id. The spawn registry's derivation, which the verification door and fold recompute. Refuses a bad argument with `LedgerValidationError`, naming it. |
+| `verificationPolicySha256(policy)` | Pure. `policy_sha256` (P-16/C): sha256 over `acp/verification-policy/v1\n` and the canonical JSON of `{commands, independentVerifierRequired, commitPolicy}`, the recorded envelope's three members. The one producer. |
+| `receiptVerificationColumns(value)` | Pure. The §10.2 columns of one receipt from one parse, the name included: the reading the verification door compares a record against, and since P-16/C the one the daemon's runner carries. |
+| `listVerifications(taskId, revision, attempt)` | Every receipt row of one attempt, in the order recorded (P-16/C): the runner's next spawn ordinal. Read-only; no route or verb. |
 | `computeOutboxCommandId(input)` / `outboxCommandIdPreimageV1(input)` | Pure. The id of one command, over `(sagaId, phase, targetKind, targetId)` under the contract's prefix; the door recomputes it. |
 | `foldOutboxCommands(entries)` | Pure. Every command a sequence of stream events folds to, refusing what the append door refuses. |
 | `measurementStreamIdV1(coordinate)` / `measurementStreamPreimageV1(coordinate)` | Pure. The id of one usage measurement stream, over `(source, accountId, routeSegmentId, sourceEpoch)` under its versioned prefix; refuses a malformed field by name before hashing. |
@@ -193,7 +197,7 @@ seventeenth class cannot arrive without appearing here.
 | `LedgerInitiativeBatchConflictError` | an initiative batch meets a stream that holds part of it, or all of it with other content; a batch is recorded whole or replayed whole, and carries the count of keys already recorded, never a body |
 | `LedgerTaskGraphRefusedError` | the batch door refuses a task graph revision by the decision's word, or the fold meets a revision the door would have refused; carries `reason` and `at` — a field path, or the nodes on a cycle by task id and revision — never content |
 | `LedgerTaskStepLinkRefusedError` | the single initiative door refuses a task's step link by the decision's word, or the fold meets a link the door would have refused; carries `reason` and `at`, a field path, never content. `rebuildReadModel()` throws it; `verifyIntegrity()` reports it |
-| `LedgerVerificationRefusedError` | the task door refuses a receipt-form `VERIFICATION_COMPLETED` or a verdict-form `AUDIT_COMPLETED` by one of the nineteen words of `VERIFICATION_REFUSALS`, or the fold meets one the door would have refused; carries `reason` and `at`, a field path, never a receipt's or an evidence's bytes nor a carried digest. `rebuildReadModel()` throws it; `verifyIntegrity()` reports it |
+| `LedgerVerificationRefusedError` | the task door refuses a receipt-form `VERIFICATION_COMPLETED` or a verdict-form `AUDIT_COMPLETED` by one of the twenty-one words of `VERIFICATION_REFUSALS` (nineteen in ADR 0122, and P-16/C's `AUDITOR_NOT_REGISTERED` and `VERIFIER_NOT_REGISTERED`), or the fold meets one the door would have refused; carries `reason` and `at`, a field path, never a receipt's or an evidence's bytes nor a carried digest. `rebuildReadModel()` throws it; `verifyIntegrity()` reports it |
 
 ## Tables
 
@@ -346,7 +350,11 @@ and never carried:
   under `acp/receipt-write-set/v1\n`.
 
 The three prefixes are this package's own, as the account-integrity and
-usage-settlement prefixes are. The two sub-prefixes are not on the barrel.
+usage-settlement prefixes are. The two sub-prefixes are not on the barrel. P-16/C
+(ADR 0123) adds a fourth, `acp/verification-policy/v1\n`, for `policy_sha256`:
+`verificationPolicySha256` over the recorded envelope's declared commands, in their
+order, its `independentVerifierRequired` and its `commitPolicy`; the runner's bounds are
+not in it.
 
 The commit message's trailer is not in the preimage, because it carries the
 digest. The receipt's schema refuses a body that already holds one before anything
@@ -360,6 +368,12 @@ revision. The value is the Claude CLI's session name, byte for byte; providers'
 `claudeSessionId` computes the same function, and both suites pin the same four
 vectors (L-P16A2-2). A bad argument throws `LedgerValidationError` naming `taskId`
 or `attempt`. **No error class is added.**
+
+`supervisedWorkerIdFor(taskId, attempt, role, ordinal)` (P-16/C, ADR 0123) is the
+same construction under contracts' `SUPERVISED_WORKER_ID_UUID_NAMESPACE`, over
+`taskId/attempt/role/ordinal`: the verifier (`verifier`) and the auditor (`reviewer`)
+are named by their spawn, and the ordinal is the run id. One private v5 function
+serves both derivations, and the writer's four vectors are unchanged (L-P16C-3).
 
 ## The revision coordinate, and the revision's own record
 
@@ -1819,7 +1833,12 @@ an offset instant is `RECORDED_AT_NOT_CANONICAL`), that the coordinate names an 
 attempt and the event's flat attempt is that row's, the writer's id as
 `writerWorkerIdFor(taskId, flat attempt)` (the bijection; `WRITER_ID_MISMATCH`),
 the verifier's and the auditor's independence by label and by instance, and for a
-verdict its PASS receipt of the same attempt, tree and writer.
+verdict its PASS receipt of the same attempt, tree and writer. **The spawn registry**
+(P-16/C, ADR 0123): for a key it does not already hold, the run id must be the next
+ordinal of the coordinate and the role, and the instance id
+`supervisedWorkerIdFor(taskId, flat attempt, role, runId)`, or the record is
+`VERIFIER_NOT_REGISTERED` / `AUDITOR_NOT_REGISTERED` at `…runId` or `…workerId`; the
+door answers the last ordinal through `ix_*__attempt`, the fold from its snapshot.
 
 **The bytes are the door's alone.** Before its lock, `append` and `appendBatch` read the
 receipt (class `RECEIPT`) or the evidence (class `EVIDENCE`) by reference under the

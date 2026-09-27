@@ -6564,6 +6564,17 @@ export class Ledger {
           | undefined;
         return row === undefined ? null : auditVerdictRowToModel(row);
       },
+      // The spawn registry's last ordinal (P-16/C), through `ix_*__attempt`.
+      lastRunId: (role, taskId, revisionNumber, attemptNumber) => {
+        const sql =
+          role === "verifier"
+            ? "SELECT MAX(verifier_run_id) AS last FROM verification_read_model " +
+              "WHERE task_id = ? AND revision_number = ? AND attempt_number = ?"
+            : "SELECT MAX(auditor_run_id) AS last FROM audit_verdict_read_model " +
+              "WHERE task_id = ? AND revision_number = ? AND attempt_number = ?";
+        const row = this.#stmt(sql).get(taskId, revisionNumber, attemptNumber) as { readonly last: number | null };
+        return row.last ?? 0;
+      },
     };
   }
 
@@ -12617,6 +12628,22 @@ export class Ledger {
       | VerificationRow
       | undefined;
     return row === undefined ? null : verificationRowToModel(row);
+  }
+
+  /**
+   * Every receipt row of one attempt, in the order recorded (P-16/C, ADR 0123): what
+   * the verification runner reads for the next spawn ordinal of the coordinate. Read
+   * through `ix_verification_read_model__attempt`; read-only, and no route or verb
+   * exposes it.
+   */
+  listVerifications(taskId: string, revisionNumber: number, attemptNumber: number): readonly VerificationReadModel[] {
+    this.#assertOpen("listVerifications");
+    return (
+      this.#stmt(
+        "SELECT * FROM verification_read_model WHERE task_id = ? AND revision_number = ? AND attempt_number = ? " +
+          "ORDER BY sequence ASC",
+      ).all(taskId, revisionNumber, attemptNumber) as VerificationRow[]
+    ).map(verificationRowToModel);
   }
 
   /**

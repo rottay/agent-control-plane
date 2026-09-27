@@ -4,7 +4,7 @@ import { readByReference } from "../artifact-plane/index.js";
 import { canonicalJsonStringify } from "../canonical-json/index.js";
 import { LedgerVerificationRefusedError } from "../errors/index.js";
 import type { Ledger } from "../ledger/index.js";
-import { receiptVerificationColumns, writerWorkerIdFor } from "../receipt-identity/index.js";
+import { receiptVerificationColumns, supervisedWorkerIdFor, writerWorkerIdFor } from "../receipt-identity/index.js";
 import type { AuditVerdictReadModel, VerificationReadModel } from "../types/index.js";
 
 import type {
@@ -59,14 +59,29 @@ export type {
  * carried writer id must be `writerWorkerIdFor(taskId, legacy)`, where `legacy` is
  * that attempt row's flat number: never the per-revision `attemptNumber`, which
  * restarts in each revision (decision 229). Both callers recompute it (ND-17).
+ *
+ * ## The spawn registry (P-16/C, ADR 0123; decision 236)
+ *
+ * The verifier's and the auditor's ids are the registry's: for a key not yet held, the
+ * run id must be the next ordinal of the coordinate and the role, `1 + lastRunId`, or
+ * the record is `VERIFIER_NOT_REGISTERED` / `AUDITOR_NOT_REGISTERED` at `…runId`; then
+ * the instance id must be `supervisedWorkerIdFor(taskId, legacy, role, runId)`, role
+ * `verifier` or `reviewer`, or the same word at `…workerId`. A key already held (the
+ * same receipt again with the same metadata) is a replay and is not re-judged. Both
+ * callers answer `lastRunId` from what they hold, so a rebuild refuses the same ids in
+ * the same words. Stated limits: a spawn that crashed before its receipt was recorded
+ * leaves no row, and its ordinal is reused by the retry; of two concurrent runs of
+ * one attempt the second append is refused `VERIFIER_NOT_REGISTERED` (P-18 owns both).
  */
 
 /**
- * The closed refusal vocabulary, sorted (ND-8, frozen in ADR 0122). Every refusal
- * names the field that failed, never a value.
+ * The closed refusal vocabulary, sorted (ND-8, frozen in ADR 0122 at nineteen; ADR
+ * 0123 adds the registry's two, `AUDITOR_NOT_REGISTERED` and
+ * `VERIFIER_NOT_REGISTERED`). Every refusal names the field that failed, never a value.
  */
 export const VERIFICATION_REFUSALS = [
   "AUDITOR_NOT_INDEPENDENT",
+  "AUDITOR_NOT_REGISTERED",
   "AUDIT_RECEIPT_NOT_PASS",
   "AUDIT_RECEIPT_UNKNOWN",
   "AUDIT_RECORD_INVALID",
@@ -84,6 +99,7 @@ export const VERIFICATION_REFUSALS = [
   "RECEIPT_UNREADABLE",
   "RECORDED_AT_NOT_CANONICAL",
   "VERIFIER_NOT_INDEPENDENT",
+  "VERIFIER_NOT_REGISTERED",
   "WRITER_ID_MISMATCH",
 ] as const;
 
@@ -275,6 +291,18 @@ function decideVerification(
   if (verifier.identity === writer.identity) refuse("VERIFIER_NOT_INDEPENDENT", at + ".verifier.identity");
   if (verifier.workerId === writer.workerId) refuse("VERIFIER_NOT_INDEPENDENT", at + ".verifier.workerId");
 
+  // The spawn registry (P-16/C): judged only for a key not yet held, so a replay of the
+  // same receipt with the same metadata keeps its first row.
+  const stored = view.verification(receiptSha256);
+  if (stored === null) {
+    const runId = verifier.runId ?? 0;
+    const next = view.lastRunId("verifier", event.taskId, revisionNumber, attemptNumber) + 1;
+    if (runId !== next) refuse("VERIFIER_NOT_REGISTERED", at + ".verifier.runId");
+    if (verifier.workerId !== supervisedWorkerIdFor(event.taskId, legacy, "verifier", next)) {
+      refuse("VERIFIER_NOT_REGISTERED", at + ".verifier.workerId");
+    }
+  }
+
   const row: VerificationReadModel = {
     receiptSha256,
     taskId: event.taskId,
@@ -296,7 +324,6 @@ function decideVerification(
     recordedAt: event.recordedAt,
     sequence,
   };
-  const stored = view.verification(receiptSha256);
   if (stored === null) return { kind: "VERIFICATION", row, recorded: false };
   if (metadataOf(stored) !== metadataOf(row)) refuse("RECEIPT_METADATA_CONFLICT", at + ".receiptSha256");
   return { kind: "VERIFICATION", row: stored, recorded: true };
@@ -324,7 +351,7 @@ function decideAuditVerdict(
 
   if (!isCanonicalInstant(event.recordedAt)) refuse("RECORDED_AT_NOT_CANONICAL", "recordedAt");
 
-  openedAttempt(view, event, revisionNumber, attemptNumber);
+  const legacy = openedAttempt(view, event, revisionNumber, attemptNumber);
 
   // The receipt row, checked field by field against the verdict (§10.3 "Validación de
   // referencia"): known, of this coordinate, `PASS`, this tree, this writer.
@@ -343,6 +370,19 @@ function decideAuditVerdict(
   if (auditor.identity === receipt.writerIdentity) refuse("AUDITOR_NOT_INDEPENDENT", at + ".auditor.identity");
   if (auditor.workerId === receipt.writerWorkerId) refuse("AUDITOR_NOT_INDEPENDENT", at + ".auditor.workerId");
 
+  // The spawn registry (P-16/C), role `reviewer`. The stream's own `event_id` is
+  // unique, so the door never meets a second verdict under one id and always judges;
+  // the fold meets a held id only in a history the door never wrote, and judges the rest.
+  const stored = view.auditVerdict(event.eventId);
+  if (stored === null) {
+    const runId = auditor.runId ?? 0;
+    const next = view.lastRunId("reviewer", event.taskId, revisionNumber, attemptNumber) + 1;
+    if (runId !== next) refuse("AUDITOR_NOT_REGISTERED", at + ".auditor.runId");
+    if (auditor.workerId !== supervisedWorkerIdFor(event.taskId, legacy, "reviewer", next)) {
+      refuse("AUDITOR_NOT_REGISTERED", at + ".auditor.workerId");
+    }
+  }
+
   const row: AuditVerdictReadModel = {
     auditId: event.eventId,
     taskId: event.taskId,
@@ -360,9 +400,6 @@ function decideAuditVerdict(
     recordedAt: event.recordedAt,
     sequence,
   };
-  // The stream's own `event_id` is unique, so the door never meets a second verdict
-  // under one id; the fold does only in a history the door never wrote.
-  const stored = view.auditVerdict(event.eventId);
   if (stored === null) return { kind: "AUDIT_VERDICT", row, recorded: false };
   if (metadataOf(stored) !== metadataOf(row)) refuse("RECEIPT_METADATA_CONFLICT", "eventId");
   return { kind: "AUDIT_VERDICT", row: stored, recorded: true };
@@ -376,7 +413,8 @@ function decideAuditVerdict(
  * instant, the attempt the coordinate names and its flat number, then the form's own
  * facts — for a receipt the writer's derived id and the verifier's independence; for
  * a verdict its receipt row, that row's coordinate, `PASS`, tree and writer, and the
- * auditor's independence — and last the key already held, a replay with the same
+ * auditor's independence — then, for a key not yet held, the spawn registry's run id
+ * and instance id (P-16/C), and last the key already held, a replay with the same
  * metadata or `RECEIPT_METADATA_CONFLICT`.
  */
 export function decideVerificationRecord(

@@ -30,6 +30,7 @@ import {
   ControlPlaneEvent,
   VerificationReceipt,
   WRITER_ID_UNISSUED,
+  SUPERVISED_WORKER_ID_UUID_NAMESPACE,
   WRITER_WORKER_ID_UUID_NAMESPACE,
   commitMessageWithReceiptTrailer,
   DRIVER_CAPABILITIES,
@@ -1376,6 +1377,12 @@ describe("the writer id's rule and the commit message's trailer (P-16/A2)", () =
     // The bytes of the Claude CLI's session namespace since P-15/A (ADR 0101).
     expect(WRITER_WORKER_ID_UUID_NAMESPACE).toBe("7108affe-18e1-427e-8a44-493bb4a3af92");
     expect(WRITER_ID_UNISSUED).toBe("WRITER_ID_UNISSUED");
+  });
+
+  it("declares the supervised namespace, itself a v5 under the writer's (P-16/C)", () => {
+    // Python: uuid.uuid5(UUID("7108affe-18e1-427e-8a44-493bb4a3af92"), "acp/supervised-worker-id/v1").
+    expect(SUPERVISED_WORKER_ID_UUID_NAMESPACE).toBe("370c3107-1424-5cc1-b7ca-74d37eb0fb68");
+    expect(SUPERVISED_WORKER_ID_UUID_NAMESPACE).not.toBe(WRITER_WORKER_ID_UUID_NAMESPACE);
   });
 
   it("builds exactly body, a blank line, the trailer and one LF", () => {

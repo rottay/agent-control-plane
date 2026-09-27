@@ -25,6 +25,7 @@ import {
   buildQuarantineBatch,
   quarantineWorktree,
   recordCommit,
+  writerIdIssuerFor,
 } from "../../src/commit-authorization/index.js";
 import type {
   AuthorizationOutcome,
@@ -760,6 +761,37 @@ describe("the lease binds the writer, the worktree and the moment", () => {
     for (const code of ["LEASE_EXPIRED", "LEASE_HOLDER_MISMATCH", "LEASE_WORKTREE_MISMATCH"]) {
       expect(AUTHORIZATION_REFUSALS).toContain(code);
     }
+  });
+});
+
+describe("the writer id issuer, produced from an attempt's recorded route segments (P-16/C)", () => {
+  const cli = { provider: "claude", transportKind: "CLI_SUBSCRIPTION" };
+
+  it("P5: every segment the Claude CLI under a subscription issues CLAUDE_CLI_SESSION", () => {
+    expect(writerIdIssuerFor([cli])).toBe("CLAUDE_CLI_SESSION");
+    // A handoff that stays on the one issuing route still issues.
+    expect(writerIdIssuerFor([cli, { ...cli }])).toBe("CLAUDE_CLI_SESSION");
+    // The producer's answer is the one the authorization admits.
+    expect(authorizeCommit(request({ writerIdIssuer: writerIdIssuerFor([cli]) ?? "" })).ok).toBe(true);
+  });
+
+  it("N4: no segment, another transport, another provider, or a mixed handoff issues nothing", () => {
+    const cases: readonly (readonly { provider: unknown; transportKind: unknown }[])[] = [
+      [],
+      [{ provider: "claude", transportKind: "API_KEY" }],
+      [{ provider: "claude", transportKind: "LOCAL_OR_SELF_HOSTED" }],
+      [{ provider: "codex", transportKind: "CLI_SUBSCRIPTION" }],
+      [cli, { provider: "codex", transportKind: "CLI_SUBSCRIPTION" }],
+      [{ provider: "claude", transportKind: "API_KEY" }, cli],
+      [{ provider: "Claude", transportKind: "CLI_SUBSCRIPTION" }],
+      [{ provider: "claude", transportKind: "cli_subscription" }],
+      [{ provider: null, transportKind: undefined }],
+    ];
+    for (const segments of cases) {
+      expect({ segments, issuer: writerIdIssuerFor(segments) }).toEqual({ segments, issuer: null });
+    }
+    expect(writerIdIssuerFor(null as never)).toBeNull();
+    expect(writerIdIssuerFor([null] as never)).toBeNull();
   });
 });
 

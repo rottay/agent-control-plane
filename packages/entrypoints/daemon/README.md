@@ -200,7 +200,41 @@ re-submission under the version in force, through `acp intake` or
 over a planted ledger; that one test file is the only daemon file the fence lets
 import `node:sqlite`, to plant it.
 
+## The verification runner and the tree hasher
+
+`src/verification-runner` (P-16/C, ADR 0123) is the daemon's fifth spawn site and the
+plane's first real verification. `runVerification` is internal: off the barrel, with no
+route, verb or beat yet (P-16/D1 wires it). It runs **only the check commands the
+recorded envelope declares**, read back through runtime's `readRecordedTask`; its input
+has no command field. Everything that can refuse does so by name before the first
+spawn: the scratch root, the task and its state, the declared checks and write-set,
+the object format (`OBJECT_FORMAT_UNSUPPORTED` for anything but sha1), the observation
+(`BASE_HEAD_MISSING`, `RUNNER_WRITE_SET_VIOLATION`) and the writer id's issuer
+(`WRITER_ID_UNISSUED`). The checks run in a disposable copy under one per-run directory
+(`tree`, `home`, `tmp`) beneath a caller-given scratch root, and the directory is
+removed afterwards. The copy holds exactly the tree the receipt names: index paths and
+observed untracked paths, minus deletions, no-follow, never `.git`.
+
+The environment is built, never inherited: `PATH=/usr/bin:/bin`, `LC_ALL=C`, `HOME` and
+`TMPDIR` in the per-run directory, and Git confined to the copy by
+`GIT_CEILING_DIRECTORIES`, `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`.
+**There is no operating-system sandbox**: a declared check can reach any path the
+daemon can, and the mechanism is P-25's. The one product is a private `RECEIPT` and the
+receipt-form `VERIFICATION_COMPLETED` the ledger's door admits; the verifier's id is the
+spawn registry's (`supervisedWorkerIdFor`, run id = next ordinal of the attempt).
+
+`src/tree-hasher` computes the receipt's `treeSha` in process (sha1 blob and tree
+objects in git's order), reads the copy no-follow, and spawns and writes nothing. Its
+oracle is the test's: `git write-tree` over the same content in disposable repositories.
+
 ## Bounds
+
+The verification runner bounds each check's wall time and its stdout and stderr bytes
+together, counted raw as they arrive, and the run's total wall time. Exceeding one
+kills the check's whole process group and records `137`. A check that cannot start
+records `127`, and one ended by a signal records `128 +` its number, or `255` for a
+signal outside the closed list. Every one of these is `FAIL`. Check output is counted
+and discarded, never logged or stored.
 
 Logs are capped three ways: total bytes, file count, and a single line. All
 three are needed, and each is tested past its limit. A byte cap alone lets
@@ -228,6 +262,16 @@ restored in `finally`, then armed to refuse a late call — and no socket; the l
 talks over a real loopback socket to `test/testing/loopback-sse-server/index.mjs`, a
 tracked fixture spawned by path, the one socket these drills open. Every credential is
 a synthetic canary written into a disposable directory and swept from every sink.
+
+The verification runner's suite (P-16/C) runs end to end: a task recorded through the
+real intake, a real ledger and private plane, and a real disposable sha1 repository per
+test, built with Git plumbing only under a hermetic environment and the synthetic
+identity `acp-fixture <fixture@invalid>`. Its checks are synthetic shell one-liners.
+It proves the bounds (a grandchild is gone after a timeout), the built environment (a
+parent canary never reaches a check), that a check's output reaches no file of the
+ledger, and that the copy, the original worktree and the checkout's own `.git` are
+untouched. That last proof runs only in a checkout nobody else runs Git in. The tree
+hasher's suite holds it to `git write-tree` for every fixture shape.
 
 ## The packaged entry
 

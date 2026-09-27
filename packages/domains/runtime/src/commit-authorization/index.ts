@@ -150,10 +150,42 @@ export interface RecordedCheck {
  *
  * One member today: a Claude CLI writer runs under a session named by the writer
  * id itself. Every other transport is refused as `WRITER_ID_UNISSUED` until
- * P-28 widens the set. Module-private: its producer is P-16/C's runner, and it is
- * promoted when a second reader exists.
+ * P-28 widens the set. Module-private: its producer is `writerIdIssuerFor` below
+ * (P-16/C, ADR 0123), the promotion decision 229 anticipated; the list itself stays
+ * here.
  */
 const WRITER_ID_ISSUERS: readonly string[] = Object.freeze(["CLAUDE_CLI_SESSION"]);
+
+/** The one route a writer id is issued on today: the Claude CLI under a subscription. */
+const CLAUDE_CLI_ROUTE = Object.freeze({ provider: "claude", transportKind: "CLI_SUBSCRIPTION" });
+
+/**
+ * The writer id issuer of one attempt, from its recorded route segments, or `null`
+ * (P-16/C, ADR 0123; decision 236, ND-11).
+ *
+ * Every segment of the attempt must be the Claude CLI under a subscription
+ * (`provider = "claude"`, `transportKind = "CLI_SUBSCRIPTION"`): then the writer ran
+ * under a session named by its writer id, and the issuer is `CLAUDE_CLI_SESSION`.
+ * No segment at all, or any other segment -- an API key, a local or self-hosted
+ * model, another provider's CLI, or a handoff to any of them -- has no issuer, and
+ * the caller refuses `WRITER_ID_UNISSUED` by name. Pure, and total over its input:
+ * a segment that is not an object with those two strings is an "other".
+ *
+ * `authorizeCommit` still takes the issuer from its caller; P-17/A gives it this
+ * function's answer.
+ */
+export function writerIdIssuerFor(
+  segments: readonly { readonly provider: unknown; readonly transportKind: unknown }[],
+): string | null {
+  if (!Array.isArray(segments) || segments.length === 0) return null;
+  for (const segment of segments as readonly unknown[]) {
+    if (typeof segment !== "object" || segment === null) return null;
+    const fields = segment as { readonly provider?: unknown; readonly transportKind?: unknown };
+    if (fields.provider !== CLAUDE_CLI_ROUTE.provider || fields.transportKind !== CLAUDE_CLI_ROUTE.transportKind) return null;
+  }
+  const issuer = WRITER_ID_ISSUERS[0];
+  return issuer ?? null;
+}
 
 /**
  * The request's closed key set (ND-11).

@@ -4057,6 +4057,17 @@ export function applyEventToSnapshot(
         snapshot.taskAttempts.get(taskAttemptKey(taskId, revisionNumber, attemptNumber))?.legacyAttemptNumber ?? null,
       verification: (receiptSha256) => snapshot.verifications.get(receiptSha256) ?? null,
       auditVerdict: (auditId) => snapshot.auditVerdicts.get(auditId) ?? null,
+      // The spawn registry's last ordinal (P-16/C), from the rows folded before.
+      lastRunId: (role, taskId, revisionNumber, attemptNumber) => {
+        let last = 0;
+        const rows = role === "verifier" ? snapshot.verifications.values() : snapshot.auditVerdicts.values();
+        for (const row of rows) {
+          if (row.taskId !== taskId || row.revisionNumber !== revisionNumber || row.attemptNumber !== attemptNumber) continue;
+          const runId = "verifierRunId" in row ? row.verifierRunId : row.auditorRunId;
+          if (runId > last) last = runId;
+        }
+        return last;
+      },
     },
     event,
     sequence,

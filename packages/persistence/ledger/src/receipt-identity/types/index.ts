@@ -57,3 +57,16 @@ export interface ReceiptVerificationColumns {
   readonly writer: { readonly identity: string; readonly workerId: string };
   readonly verifier: { readonly identity: string; readonly workerId: string; readonly runId: number };
 }
+
+/** The two supervised roles (P-16/C, ADR 0123): the `WORKER_ROLES` literals a verifier and an auditor run as. */
+export type SupervisedRole = "verifier" | "reviewer";
+
+/**
+ * The object `policy_sha256` digests (P-16/C, ADR 0123; ND-12): three members of the
+ * recorded envelope, and nothing of the runner's bounds.
+ */
+export interface VerificationPolicy {
+  readonly commands: readonly string[];
+  readonly independentVerifierRequired: boolean;
+  readonly commitPolicy: "NO_COMMIT" | "LOCAL_COMMIT_WITH_RECEIPT";
+}

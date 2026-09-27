@@ -1,12 +1,28 @@
 import { createHash } from "node:crypto";
 
-import { VerificationReceipt, WRITER_WORKER_ID_UUID_NAMESPACE } from "@acp/contracts";
+import {
+  SUPERVISED_WORKER_ID_UUID_NAMESPACE,
+  VerificationReceipt,
+  WRITER_WORKER_ID_UUID_NAMESPACE,
+} from "@acp/contracts";
 
 import { canonicalJsonStringify, sha256Hex } from "../canonical-json/index.js";
 import { LedgerValidationError } from "../errors/index.js";
-import type { ReceiptCheckEntry, ReceiptIdentityPreimageV1, ReceiptVerificationColumns } from "./types/index.js";
+import type {
+  ReceiptCheckEntry,
+  ReceiptIdentityPreimageV1,
+  ReceiptVerificationColumns,
+  SupervisedRole,
+  VerificationPolicy,
+} from "./types/index.js";
 
-export type { ReceiptCheckEntry, ReceiptIdentityPreimageV1, ReceiptVerificationColumns } from "./types/index.js";
+export type {
+  ReceiptCheckEntry,
+  ReceiptIdentityPreimageV1,
+  ReceiptVerificationColumns,
+  SupervisedRole,
+  VerificationPolicy,
+} from "./types/index.js";
 
 /**
  * A receipt's identity, version 1, and the writer's instance id (P-16/A2, ADR 0121).
@@ -40,6 +56,10 @@ export type { ReceiptCheckEntry, ReceiptIdentityPreimageV1, ReceiptVerificationC
  * Each under its own prefix. The three prefixes are the ledger's, as the account
  * integrity and usage settlement prefixes are: they encode a digest this package
  * computes, and no contract declares them.
+ *
+ * P-16/C (ADR 0123) adds a fourth, `acp/verification-policy/v1`, for the one other
+ * digest a receipt carries: `policy_sha256`, over the object `verificationPolicySha256`
+ * names. And the supervised instance id beside the writer's, under its own namespace.
  *
  * The commit message's trailer is not in the preimage — it carries this digest —
  * and a body that already holds one is refused by the receipt's own schema before
@@ -164,6 +184,32 @@ function uuidBytes(uuid: string): Buffer {
 }
 
 /**
+ * RFC 4122 version 5 over one name under one namespace, in canonical lowercase.
+ * Module-private: the two derivations below are its only callers, each under the
+ * namespace `@acp/contracts` declares for it.
+ */
+function uuidV5(namespace: string, name: string): string {
+  const digest = createHash("sha1").update(uuidBytes(namespace)).update(name, "utf8").digest();
+  const bytes = digest.subarray(0, 16);
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
+}
+
+function assertTaskId(taskId: unknown): asserts taskId is string {
+  if (typeof taskId !== "string" || taskId.length === 0) {
+    throw new LedgerValidationError([{ path: "taskId", message: "a task id is a non-empty string" }]);
+  }
+}
+
+function assertCount(value: unknown, path: string, message: string): asserts value is number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw new LedgerValidationError([{ path, message }]);
+  }
+}
+
+/**
  * The writer's instance id for `(taskId, attempt)`: the RFC 4122 version 5 UUID over
  * `taskId + "/" + String(attempt)` under `WRITER_WORKER_ID_UUID_NAMESPACE`.
  *
@@ -178,21 +224,81 @@ function uuidBytes(uuid: string): Buffer {
  * naming the argument.
  */
 export function writerWorkerIdFor(taskId: string, attempt: number): string {
-  if (typeof taskId !== "string" || taskId.length === 0) {
-    throw new LedgerValidationError([{ path: "taskId", message: "a task id is a non-empty string" }]);
+  assertTaskId(taskId);
+  assertCount(attempt, "attempt", "a flat attempt is a safe integer of one or greater");
+  return uuidV5(WRITER_WORKER_ID_UUID_NAMESPACE, taskId + "/" + String(attempt));
+}
+
+/** The two supervised roles, the `WORKER_ROLES` literals a verifier and an auditor run as. */
+export const SUPERVISED_ROLES: readonly SupervisedRole[] = Object.freeze(["reviewer", "verifier"]);
+
+/**
+ * A supervised verifier's or auditor's instance id: the version 5 UUID over
+ * `taskId + "/" + attempt + "/" + role + "/" + ordinal` under
+ * `SUPERVISED_WORKER_ID_UUID_NAMESPACE` (P-16/C, ADR 0123; decision 236).
+ *
+ * The spawn registry is this derivation plus the recorded rows: `ordinal` is the
+ * spawn's run id, the next one of the attempt and the role (1 + the largest recorded
+ * `verifier_run_id` or `auditor_run_id` of the coordinate), and the verification door
+ * and fold refuse any other id or run id (`VERIFIER_NOT_REGISTERED`,
+ * `AUDITOR_NOT_REGISTERED`). `attempt` is the flat per-task attempt, as the writer's
+ * is. `role` is `verifier` for a verification and `reviewer` for an audit: an auditor
+ * is a reviewer (contracts §5), and there is no `auditor` role.
+ *
+ * Refused, never coerced: an empty task id, a flat attempt or ordinal that is not a
+ * positive safe integer, or a role outside the two, throws `LedgerValidationError`
+ * naming the argument.
+ */
+export function supervisedWorkerIdFor(taskId: string, attempt: number, role: SupervisedRole, ordinal: number): string {
+  assertTaskId(taskId);
+  assertCount(attempt, "attempt", "a flat attempt is a safe integer of one or greater");
+  if (typeof role !== "string" || !SUPERVISED_ROLES.includes(role)) {
+    throw new LedgerValidationError([{ path: "role", message: "a supervised role is verifier or reviewer" }]);
   }
-  if (typeof attempt !== "number" || !Number.isSafeInteger(attempt) || attempt < 1) {
-    throw new LedgerValidationError([
-      { path: "attempt", message: "a flat attempt is a safe integer of one or greater" },
-    ]);
+  assertCount(ordinal, "ordinal", "a spawn ordinal is a safe integer of one or greater");
+  return uuidV5(
+    SUPERVISED_WORKER_ID_UUID_NAMESPACE,
+    taskId + "/" + String(attempt) + "/" + role + "/" + String(ordinal),
+  );
+}
+
+/** The version prefix of the verification policy digest (P-16/C, ADR 0123). One LF, its last byte. */
+export const VERIFICATION_POLICY_PREIMAGE_PREFIX_V1 = "acp/verification-policy/v1\n";
+
+/**
+ * `policy_sha256`: the digest of the verification policy a run applied (P-16/C, ADR
+ * 0123; decision 235, ND-12).
+ *
+ *     sha256(VERIFICATION_POLICY_PREIMAGE_PREFIX_V1 + canonicalJsonStringify({
+ *       commands, independentVerifierRequired, commitPolicy }))
+ *
+ * Three members of the recorded envelope and nothing else, so P-17/A recomputes it
+ * from the envelope alone: the declared check commands in their declared order (the
+ * order is the run's), whether an independent verifier is required, and the commit
+ * policy. The runner's bounds are not in it, a stated limit.
+ *
+ * Refused, never coerced: a policy whose commands are not an array of non-empty
+ * strings, whose flag is not a boolean or whose commit policy is not one of the two
+ * words throws `LedgerValidationError` naming the member.
+ */
+export function verificationPolicySha256(policy: VerificationPolicy): string {
+  const commands: unknown = policy.commands;
+  if (!Array.isArray(commands) || commands.some((command) => typeof command !== "string" || command.length === 0)) {
+    throw new LedgerValidationError([{ path: "commands", message: "the declared commands are non-empty strings" }]);
   }
-  const digest = createHash("sha1")
-    .update(uuidBytes(WRITER_WORKER_ID_UUID_NAMESPACE))
-    .update(taskId + "/" + String(attempt), "utf8")
-    .digest();
-  const bytes = digest.subarray(0, 16);
-  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
-  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
-  const hex = bytes.toString("hex");
-  return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
+  if (typeof policy.independentVerifierRequired !== "boolean") {
+    throw new LedgerValidationError([{ path: "independentVerifierRequired", message: "the verifier requirement is a boolean" }]);
+  }
+  const commitPolicy: unknown = policy.commitPolicy;
+  if (commitPolicy !== "NO_COMMIT" && commitPolicy !== "LOCAL_COMMIT_WITH_RECEIPT") {
+    throw new LedgerValidationError([{ path: "commitPolicy", message: "the commit policy is one of the envelope's two words" }]);
+  }
+  return sha256Hex(
+    VERIFICATION_POLICY_PREIMAGE_PREFIX_V1 +
+      canonicalJsonStringify({
+        commands: [...(commands as string[])],
+        independentVerifierRequired: policy.independentVerifierRequired,
+        commitPolicy: policy.commitPolicy,
+      }),
+  );
 }

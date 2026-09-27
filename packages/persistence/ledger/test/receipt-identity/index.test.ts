@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   CONTRACT_VERSION,
   CommitAuthorizationReceipt,
+  SUPERVISED_WORKER_ID_UUID_NAMESPACE,
   VerificationReceipt,
   WRITER_WORKER_ID_UUID_NAMESPACE,
 } from "@acp/contracts";
@@ -14,9 +15,12 @@ import {
   RECEIPT_CHECKS_PREIMAGE_PREFIX_V1,
   RECEIPT_IDENTITY_PREIMAGE_PREFIX_V1,
   RECEIPT_WRITE_SET_PREIMAGE_PREFIX_V1,
+  VERIFICATION_POLICY_PREIMAGE_PREFIX_V1,
   receiptIdentityPreimageV1,
   receiptSha256,
   receiptVerificationColumns,
+  supervisedWorkerIdFor,
+  verificationPolicySha256,
   writerWorkerIdFor,
 } from "../../src/receipt-identity/index.js";
 
@@ -315,6 +319,100 @@ describe("the writer's instance id", () => {
   });
 });
 
+describe("the supervised verifier's and auditor's instance id (P-16/C, ADR 0123)", () => {
+  const TASK_AA = "00000000-0000-4000-8000-0000000000aa";
+  // Python: uuid.uuid5(uuid.UUID("370c3107-1424-5cc1-b7ca-74d37eb0fb68"), name).
+  const VECTORS: readonly (readonly [string, number, "verifier" | "reviewer", number, string])[] = [
+    [TASK_AA, 1, "verifier", 1, "423f2d9b-71cd-575b-bc4c-8c3b68be0479"],
+    [TASK_AA, 1, "reviewer", 1, "fe8388d4-c82a-5d4a-a9f7-dc3cc41e3ec3"],
+    [TASK_AA, 2, "verifier", 3, "b6232d97-1dee-569d-a855-e367a0438574"],
+    ["tâche", 3, "reviewer", 10, "72ff934a-f231-5dd2-bb14-38340f753c83"],
+  ];
+
+  it("P6: equals four Python vectors and this file's RFC 4122 construction; the namespace is a v5 of the writer's", () => {
+    expect(SUPERVISED_WORKER_ID_UUID_NAMESPACE).toBe(independentV5(WRITER_WORKER_ID_UUID_NAMESPACE, "acp/supervised-worker-id/v1"));
+    for (const [taskId, attempt, role, ordinal, expected] of VECTORS) {
+      expect(supervisedWorkerIdFor(taskId, attempt, role, ordinal)).toBe(expected);
+      expect(independentV5(SUPERVISED_WORKER_ID_UUID_NAMESPACE, taskId + "/" + String(attempt) + "/" + role + "/" + String(ordinal))).toBe(expected);
+    }
+    // Never the writer's id for the same task and attempt: another namespace, another name.
+    expect(supervisedWorkerIdFor(TASK_AA, 1, "verifier", 1)).not.toBe(writerWorkerIdFor(TASK_AA, 1));
+    // The writer's four vectors are unchanged by the shared construction.
+    expect(writerWorkerIdFor(TASK, 1)).toBe("39de475b-2696-5df6-b64b-88336de7d72c");
+  });
+
+  it("B4: refuses an empty task, an ordinal or attempt that is not a positive safe integer, and a role outside the two", () => {
+    const invalid: readonly (readonly [unknown, unknown, unknown, unknown, string])[] = [
+      ["", 1, "verifier", 1, "taskId"],
+      [TASK, 0, "verifier", 1, "attempt"],
+      [TASK, 1, "auditor", 1, "role"],
+      [TASK, 1, "implementer", 1, "role"],
+      [TASK, 1, "Verifier", 1, "role"],
+      [TASK, 1, "verifier", 0, "ordinal"],
+      [TASK, 1, "verifier", -1, "ordinal"],
+      [TASK, 1, "verifier", 1.5, "ordinal"],
+      [TASK, 1, "verifier", Number.MAX_SAFE_INTEGER + 1, "ordinal"],
+      [TASK, 1, "verifier", "1", "ordinal"],
+    ];
+    for (const [taskId, attempt, role, ordinal, path] of invalid) {
+      let refusal: unknown = null;
+      try {
+        supervisedWorkerIdFor(taskId as string, attempt as number, role as "verifier", ordinal as number);
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal, JSON.stringify([taskId, attempt, role, ordinal])).toBeInstanceOf(LedgerValidationError);
+      expect((refusal as LedgerValidationError).issues.map((issue) => issue.path)).toEqual([path]);
+    }
+  });
+});
+
+describe("the verification policy digest (P-16/C, ADR 0123; ND-12)", () => {
+  // Python: hashlib.sha256(preimage.encode()).hexdigest() over the literal preimages below.
+  const POLICY_ONE =
+    'acp/verification-policy/v1\n{"commands":["pnpm check","pnpm lint"],"commitPolicy":"LOCAL_COMMIT_WITH_RECEIPT","independentVerifierRequired":true}';
+  const POLICY_TWO =
+    'acp/verification-policy/v1\n{"commands":["test -f \\"a b\\"","exit 0"],"commitPolicy":"NO_COMMIT","independentVerifierRequired":false}';
+
+  it("equals two digests computed outside the package, and the hand-written preimages", () => {
+    expect(VERIFICATION_POLICY_PREIMAGE_PREFIX_V1).toBe("acp/verification-policy/v1\n");
+    expect(sha256(POLICY_ONE)).toBe("8a14ac41b297f094140df711f87807a54e15f600df933bf804039f3d8a434228");
+    expect(sha256(POLICY_TWO)).toBe("2518c01a7dcb593a2eee24e489043c578d5f081bd06d5671959783df85b1d53b");
+    expect(
+      verificationPolicySha256({
+        commands: ["pnpm check", "pnpm lint"],
+        independentVerifierRequired: true,
+        commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+      }),
+    ).toBe("8a14ac41b297f094140df711f87807a54e15f600df933bf804039f3d8a434228");
+    expect(
+      verificationPolicySha256({ commands: ['test -f "a b"', "exit 0"], independentVerifierRequired: false, commitPolicy: "NO_COMMIT" }),
+    ).toBe("2518c01a7dcb593a2eee24e489043c578d5f081bd06d5671959783df85b1d53b");
+  });
+
+  it("keeps the declared order of the commands, and refuses a malformed policy naming the member", () => {
+    const base = { commands: ["a", "b"], independentVerifierRequired: true, commitPolicy: "NO_COMMIT" } as const;
+    expect(verificationPolicySha256(base)).not.toBe(verificationPolicySha256({ ...base, commands: ["b", "a"] }));
+    const invalid: readonly (readonly [Record<string, unknown>, string])[] = [
+      [{ ...base, commands: "a" }, "commands"],
+      [{ ...base, commands: [""] }, "commands"],
+      [{ ...base, commands: [7] }, "commands"],
+      [{ ...base, independentVerifierRequired: "yes" }, "independentVerifierRequired"],
+      [{ ...base, commitPolicy: "no_commit" }, "commitPolicy"],
+    ];
+    for (const [policy, path] of invalid) {
+      let refusal: unknown = null;
+      try {
+        verificationPolicySha256(policy as never);
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal, path).toBeInstanceOf(LedgerValidationError);
+      expect((refusal as LedgerValidationError).issues.map((issue) => issue.path)).toEqual([path]);
+    }
+  });
+});
+
 describe("the columns execution §10.2 derives from one receipt (P-16/B, ADR 0122)", () => {
   it("P8: returns A2's pinned vectors unchanged, from one parse", () => {
     const pass = receiptVerificationColumns(receipt());
@@ -356,8 +454,14 @@ describe("the columns execution §10.2 derives from one receipt (P-16/B, ADR 012
 });
 
 describe("the ledger barrel", () => {
-  it("keeps the column reading in the module: the verification door is its one caller", () => {
-    expect(Object.keys(ledgerBarrel)).not.toContain("receiptVerificationColumns");
+  it("exports the column reading for its second caller, the daemon's verification runner (P-16/C)", () => {
+    expect(ledgerBarrel.receiptVerificationColumns).toBe(receiptVerificationColumns);
+  });
+
+  it("exports the supervised id, the policy digest and its prefix (P-16/C)", () => {
+    expect(ledgerBarrel.supervisedWorkerIdFor).toBe(supervisedWorkerIdFor);
+    expect(ledgerBarrel.verificationPolicySha256).toBe(verificationPolicySha256);
+    expect(ledgerBarrel.VERIFICATION_POLICY_PREIMAGE_PREFIX_V1).toBe(VERIFICATION_POLICY_PREIMAGE_PREFIX_V1);
   });
 
   it("exports the three functions and the identity prefix, and keeps the sub-prefixes in the module", () => {

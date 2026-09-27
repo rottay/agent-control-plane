@@ -22,7 +22,7 @@ import {
   LedgerTaskStepLinkRefusedError,
   LedgerVerificationRefusedError,
 } from "../../src/errors/index.js";
-import { receiptVerificationColumns, writerWorkerIdFor } from "../../src/receipt-identity/index.js";
+import { receiptVerificationColumns, supervisedWorkerIdFor, writerWorkerIdFor } from "../../src/receipt-identity/index.js";
 
 import {
   applyArtifactEventToSnapshot,
@@ -5031,8 +5031,10 @@ describe("the task step link fold (P-27 cut C, ADR 0116)", () => {
 describe("the verification fold refuses in the door's words (P-16/B)", () => {
   const TASK_ID = "00000000-0000-4000-8000-00000000000b";
   const AT = "2026-09-26T12:00:00.000Z";
-  const VERIFIER_ID = "24a8af45-549e-5137-8d27-03eb76de8b47";
-  const AUDITOR_ID = writerWorkerIdFor("00000000-0000-4000-8000-0000000000aa", 7);
+  // The spawn registry's ids (P-16/C, ADR 0123), derived, never lifted: revision r of
+  // this fixture is flat attempt r, and each form's first spawn is run 1.
+  const verifierIdOf = (flat: number, runId = 1): string => supervisedWorkerIdFor(TASK_ID, flat, "verifier", runId);
+  const AUDITOR_ID = supervisedWorkerIdFor(TASK_ID, 1, "reviewer", 1);
 
   let next = 0;
   function event(
@@ -5085,7 +5087,7 @@ describe("the verification fold refuses in the door's words (P-16/B)", () => {
     );
   }
 
-  function receipt(writerFlat: number, revisionNumber: number, runStatus = "PASS"): Record<string, unknown> {
+  function receipt(writerFlat: number, revisionNumber: number, runStatus = "PASS", runId = 1): Record<string, unknown> {
     const columns = receiptVerificationColumns({
       contractVersion: CONTRACT_VERSION,
       taskId: TASK_ID,
@@ -5099,7 +5101,7 @@ describe("the verification fold refuses in the door's words (P-16/B)", () => {
       observedTrackedChanges: [],
       observedUntrackedPaths: [],
       writer: { identity: "claude/opus/implementer/01", workerId: writerWorkerIdFor(TASK_ID, writerFlat) },
-      verifier: { identity: "claude/sonnet/verifier/01", workerId: VERIFIER_ID, runId: 1 },
+      verifier: { identity: "claude/sonnet/verifier/01", workerId: verifierIdOf(revisionNumber, runId), runId },
       runStatus,
       checks: [{ command: "pnpm check", exitCode: 0, ranAt: AT }],
       commitMessageBody: "feat(runtime): a verified change",
@@ -5121,12 +5123,16 @@ describe("the verification fold refuses in the door's words (P-16/B)", () => {
     };
   }
 
-  function verdictOf(record: Record<string, unknown>, verdict = "ACCEPT"): Record<string, unknown> {
+  function verdictOf(
+    record: Record<string, unknown>,
+    verdict = "ACCEPT",
+    auditor: Record<string, unknown> = { identity: "claude/sonnet/reviewer/01", workerId: AUDITOR_ID, runId: 1 },
+  ): Record<string, unknown> {
     return {
       receiptSha256: record["receiptSha256"],
       treeSha: record["treeSha"],
       writerWorkerId: (record["writer"] as { workerId: string }).workerId,
-      auditor: { identity: "claude/sonnet/reviewer/01", workerId: AUDITOR_ID, runId: 1 },
+      auditor,
       verdict,
       evidenceSha256: "d".repeat(64),
       artifactReferenceId: "ref-evidence-never-published",
@@ -5233,5 +5239,49 @@ describe("the verification fold refuses in the door's words (P-16/B)", () => {
         );
       }),
     ).toEqual({ reason: "AUDIT_RECEIPT_NOT_PASS", at: "payload.auditVerdict.receiptSha256" });
+  });
+
+  it("N12/N13 (fold): refuses a verifier or an auditor the spawn registry did not name (P-16/C)", () => {
+    const snapshot = folded();
+    // Run 2 of the verifier when the fold holds no run of this attempt.
+    expect(
+      refusal(() => {
+        applyEventToSnapshot(
+          snapshot,
+          event("VERIFICATION_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, verification: receipt(1, 1, "PASS", 2) }),
+          3,
+          "3".repeat(64),
+        );
+      }),
+    ).toEqual({ reason: "VERIFIER_NOT_REGISTERED", at: "payload.verification.verifier.runId" });
+
+    const record = receipt(1, 1);
+    applyEventToSnapshot(snapshot, event("VERIFICATION_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, verification: record }), 4, "4".repeat(64));
+    // Run 2 is next now, and run 2's own id is folded.
+    applyEventToSnapshot(
+      snapshot,
+      event("VERIFICATION_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, verification: receipt(1, 1, "FAIL", 2) }),
+      5,
+      "5".repeat(64),
+    );
+    expect([...snapshot.verifications.values()].map((row) => row.verifierRunId)).toEqual([1, 2]);
+
+    // An auditor under the writer's namespace, and a run that skips.
+    for (const [auditor, path] of [
+      [{ identity: "claude/sonnet/reviewer/01", workerId: writerWorkerIdFor(TASK_ID, 9), runId: 1 }, "auditor.workerId"],
+      [{ identity: "claude/sonnet/reviewer/01", workerId: supervisedWorkerIdFor(TASK_ID, 1, "reviewer", 2), runId: 2 }, "auditor.runId"],
+    ] as const) {
+      expect(
+        refusal(() => {
+          applyEventToSnapshot(
+            snapshot,
+            event("AUDIT_COMPLETED", 1, { revisionNumber: 1, attemptNumber: 1, auditVerdict: verdictOf(record, "ACCEPT", auditor) }),
+            6,
+            "6".repeat(64),
+          );
+        }),
+        path,
+      ).toEqual({ reason: "AUDITOR_NOT_REGISTERED", at: "payload.auditVerdict." + path });
+    }
   });
 });

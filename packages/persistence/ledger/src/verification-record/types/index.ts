@@ -8,6 +8,7 @@
  */
 
 import type { ReferenceReadRefusal } from "../../artifact-plane/index.js";
+import type { SupervisedRole } from "../../receipt-identity/index.js";
 import type { AuditVerdictReadModel, VerificationReadModel } from "../../types/index.js";
 
 /**
@@ -22,6 +23,17 @@ export interface VerificationDecisionView {
   readonly verification: (receiptSha256: string) => VerificationReadModel | null;
   /** The verdict row under one audit id, or null. */
   readonly auditVerdict: (auditId: string) => AuditVerdictReadModel | null;
+  /**
+   * The largest run id recorded for one coordinate and one supervised role, or 0 when
+   * none (P-16/C, ADR 0123): `verifier` reads the receipt rows' `verifierRunId`,
+   * `reviewer` the verdict rows' `auditorRunId`.
+   */
+  readonly lastRunId: (
+    role: SupervisedRole,
+    taskId: string,
+    revisionNumber: number,
+    attemptNumber: number,
+  ) => number;
 }
 
 /**

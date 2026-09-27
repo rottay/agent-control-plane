@@ -173,6 +173,7 @@ export {
   VerificationReceipt,
   WRITER_ID_UNISSUED,
   WRITER_WORKER_ID_UUID_NAMESPACE,
+  SUPERVISED_WORKER_ID_UUID_NAMESPACE,
   commitMessageWithReceiptTrailer,
 } from "./commit-authorization/index.js";
 export {
