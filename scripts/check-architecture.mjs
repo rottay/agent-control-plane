@@ -5913,6 +5913,7 @@ const V2DOCSAUDIT_WRITE_SET = [
   "docs/audit/architecture/database/planning/index.md",
   "docs/audit/architecture/database/planning/simulation/index.md",
   "docs/audit/architecture/database/streams/index.md",
+  "docs/audit/architecture/governance/index.md",
   "docs/audit/architecture/index.md",
   "docs/audit/architecture/integrations/composition/contracts/index.md",
   "docs/audit/architecture/integrations/composition/index.md",
@@ -12988,6 +12989,136 @@ const P17A_WRITE_SET = [
   "packages/domains/runtime/README.md",
 ];
 
+/**
+ * P-17, cut B: a commit is written only in a disposable repository, from its recorded
+ * authorization (ADR 0127; decisions 248-250; brief v1 with the DT pre-review's
+ * corrections B-1..B-7 and its rulings on ND-ID and ND-1 to ND-20, adopted).
+ *
+ * `daemon/src/git-writer` is the sixth spawn site: three plumbing verbs (`hash-object`,
+ * `commit-tree`, `update-ref` with its old operand), a built environment, hooks off,
+ * unsigned, UTF-8, the injected identity on all six keys Git reads, and the recorded
+ * `authorized_at` as both dates; operational writing is off, and a target is admitted
+ * only strictly under the checkout's `.acp-local/`. `daemon/src/commit-writer` is the
+ * production caller of `authorizeCommit` and spawns nothing: it records the record-form
+ * `COMMIT_AUTHORIZED` in `AUDITING`, and in `READY_TO_COMMIT` holds the authorization in
+ * force with base, tree, write-set and policy revalidated before any write, checks NB-2,
+ * and calls the fence port before `update-ref`. `authorizeCommit` reads its body from the
+ * envelope's title. Held by L-P17B-1 and L-P17B-2; L-C-4a and L-P17A-2 are amended in
+ * their own rows.
+ *
+ * **Pins that move.** `PATH_SCOPED_LAWS` 188 -> **190**; `SPAWN_ALLOWED_FILES` 5 -> **6**;
+ * ledger `COMMIT_AUTHORIZATION_REFUSALS` 26 -> **28**; the ADR corpus 126 -> **127**.
+ * **Pins that do not.** `CONTRACT_VERSION` (2.11.0), `API_CONTRACT_VERSION` (0.25.0),
+ * `CONTRACTS_SCHEMA_EXPORTS` (191), `RUNTIME_PUBLIC_EXPORTS` (317), `GIT_READ_VERBS` (4),
+ * runtime `AUTHORIZATION_REFUSALS` (19), `RUNNER_REFUSALS` (19), `DAEMON_PUBLIC_EXPORTS`
+ * (both modules are off the barrel), the daemon's builtins (no `node:os`); no migration.
+ *
+ * **Twenty-five paths; seven are new**: the two modules and their type leaves, their
+ * two suites, and the ADR.
+ */
+const P17B_WRITE_SET = [
+  "packages/entrypoints/daemon/src/git-writer/index.ts",
+  "packages/entrypoints/daemon/src/git-writer/types/index.ts",
+  "packages/entrypoints/daemon/src/commit-writer/index.ts",
+  "packages/entrypoints/daemon/src/commit-writer/types/index.ts",
+  "packages/entrypoints/daemon/test/git-writer/index.test.ts",
+  "packages/entrypoints/daemon/test/commit-writer/index.test.ts",
+  "docs/architecture/0127-a-commit-is-written-only-in-a-disposable-repository-from-its-recorded-authorization.md",
+  "packages/entrypoints/daemon/src/tree-hasher/index.ts",
+  "packages/entrypoints/daemon/src/tree-hasher/types/index.ts",
+  "packages/entrypoints/daemon/test/tree-hasher/index.test.ts",
+  "packages/domains/runtime/src/commit-authorization/index.ts",
+  "packages/domains/runtime/test/commit-authorization/index.test.ts",
+  "packages/domains/runtime/test/pilots/writer/index.test.ts",
+  "packages/persistence/ledger/src/commit-authorization-record/index.ts",
+  "packages/persistence/ledger/src/index.ts",
+  "packages/persistence/ledger/test/commit-authorization-record/index.test.ts",
+  "packages/persistence/ledger/README.md",
+  "packages/domains/runtime/README.md",
+  "packages/entrypoints/daemon/README.md",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "docs/audit/architecture/database/execution/index.md",
+  "docs/audit/architecture/contracts/index.md",
+];
+
+/**
+ * P-17, cut workspaceMode: a read-only task declares no write-set and never commits
+ * (ADR 0127; decisions 248-250; brief v1 with the DT pre-review's corrections B-1 and
+ * B-2 and its rulings on ND-NUM and ND-1 to ND-14, adopted).
+ *
+ * `TaskEnvelope` gains contratos §2's workspace axis, `WorkspaceMode` =
+ * {`MUTABLE_WITHIN_WRITE_SET`, `READ_ONLY`}, defaulted to `MUTABLE_WITHIN_WRITE_SET`
+ * so the parsed envelope always carries it (ND-1 (a)); the contract holds `READ_ONLY`
+ * to `NO_COMMIT` (at `workspaceMode`) and to an empty write-set (at `writeSet`),
+ * before the existing commit-policy rule (ND-2 (a)). Decision 242's pending act is
+ * paid: an empty write-set is lawful only under `READ_ONLY`, at the intake, the
+ * recorded walk's admission, the conformance gate and the runner, each guard spelled
+ * `workspaceMode !== "READ_ONLY"` (B-1). The daemon reads the mode from the walked
+ * envelope at both gate sites and forwards it (B-2); a `READ_ONLY` walk verifies over
+ * the empty set, audits, checkpoints, and any change it makes is quarantined
+ * post hoc (ND-8). A verification receipt may declare the empty set; a commit
+ * authorization receipt may not (ND-3 (a)). Held by L-P17WM-1 and L-P17WM-2.
+ *
+ * **Pins that move.** `CONTRACT_VERSION` 2.11.0 -> **2.12.0** (an identity, ADR 0076;
+ * the supported set 10 -> 11); `API_CONTRACT_VERSION` 0.25.0 -> **0.26.0** (ND-7 (a));
+ * `PATH_SCOPED_LAWS` 188 -> **190**; `CONTRACTS_SCHEMA_EXPORTS` 191 -> **192**
+ * (`WorkspaceMode`); the ADR corpus 126 -> **127**. The envelope-identity vectors and
+ * `D4_V1_TRAIL_SHA256` are re-sealed by their recorded methods, never lifted.
+ * **Pins that do not.** `RUNTIME_PUBLIC_EXPORTS` (317), `MIGRATIONS` (29; no column
+ * holds the field), `TASK_INTAKE_CODES` (13), `RECORDED_WALK_REFUSALS` (3),
+ * `RECORDED_TASK_REFUSALS` (7), `RUNNER_REFUSALS` (19), `ENFORCEMENT_REFUSALS` (14),
+ * `AUTHORIZATION_REFUSALS` (19), `VERIFICATION_REFUSALS` (27), `SPAWN_ALLOWED_FILES`
+ * (5), `DERIVED_TABLES` (38), API routes (27).
+ *
+ * **Forty-one paths; one is new**: the ADR.
+ */
+const P17WM_WRITE_SET = [
+  "packages/kernel/contracts/src/schemas/task-envelope/index.ts",
+  "packages/kernel/contracts/src/schemas/primitives/index.ts",
+  "packages/kernel/contracts/src/schemas/commit-authorization/index.ts",
+  "packages/kernel/contracts/src/schemas/index.ts",
+  "packages/kernel/contracts/src/index.ts",
+  "packages/kernel/contracts/README.md",
+  "packages/kernel/protocol/src/version/index.ts",
+  "packages/kernel/protocol/README.md",
+  "packages/domains/runtime/src/intake/index.ts",
+  "packages/domains/runtime/src/recorded-task/index.ts",
+  "packages/domains/runtime/src/enforcement/index.ts",
+  "packages/domains/runtime/README.md",
+  "packages/entrypoints/daemon/src/verification-runner/index.ts",
+  "packages/entrypoints/daemon/src/composition/ports/index.ts",
+  "packages/entrypoints/daemon/src/composition/index.ts",
+  "packages/entrypoints/daemon/README.md",
+  "packages/persistence/ledger/README.md",
+  "packages/kernel/contracts/test/schemas/index.test.ts",
+  "packages/kernel/protocol/test/schemas/index.test.ts",
+  "packages/persistence/ledger/test/envelope-identity/index.test.ts",
+  "packages/persistence/ledger/test/ledger/index.test.ts",
+  "packages/domains/runtime/test/intake/index.test.ts",
+  "packages/domains/runtime/test/recorded-task/index.test.ts",
+  "packages/domains/runtime/test/enforcement/index.test.ts",
+  "packages/domains/runtime/test/core/events/index.test.ts",
+  "packages/domains/runtime/test/core/step-executor/index.test.ts",
+  "packages/entrypoints/daemon/test/verification-runner/index.test.ts",
+  "packages/entrypoints/daemon/test/drills/execution/index.test.ts",
+  "packages/entrypoints/daemon/test/bin/acp-daemon/index.test.ts",
+  "packages/entrypoints/cli/test/intake/index.test.ts",
+  "packages/entrypoints/cli/test/cli/index.test.ts",
+  "packages/entrypoints/cli/test/tool-call/index.test.ts",
+  "packages/entrypoints/gateway/test/task-intake/index.test.ts",
+  "packages/entrypoints/gateway/test/tool-calls/index.test.ts",
+  "scripts/check-architecture.mjs",
+  "docs/architecture/0127-a-read-only-task-declares-no-write-set-and-never-commits.md",
+  "docs/architecture/index.md",
+  "docs/audit/decisions/index.md",
+  "docs/audit/implementation/packets/index.md",
+  "docs/audit/architecture/contracts/index.md",
+  "docs/api-reference.md",
+];
+
 const README_ASSET_WRITE_SET = [
   "docs/readme/header/index.svg",
   "docs/readme/header/index.png",
@@ -13252,6 +13383,8 @@ const WRITE_SET = [
   ...P16D1_WRITE_SET,
   ...P16D2_WRITE_SET,
   ...P17A_WRITE_SET,
+  ...P17B_WRITE_SET,
+  ...P17WM_WRITE_SET,
   ...README_ASSET_WRITE_SET,
 ].filter((relativePath) => !RETIRED.has(relativePath));
 
@@ -13375,8 +13508,17 @@ function assertAdrNumbering() {
 // deleted there and their content moved, not lost. The roadmap stays canonical
 // for scope, sequence and gates. Previous digest:
 // feaa94aa1e7ccdbbb8bec18374f44889e6cd267acadfe7b8e204e8064951c052.
+// Owner-authorized documentary product extension, 2026-09-26: the exact
+// roadmap diff adds planned profiles, governance and X10 context + actions.
+// No backend readiness, release or operational authority follows from this pin.
+// Previous digest: 0cc04b82961b6a70997fcb874be4b1c78f559ce9d2e9bc8a6d8c6c751abc5495.
+// Owner-authorized documentary portrait amendment, 2026-09-26: curated builtin
+// assets by exact ID/version/digest; ASCII remains an optional legacy format.
+// No uploads, authority, backend implementation or support claim follows.
+// Previous digest: a45fdf1484dfc81eddce064bfa92aff55f917af63158cfb3338f5ebd91884ef9.
+// Owner-authorized planning amendment, 2026-09-26: reusable profiles, guided plans and optional capture/STT only; no implementation claim. Previous digest: 5954b1dcb5a1a98daacc298c665eb42e27a88b5d0f079bd80c76d6168eefd942.
 const ROADMAP_SHA256 =
-  "0cc04b82961b6a70997fcb874be4b1c78f559ce9d2e9bc8a6d8c6c751abc5495";
+  "5d9e44292eb0237a597e336986d8647532b4077d83b83e549821113fb9235782";
 
 /**
  * The Estado line P7 closure is allowed to have produced.
@@ -14921,6 +15063,28 @@ const PATH_SCOPED_LAWS = [
   {
     law: "one in-force predicate, one vocabulary, and the issuer and the policy are read, never supplied",
     scope: "packages/persistence/ledger/src/commit-authorization-record/index.ts, packages/domains/runtime/src/commit-authorization/index.ts, packages/*/*/src/**",
+  },
+  // P-17/B. Two new path-shaped surfaces, so two new rows: the register and the
+  // `requireScope` call sites both move 188 -> 190 for L-P17B-1 and L-P17B-2. L-C-4a
+  // (the git namers, now two) and L-P17A-2 (a second caller of the predicate, the body
+  // key removed, 28 words) are amended in their own rows; neither adds one.
+  {
+    law: "one Git writer, plumbing only, in a built environment, hooks off, unsigned, at recorded dates, the identity by -c",
+    scope: "packages/entrypoints/daemon/src/git-writer/index.ts, packages/entrypoints/daemon/src/**",
+  },
+  {
+    law: "the production caller of authorizeCommit reads and records, and never supplies",
+    scope: "packages/entrypoints/daemon/src/commit-writer/index.ts, packages/entrypoints/daemon/src/**",
+  },
+  // P-17/workspaceMode. Two new path-shaped surfaces, so two new rows: the register and
+  // the `requireScope` call sites both move 188 -> 190 for L-P17WM-1 and L-P17WM-2.
+  {
+    law: "an empty write-set is lawful only under READ_ONLY",
+    scope: "packages/kernel/contracts/src/schemas/task-envelope/index.ts, packages/domains/runtime/src/{intake,recorded-task,enforcement}/index.ts, packages/entrypoints/daemon/src/verification-runner/index.ts, packages/*/*/src/**",
+  },
+  {
+    law: "the workspace mode is read, never stated",
+    scope: "packages/entrypoints/daemon/src/**",
   },
 ];
 
@@ -18016,6 +18180,8 @@ const SPAWN_ALLOWED_FILES = new Map([
   ["packages/edges/providers/src/process/spawn/index.ts", "the single provider spawn authority"],
   ["packages/entrypoints/daemon/src/git-observer/index.ts", "the single git read authority"],
   ["packages/entrypoints/daemon/src/verification-runner/index.ts", "the single bounded verification runner"],
+  // P-17/B (ADR 0127): the sixth, and the only site that writes to a repository.
+  ["packages/entrypoints/daemon/src/git-writer/index.ts", "the single git write authority, disposable repositories only"],
 ]);
 
 // Anything that could listen, connect or fan out. None of these belongs in a
@@ -23049,6 +23215,9 @@ if (accountsIndex === null) {
   // which the auditor publishes and the ledger's door parses. Its rule words are its own
   // enum, not an export. 190 -> 191.
   "AuditEvidence",
+  // P-17/workspaceMode (ADR 0127, decision 248): contratos §2's workspace axis, the
+  // vocabulary `TaskEnvelope.workspaceMode` carries. 191 -> 192.
+  "WorkspaceMode",
 ];
 
   const schemasBarrel = readIfPresent("packages/kernel/contracts/src/schemas/index.ts");
@@ -29411,11 +29580,19 @@ if (tracked.status === 0) {
 // through an alias, a word list assembled at runtime, or what `stripComments` hides is not
 // seen. The decision's unit truth tables, the door and fold negatives and the runtime
 // suite's request-key refusals are the behaviour.
+//
+// AMENDED by P-17/B (ADR 0127; decision 250), in its own row: the predicate has a second
+// caller, `daemon/src/commit-writer/index.ts`, which calls it exactly once (before any
+// object write) and is the only other file that may; `REQUEST_KEYS` names no
+// `"commitMessageBody"` either, and the body of `authorizeCommit` reads `envelope.title`
+// (ND-3); and `COMMIT_AUTHORIZATION_REFUSALS` holds exactly 28 words (ND-7).
 {
   const HOME = "packages/persistence/ledger/src/commit-authorization-record/index.ts";
   const RUNTIME = "packages/domains/runtime/src/commit-authorization/index.ts";
+  const COMMIT_WRITER = "packages/entrypoints/daemon/src/commit-writer/index.ts";
+  const WORD_COUNT = 28;
   const LAW = "one in-force predicate, one vocabulary, and the issuer and the policy are read, never supplied";
-  const REMOVED_KEYS = ['"writerIdIssuer"', '"policySha256"', '"declaredWriteSet"'];
+  const REMOVED_KEYS = ['"writerIdIssuer"', '"policySha256"', '"declaredWriteSet"', '"commitMessageBody"'];
   const RUNTIME_WORDS = [
     "COMMIT_MESSAGE_BODY_EMPTY",
     "COMMIT_MESSAGE_BODY_ENDS_IN_LF",
@@ -29425,7 +29602,7 @@ if (tracked.status === 0) {
   ];
   let scanned = 0;
   const declarations = [];
-  const callers = new Set();
+  const callers = new Map();
   const vocabulary = [];
   if (tracked.status === 0) {
     const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
@@ -29438,16 +29615,23 @@ if (tracked.status === 0) {
       const code = stripComments(file);
       const declared = code.match(/export\s+function\s+commitAuthorizationInForce\s*\(/g) ?? [];
       for (let index = 0; index < declared.length; index += 1) declarations.push(relativePath);
-      if (/\bcommitAuthorizationInForce\s*\(/.test(code.replace(/function\s+commitAuthorizationInForce\s*\(/g, ""))) callers.add(relativePath);
+      const calls = (code.replace(/function\s+commitAuthorizationInForce\s*\(/g, "").match(/\bcommitAuthorizationInForce\s*\(/g) ?? []).length;
+      if (calls > 0) callers.set(relativePath, calls);
       if (/(?:const|let|var)\s+COMMIT_AUTHORIZATION_REFUSALS\b/.test(code)) vocabulary.push(relativePath);
     }
   }
   if (declarations.length !== 1 || declarations[0] !== HOME) {
     fail("commitAuthorizationInForce is declared " + String(declarations.length) + " time(s) (" + (declarations.join(", ") || "no file") + "); its one home is " + HOME + " (L-P17A-2)");
   }
-  for (const caller of callers) {
-    if (caller !== HOME) fail(caller + " calls commitAuthorizationInForce(; the one decision in " + HOME + " is its caller (L-P17A-2)");
+  for (const [caller, calls] of callers) {
+    if (caller === HOME) continue;
+    if (caller === COMMIT_WRITER) {
+      if (calls !== 1) fail(COMMIT_WRITER + " calls commitAuthorizationInForce( " + String(calls) + " time(s); once, before any object write (L-P17A-2)");
+      continue;
+    }
+    fail(caller + " calls commitAuthorizationInForce(; its callers are the one decision in " + HOME + " and " + COMMIT_WRITER + " (L-P17A-2)");
   }
+  if (!callers.has(COMMIT_WRITER)) fail(COMMIT_WRITER + " no longer calls commitAuthorizationInForce(; the effect is held in force before any write (L-P17A-2)");
   if (vocabulary.length !== 1 || vocabulary[0] !== HOME) {
     fail("COMMIT_AUTHORIZATION_REFUSALS is declared in " + (vocabulary.join(", ") || "no file") + "; its one home is " + HOME + " (L-P17A-2)");
   }
@@ -29467,6 +29651,8 @@ if (tracked.status === 0) {
         fail(HOME + " COMMIT_AUTHORIZATION_REFUSALS holds an entry that is not an upper-case word (L-P17A-2)");
       } else if (words.join(",") !== [...words].sort().join(",") || new Set(words).size !== words.length) {
         fail(HOME + " COMMIT_AUTHORIZATION_REFUSALS is not sorted without repeats (L-P17A-2)");
+      } else if (words.length !== WORD_COUNT) {
+        fail(HOME + " COMMIT_AUTHORIZATION_REFUSALS holds " + String(words.length) + " words; " + String(WORD_COUNT) + " since P-17/B's two revalidation words (L-P17A-2)");
       }
     }
     const decision = functionBody(code, "export function decideCommitAuthorizationRecord(");
@@ -29492,6 +29678,12 @@ if (tracked.status === 0) {
       if (/\brequest\.policySha256\b|fields\[\s*["']policySha256["']\s*\]/.test(body)) {
         fail(RUNTIME + " authorizeCommit reads a caller's policySha256; the policy is recomputed from the envelope (L-P17A-2)");
       }
+      if (!body.includes("envelope.title")) {
+        fail(RUNTIME + " authorizeCommit no longer reads envelope.title; the body is the recorded envelope's (L-P17A-2)");
+      }
+      if (/\brequest\.commitMessageBody\b|fields\[\s*["']commitMessageBody["']\s*\]/.test(body)) {
+        fail(RUNTIME + " authorizeCommit reads a caller's commitMessageBody; the body is read, never supplied (L-P17A-2)");
+      }
     }
     const keys = /const REQUEST_KEYS\b[^=]*=\s*new Set\(\[([^\]]*)\]\)/.exec(code);
     if (keys === null) {
@@ -29509,6 +29701,359 @@ if (tracked.status === 0) {
   }
   requireScope(LAW, scanned);
   notes.push("one in-force predicate in " + HOME + "; " + String(words.length) + " refusal words, sorted and closed; authorizeCommit reads its issuer and policy");
+}
+
+// L-P17B-1 -- one Git writer, plumbing only, in a built environment, hooks off, unsigned,
+// at recorded dates, the identity by -c (P-17/B, ADR 0127; decisions 248 and 250; B-1,
+// B-4, B-5, ND-ID, ND-10, ND-11, ND-12).
+//
+// Over `daemon/src/git-writer/index.ts`, comments stripped: it is a spawn site
+// (`SPAWN_ALLOWED_FILES`); `GIT_WRITER_VERBS` is the frozen literal of exactly
+// `"commit-tree"`, `"hash-object"`, `"update-ref"`, and `gitWrite` checks
+// `isWriterVerb(request.verb)` before its one `spawnSync(`; it names none of `"commit"`,
+// `"checkout"`, `"restore"`, `"clean"`, `"stash"`, `"reset"`, `"add"`, `"push"`,
+// `"remote"`, `"fetch"`, `"merge"`, `"rebase"`, `"tag"`, `"branch"`, `"gc"`, `"prune"`,
+// `"config"`, `"--force"`, `"-S"`, `"--gpg-sign"`, `"read-tree"`, `"update-index"` or
+// `"write-tree"`; `/usr/bin/git` once, as `GIT_BINARY`, and `shell: false`; no
+// `process.env`, no `node:os`, no `createHash(`, no `Date.now(`, no `new Date()`;
+// `writerEnvironment` is one `Object.freeze({` literal holding `GIT_CONFIG_NOSYSTEM: "1"`,
+// `GIT_CONFIG_GLOBAL: "/dev/null"` and `GIT_CEILING_DIRECTORIES`, and no `HOME`; the two
+// dates are bound once, `GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date`, from
+// `gitDateOf(`; `writerPrefix` holds `core.hooksPath=/dev/null`, `commit.gpgSign=false`,
+// `user.useConfigOnly=true`, `i18n.commitEncoding=UTF-8` and the identity on
+// `user.name=`, `user.email=`, `author.name=`, `author.email=`, `committer.name=` and
+// `committer.email=`; no `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`, `GIT_COMMITTER_NAME` or
+// `GIT_COMMITTER_EMAIL`; `OPERATIONAL_GIT_WRITING = false as boolean` is a literal;
+// `"update-ref"` is spelled twice, in the verbs and in one call with three operands; the
+// checkout root is the `paths` module's expression and `admitRepository` takes no root;
+// `GIT_WRITER_REFUSALS` is sorted without repeats. Over every other daemon `src` file: no
+// `"commit-tree"`, `"hash-object"` or `"update-ref"`.
+//
+// Stated limit, as for every law since L-P27C-1: a text matcher. The semantic guards are
+// the writer suite's (hooks, signing, encoding, identity, HOME, admission, the verb set,
+// NB-2, the compare-and-set) and the commit writer's end-to-end suite.
+{
+  const WRITER = "packages/entrypoints/daemon/src/git-writer/index.ts";
+  const LAW = "one Git writer, plumbing only, in a built environment, hooks off, unsigned, at recorded dates, the identity by -c";
+  let scanned = 0;
+  if (!SPAWN_ALLOWED_FILES.has(WRITER)) fail(WRITER + " is not a spawn site of SPAWN_ALLOWED_FILES (L-P17B-1)");
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!relativePath.startsWith("packages/entrypoints/daemon/src/") || !relativePath.endsWith(".ts")) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      if (relativePath === WRITER) continue;
+      const code = stripComments(file);
+      for (const verb of ['"commit-tree"', '"hash-object"', '"update-ref"']) {
+        if (code.includes(verb)) fail(relativePath + " names the write verb " + verb + "; the one Git writer is " + WRITER + " (L-P17B-1)");
+      }
+    }
+  }
+  const writer = readIfPresent(WRITER);
+  if (writer === null) {
+    fail(WRITER + " is gone; the Git writer has no home (L-P17B-1)");
+  } else {
+    const code = stripComments(writer);
+    const verbs = /export const GIT_WRITER_VERBS = Object\.freeze\(\[([^\]]*)\] as const\);/.exec(code);
+    if (verbs === null || (verbs[1] ?? "").split(",").map((entry) => entry.trim()).filter(Boolean).join(",") !== '"commit-tree","hash-object","update-ref"') {
+      fail(WRITER + " GIT_WRITER_VERBS is not the frozen literal of commit-tree, hash-object and update-ref (L-P17B-1)");
+    }
+    const write = functionBody(code, "export function gitWrite(");
+    if (write === null) {
+      fail(WRITER + " no longer defines gitWrite (L-P17B-1)");
+    } else {
+      const check = write.indexOf("isWriterVerb(request.verb)");
+      const spawn = write.indexOf("spawnSync(");
+      if (check < 0 || spawn < 0 || check > spawn) fail(WRITER + " gitWrite does not check isWriterVerb(request.verb) before it spawns (L-P17B-1)");
+    }
+    if ((code.match(/\bspawnSync\(/g) ?? []).length !== 1) fail(WRITER + " spawns other than once, in gitWrite (L-P17B-1)");
+    for (const forbidden of [
+      '"commit"', '"checkout"', '"restore"', '"clean"', '"stash"', '"reset"', '"add"', '"push"', '"remote"', '"fetch"',
+      '"merge"', '"rebase"', '"tag"', '"branch"', '"gc"', '"prune"', '"config"', '"--force"', '"-S"', '"--gpg-sign"',
+      '"read-tree"', '"update-index"', '"write-tree"',
+      "process.env", "node:os", "createHash(", "Date.now(", "new Date()",
+      "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+    ]) {
+      if (code.includes(forbidden)) fail(WRITER + " names " + forbidden + " (L-P17B-1)");
+    }
+    if ((code.split('"/usr/bin/git"').length - 1) !== 1 || !code.includes('const GIT_BINARY = "/usr/bin/git";')) {
+      fail(WRITER + " does not name /usr/bin/git exactly once, as GIT_BINARY (L-P17B-1)");
+    }
+    if (!code.includes("shell: false")) fail(WRITER + " no longer spawns with shell: false (L-P17B-1)");
+    const environment = functionBody(code, "function writerEnvironment(");
+    if (environment === null || !environment.includes("return Object.freeze({")) {
+      fail(WRITER + " writerEnvironment is not one frozen literal (L-P17B-1)");
+    } else {
+      for (const needed of ['GIT_CONFIG_NOSYSTEM: "1"', 'GIT_CONFIG_GLOBAL: "/dev/null"', "GIT_CEILING_DIRECTORIES", "GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date"]) {
+        if (!environment.includes(needed)) fail(WRITER + " writerEnvironment does not hold " + needed + " (L-P17B-1)");
+      }
+      if (/\bHOME\b/.test(environment)) fail(WRITER + " writerEnvironment names HOME; the writer's environment has none (L-P17B-1)");
+    }
+    if ((code.match(/GIT_AUTHOR_DATE/g) ?? []).length !== 1 || (code.match(/GIT_COMMITTER_DATE/g) ?? []).length !== 1) {
+      fail(WRITER + " binds the dates other than once (L-P17B-1)");
+    }
+    if (!/export function gitDateOf\(/.test(code) || !/date = gitDateOf\(/.test(code)) fail(WRITER + " no longer derives its date from gitDateOf( (L-P17B-1)");
+    const prefix = functionBody(code, "function writerPrefix(");
+    if (prefix === null) {
+      fail(WRITER + " no longer defines writerPrefix (L-P17B-1)");
+    } else {
+      for (const needed of [
+        '"core.hooksPath=/dev/null"', '"commit.gpgSign=false"', '"user.useConfigOnly=true"', '"i18n.commitEncoding=UTF-8"',
+        '"user.name="', '"user.email="', '"author.name="', '"author.email="', '"committer.name="', '"committer.email="',
+      ]) {
+        if (!prefix.includes(needed)) fail(WRITER + " writerPrefix does not hold " + needed + " (L-P17B-1)");
+      }
+    }
+    if (!/writerPrefix\(request\.identity\)/.test(code)) fail(WRITER + " no longer puts writerPrefix on its spawn (L-P17B-1)");
+    if (!code.includes("export const OPERATIONAL_GIT_WRITING = false as boolean;")) {
+      fail(WRITER + " OPERATIONAL_GIT_WRITING is not the literal false; enabling operational writing is not this cut's (L-P17B-1)");
+    }
+    if ((code.split('"update-ref"').length - 1) !== 2 || !/verb:\s*"update-ref",\s*args:\s*\[\s*[\w.]+,\s*[\w.]+,\s*[\w.]+\s*\]/.test(code)) {
+      fail(WRITER + " does not spell update-ref once, with its three operands (L-P17B-1)");
+    }
+    if (!code.includes('resolve(fileURLToPath(import.meta.url), "..")') || !code.includes('resolve(HERE, "..", "..", "..", "..", "..")')) {
+      fail(WRITER + " no longer derives the checkout root with the paths module's expression (L-P17B-1)");
+    }
+    if (!/export function admitRepository\(target: unknown\)/.test(code) || !code.includes('".acp-local"')) {
+      fail(WRITER + " admitRepository takes more than its target, or no longer names .acp-local (L-P17B-1)");
+    }
+    const refusals = /export const GIT_WRITER_REFUSALS = \[([^\]]*)\] as const;/.exec(code);
+    const words = refusals === null ? [] : [...(refusals[1] ?? "").matchAll(/"([A-Z_]+)"/g)].map((match) => match[1]);
+    if (words.length === 0 || words.join(",") !== [...words].sort().join(",") || new Set(words).size !== words.length) {
+      fail(WRITER + " GIT_WRITER_REFUSALS is not a sorted list without repeats (L-P17B-1)");
+    }
+  }
+  requireScope(LAW, scanned);
+  notes.push("one Git writer in " + WRITER + ": three plumbing verbs, a built environment, hooks off, unsigned, recorded dates, the identity on six keys, operational writing off");
+}
+
+// L-P17B-2 -- the production caller of authorizeCommit reads and records, and never
+// supplies (P-17/B, ADR 0127; decisions 249 and 250; B-6, ND-1, ND-3, ND-4, ND-15,
+// ND-16, ND-17).
+//
+// Over `daemon/src/commit-writer/index.ts`, comments stripped: it is not a spawn site and
+// names none of `child_process`, `spawn`, `/usr/bin/git`, `"COMMIT_RECORDED"`,
+// `Date.now(`, `new Date(` or `commitMessageBody:`; it calls `authorizeCommit(` and
+// `commitAuthorizationInForce(` once each, and `readRecordedTask(`, `recordedLeaseOf(`,
+// `listEvents(` and `getCommitAuthorization(`; every `.append(` is `ledger.append(`; and
+// the effect's date is the row's (`authorizedAt: row.authorizedAt` inside the
+// `commitAndCompareAndSet({` call).
+//
+// Stated limit: a text matcher. The behaviour is the commit writer's end-to-end suite.
+{
+  const CALLER = "packages/entrypoints/daemon/src/commit-writer/index.ts";
+  const LAW = "the production caller of authorizeCommit reads and records, and never supplies";
+  let scanned = 0;
+  if (SPAWN_ALLOWED_FILES.has(CALLER)) fail(CALLER + " is a spawn site; the commit writer spawns nothing (L-P17B-2)");
+  const caller = readIfPresent(CALLER);
+  if (caller === null) {
+    fail(CALLER + " is gone; authorizeCommit has no production caller (L-P17B-2)");
+  } else {
+    scanned += 1;
+    const code = stripComments(caller);
+    for (const forbidden of ["child_process", "spawn", "/usr/bin/git", '"COMMIT_RECORDED"', "Date.now(", "new Date(", "commitMessageBody:"]) {
+      if (code.includes(forbidden)) fail(CALLER + " names " + forbidden + " (L-P17B-2)");
+    }
+    for (const once of ["authorizeCommit(", "commitAuthorizationInForce("]) {
+      const count = (code.match(new RegExp("\\b" + once.replace("(", "\\("), "g")) ?? []).length;
+      if (count !== 1) fail(CALLER + " calls " + once + " " + String(count) + " time(s); once (L-P17B-2)");
+    }
+    for (const needed of ["readRecordedTask(", "recordedLeaseOf(", "listEvents(", "getCommitAuthorization("]) {
+      if (!code.includes(needed)) fail(CALLER + " no longer names " + needed + " (L-P17B-2)");
+    }
+    const effectAt = code.indexOf("commitAndCompareAndSet({");
+    const effectCall = effectAt < 0 ? "" : code.slice(effectAt, code.indexOf("});", effectAt));
+    if (!effectCall.includes("authorizedAt: row.authorizedAt,")) {
+      fail(CALLER + " commitAndCompareAndSet({ does not take authorizedAt: row.authorizedAt; the effect's date is the row's (L-P17B-2)");
+    }
+    const appends = (code.match(/\.append\(/g) ?? []).length;
+    const doorAppends = (code.match(/\bledger\.append\(/g) ?? []).length;
+    if (appends === 0 || appends !== doorAppends) fail(CALLER + " appends other than through ledger.append( (L-P17B-2)");
+  }
+  requireScope(LAW, scanned);
+  notes.push("the production caller of authorizeCommit, " + CALLER + ", reads recorded facts, records through the door and spawns nothing");
+}
+
+// L-P17WM-1 -- an empty write-set is lawful only under READ_ONLY (P-17/workspaceMode,
+// ADR 0127; decisions 248 and 249; ND-2, ND-4, B-1).
+//
+// Over comments-stripped text: (i) the contracts' `task-envelope/index.ts` declares
+// `export const WorkspaceMode = z.enum([` once, with exactly `"MUTABLE_WITHIN_WRITE_SET"`
+// and `"READ_ONLY"`, sorted; its strict object holds `workspaceMode: WorkspaceMode` once;
+// and its `superRefine` body holds an `if (` condition naming `"READ_ONLY"` with
+// `commitPolicy` and one naming `"READ_ONLY"` with `writeSet.length`. (ii)-(v) each of the
+// four empty-set refusals -- the intake's `refuse("REQUEST_INVALID", "WRITE_SET_EMPTY"`
+// inside `preconditions`, the recorded walk's `refuseWalk("WRITE_SET_EMPTY"` inside
+// `recordedWalkRefusal`, the conformance gate's `refuse("WRITE_SET_EMPTY"` inside
+// `checkWriteSetConformance` and the runner's `refuse("RUNNER_WRITE_SET_EMPTY"` inside
+// `runVerification` -- occurs once in its file, inside its function, and the nearest
+// `if (` before it has a condition that, whitespace collapsed, holds
+// `workspaceMode !== "READ_ONLY"` (B-1: a cast envelope's absent mode keeps the strict
+// rule; the enforcement site's local is named exactly `workspaceMode`, ND-10). (vi) No
+// other tracked `packages/*/*/src` `.ts` file declares a `z.enum(` literal holding the
+// exact token `"READ_ONLY"`, so the vocabulary has one home.
+//
+// Stated limit (L-P27C-1's): a text matcher. A guard through an alias or a helper, or
+// what `stripComments` hides, is not seen. The semantic guards are the contracts,
+// runtime, runner, door and drill suites (READ_ONLY enters, walks, verifies over the
+// empty set and is quarantined on any change; MUTABLE with an empty set is refused).
+{
+  const LAW = "an empty write-set is lawful only under READ_ONLY";
+  const ENVELOPE = "packages/kernel/contracts/src/schemas/task-envelope/index.ts";
+  const MEMBERS = ["MUTABLE_WITHIN_WRITE_SET", "READ_ONLY"];
+  const GUARD = 'workspaceMode !== "READ_ONLY"';
+  const SITES = [
+    ["packages/domains/runtime/src/intake/index.ts", "function preconditions(", /\brefuse\(\s*"REQUEST_INVALID",\s*"WRITE_SET_EMPTY"/g],
+    ["packages/domains/runtime/src/recorded-task/index.ts", "function recordedWalkRefusal(", /\brefuseWalk\(\s*"WRITE_SET_EMPTY"/g],
+    ["packages/domains/runtime/src/enforcement/index.ts", "function checkWriteSetConformance(", /\brefuse\(\s*"WRITE_SET_EMPTY"/g],
+    ["packages/entrypoints/daemon/src/verification-runner/index.ts", "function runVerification(", /\brefuse\(\s*"RUNNER_WRITE_SET_EMPTY"/g],
+  ];
+  const collapse = (text) => text.replace(/\s+/g, " ").replace(/\(\s+/g, "(").replace(/\s+\)/g, ")");
+  // The body of a declaration whose parameters may hold a type literal (L-P16D2-1's reader).
+  const bodyAfterParameters = (source, declaration) => {
+    const at = source.indexOf(declaration);
+    if (at === -1) return null;
+    let depth = 0;
+    for (let cursor = at + declaration.length - 1; cursor < source.length; cursor += 1) {
+      if (source[cursor] === "(") depth += 1;
+      else if (source[cursor] === ")") {
+        depth -= 1;
+        if (depth === 0) return functionBody(source.slice(cursor + 1), "");
+      }
+    }
+    return null;
+  };
+  // Every `if (` condition of a text, parentheses balanced, in order.
+  const conditions = (text) => {
+    const found = [];
+    for (const match of text.matchAll(/\bif\s*\(/g)) {
+      let depth = 0;
+      for (let cursor = match.index + match[0].length - 1; cursor < text.length; cursor += 1) {
+        if (text[cursor] === "(") depth += 1;
+        else if (text[cursor] === ")") {
+          depth -= 1;
+          if (depth === 0) {
+            found.push({ at: match.index, text: collapse(text.slice(match.index + match[0].length, cursor)) });
+            break;
+          }
+        }
+      }
+    }
+    return found;
+  };
+  let scanned = 0;
+
+  const envelope = stripComments(readIfPresent(ENVELOPE) ?? "");
+  if (envelope.trim().length > 0) scanned += 1;
+  const enums = [...envelope.matchAll(/\bexport const WorkspaceMode\s*=\s*z\.enum\(\[([^\]]*)\]\)/g)];
+  if (enums.length !== 1) {
+    fail(ENVELOPE + " declares export const WorkspaceMode = z.enum([ " + String(enums.length) + " time(s); once (L-P17WM-1)");
+  } else {
+    const members = [...(enums[0][1] ?? "").matchAll(/"([^"]*)"/g)].map((match) => match[1]);
+    if (JSON.stringify(members) !== JSON.stringify(MEMBERS) || JSON.stringify(members) !== JSON.stringify([...members].sort())) {
+      fail(ENVELOPE + " WorkspaceMode is [" + members.join(", ") + "]; exactly [" + MEMBERS.join(", ") + "], sorted (L-P17WM-1)");
+    }
+  }
+  if ((envelope.match(/\bworkspaceMode:\s*WorkspaceMode\b/g) ?? []).length !== 1) {
+    fail(ENVELOPE + " does not hold workspaceMode: WorkspaceMode once in the strict object (L-P17WM-1)");
+  }
+  const refine = functionBody(envelope, ".superRefine(");
+  const refineConditions = refine === null ? [] : conditions(refine).map((condition) => condition.text);
+  if (!refineConditions.some((text) => text.includes('"READ_ONLY"') && text.includes("commitPolicy"))) {
+    fail(ENVELOPE + " superRefine names no condition coupling READ_ONLY to the commit policy (L-P17WM-1)");
+  }
+  if (!refineConditions.some((text) => text.includes('"READ_ONLY"') && text.includes("writeSet.length"))) {
+    fail(ENVELOPE + " superRefine names no condition coupling READ_ONLY to an empty write-set (L-P17WM-1)");
+  }
+
+  for (const [path, declaration, refusal] of SITES) {
+    const source = stripComments(readIfPresent(path) ?? "");
+    if (source.trim().length > 0) scanned += 1;
+    const occurrences = [...source.matchAll(refusal)];
+    const body = bodyAfterParameters(source, declaration);
+    const inside = body === null ? [] : [...body.matchAll(refusal)];
+    if (occurrences.length !== 1 || inside.length !== 1) {
+      fail(path + " holds its empty-set refusal " + String(occurrences.length) + " time(s), " + String(inside.length) + " inside " + declaration + "; once, inside it (L-P17WM-1)");
+      continue;
+    }
+    const guard = conditions(body.slice(0, inside[0].index)).at(-1);
+    if (guard === undefined || !guard.text.includes(GUARD)) {
+      fail(path + " guards its empty-set refusal by [" + (guard?.text ?? "no condition") + "]; the guard names " + GUARD + " (L-P17WM-1)");
+    }
+  }
+
+  const strays = [];
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!/^packages\/[^/]+\/[^/]+\/src\//.test(relativePath) || !/\.tsx?$/.test(relativePath)) continue;
+      if (relativePath === ENVELOPE) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      for (const literal of stripComments(file).matchAll(/\bz\.enum\(\s*\[([^\]]*)\]/g)) {
+        if (/"READ_ONLY"/.test(literal[1] ?? "")) strays.push(relativePath);
+      }
+    }
+  }
+  if (strays.length > 0) {
+    fail("a z.enum( holding \"READ_ONLY\" is declared in [" + [...new Set(strays)].join(", ") + "]; the workspace vocabulary's one home is " + ENVELOPE + " (L-P17WM-1)");
+  }
+  requireScope(LAW, scanned);
+  notes.push("an empty write-set is lawful only under READ_ONLY: WorkspaceMode in " + ENVELOPE + ", four refusals guarded by " + GUARD);
+}
+
+// L-P17WM-2 -- the workspace mode is read, never stated (P-17/workspaceMode, ADR 0127;
+// decision 249; B-2; L-P16D1-3's mould).
+//
+// Over every tracked `packages/entrypoints/daemon/src/` `.ts` file, comments stripped: no
+// `workspaceMode:` property takes a string literal; the composition root holds
+// `workspaceMode: walked.envelope.workspaceMode,` once and
+// `workspaceMode: walk.envelope.workspaceMode,` once (the two conformance gate sites);
+// and `composition/ports/index.ts` holds `workspaceMode: input.workspaceMode` once,
+// inside its `checkWriteSetConformance({` literal.
+//
+// Stated limit: a text matcher; a mode stated through a constant is not seen. The
+// semantic guard is the drill's READ_ONLY pair through the doors (a change is
+// quarantined only if the gate is told the mode).
+{
+  const LAW = "the workspace mode is read, never stated";
+  const ROOT = "packages/entrypoints/daemon/src/composition/index.ts";
+  const PORTS = "packages/entrypoints/daemon/src/composition/ports/index.ts";
+  let scanned = 0;
+  const stated = [];
+  if (tracked.status === 0) {
+    const sources = new Set(tracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const relativePath of WRITE_SET) sources.add(relativePath);
+    for (const relativePath of [...sources].sort()) {
+      if (!relativePath.startsWith("packages/entrypoints/daemon/src/") || !relativePath.endsWith(".ts")) continue;
+      const file = readIfPresent(relativePath);
+      if (file === null) continue;
+      scanned += 1;
+      if (/\bworkspaceMode\s*:\s*["'`]/.test(stripComments(file))) stated.push(relativePath);
+    }
+  }
+  if (stated.length > 0) {
+    fail("a workspace mode is stated in [" + stated.join(", ") + "]; the gate reads the envelope's own (L-P17WM-2)");
+  }
+  const root = stripComments(readIfPresent(ROOT) ?? "");
+  for (const site of ["walked", "walk"]) {
+    const pattern = new RegExp("\\bworkspaceMode: " + site + "\\.envelope\\.workspaceMode,", "g");
+    if ((root.match(pattern) ?? []).length !== 1) {
+      fail(ROOT + " does not pass workspaceMode: " + site + ".envelope.workspaceMode, once to conformanceGateFor (L-P17WM-2)");
+    }
+  }
+  const ports = stripComments(readIfPresent(PORTS) ?? "");
+  const conformance = functionBody(ports, "checkWriteSetConformance(");
+  if ((ports.match(/\bworkspaceMode: input\.workspaceMode\b/g) ?? []).length !== 1 || conformance === null || !/\bworkspaceMode: input\.workspaceMode\b/.test(conformance)) {
+    fail(PORTS + " does not forward workspaceMode: input.workspaceMode once into checkWriteSetConformance({ (L-P17WM-2)");
+  }
+  requireScope(LAW, scanned);
+  notes.push("the workspace mode is read from the walked envelope at both gate sites and forwarded, never stated");
 }
 
 // --- 21c. V2-B5/R11: the telemetry export edge ------------------------------
@@ -30539,6 +31084,7 @@ const DAEMON_CHILD_DOOR = "packages/entrypoints/daemon/src/daemon-child/index.ts
 // --- 21e. write-set conformance (V2 concurrency C4) -------------------------
 
 const DAEMON_GIT_SITE = "packages/entrypoints/daemon/src/git-observer/index.ts";
+const DAEMON_GIT_WRITER_SITE = "packages/entrypoints/daemon/src/git-writer/index.ts";
 const RUNTIME_EFFECTS_SITE = "packages/domains/runtime/src/execution-effects/index.ts";
 
 // L-C-4a -- one git authority, and it can only read.
@@ -30549,6 +31095,11 @@ const RUNTIME_EFFECTS_SITE = "packages/domains/runtime/src/execution-effects/ind
 // the file, so there is no branch that could carry one. This matters most at
 // the moment it is used: a write-set violation is discovered *by* this observer,
 // and the module that could tidy the evidence away does not exist.
+//
+// AMENDED by P-17/B (ADR 0127; decision 250), in its own row: `/usr/bin/git` is named
+// in exactly **two** daemon files, the observer and the writer. The observer part is
+// unchanged -- it checks `GIT_READ_VERBS`, names no mutating verb and spawns with
+// `shell: false` -- and the writer is held by L-P17B-1.
 {
   let gitScanned = 0;
   if (tracked.status === 0) {
@@ -30562,12 +31113,16 @@ const RUNTIME_EFFECTS_SITE = "packages/domains/runtime/src/execution-effects/ind
       gitScanned += 1;
       if (stripComments(content).includes("/usr/bin/git")) namers.push(relativePath);
     }
-    if (namers.join(", ") !== DAEMON_GIT_SITE) {
+    const expectedNamers = [DAEMON_GIT_SITE, DAEMON_GIT_WRITER_SITE].sort();
+    if ([...namers].sort().join(", ") !== expectedNamers.join(", ")) {
       fail(
         "git is invoked from [" +
           namers.join(", ") +
-          "]; exactly one module may read a worktree, and it is " +
-          DAEMON_GIT_SITE,
+          "]; exactly two modules may name it: " +
+          DAEMON_GIT_SITE +
+          " reads a worktree and " +
+          DAEMON_GIT_WRITER_SITE +
+          " writes a disposable repository (L-C-4a)",
       );
     }
   }

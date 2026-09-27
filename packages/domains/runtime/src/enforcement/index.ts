@@ -42,7 +42,7 @@
  * asserts the absent tokens.
  */
 
-import { Lease, PathDigest } from "@acp/contracts";
+import { Lease, PathDigest, WorkspaceMode } from "@acp/contracts";
 
 // ---------------------------------------------------------------------------
 // The read-only git port — a type, and an allow-list
@@ -456,6 +456,16 @@ export function revokeLease(
 
 export interface ConformanceRequest {
   readonly declaredWriteSet: readonly string[];
+  /**
+   * The envelope's workspace axis (P-17/workspaceMode, ADR 0127, decision 249).
+   *
+   * Optional, and read from the envelope by the caller, never stated. Absent or
+   * `undefined` keeps today's strict rule: an empty declared set is
+   * `WRITE_SET_EMPTY`. `READ_ONLY` admits only the empty set, and then every
+   * observed path is a violation; `READ_ONLY` with a declared path, or a defined
+   * value outside `WorkspaceMode`, is `REQUEST_INVALID` at `request.workspaceMode`.
+   */
+  readonly workspaceMode?: WorkspaceMode | undefined;
   readonly observation: WorktreeObservation;
   /**
    * The lease the writer holds.
@@ -513,7 +523,20 @@ export function checkWriteSetConformance(request: ConformanceRequest): Conforman
 
   const declared: unknown = fields["declaredWriteSet"];
   if (!Array.isArray(declared)) return refuse("REQUEST_INVALID", "request.declaredWriteSet");
-  if (declared.length === 0) return refuse("WRITE_SET_EMPTY", "request.declaredWriteSet");
+  // The workspace axis before the set it governs (P-17/workspaceMode, ADR 0127). A
+  // missing or `undefined` mode is today's strict rule; only a defined value is
+  // held to the vocabulary. `READ_ONLY` declares no path, and then the comparison
+  // below makes every observed path a violation.
+  const workspaceMode: unknown = fields["workspaceMode"];
+  if (workspaceMode !== undefined && !WorkspaceMode.safeParse(workspaceMode).success) {
+    return refuse("REQUEST_INVALID", "request.workspaceMode");
+  }
+  if (workspaceMode === "READ_ONLY" && declared.length > 0) {
+    return refuse("REQUEST_INVALID", "request.workspaceMode");
+  }
+  if (workspaceMode !== "READ_ONLY" && declared.length === 0) {
+    return refuse("WRITE_SET_EMPTY", "request.declaredWriteSet");
+  }
   for (let index = 0; index < declared.length; index += 1) {
     const entry: unknown = declared[index];
     const at = "request.declaredWriteSet[" + String(index) + "]";

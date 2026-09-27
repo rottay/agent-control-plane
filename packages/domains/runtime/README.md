@@ -174,8 +174,16 @@ named before the receipt parse -- `COMMIT_MESSAGE_BODY_EMPTY`,
 `COMMIT_MESSAGE_BODY_ENDS_IN_LF`, `COMMIT_MESSAGE_BODY_HOLDS_CR` and
 `COMMIT_MESSAGE_BODY_HOLDS_TRAILER` (the trailer's key is never spelled here; the
 receipt's own body schema decides). `AUTHORIZATION_REFUSALS` holds nineteen words. The
-recorded authorization itself is the ledger's (`commit_authorization_read_model`); this
-module still has no production caller, which is P-17/B's.
+recorded authorization itself is the ledger's (`commit_authorization_read_model`).
+
+Since P-17/B (ADR 0127; decision 249) the body is read, never supplied: `authorizeCommit`
+takes it from the recorded envelope's `title`, the same source the verification runner's
+receipt body is read from, so a rebuilt receipt equals the recorded one.
+`commitMessageBody` is no longer a request key (a caller that names it is
+`REQUEST_INVALID` at `request.commitMessageBody`), and the body words land at
+`request.envelope.title`. An empty title is refused by the envelope contract first, so
+`COMMIT_MESSAGE_BODY_EMPTY` stays in the vocabulary and is unreachable here. Its
+production caller is the daemon's commit writer.
 
 The supervisor holds **no cursor**. Every decision about what to do next is read
 back out of the ledger, which is what makes "the ledger is the authority" true
@@ -486,8 +494,13 @@ nothing, is `ROADMAP_STEPS_UNDECLARED` — unknown is never zero. P-16/D2 (ADR 0
 decision 242) adds a third: a `NO_COMMIT` envelope with an empty write-set is
 `REQUEST_INVALID` `WRITE_SET_EMPTY` at `envelope.writeSet`, beside
 `ROLE_NOT_IN_ENVELOPE`, so nothing is published and nothing appended. Under
-`LOCAL_COMMIT_WITH_RECEIPT` the contract refuses it first. A read-only task is P-17's
-`workspaceMode`.
+`LOCAL_COMMIT_WITH_RECEIPT` the contract refuses it first. A read-only task says so by
+`workspaceMode: "READ_ONLY"` (P-17/workspaceMode, ADR 0127): the contract holds it to
+`NO_COMMIT` and an empty write-set, and the intake, `recordedWalkRefusal` and
+`checkWriteSetConformance` refuse the empty set only outside `READ_ONLY` (each guard
+spelled `workspaceMode !== "READ_ONLY"`, so an absent mode keeps the strict rule). The
+conformance request takes an optional `workspaceMode`: under `READ_ONLY` only the empty
+declared set is admitted, and every observed path is then a violation.
 
 ### Loopback and data roots
 

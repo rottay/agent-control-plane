@@ -209,6 +209,15 @@ CHECKS_UNDECLARED at envelope.validation.commands`, `WRITE_SET_EMPTY at
 envelope.writeSet` or `WRITER_ID_UNISSUED at route`. The task stays `DISCOVERED`. So an
 API_KEY or local recorded walk cannot run until P-28 widens the issuers.
 
+An empty write-set is lawful only under `workspaceMode: "READ_ONLY"` (P-17/workspaceMode,
+ADR 0127). Both conformance gate sites read the mode from the walked envelope and
+`conformanceGateFor` forwards it, never stated (L-P17WM-2). A `READ_ONLY` task walks
+`READ_ONLY_PLAN`, and the runner verifies it over `declaredWriteSet: []`, so any change
+in its worktree is quarantined (`WRITE_SET_VIOLATION_DETECTED`, `LEASE_REVOKED`,
+`SUSPECT_WORKTREE`) or refused (`RUNNER_WRITE_SET_VIOLATION`); a clean one ends
+`CHECKPOINTED` with a `PASS` receipt and never commits. The tools are not read-only: the
+guarantee is post hoc (P-25, P-35/H-8).
+
 ## The verification runner and the tree hasher
 
 `src/verification-runner` (P-16/C, ADR 0123) is the daemon's fifth spawn site and the
@@ -267,6 +276,38 @@ recorded walk on a transport with no writer-id issuer is refused at the start, b
 any spend (P-16/D2). The runner's own `WRITER_ID_UNISSUED`, `RUNNER_CHECKS_UNDECLARED`
 and `RUNNER_WRITE_SET_EMPTY` stay as a backstop; a switch landed mid-attempt onto a
 transport with no issuer still fails at the runner after spend (P-28).
+
+## The git writer and the commit writer
+
+`src/git-writer` (P-17/B, ADR 0127) is the sixth spawn site and the only one that writes
+to a repository. Operational Git writing is off (`OPERATIONAL_GIT_WRITING`, a frozen
+`false`): a target is admitted only if its real path is strictly under the checkout's own
+`.acp-local/`, with a `.git` directory of its own, a `sha1` object format, a born HEAD
+(`BASE_HEAD_MISSING`) on a branch (`GIT_WRITER_HEAD_DETACHED`); anything else is
+`GIT_WRITER_OPERATIONAL_DISABLED` before any spawn. The checkout root is derived with the
+`paths` module's expression, never supplied. Three plumbing verbs, checked before any
+spawn: `hash-object` (every blob and tree, each printed id held to the tree hasher's),
+`commit-tree` (the message on stdin, the id held to the hasher's commit object) and
+`update-ref <ref> <new> <old>`, the ref read back through the observer. Every spawn runs
+`/usr/bin/git` with `shell: false`, a built environment (no `HOME`, no global or system
+configuration, a ceiling at the repository's parent) and a fixed prefix: hooks off,
+unsigned, no implicit identity, UTF-8, and the injected identity on `user.*`, `author.*`
+and `committer.*`, so repository-local configuration cannot change the author or the
+reflog. The identity is required; while writing is off it must be on an `.invalid`
+domain. The dates are the recorded `authorized_at`, floored to the second. The writer
+never writes the index (a stated limit).
+
+`src/commit-writer` is the production caller of runtime's `authorizeCommit`, and spawns
+nothing. `authorizeRecordedCommit`, in `AUDITING`, rebuilds the receipt over recorded
+facts and the current observation (the name and the observed paths must equal the
+recorded ones) and records the record-form `COMMIT_AUTHORIZED` through the ledger's door,
+as `acp/commit-writer/coordinator/01`. `writeAuthorizedCommit`, in `READY_TO_COMMIT`,
+reads the row back, holds it in force with base, tree, write-set and policy revalidated
+before any write (`GIT_WRITER_NOT_IN_FORCE`), then has the writer write the objects,
+check NB-2, write the commit, ask the fence port -- in production `LeaseHold.renew()`: a
+lapsed lease holds no valid token -- and compare-and-set the branch. It appends no
+`COMMIT_RECORDED` and moves no row (P-17/C). Both modules are off the barrel and no walk
+calls them yet.
 
 ## Bounds
 

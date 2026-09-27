@@ -74,6 +74,11 @@ prueba cierra la afirmación. La columna «hoy» describe el árbol en `a92756b`
 | 18 | Notificaciones y relojes | puertos de entrega y de reloj; hechos durables de planificación | terminal y local; webhook o correo como adapters futuros | el fallo del aviso no congela la tarea; sin duplicados sin clasificar; los timers persisten | no existe |
 | 19 | Modalidades | entrada y salida con referencias y metadata; STT, TTS y realtime como capacidades distintas | texto primero; voz, imagen, video y documentos como packs | `UNSUPPORTED` explícito; límites de formato; interrupción de voz y su costo; ninguna grabación sensible en el stream público | sólo texto |
 
+La familia **19** conserva arriba su estado histórico. La selección planificada
+vigente de X13 es sólo captura de voz iniciada por el usuario → STT revisable →
+texto insertado explícitamente en brief/instrucciones, según [§5.2](#52-captura-y-transcripción-de-voz-seleccionadas).
+No selecciona TTS, realtime ni las otras modalidades, ni acredita soporte actual.
+
 **Superficies** (CLI, API, consola, integraciones) no son una familia de
 integración: son puertas y su regla vive en
 [estructura §4.3](../structure/index.md). La misma operación, la misma
@@ -140,6 +145,98 @@ a la vez. Cierra primero: ejecución útil, cuentas, recuperación, equipo y pla
 tools, observabilidad y pruebas.
 
 ---
+
+### 5.1 Recuperación contextual y acciones seleccionadas
+
+El owner seleccionó **ambas** el 2026-09-26; [X10 pasa a OPTIONAL_SELECTED
+planificado](../../requirements/index.md#131-delta-planificado-del-owner-2026-09-26),
+con delta sobre el perfil histórico, sin soporte declarado ni readiness heredado.
+P-36 custodia selección; los [cortes descriptivos](../../roadmap/index.md#22-extensiones-de-producto-planificadas)
+y sus contratos/diccionarios deben congelarse antes de código. No instala fuentes,
+embeddings, modelos, vector stores ni conectores, ni autoriza consumo/credenciales.
+El primer perfil recomendado usa selección local de texto; remoto exige selección
+de scope, destino de datos, credencial opaca y límites de consumo por separado.
+
+**Contexto.** Fuente/ingesta, revisión, chunking, índice reconstruible, query y
+citas son operaciones distintas. El índice fija IDs/revisiones de fuente,
+referencia/digest/generación de artefacto, span, schema/epoch de índice y adapter/
+modelo de embedding. Nunca es verdad, task store o autoridad de permisos. Adapter
+opcional detrás de la composición/gate existentes; ausencia es unavailable,
+UNKNOWN o UNSUPPORTED según su contrato, nunca soporte supuesto. Sustitución
+requiere la misma suite real; mocks no la prueban.
+
+ACL de fuente antes de indexar/exponer nombre, snippets o conteos; otra vez en
+retrieval/citación y justo antes de cada envío al modelo o despacho. Cachés por
+contexto autorizado y revisión, invalidadas por revocación; compartir bytes no
+comparte permisos. Revocación entre retrieval y send retiene/recompone sin el
+contenido revocado. Abrir cita revalida y no sustituye fuente antigua por latest.
+Cita identifica procedencia exacta, no prueba corrección. Retención/GONE/restore
+cambian disponibilidad honestamente. Payload público/log/telemetría no lleva
+contenido privado para explicar un fallo.
+
+Documentos, chunks, resultados de herramientas y citas son **datos no confiables**:
+no modifican instrucciones, scope, política, destinos ni autorizan acciones.
+Envío a embedding/clasificador externo también es egress protegido. La composición
+backend posee orden y bytes; el contexto no reemplaza envelope ni perfil admitido.
+Aplican las fronteras de [gobernanza](../governance/index.md): identidad y
+clasificador opcionales, ContentInspectionPort falible, AuthorizationPort en sus
+consumidores; ningún segundo gate/outbox/evaluador de permisos oculto en RAG.
+
+**Acciones propuestas.** Conversación privada produce sólo propuesta estructurada
+con operación cerrada, target/base exacta, payload/efectos, procedencia y estado.
+Primer alcance recomendado: draft de plan normal o solicitud de revisión, no
+herramienta arbitraria. Confirmación explícita vinculada a esos bytes/revisión,
+OCC y permisos actuales aplican el draft por planning; guardar no ejecuta. Toda
+acción con efectos pasa por el ciclo existente de aprobación/admisión/route/
+reserva/budget/efecto y recovery. Ni chat, cita o retrieved instruction conceden
+autoridad. Unknown outcome bloquea retry ciego; no segunda outbox/task store.
+El run del asistente registra worker/modelo/cuenta/uso reales; no identidad desde
+su texto. Ownership/cohorte/retención de conversación deben congelarse con
+[planning](../database/planning/index.md#extensión-planificada-perfiles-equipos-e-historia).
+
+**Búsqueda separada.** Buscar registros autorizados sobre proyecciones existentes
+funciona sin modelo ni X10; búsqueda documental puede usar el pack seleccionado.
+Permisos antes de hits/snippets/sugerencias/totales/facets. Acceso directo a un
+objeto no autorizado o faltante retorna igual forma segura de indisponibilidad;
+query sólo sobre registros ajenos tiene forma de resultado vacío autorizado,
+sin conteos escondidos. No búsqueda cross-initiative por una etiqueta “project”.
+Esto no promete ausencia universal de canales temporales: congelar probes
+acotados, supuestos de caché/carga/red, umbrales y amenazas residuales antes de
+anunciar resistencia en un perfil concreto.
+
+Cierre: fuente/cita revocada y stale índice, inyección/exfiltración, confirmación
+stale, replay/carreras, recovery y paridad CLI/API medidos con oráculos
+independientes ([tests §8.2](../../quality/testing/index.md#82-aceptación-futura-de-las-extensiones-de-producto)).
+Completar sólo contexto no cierra las acciones seleccionadas. X11 comunicación
+externa y remoto multiusuario siguen fuera; X10 no selecciona voz implícitamente.
+X13 tiene su selección separada y acotada en §5.2; Jev + Laya no cambia.
+
+### 5.2 Captura y transcripción de voz seleccionadas
+
+Selección explícita del owner incorporada en [requisitos §13.2](../../requirements/index.md#132-perfil-sucesor-voz-acotada-2026-09-26):
+X13 OPTIONAL_SELECTED **opcional y planificado**, sólo captura iniciada por el
+usuario → transcripción revisable → inserción explícita de texto en brief de
+feature o instrucciones de agente. P-06/M12 conserva responsabilidad primaria.
+No es implementación, selección de proveedor/codec ni autorización de ejecución.
+Se conserva el texto baseline; resto de X13 no seleccionado: TTS, diálogo realtime,
+imagen/video, análisis multimodal general, identificación/clonado de voz y entrada
+desde archivos/URLs arbitrarios. No aumenta los 121 IDs ni los 39 packets.
+
+Antes de habilitar, congelar contrato de inicio/parada/cancelación, consentimiento
+y permisos de dispositivo, formatos/bytes/duración, adapter/fuente/versión, ruta
+local o egress autorizado, retención/borrado, costo conocido/UNKNOWN, errores y
+resultado incierto. Audio/transcript privados por referencia, autorización antes
+de metadata/envío y sin sinks públicos. Voz no autentica ni concede permisos.
+Revisión/edición del transcript precede su inserción; no auto-create/save/run/grant.
+Micrófono denegado, adapter ausente, fallo o cancelación permiten seguir escribiendo.
+
+El mock de muestra sigue guionado y debe decir que no usa micrófono ni STT real.
+Texto tecleado, selecciones y transcript vacío sobreviven al rerender; exceso
+rechaza sin truncar. Descartar preview conserva texto anterior; salir de autoría
+sucia requiere confirmar descarte, sin promesa de persistencia universal.
+La habilitación real exige reconciliación física, conformidad y negativos de
+[tests §8.2](../../quality/testing/index.md#82-aceptación-futura-de-las-extensiones-de-producto).
+Ninguna ausencia/fallo dispara fallback remoto, gasto o nueva modalidad implícitos.
 
 ## 6. SDKs dentro de un edge
 

@@ -67,6 +67,13 @@ No se prueba todo el producto cartesiano del mercado. Se certifican perfiles.
 Conformidad individual no prueba delegación: interacciones de ownership, retry y
 cancelación requieren drills de la pareja concreta.
 
+La propuesta conserva por campo selección explícita/default heredado, origen y
+revisión, participantes/scopes y fingerprint normalizado. «Proyecto» en UX mapea
+a iniciativa/repositorio admitidos; STEP > INITIATIVE > GLOBAL sigue siendo el
+único resolver, no una cuarta capa ni catálogo paralelo de cuentas. Perfil AI y
+su revisión describen trabajo; modelo/cuenta/harness efectivos pertenecen a la
+asignación/run exactos. Nivel/skills no conceden compatibilidad ni autoridad.
+
 ## 4. Preflight antes del trabajo
 
 Un mismo servicio de aplicación sirve a CLI, API y futura UI:
@@ -84,7 +91,7 @@ Un mismo servicio de aplicación sirve a CLI, API y futura UI:
    a la revisión/política autorizadas y al intento/segmento pertinente. Sin
    credenciales ni prompts. No modifica la preimagen del envelope ni mete allí
    la cuenta resuelta, cuya identidad es separada.
-6. Al despachar, revalidar snapshot y adquirir reservas/leases existentes. **Un
+6. Al iniciar/reanudar y despachar, revalidar snapshot y adquirir reservas/leases existentes. **Un
    preflight verde no es un lock.** Cambios relevantes de versión, permisos,
    selección o evidencia invalidan el plan; cuota y ownership se verifican vivos.
    Un cambio ajeno al perfil no invalida todo el sistema.
@@ -96,6 +103,14 @@ no la requiere. No hay degradación silenciosa.
 
 Cambiar la composición durante un run requiere frontera segura y el protocolo
 existente de continuidad; cambiar un checkbox no autoriza migración en vivo.
+
+Preview de propuesta no crea feature/tarea/asignación ni ejecución persistidas.
+Persistir conversación autorizada es operación aparte. Confirmar fija base,
+payload y fingerprint; usa OCC, idempotencia y autorización fresca. Replay
+reproduce el payload almacenado, sin recalcular defaults ni duplicar. Guardar
+no instala, ejecuta, aprueba, reserva ni cobra. Planes con componentes planned o
+UNKNOWN pueden guardarse como propuestas explícitas, nunca soporte verde ni
+bypass del preflight común. El diagnóstico legible no exige privilegios de mutación.
 
 ## 5. Ejemplos
 
@@ -112,6 +127,9 @@ Decisiones de diseño condicionadas a perfiles certificados, **no soporte actual
 | Phoenix + otro receptor de telemetría | uno por defecto; fanout explícito | controlar egress, colas y costos; evitar doble ingesta y doble conteo |
 | Memoria del framework + servicio de memoria | depende de rol/scope | memoria de trabajo y persistente pueden coexistir; dos autoridades del mismo estado sin reconciliación, no |
 | Dos modelos para roles diferentes | permitir dentro de recursos y autoridad | pertenecer a la misma familia no crea conflicto |
+| LangChain basado en LangGraph | ya incluido según versión/perfil | no pedir una segunda selección sólo por el nombre; verificar qué runtime y responsabilidad realmente incorpora |
+| Dos índices bajo un pipeline RAG | no requeridos por defecto | pipeline más índice no son dos vector stores; si se proponen dos, declarar scopes y beneficio |
+| Cuenta de suscripción + SDK/API | no inferir autorización o financiación | comprobar transporte/credencial/condiciones; sin fallback pagado implícito |
 
 ## 6. Experiencia de selección
 
@@ -122,6 +140,40 @@ desaparece. CLI/API devuelven el mismo diagnóstico; no se implementa UI ahora.
 
 Se distingue: disponible para instalar, instalado, seleccionable para esta tarea
 y soportado/probado bajo este perfil. No cambiar la selección por el usuario.
+
+Guía conversacional breve, cantidad de pantallas flexible y detalle técnico
+progresivo, no un wizard de catálogo obligatorio. Partir del brief y entregables;
+el proyecto configura defaults de permisos/cuentas/modelos con procedencia una
+vez, revalidados al consumo. Mostrar por necesidad ya incluido, complemento,
+alternativa, conflicto comprobado, requisito/adapter faltante o no verificado.
+Una familia comercial extensible no promete adapters para todas sus marcas.
+No ocultar opción desconocida como incompatibilidad probada ni recomendar un
+framework donde el perfil nativo basta.
+
+La propuesta concreta muestra equipo/pins por paso, instrucciones, modelos/cuentas,
+componentes, concurrencia y pruebas/coverage objetivo. Concurrencia máxima es
+límite, no promesa: DAG, write-set/leases, recursos, cuota y presupuesto mandan.
+Coverage objetivo lleva métrica/alcance/exclusiones/umbral o ausencia; medido sólo
+desde evidencia real. Comparar costo/velocidad/rigor con supuestos/UNKNOWN, sin
+ranking fijo por vendor, nivel del agente o número de revisores. Separar costo
+de suscripción/API/infra/decisión/evaluación/telemetría, sin doble contabilización.
+
+Antes de adoptar, mostrar qué se conserva, requiere revisión o reemplaza frente
+al draft/base exactos. Cancelar patch/comparación conserva el draft. Cerrar autoría
+puede descartarlo explícitamente, con confirmación si está sucio; no se promete
+retención universal o Cancel→reopen. Replanificar modifica futuro, no historia.
+Cadencia de commits no cambia commit_policy ni aprobación/publicación; la semántica
+vive en [planning](../../database/planning/index.md#extensión-planificada-perfiles-equipos-e-historia).
+
+Jev/Laya conservan la selección de candidatos admisibles y gates de
+[integraciones §8](../index.md#8-decisiones-delegadas), no se convierten en planner
+de roadmap ni motor de permisos. Una muestra guionada se puede explorar y adoptar
+como elección manual explícita sin llamada/score calibrado/costo inventados;
+abstención, timeout o adapter no verificado no activan delegación ni fallback.
+El planner amplio requiere contrato/consumidor propios antes de código.
+La [voz acotada](../index.md#52-captura-y-transcripción-de-voz-seleccionadas) inserta
+texto revisado; chat/voz no auto-crean ni ejecutan. Seguimiento expone identidad,
+frescura y evidencia exactas con lectura autorizada, no proceso real desde mock.
 
 ## 7. Incorporación al plan
 

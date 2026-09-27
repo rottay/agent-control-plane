@@ -142,6 +142,8 @@ new records from `_template.md`, which carries the required fields.
 | 0124 | [A walk consumes its verification and its audit](0124-a-walk-consumes-its-verification-and-its-audit.md) | accepted |
 | 0125 | [A recorded walk is refused before its spend](0125-a-recorded-walk-is-refused-before-its-spend.md) | accepted |
 | 0126 | [A commit authorization is recorded and revalidated](0126-a-commit-authorization-is-recorded-and-revalidated.md) | accepted |
+| 0127 | [A commit is written only in a disposable repository, from its recorded authorization](0127-a-commit-is-written-only-in-a-disposable-repository-from-its-recorded-authorization.md) | accepted |
+| 0127 | [A read-only task declares no write-set and never commits](0127-a-read-only-task-declares-no-write-set-and-never-commits.md) | accepted |
 
 Where to start: **0001** for why the ledger is the only authority, **0002** for
 what that authority is made of, **0012** and **0014** for how the repository is

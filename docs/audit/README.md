@@ -12,11 +12,15 @@ sólo cuando son metadatos necesarios de una evidencia.
 arquitectura, su modelo de datos, sus contratos, sus requisitos, cómo se mide su
 calidad y en qué orden se construye.
 
-**No es** autoridad operativa. Hasta que se cierre el puente de
-[migración](implementation/migration/index.md), la ley que gobierna el trabajo
-diario sigue siendo `AGENTS.md` y el roadmap vigente del repositorio. Esta
-documentación **no está admitida todavía** por la lista exacta de rutas de la
-compuerta de arquitectura, y **no se modificó el checker para autoaprobarla**.
+**No sustituye** la autoridad operativa del [roadmap canónico](../ROADMAP.md).
+ADR 0061 admite esta carpeta por literales exactos en la compuerta; admisión no
+es autorización ni certificación. La enmienda del owner del 2026-09-26 incorpora
+expresamente el [registro de extensiones planificadas](roadmap/index.md#22-extensiones-de-producto-planificadas)
+y sus dueños como addendum de alcance, secuencia y gates. Los contratos físicos
+baseline siguen vinculantes hasta su transición explícita antes de código; el
+[puente de migración](implementation/migration/index.md) no se declara cerrado
+por esta integración. Las asignaciones históricas de agentes no revocan una
+instrucción posterior explícita del owner.
 
 **No autoriza nada**: ni implementación, ni gasto, ni instalaciones, ni
 publicación, ni cutover. Las autorizaciones las emite el owner, o el coordinador
@@ -39,6 +43,7 @@ una vez y los demás enlazan.
 | [Contratos](architecture/contracts/index.md) | el ciclo de una tarea | qué operaciones existen, con qué precondiciones, errores y garantías |
 | [Base de datos](architecture/database/index.md) | reglas de persistencia, DER e invariantes | nombres, tipos, claves, causalidad, transacciones, migración |
 | ↳ [streams](architecture/database/streams/index.md) · [planificación](architecture/database/planning/index.md) · [ejecución](architecture/database/execution/index.md) · [cuentas](architecture/database/accounts/index.md) · [economía](architecture/database/economy/index.md) · [artefactos](architecture/database/artifacts/index.md) · [coordinación](architecture/database/coordination/index.md) | el diccionario físico, columna por columna | qué tabla, qué columna, qué tipo, qué restricción |
+| [Gobernanza](architecture/governance/index.md) | principales, grants, protección de datos, incidentes y límites | extensión planificada; E1(b), recuperación del aprobador y señales falibles; sin enforcement aceptado |
 | [Integraciones](architecture/integrations/index.md) | familias, niveles y sustitución | qué significa opcional, funcional e intercambiable, y qué prueba lo demuestra |
 | ↳ [Comparativa de mercado](architecture/integrations/market/index.md) · [Composición](architecture/integrations/composition/index.md) | alternativas y compatibilidad entre selecciones | dónde encaja cada herramienta y cómo impedir doble autoridad antes de ejecutar |
 | [Requisitos](requirements/index.md) | los 99 casos y los 22 criterios transversales | qué hay que construir, quién lo posee y qué lo acepta |
@@ -70,6 +75,18 @@ una vez y los demás enlazan.
 ---
 
 ## 4. Estado, en una tabla
+
+La tabla siguiente es la **medición histórica de la consolidación**, no el estado
+actual de la suite ni del backend. Los receipts por packet gobiernan el avance
+posterior. La incorporación documental del 2026-09-26 registra O1–O13, gobernanza,
+perfiles/equipos y X10 contextual + acciones como planificación, ampliada con
+biblioteca reusable, skills/nivel, planificación e intención de commits/seguimiento
+y X13 opcional sólo captura de voz → STT → texto revisado. No ejecutó sus pruebas
+de aceptación ni certifica funcionalidad. Perfil histórico 115/4/2/0 y
+[primer delta 115/3/2/1](requirements/index.md#131-delta-planificado-del-owner-2026-09-26)
+se preservan; el [sucesor vigente 115/2/2/2](requirements/index.md#132-perfil-sucesor-voz-acotada-2026-09-26)
+usa los mismos 121 IDs y 39 packets baseline. TTS/realtime y demás alcance X13
+no seleccionado siguen fuera; las extensiones tienen avance separado.
 
 | Pregunta | Respuesta |
 | --- | --- |

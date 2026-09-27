@@ -382,15 +382,18 @@ export type { VerificationRefusal } from "./verification-record/index.js";
 
 // P-17/A (ADR 0126): the closed words a record-form COMMIT_AUTHORIZED is refused by, at
 // the door and in the fold, and the one in-force predicate, exported so P-17/B's writer
-// (before `update-ref`) and P-17/C's `COMMIT_RECORDED` call the same function (ND-13).
-// The decision and the door's read of the receipt and envelope stay in the module.
-export { COMMIT_AUTHORIZATION_REFUSALS, commitAuthorizationInForce } from "./commit-authorization-record/index.js";
+// (before any object write) and P-17/C's `COMMIT_RECORDED` call the same function
+// (ND-13). P-17/B (ADR 0127; ND-17): the recorded lease's one fold, `recordedLeaseOf`,
+// and the event shape it folds, so the writer and the door read one lease. The decision
+// and the door's read of the receipt and envelope stay in the module.
+export { COMMIT_AUTHORIZATION_REFUSALS, commitAuthorizationInForce, recordedLeaseOf } from "./commit-authorization-record/index.js";
 export type {
   CommitAuthorizationInForce,
   CommitAuthorizationInForceInput,
   CommitAuthorizationRefusal,
   CommitAuthorizationRevalidation,
   RecordedLease,
+  RecordedLeaseEvent,
 } from "./commit-authorization-record/index.js";
 
 // P-27 cut C (ADR 0116): a task's step link -- the decision, pure over what its caller

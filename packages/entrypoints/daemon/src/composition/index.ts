@@ -665,10 +665,12 @@ function usageSourceFor(route: ResolvedRoute): WalkChainFacts["usageSource"] | n
  *
  * A task read back whole is then admitted as a walk (P-16/D2, ADR 0125): runtime's
  * `recordedWalkRefusal` is asked once, and a task with no declared checks
- * (`CHECKS_UNDECLARED`), no write-set (`WRITE_SET_EMPTY`) or an elected route with
- * no writer id issuer (`WRITER_ID_UNISSUED`) stops the start here too, before
- * anything is appended, leased, dispatched or spent. The runner's own words stay
- * its backstop.
+ * (`CHECKS_UNDECLARED`), no write-set outside `READ_ONLY` (`WRITE_SET_EMPTY`) or an
+ * elected route with no writer id issuer (`WRITER_ID_UNISSUED`) stops the start
+ * here too, before anything is appended, leased, dispatched or spent. The runner's
+ * own words stay its backstop. A `READ_ONLY` task (P-17/workspaceMode, ADR 0127) is
+ * walked with its empty write-set, and both conformance gates read its
+ * `workspaceMode` from the walked envelope, so any change it makes is quarantined.
  */
 function recordedSubject(input: {
   readonly ledger: Ledger;
@@ -1139,6 +1141,7 @@ async function startWalks(options: DaemonOptions | Parameters<typeof startRecord
         invocation,
         worktreePath: bindingForRoute(options.execution).workdir,
         declaredWriteSet: walked.envelope.writeSet,
+        workspaceMode: walked.envelope.workspaceMode,
         lease: hold.lease,
         emittedBy: options.emittedBy,
         onViolation: () => {
@@ -1461,6 +1464,7 @@ async function startWalks(options: DaemonOptions | Parameters<typeof startRecord
             invocation: held.invocation,
             worktreePath: walk.worktreePath,
             declaredWriteSet: walk.envelope.writeSet,
+            workspaceMode: walk.envelope.workspaceMode,
             lease: heldLease.hold.lease,
             emittedBy: walk.spec.emittedBy,
             onViolation: () => {

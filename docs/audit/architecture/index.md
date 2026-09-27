@@ -104,6 +104,30 @@ reubicación o extracción, no una reescritura general:
 
 ---
 
+### Extensión planificada: perfiles y gobernanza
+
+El [registro de producto](../roadmap/index.md#22-extensiones-de-producto-planificadas)
+añade a `planning` la semántica de perfiles AI privados, sus revisiones y adopción
+por las asignaciones existentes; no crea un registry de modelos ni un resolver
+de equipos. El contexto propuesto `governance` posee principales humanos, grants,
+políticas, decisiones de protección, hallazgos e incidentes. Su [especificación](governance/index.md)
+no admite todavía un paquete de código: GOV-1 debe congelar su contrato y
+admisión al fence dentro de su propio corte. Aprobaciones siguen en planning,
+cuentas en accounts, efectos/identidad de run en runtime y artefactos en su dueño.
+
+Son distintas: **persona autenticada**, **perfil AI descriptivo**, **cuenta de
+proveedor** y **worker/run emitido por el plane**. La asignación usa roles cerrados
+(coordinator, implementer, reviewer, consultant, verifier) y fija configuración;
+no convierte especialidad o nombre en permiso. Dos nombres no prueban revisión
+independiente y un modelo que dice ser revisor no emite una identidad verificadora.
+El run conserva modelo/cuenta/transporte reales y el snapshot admitido; historia
+sin perfil no se reconstruye desde el nombre actual.
+
+Puertos de gobernanza se declaran en sus consumidores y se adaptan en la
+composition root; ningún dominio importa otro dominio. Proveedores de identidad,
+inspección y avisos son opcionales. El producto individual funciona sin servicios
+de equipo, sin tenancy obligatoria y sin dependencia de otros módulos de producto.
+
 ## 4. Puertos
 
 **Un puerto vive en el dominio cuando el dominio es su consumidor.** Si sólo un
@@ -122,7 +146,9 @@ inventa un puerto en el dominio para renombrar algo que ya existe.
 | lectura de Git | `runtime` | `domains/runtime/ports/vcs` | `GitReadPort` en `runtime/src/enforcement` |
 | checkpoint | `runtime` | `domains/runtime/ports/checkpoint` | `CheckpointPort`: `persist` **sí** tiene caller productivo, cableado desde el daemon a los dos modos; `read` es lo que no tiene consumidor y bloquea la rehidratación |
 | store de artefactos | `runtime`, `observation` | `domains/<contexto>/ports/artifacts` | no existe |
-| credenciales e identidad | `accounts`, entrypoints | `domains/accounts/ports/credentials` | no existe |
+| credenciales de proveedor | `accounts`, `runtime` | puerto de credenciales del consumidor, sin identidad humana | estado del baseline; no concede permisos |
+| identidad humana (extensión planificada) | `governance` | `OperatorIdentityPort` en su consumidor | GOV-1 pendiente; no inferir del bearer, cuenta o perfil |
+| autorización (extensión planificada) | cada contexto consumidor | `AuthorizationPort` en sus propios `ports/`, adaptado por composition root | contrato portable, enforcement pendiente según GOV |
 
 La regla que ordena esta tabla es una sola: **un puerto se declara donde está su
 consumidor.** Un contrato que ya existe en el kernel y sirve, se reutiliza; no se

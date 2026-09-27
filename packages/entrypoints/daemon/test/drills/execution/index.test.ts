@@ -5733,6 +5733,13 @@ function d4ThroughTheDoors(options: {
   readonly commands?: readonly string[];
   /** P-16/D2: the envelope's commit policy; envelopeFor's LOCAL_COMMIT_WITH_RECEIPT by default. */
   readonly commitPolicy?: "NO_COMMIT" | "LOCAL_COMMIT_WITH_RECEIPT";
+  /**
+   * P-17/workspaceMode: the envelope's workspace axis, left to the contract's default
+   * when omitted (so every document D4 builds stays byte-identical), and its write-set,
+   * `[D4_WRITTEN]` by default.
+   */
+  readonly workspaceMode?: "MUTABLE_WITHIN_WRITE_SET" | "READ_ONLY";
+  readonly writeSet?: readonly string[];
 }): {
   readonly databasePath: string;
   readonly taskId: string;
@@ -5830,6 +5837,8 @@ function d4ThroughTheDoors(options: {
       validation: { commands: [...(options.commands ?? ["test -f " + D4_WRITTEN, "exit 0"])], independentVerifierRequired: true },
       ...(role === "reviewer" ? { eligibility: { roles: [role], providers: null, requiredCapabilities: [] } } : {}),
       ...(options.commitPolicy === undefined ? {} : { commitPolicy: options.commitPolicy }),
+      ...(options.workspaceMode === undefined ? {} : { workspaceMode: options.workspaceMode }),
+      ...(options.writeSet === undefined ? {} : { writeSet: [...options.writeSet] }),
     },
     clientScope: D4_OPERATOR,
     clientRequestKey: "d4-" + taskId,
@@ -6199,6 +6208,76 @@ describe("P-15/D4: a recorded task, from its door to its result (parallelism :14
     }
   }, 300_000);
 
+  it("P-17/workspaceMode E1 through the doors: a READ_ONLY task whose writer changes nothing verifies over no write-set, audits ACCEPT and checkpoints, and commits nothing", async () => {
+    const { databasePath, taskId } = d4ThroughTheDoors({
+      priced: true,
+      commitPolicy: "NO_COMMIT",
+      workspaceMode: "READ_ONLY",
+      writeSet: [],
+    });
+    const child = d4EchoChild({ isError: false });
+    const config = d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG, undefined, undefined, false);
+    await expect(runPackagedEntry([config])).resolves.toBe(0);
+    expect(readFileSync(child.spawnLog, "utf8")).toBe("spawned\n");
+    const ledger = openLedger(databasePath);
+    ledgers.push(ledger);
+    const receipts = ledger.listVerifications(taskId, 1, 1);
+    expect(receipts.map((row) => row.runStatus)).toEqual(["PASS"]);
+    // The receipt itself states the empty declared set and no observed change.
+    const leaseStore = openArtifactBlobLeaseStore(artifactBlobLeaseStorePath(databasePath), {
+      incarnationId: randomUUID(),
+      createdAt: D4_RULES_FROM,
+    });
+    try {
+      const plane = openArtifactPlane({ ledger, leaseStore, ledgerPath: databasePath });
+      const read = plane.read({ artifactReferenceId: receipts[0]?.artifactReferenceId ?? "", scopeKind: "TASK", scopeId: taskId });
+      if (read.verb !== "READ") throw new Error("expected the receipt");
+      const receipt = JSON.parse(read.content.toString("utf8")) as Record<string, unknown>;
+      expect(receipt["declaredWriteSet"]).toEqual([]);
+      expect(receipt["observedTrackedChanges"]).toEqual([]);
+      expect(receipt["observedUntrackedPaths"]).toEqual([]);
+    } finally {
+      leaseStore.close();
+    }
+    expect(ledger.listAuditVerdicts(receipts[0]?.receiptSha256 ?? "").map((row) => row.verdict)).toEqual(["ACCEPT"]);
+    const stream = ledger.listEvents({ taskId, limit: 500 }).events.map((record) => record.event);
+    const transitions = stream.map((event) => event.transitionId);
+    expect(transitions.includes("verified") && transitions.includes("audited")).toBe(true);
+    expect(stream.find((event) => event.type === "CHECKPOINT_WRITTEN")?.fromState).toBe("AUDITING");
+    expect(stream.map((event) => event.toState)).not.toContain("READY_TO_COMMIT");
+    expect(stream.some((event) => event.type.startsWith("COMMIT_"))).toBe(false);
+    expect(stream.some((event) => event.type === "WRITE_SET_VIOLATION_DETECTED")).toBe(false);
+    expect(ledger.getTask(taskId)?.currentState).toBe("CHECKPOINTED");
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+  }, 300_000);
+
+  it("P-17/workspaceMode E2 through the doors: a READ_ONLY task whose worktree holds a change is quarantined at the start, with no receipt and no commit", async () => {
+    const { databasePath, taskId } = d4ThroughTheDoors({
+      priced: true,
+      commitPolicy: "NO_COMMIT",
+      workspaceMode: "READ_ONLY",
+      writeSet: [],
+    });
+    const child = d4EchoChild({ isError: false });
+    // The writer's change is planted before the start (d4Worktree), so the gate's
+    // first observation already sees it: under READ_ONLY every path is outside the set.
+    const config = d4ConfigFile(databasePath, taskId, child.binary, D4_CATALOG, undefined, undefined, true);
+    await expect(runPackagedEntry([config])).rejects.toThrow("WRITE_SET_VIOLATION_DETECTED");
+    const ledger = openLedger(databasePath);
+    ledgers.push(ledger);
+    const stream = ledger.listEvents({ taskId, limit: 500 }).events.map((record) => record.event);
+    const types = stream.map((event) => event.type);
+    expect(types).toContain("WRITE_SET_VIOLATION_DETECTED");
+    expect(types).toContain("LEASE_REVOKED");
+    expect(stream.find((event) => event.type === "WRITE_SET_VIOLATION_DETECTED")?.payload["firstPathOutsideSet"]).toBe(D4_WRITTEN);
+    expect(stream.some((event) => event.type === "TASK_STATE_CHANGED" && event.toState === "SUSPECT_WORKTREE")).toBe(true);
+    expect(ledger.getTask(taskId)?.currentState).toBe("SUSPECT_WORKTREE");
+    expect(ledger.listVerifications(taskId, 1, 1)).toEqual([]);
+    expect(stream.some((event) => event.type.startsWith("COMMIT_"))).toBe(false);
+    expect(stream.map((event) => event.toState)).not.toContain("READY_TO_COMMIT");
+    expect(ledger.verifyIntegrity().problems).toEqual([]);
+  }, 300_000);
+
   it("N-D10: a catalog that prices nothing in force refuses before any spend, and the task settles FAILED", async () => {
     const { databasePath, taskId } = d4ThroughTheDoors({ priced: false });
     const child = d4EchoChild({ isError: false });
@@ -6268,8 +6347,20 @@ describe("P-15/D4: a recorded task, from its door to its result (parallelism :14
  * supported set moved to 2.11.0, the field and its refinement removed) and the drill's
  * envelope literals without `objective`, which gave the value below. The current tree
  * gives the same value, so D3's invariance holds at 2.11.0 too.
+ *
+ * P-17/workspaceMode moved `CONTRACT_VERSION` to 2.12.0 and gave `TaskEnvelope` its
+ * `workspaceMode`, defaulted to `MUTABLE_WITHIN_WRITE_SET` (ADR 0127), so the stamp and
+ * the envelope digest both move once more. Restamped by the same method on the same
+ * source: `git archive be3b06f` into the scratchpad with this test as c1bb414 wrote it,
+ * run once as it stood -- reproducing `f61ca58b…ed93`, the control -- and once with
+ * A1's contract edits and this cut's applied there (the version literal moved to
+ * 2.12.0 and the supported set to hold 2.10.0, 2.11.0 and 2.12.0; `objective` and its
+ * refinement removed; `WorkspaceMode`, the defaulted field and its two refinements
+ * added) and the drill's envelope literals without `objective` and, as this cut leaves
+ * them, without `workspaceMode`, which gave the value below. The current tree gives the
+ * same value, so D3's invariance holds at 2.12.0 too.
  */
-const D4_V1_TRAIL_SHA256 = "96593135b1f802ff9413dc53a79f086da6bf8ee995156764c2a254ec221089e5";
+const D4_V1_TRAIL_SHA256 = "d971f6602a47c51e19eb0f13845a3183fd86c70e0d75c4e626e7c2398e91c970";
 
 describe("P-15/D4 PC-D3: the inline V1 walk is byte-identical to the one before D3", () => {
   it("hashes the same trail, lease rows aside, as the pre-D3 source", async () => {

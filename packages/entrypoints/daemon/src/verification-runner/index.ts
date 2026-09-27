@@ -83,9 +83,10 @@ export type {
  *    digest and the route to the intake's resolution (`RUNNER_TASK_UNREADABLE`, the
  *    reader's word carried); not in a terminal state (`RUNNER_TASK_TERMINAL`).
  * 3. The envelope: declared checks (`RUNNER_CHECKS_UNDECLARED`), a write-set
- *    (`RUNNER_WRITE_SET_EMPTY`; since P-16/D2 both are refused before spend at the
- *    recorded start, the empty write-set at the intake too, and this is the
- *    backstop), a title the
+ *    outside `READ_ONLY` (`RUNNER_WRITE_SET_EMPTY`; since P-16/D2 both are refused
+ *    before spend at the recorded start, the empty write-set at the intake too, and
+ *    this is the backstop; a `READ_ONLY` task verifies over the empty set, so step 5
+ *    makes every observed change a violation, P-17/workspaceMode, ADR 0127), a title the
  *    commit body rule admits (`RUNNER_COMMIT_BODY_INVALID`), a writer label that is a
  *    worker identity other than the runner's.
  * 4. The object format, before any observation could misread a 64-hex id: `sha1` or
@@ -509,7 +510,9 @@ export async function runVerification(input: VerificationRunInput): Promise<Veri
   const envelope = task.envelope;
   const commands = envelope.validation.commands;
   if (commands.length === 0) return refuse("RUNNER_CHECKS_UNDECLARED", "envelope.validation.commands");
-  if (envelope.writeSet.length === 0) return refuse("RUNNER_WRITE_SET_EMPTY", "envelope.writeSet");
+  if (envelope.workspaceMode !== "READ_ONLY" && envelope.writeSet.length === 0) {
+    return refuse("RUNNER_WRITE_SET_EMPTY", "envelope.writeSet");
+  }
   try {
     commitMessageWithReceiptTrailer(envelope.title, "0".repeat(64));
   } catch {

@@ -154,6 +154,93 @@ reales conservan la autorización de perfil y límites exigida por el repositori
 
 ---
 
+### 2.2 Extensiones de producto planificadas
+
+**Mandato incorporado el 2026-09-26 por el [roadmap canónico](../../ROADMAP.md).**
+El owner seleccionó RAG contextual **y acciones propuestas**, y autorizó integrar
+las capacidades representadas por el mock. Esta sección es el addendum vigente
+de planificación, no una invitación a implementar contratos sin congelar.
+Preserva 39 packets baseline, 121 IDs históricos, sus cierres y camino crítico;
+ninguna nueva capacidad hereda DESIGN_READY/SCOPE_FROZEN. No demora P-16 ni acepta
+sus cambios en curso. Los cortes T/R/P/E/Q/O/S/N/V del mock no son IDs backend ni
+evidencia de soporte. Gobierno opcional y producto local-first, sin dependencia
+de módulos de producto, otros repositorios, tenancy o servicios de equipo.
+
+#### Cobertura completa O1–O13
+
+| Origen | Clasificación y destino canónico | Límite veraz |
+| --- | --- | --- |
+| O1 Asistencia contextual | selección planificada X10; [integraciones §5.1](../architecture/integrations/index.md#51-recuperación-contextual-y-acciones-seleccionadas) | contexto/citas + propuestas de acciones, no acceso ni ejecución desde un documento recuperado |
+| O2 Conversaciones/búsqueda | enmienda acotada de [planning](../architecture/database/planning/index.md#extensión-planificada-perfiles-equipos-e-historia), artefactos e integraciones | brief/roadmap privados, inferencias propuestas y edición manual; búsqueda de registros sin X10 ni modelo; no segundo task store |
+| O3 Revisión humana | P-28 baseline más extensión separada de [interacción](../architecture/contracts/interaction/index.md#extensión-planificada-aprobación-y-propuestas-exactas) | autoridad/independencia/CAS, nunca mensajes o personas simuladas |
+| O4 Gobernanza de equipos | nueva extensión [GOV](../architecture/governance/index.md) | E1(b), E2 y E3; opcional, no seguridad instalada |
+| O5 Configurar suscripción/API/local | plan existente P-19/P-20/P-23/P-32/P-33/P-34 | cuota, uso, gasto y capacidad desconocidos no equivalen a cero; fallback pagado exige autorización |
+| O6 Analítica de uso | plan existente P-30–P-35, economía/observación/evaluación | totales/heatmaps reproducibles desde runs; no otra contabilidad ni ahorro universal |
+| O7 Composición neutral | P-23 y dueños existentes de tools/confinamiento/instalación; [catálogo](../architecture/integrations/market/index.md) y [composición](../architecture/integrations/composition/index.md) | defaults de proyecto y alternativas por necesidad, no catálogo de casillas; seleccionar no instala ni prueba; un resolver/preflight |
+| O8 Jev + Laya | extensión P-35 de §2.1, sin cambio | dos adapters reales, contrato único y gates previos conservados |
+| O9 Autoría guiada/etapas | P-26/P-27/P-28/P-29 más agrupación revisionada propuesta de pasos | objetivo → entregables → equipo/componentes/pruebas/concurrencia; cadencia de commits separada de aprobación/push; no reabrir historia, nueva jerarquía ejecutable ni segundo DAG |
+| O10 Vista móvil simplificada | frontera de representación | contexto read-only y derivación honesta al desktop; no servicio remoto ni autorización multiusuario |
+| O11 Empaquetado desktop | plan existente P-38 | shell/runtime de escritorio sigue siendo decisión; preview no es instalador firmado, updater ni permisos OS |
+| O12 Voz/multimodal | X13 OPTIONAL_SELECTED planificado sólo [captura → STT → texto revisado](../architecture/integrations/index.md#52-captura-y-transcripción-de-voz-seleccionadas) | opcional para describir feature/agente; sin soporte actual implícito; TTS/realtime/imagen/video/voz como identidad y archivos/URLs arbitrarios no seleccionados |
+| O13 Agentes AI con nombre | biblioteca reusable y extensión separada P-28 | publicación workspace explícita con ACL existentes y legacy privado; skills/nivel descriptivos; planning posee revisión/asignación, runtime worker/run real; builtin ID/versión/digest y ASCII legacy opcional |
+
+#### Registro de extensión, dependencias y cierre
+
+Los nombres siguientes son descriptivos, **no** números de packet nuevos. El DT
+congelará cortes/leases exactos en el dueño de packets antes de implementación.
+
+| Entrega planificada | Dueño y dependencias | Criterio de terminación, no satisfecho por esta página |
+| --- | --- | --- |
+| Biblioteca de perfiles AI | planning; streams/artefactos; publicación workspace y acceso privados existentes | identidad/revisión/head, skills/nivel, límites, OCC/idempotencia y archive; legacy privado, clone autorizado, conteos sin filtración, rebuild de cohorte y lectura autorizada con pruebas de [planning](../architecture/database/planning/index.md#extensión-planificada-perfiles-equipos-e-historia) |
+| Equipos/asignaciones e historia | extensión P-28; perfiles; resolver existente; admisión y run identity reales | adopción explícita con OCC, snapshot de revisión exacta, pins, run/receipt inmutables, ausencia de perfil baseline válida; aprobación nunca fabricada |
+| Autoría por etapas y propuestas | planning; P-26/P-27/P-28/P-29 y composición | grupos sobre pasos existentes, defaults/payload/fingerprint exactos, replay sin recalcular, cancelar patch conserva draft y descarte sucio confirmado; pruebas/coverage objetivos no son medición; cadencia no concede commits/push |
+| Gobernanza opcional | GOV-0…GOV-11 de [su dueño §16](../architecture/governance/index.md#16-alcance-backend-por-cortes-dependencias-y-paralelización) | cada corte congela datos/contratos y negativos, cobertura declarada por adapter; E1(b)/E2/E3 aplicados; no habilitar sin validación real |
+| Contexto y acciones X10 | integraciones y artefactos; permisos de fuente/gobernanza cuando aplica; P-36 custodia la selección | fuentes/citas/índice reconstruible, revocación, instrucciones no confiables, confirmación exacta y ciclo de efecto normal; conformidad real antes de soporte |
+| Conversaciones y búsqueda | planning/artefactos/observation; metadatos scoped y acceso vigente | contenido privado, ownership real, historia/propuestas sin autoridad; búsqueda de registros independiente de X10 y sin filtrar nombres/conteos privados |
+| Captura/transcripción opcional X13 | P-06/M12 conserva responsabilidad primaria; integraciones, artefactos y consumidores de draft | congelar dispositivo/consentimiento, adapter/versión, formatos/límites, egress, retención/borrado, costo/UNKNOWN y cancelación; revisar antes de insertar; edición manual ante rechazo/fallo; no TTS/realtime implícito |
+| Seguimiento agente/paso | runtime/observation, asignación exacta y lectura autorizada | enlace a intento/run/log/console con worker y ruta efectivos, frescura/cursor, costos y evidencia; no nueva tabla/autoridad de consola ni proceso activo inventado desde planned/legacy/unknown |
+| Economía/heatmap/compatibilidad/distribución | packets y dueños existentes indicados en O5–O8/O11 | recorridos completos, recuperación, oráculos independientes y límites reales de su perfil; no nuevo subsistema por pantalla |
+
+Secuencia mecánica: (1) preparación RO de modelos de amenaza, límites, oráculos
+y contratos sobre snapshots; (2) congelar por entrega diccionario, eventos,
+cohortes, normalización, composición y negativa tipada; (3) integrar la transición
+física con sus owners serializados; (4) publicar descriptor/perfil privado;
+(5) extender asignación/admisión y capturar identidad real; (6) exponer lectura,
+aprobación y acciones por las puertas existentes; (7) conformidad/paridad,
+crash/rebuild/privacidad y revisión independiente. Gobernanza sigue su DAG propio;
+contexto sin acciones puede ser subcorte, pero **no cierra X10 seleccionado** sin
+acciones propuestas seguras. Nada consume modelos o instala adapters por este
+orden. El baseline y la primera tarea útil no esperan una extensión opcional.
+La cantidad de pantallas es flexible: defaults con procedencia evitan preguntas
+repetidas, sin cachear permiso. Jev/Laya conservan su selección de candidato y
+gates; planificador amplio requiere consumidor/contrato propios antes de código.
+Concurrencia máxima es una preferencia acotada por dependencias, leases/write-set,
+recursos, cuota y presupuesto, nunca garantía de paralelismo o corrección.
+
+#### Reconciliación física obligatoria antes de código
+
+Estos cinco owners permanecen fuera de la escritura documental concurrente con
+P-16. Su baseline sigue vigente; este registro **ya** agrega el alcance a la
+planificación y exige la siguiente reconciliación en su safe point:
+
+| Owner canónico | Integración requerida antes del código que la consuma |
+| --- | --- |
+| [Packets](../implementation/packets/index.md) | cortes/readiness y write-sets de extensiones separados de 39; dependencia en A10/STEP, aprobación/re-resolución y worker revocation sin borrar baseline P-28 |
+| [Decisiones](../decisions/index.md) | registrar decisiones técnicas pendientes cuando se resuelvan; las selecciones del owner constan aquí y en [requisitos §13.2](../requirements/index.md#132-perfil-sucesor-voz-acotada-2026-09-26); las exclusiones previas de X10 y del alcance captura/STT de X13 son históricas, no se supersede el resto de X13 |
+| [Contratos](../architecture/contracts/index.md) | composición exacta del envelope, bytes/digests, perfil/asignación, planner/voz, validación humana, confirmación y frontera de cadencia con operaciones de commit existentes, errores/versiones y recovery; no editar receipts P-16 |
+| [Ejecución](../architecture/database/execution/index.md) | snapshot inmutable de perfil/asignación por intento y route, pins/lifetime, identidad emitida real; no renombrar historia ni cambiar un run admitido |
+| [Datos raíz](../architecture/database/index.md) | diccionario/cohortes/DER y transición serializada coherentes con streams/planning/artefactos; causalidad tipada y publicación atómica; no DDL implícito |
+
+Readiness exige productor de cada hecho, transacción/OCC/replay, schema/revision
+compatibles, consumidores/privacidad, oráculos y rollback/rebuild definidos. Las
+asignaciones baseline conservan STEP > INITIATIVE > GLOBAL; “project” de UX se
+mapea explícitamente a iniciativa/repositorio admitidos, nunca crea una capa
+PROJECT ni autorización global. Una fila o un CHECK de forma no valida identidad.
+No se reserva ADR/decisión/migración aquí. [Tests](../quality/testing/index.md#82-aceptación-futura-de-las-extensiones-de-producto)
+y [paralelismo](parallelism/index.md#16-preparación-de-extensiones-de-producto) son gates,
+no evidencia ejecutada. El cierre documental requiere receipt independiente;
+la implementación sigue pendiente hasta sus propios DESIGN_READY y SCOPE_FROZEN.
+
 ## 3. Gates
 
 Un gate es una condición **verificable** que separa dos hitos. No se pasa por

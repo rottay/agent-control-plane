@@ -155,12 +155,15 @@ writer transport with no id issuer. The v5 derivation is the ledger's
 - **Strict objects.** Object schemas are built with `strictObject`, so an
   unknown key is a validation failure rather than a silently carried field. A
   producer that grows a field fails at the boundary instead of leaking it.
-- **One version written, a set admitted.** `CONTRACT_VERSION` is `"2.11.0"` since
-  P-16/A1, which retires `TaskEnvelope.objective` so `content` states the instruction
-  once, and so moves the envelope's preimage (ADR 0120), as P-26 cut B moved it for a
-  roadmap version's steps (ADR 0111): the literal moved and
-  `SUPPORTED_CONTRACT_VERSIONS` grew to ten without losing a member, and every stored
-  row still reads. A task recorded under a superseded version is refused by name when
+- **One version written, a set admitted.** `CONTRACT_VERSION` is `"2.12.0"` since
+  P-17/workspaceMode, which gives `TaskEnvelope` its `workspaceMode` (defaulted to
+  `MUTABLE_WITHIN_WRITE_SET`, or `READ_ONLY`) and so moves the envelope's preimage
+  (ADR 0127), as P-16/A1 moved it when it retired `TaskEnvelope.objective` (ADR 0120)
+  and P-26 cut B for a roadmap version's steps (ADR 0111): the literal moved and
+  `SUPPORTED_CONTRACT_VERSIONS` grew to eleven without losing a member, and every stored
+  row still reads. The contract holds a `READ_ONLY` envelope to `NO_COMMIT` and an
+  empty write-set; a `VerificationReceipt` may declare the empty set, and a
+  `CommitAuthorizationReceipt` may not. A task recorded under a superseded version is refused by name when
   it is read back to be run (`ENVELOPE_VERSION_SUPERSEDED`), and the path is
   re-submission under the version in force. It is the single literal a **producer** stamps.
   `SUPPORTED_CONTRACT_VERSIONS` is the set a **reader** admits, and `ContractVersion` is `z.enum` of it, so a record

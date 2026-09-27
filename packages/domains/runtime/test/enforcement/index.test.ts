@@ -462,6 +462,67 @@ describe("write-set conformance: tracked and untracked in one pass", () => {
   });
 });
 
+describe("write-set conformance under READ_ONLY (P-17/workspaceMode, ADR 0127)", () => {
+  const conformance = (declaredWriteSet: readonly string[], workspaceMode: unknown, seen = observation()): ConformanceOutcome =>
+    checkWriteSetConformance({ declaredWriteSet, workspaceMode, observation: seen, lease: lease() } as unknown as Parameters<
+      typeof checkWriteSetConformance
+    >[0]);
+
+  it("P1: READ_ONLY over the empty set with a clean observation is conformant, with no event", () => {
+    const outcome = conformance([], "READ_ONLY");
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.conformant).toBe(true);
+    expect(outcome.violations).toEqual([]);
+    expect(outcome.revokeLeaseId).toBeNull();
+    expect(outcome.recommendedTaskState).toBeNull();
+    expect(outcome.events).toEqual([]);
+  });
+
+  it("N1: READ_ONLY with one tracked change is a violation: revoke and quarantine, and nothing else", () => {
+    const outcome = conformance([], "READ_ONLY", observation({ trackedChanges: [digest("src/touched.ts", A)] }));
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.conformant).toBe(false);
+    expect([...outcome.violations]).toEqual(["src/touched.ts"]);
+    expect(outcome.revokeLeaseId).toBe(lease().leaseId);
+    expect(outcome.recommendedTaskState).toBe("SUSPECT_WORKTREE");
+    expect(outcome.events.map((e) => e.type)).toEqual(["WRITE_SET_VIOLATION_DETECTED", "LEASE_REVOKED"]);
+  });
+
+  it("N2: READ_ONLY with one untracked path is a violation as well", () => {
+    const outcome = conformance([], "READ_ONLY", observation({ untrackedPaths: ["notes.txt"] }));
+    expect(outcome.ok && !outcome.conformant && [...outcome.violations]).toEqual(["notes.txt"]);
+    expect(outcome.ok && outcome.recommendedTaskState).toBe("SUSPECT_WORKTREE");
+  });
+
+  it("N3: READ_ONLY with a declared path, and a defined value outside the vocabulary, are REQUEST_INVALID at the mode", () => {
+    expect(refusal(conformance(["a.ts"], "READ_ONLY"))).toMatchObject({ reason: "REQUEST_INVALID", at: "request.workspaceMode" });
+    for (const bogus of ["bogus", "read_only", null, "", 0]) {
+      expect(refusal(conformance([], bogus)), String(bogus)).toMatchObject({ reason: "REQUEST_INVALID", at: "request.workspaceMode" });
+      expect(refusal(conformance(["a.ts"], bogus)), String(bogus)).toMatchObject({ reason: "REQUEST_INVALID", at: "request.workspaceMode" });
+    }
+  });
+
+  it("B1: an absent mode, an undefined mode and an explicit MUTABLE_WITHIN_WRITE_SET over the empty set keep WRITE_SET_EMPTY", () => {
+    const absent = checkWriteSetConformance({ declaredWriteSet: [], observation: observation(), lease: lease() });
+    expect(refusal(absent)).toMatchObject({ reason: "WRITE_SET_EMPTY", at: "request.declaredWriteSet" });
+    // A cast envelope carries no mode at runtime, and the daemon forwards it as it is
+    // (DT B-1): the key present and `undefined` is today's strict rule.
+    expect(refusal(conformance([], undefined))).toMatchObject({ reason: "WRITE_SET_EMPTY", at: "request.declaredWriteSet" });
+    expect(refusal(conformance([], "MUTABLE_WITHIN_WRITE_SET"))).toMatchObject({
+      reason: "WRITE_SET_EMPTY",
+      at: "request.declaredWriteSet",
+    });
+  });
+
+  it("B2: MUTABLE_WITHIN_WRITE_SET with a declared set compares as before, and the vocabulary stays fourteen words", () => {
+    const outcome = conformance(["src/allowed.ts"], "MUTABLE_WITHIN_WRITE_SET", observation({ trackedChanges: [digest("src/allowed.ts", A)] }));
+    expect(outcome.ok && outcome.conformant).toBe(true);
+    expect(ENFORCEMENT_REFUSALS).toHaveLength(14);
+  });
+});
+
 describe("prestate verification", () => {
   // (c)
   it("refuses on a digest mismatch and names the path", () => {

@@ -804,7 +804,7 @@ proyección `RECORDED`. Tabla `STRICT`, sin defaults.
 | `attempt_number` | INTEGER | NOT NULL | `ck_commit_authorization_read_model__attempt_number_positive`: `> 0`; igual a la del receipt. |
 | `audit_id` | TEXT | NOT NULL | `fk_commit_authorization_read_model__audit_verdict_read_model`. El veredicto debe ser `verdict = 'ACCEPT'` sobre el **mismo** `receipt_sha256`. |
 | `commit_message_sha256` | TEXT | NOT NULL | sha256 sobre los bytes exactos del mensaje: cuerpo más trailer (abajo). |
-| `authorized_at` | TEXT | NOT NULL | instante canónico del evento `COMMIT_AUTHORIZED`. P-17/B lo usa como `GIT_AUTHOR_DATE` y `GIT_COMMITTER_DATE`: el adapter no lee reloj y el objeto commit es función de hechos registrados. Inmutable tras el INSERT. |
+| `authorized_at` | TEXT | NOT NULL | instante canónico del evento `COMMIT_AUTHORIZED`. Desde P-17/B (ADR 0127) es `GIT_AUTHOR_DATE` y `GIT_COMMITTER_DATE`, como `@<segundos> +0000` truncado al segundo, también en la entrada de reflog de `update-ref`: el writer no lee reloj y el objeto commit es función de hechos registrados. Inmutable tras el INSERT. |
 | `authorized_sequence` | INTEGER | NOT NULL | secuencia del evento `COMMIT_AUTHORIZED`. `ck_commit_authorization_read_model__authorized_sequence_positive`: `CHECK (authorized_sequence >= 1)`. Inmutable tras el INSERT. |
 | `state` | TEXT | NOT NULL | `ck_commit_authorization_read_model__state`: `CHECK (state IS NOT NULL AND state IN ('INTENDED','RECORDED','OUTCOME_UNKNOWN','SUPERSEDED'))`. |
 | `commit_sha` | TEXT | NULL | `NULL` sii `state <> 'RECORDED'` (CHECK abajo). |
@@ -887,8 +887,17 @@ reloj. No hay TTL más allá del lease, y P-17 no tiene evento de revocación: r
 autorización es de **P-28**. La vida en el instante del efecto es otra cosa: es la
 comprobación del token de fence de la parte 1 de [contratos §6.1](../../contracts/index.md),
 que P-17/B hace al ejecutar `update-ref`; es un chequeo de fencing, no una comparación
-de relojes. Queda como pregunta de P-17/B, no como afirmación, si un lease vencido
-pero todavía no reasignado conserva un token de fence vigente.
+de relojes. **Respuesta de P-17/B (ADR 0127, decisión 248): no.** Un lease vencido no
+conserva un token de fence vigente para una mutación mediada. El writer llama a un
+puerto de fence justo antes de `update-ref`; su enlace de producción es
+`LeaseHold.renew()` del walk, así que la comprobación **es una renovación**: bajo el lock
+del store relee la fila; un fence o un id de lease movidos son `LEASE_FENCE_LOST`, un
+lease vencido (igualdad incluida) es `LEASE_EXPIRED` por `renewLease`, y un éxito extiende
+`expiresAt` y registra un `LEASE_ACQUIRED` por la cola del árbitro. Un `sweep` libera la
+fila sin mover el fence pero borra el id del lease: es una tenencia perdida,
+`LEASE_FENCE_LOST`; un sucesor mueve el fence: `LEASE_FENCE_LOST`. La ventana entre la
+comprobación y `update-ref` queda cerrada por el propio compare-and-set del ref contra la
+base, y por la parte 2 de §6.1 (P-18/recuperación).
 
 **Precondiciones de puerta** ([contratos §2.1](../../contracts/index.md)):
 
@@ -904,7 +913,9 @@ pero todavía no reasignado conserva un token de fence vigente.
   último a uno anterior. La puerta y el fold juzgan las filas; los hechos derivados de
   bytes —el digest del mensaje, la política recalculada del envelope registrado y su
   write-set— son sólo de la puerta, que los re-afirma bajo el lock (ND-7); base y tree
-  contra Git son de P-17/B y P-17/C. Sin esto, un receipt
+  contra Git los revalida desde P-17/B el efecto, antes de escribir un objeto
+  (`REVALIDATED_BASE_MISMATCH`, `REVALIDATED_TREE_MISMATCH`, ADR 0127), y su uso en
+  `COMMIT_RECORDED` es de P-17/C. Sin esto, un receipt
   anterior autorizado tras uno posterior nunca quedaría superseded (la supersesión
   sólo la dispara un evento posterior) y `ux_commit_authorization_read_model__intended_task`
   rehusaría la autorización del receipt vigente. La puerta lo comprueba y no lo supone

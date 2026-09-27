@@ -351,6 +351,34 @@ varias fuentes es [notification_read_model](../execution/notifications/index.md)
 particiones disjuntas por owner_stream, con cohortes/watermarks y reemplazo parcial
 acotados; jamás se mezclan secuencias ni se borran filas de una partición vecina.
 
+### Extensión planificada: documentos de perfil y gobernanza
+
+[Planning](../planning/index.md#extensión-planificada-perfiles-equipos-e-historia)
+recomienda `registry_events`, `subject_kind = DOCUMENT`, con una familia tipada
+y versionada de documento de perfil (nombre propuesto `AGENT_PROFILE`). Es
+**nuevo vocabulario aún no admitido**: los CHECKs, tipos de evento y diccionario
+físico de §4 permanecen baseline hasta congelar la transición. Registry es
+infraestructura compartida; planning sigue siendo autoridad semántica del perfil.
+Editar nombre/instrucciones avanza el head propio, nunca `MODEL_VERSION`, catálogo
+de modelos, precios ni capability revision. No se agrega un quinto stream.
+
+La biblioteca de instalación no necesita un `task_id` o `initiative_id` falso.
+`control_plane_events` conserva su sujeto real de tarea e `initiative_events`
+su iniciativa real. Asignaciones scoped permanecen en iniciativa; GLOBAL en
+registry. Almacenamiento de instalación **no** equivale a visibilidad global.
+Eventos públicos contienen sólo IDs/digests/referencias autorizables/códigos
+cerrados; nombre, retrato, especialidad e instrucciones son contenido privado.
+
+La cohorte de perfiles declara watermarks propios de registry y publicación
+atómica; sharing de stream no convierte dos proyecciones en la misma cohorte.
+FK sólo dentro de cohorte; entre perfil, asignación, artefacto, principal y run,
+referencia causal tipada con identidad/revisión/digest/generación y vector fijado.
+Nunca comparar secuencias de streams distintos ni hacer fallback al último perfil.
+Rebuild no emite hechos, no borra otras cohortes y valida dependencias antes de
+exponer datos. Revisión, lifecycle/archive y orden de eventos son coordenadas
+separadas. Los sujetos de [gobernanza §10/13](../../governance/index.md) mantienen
+sus streams naturales; E1(b) exige transición real antes de habilitarlos.
+
 ### 4.1 Publicación de reportes derivados
 
 Los documentos INTEGRATION_PROFILE, INTEGRATION_INSTALLATION, COMPOSITION_POLICY

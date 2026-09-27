@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CONTRACT_VERSION, buildInitiativeIdempotencyKey } from "@acp/contracts";
+import { CONTRACT_VERSION, ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1, TaskEnvelope, buildInitiativeIdempotencyKey } from "@acp/contracts";
 import {
   artifactBlobLeaseStorePath,
   canonicalJsonStringify,
@@ -366,6 +366,9 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
     budget: { maxTokens: 1000, maxWallClockSeconds: 60, reserveTokensForCheckpoint: 100 },
     visualEvidenceRequired: false,
     commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    // Stated, because `envelopeBytes` canonicalizes this raw literal and the plane
+    // stores the parsed one, which always carries the defaulted field (ADR 0127).
+    workspaceMode: "MUTABLE_WITHIN_WRITE_SET",
     checkpointPolicy: { onEveryAtomicStep: true, maxStepsWithoutCheckpoint: 1 },
     ...overrides,
   };
@@ -706,7 +709,7 @@ describe("the preconditions of the request link refuse with a class, a code and 
     expect(Object.keys(stored)).not.toContain("objective");
     expect(stored["contractVersion"]).toBe(record?.event.contractVersion);
     expect(record?.event.contractVersion).toBe(CONTRACT_VERSION);
-    expect(CONTRACT_VERSION).toBe("2.11.0");
+    expect(CONTRACT_VERSION).toBe("2.12.0");
   });
 
   it("N-P14C-5: an initiative with no row is REQUEST_INVALID, and nothing enters", () => {
@@ -849,7 +852,7 @@ describe("the preconditions of the request link refuse with a class, a code and 
     expect(heads(on.ledger)).toEqual(held);
   });
 
-  it("N5 (P-16/D2): a NO_COMMIT envelope with an empty write-set is WRITE_SET_EMPTY, and nothing is published or appended", () => {
+  it("N5 (P-16/D2): a NO_COMMIT envelope with an empty write-set, outside READ_ONLY, is WRITE_SET_EMPTY, and nothing is published or appended", () => {
     const on = world();
     const held = heads(on.ledger);
     const empty = envelope({ commitPolicy: "NO_COMMIT", writeSet: [] });
@@ -871,6 +874,53 @@ describe("the preconditions of the request link refuse with a class, a code and 
     const held = heads(on.ledger);
     const empty = envelope({ commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", writeSet: [] });
     expect(intake(on, { envelope: empty })).toEqual(refusal("REQUEST_INVALID", "ENVELOPE_INVALID", "envelope.commitPolicy"));
+    expect(heads(on.ledger)).toEqual(held);
+  });
+
+  it("P-17/workspaceMode P1: a READ_ONLY NO_COMMIT envelope with an empty write-set enters DISCOVERED, revision 1, one publication", () => {
+    const on = world();
+    const readOnly = envelope({ workspaceMode: "READ_ONLY", commitPolicy: "NO_COMMIT", writeSet: [], conflictKeys: [] });
+    const outcome = entered(intake(on, { envelope: readOnly }));
+    expect(outcome.task.state).toBe("DISCOVERED");
+    expect(outcome.task.revisionNumber).toBe(1);
+    expect(outcome.task.envelopeSha256).toBe(envelopeSha256(readOnly));
+    expect(outcome.task.envelopeSha256).toBe(sha256(ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1 + canonicalJsonStringify(TaskEnvelope.parse(readOnly))));
+    expect(on.ledger.getTask(TASK_A)?.currentState).toBe("DISCOVERED");
+    expect(on.ledger.listArtifactEvents(sha256(envelopeBytes({ workspaceMode: "READ_ONLY", commitPolicy: "NO_COMMIT", writeSet: [], conflictKeys: [] }))).map((event) => event.event.artifactEventKind)).toEqual([
+      "PUBLICATION_INTENDED",
+      "PUBLICATION_SUCCEEDED",
+    ]);
+    expect(on.ledger.verifyIntegrity().problems).toEqual([]);
+    expect(TASK_INTAKE_CODES).toHaveLength(13);
+  });
+
+  it("P-17/workspaceMode N1: READ_ONLY with a declared path is ENVELOPE_INVALID at the write-set, and nothing is published or appended", () => {
+    const on = world();
+    const held = heads(on.ledger);
+    const named = envelope({ workspaceMode: "READ_ONLY", commitPolicy: "NO_COMMIT", writeSet: ["docs/intake.md"] });
+    expect(intake(on, { envelope: named })).toEqual(refusal("REQUEST_INVALID", "ENVELOPE_INVALID", "envelope.writeSet"));
+    expect(heads(on.ledger)).toEqual(held);
+    expect(on.ledger.getTask(TASK_A)).toBeNull();
+    expect(on.ledger.listArtifactEvents(sha256(canonicalJsonStringify(named)))).toEqual([]);
+  });
+
+  it("P-17/workspaceMode N2: READ_ONLY with a commit policy is ENVELOPE_INVALID at the mode, and a value outside the vocabulary likewise", () => {
+    const on = world();
+    const held = heads(on.ledger);
+    const committing = envelope({ workspaceMode: "READ_ONLY", commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", writeSet: [], conflictKeys: [] });
+    expect(intake(on, { envelope: committing })).toEqual(refusal("REQUEST_INVALID", "ENVELOPE_INVALID", "envelope.workspaceMode"));
+    expect(intake(on, { envelope: envelope({ workspaceMode: "WRITE" }) })).toEqual(
+      refusal("REQUEST_INVALID", "ENVELOPE_INVALID", "envelope.workspaceMode"),
+    );
+    expect(heads(on.ledger)).toEqual(held);
+    expect(on.ledger.getTask(TASK_A)).toBeNull();
+  });
+
+  it("P-17/workspaceMode B1: an explicit MUTABLE_WITHIN_WRITE_SET with an empty write-set keeps WRITE_SET_EMPTY", () => {
+    const on = world();
+    const held = heads(on.ledger);
+    const empty = envelope({ workspaceMode: "MUTABLE_WITHIN_WRITE_SET", commitPolicy: "NO_COMMIT", writeSet: [] });
+    expect(intake(on, { envelope: empty })).toEqual(refusal("REQUEST_INVALID", "WRITE_SET_EMPTY", "envelope.writeSet"));
     expect(heads(on.ledger)).toEqual(held);
   });
 

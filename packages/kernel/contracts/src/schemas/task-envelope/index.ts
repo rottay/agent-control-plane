@@ -81,6 +81,19 @@ export type TaskClassification = z.infer<typeof TaskClassification>;
 export const CommitPolicy = z.enum(["NO_COMMIT", "LOCAL_COMMIT_WITH_RECEIPT"]);
 export type CommitPolicy = z.infer<typeof CommitPolicy>;
 
+/**
+ * The workspace axis of contratos §2 (P-17/workspaceMode, ADR 0127).
+ *
+ * `READ_ONLY` walks the same path without mutating the workspace; the plane
+ * still records its own state and its checkpoints (contratos §2.1).
+ * `MUTABLE_WITHIN_WRITE_SET` edits only inside the declared write-set. The axis
+ * is orthogonal to `CommitPolicy` (decision 13), but the contract couples the
+ * two where the combination has no meaning: a `READ_ONLY` task never commits
+ * and declares no write-set.
+ */
+export const WorkspaceMode = z.enum(["MUTABLE_WITHIN_WRITE_SET", "READ_ONLY"]);
+export type WorkspaceMode = z.infer<typeof WorkspaceMode>;
+
 export const TaskEnvelope = z
   .strictObject({
     /**
@@ -138,7 +151,10 @@ export const TaskEnvelope = z
     /** Authority is path plus content digest. Nothing else grants authority. */
     authority: z.array(PathDigest).max(1_000),
     readSet: z.array(RepoRelativePath).max(1_000),
-    /** The exact write-set. An empty write-set means a read-only packet. */
+    /**
+     * The exact write-set. An empty write-set is lawful only under
+     * `workspaceMode: "READ_ONLY"` (ADR 0127); a `READ_ONLY` task declares none.
+     */
     writeSet: z.array(RepoRelativePath).max(500),
     /** Opaque keys used to build the conflict graph between parallel packets. */
     conflictKeys: z.array(z.string().min(1).max(200)).max(200),
@@ -171,6 +187,16 @@ export const TaskEnvelope = z
 
     visualEvidenceRequired: z.boolean(),
     commitPolicy: CommitPolicy,
+    /**
+     * The workspace axis (P-17/workspaceMode, ADR 0127, decision 248).
+     *
+     * Defaulted, so the parsed envelope always carries it: an absent field and
+     * an explicit `MUTABLE_WITHIN_WRITE_SET` give one parsed value and one
+     * `envelope_sha256`. It enters the preimage by construction, which moves
+     * every envelope digest (the class of decision 48) and bumps the contract
+     * to 2.12.0.
+     */
+    workspaceMode: WorkspaceMode.default("MUTABLE_WITHIN_WRITE_SET"),
     checkpointPolicy: z.strictObject({
       onEveryAtomicStep: z.boolean(),
       maxStepsWithoutCheckpoint: z.number().int().positive().max(100),
@@ -184,6 +210,22 @@ export const TaskEnvelope = z
         code: "custom",
         message: "checkpoint reserve must be strictly smaller than the token budget",
         path: ["budget", "reserveTokensForCheckpoint"],
+      });
+    }
+
+    if (value.workspaceMode === "READ_ONLY" && value.commitPolicy !== "NO_COMMIT") {
+      ctx.addIssue({
+        code: "custom",
+        message: "a READ_ONLY task may carry only the NO_COMMIT commit policy",
+        path: ["workspaceMode"],
+      });
+    }
+
+    if (value.workspaceMode === "READ_ONLY" && value.writeSet.length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        message: "a READ_ONLY task declares no write-set",
+        path: ["writeSet"],
       });
     }
 

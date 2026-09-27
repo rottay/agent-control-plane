@@ -2251,7 +2251,8 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
 
   /**
    * Plant a task "recorded under" another contract version into an operator ledger
-   * a 2.11.0 build entered it into (P-16/A1, ND-7 (a)).
+   * a build of the version in force entered it into (P-16/A1, ND-7 (a); 2.12.0 since
+   * P-17/workspaceMode, ADR 0127).
    *
    * The real intake has run. This publishes `raw` — the entered envelope restamped to
    * `envelopeVersion`, carrying the `objective` a 2.10.0 build still stored when
@@ -2264,8 +2265,11 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
    * The digest is computed here, test-locally, as
    * `sha256(ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1 + canonicalJsonStringify(raw))`: the
    * prefix carries its own LF, and the parse step of the two-method rule is omitted on
-   * purpose, because the 2.11.0 schema must refuse these bytes. The published bytes
-   * are built from exactly the `raw` that is hashed.
+   * purpose, because the schema in force must refuse these bytes. The published bytes
+   * are built from exactly the `raw` that is hashed. `raw` starts from the stored
+   * bytes, which are the parsed envelope, so it already states the defaulted
+   * `workspaceMode` (ADR 0127) and a plant at the version in force still digests as
+   * the one encoder does.
    */
   function plantRecorded(
     databasePath: string,
@@ -2433,11 +2437,12 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
     expect(existsSync(join(home, "executions", "executions"))).toBe(false);
   }
 
-  it("P-16/A1 E5, the helper's positive control: the same plant left at 2.11.0 starts ok and walks to CHECKPOINTED", async () => {
+  it("P-16/A1 E5, the helper's positive control: the same plant left at the version in force starts ok and walks to CHECKPOINTED", async () => {
     const home = stage();
     const { databasePath, taskId } = operatorLedger(home);
     const planted = plantRecorded(databasePath, taskId, CONTRACT_VERSION, CONTRACT_VERSION, false);
-    // For a lawful 2.11.0 envelope the test-local digest is the one encoder's.
+    // For a lawful envelope of the version in force (2.12.0, ADR 0127) the test-local
+    // digest is the one encoder's.
     expect(planted.envelopeDigest).toBe(envelopeSha256(planted.raw));
     const echoPath = join(stage(), "echo.txt");
     const config = parseDaemonChildConfig(recordedDocument(databasePath, taskId, fakeClaude(stage(), echoPath), worktree()));
@@ -2458,7 +2463,7 @@ describe("the recorded form runs a fresh recorded task to its checkpoint (P-15/D
     });
   });
 
-  it("P-16/A1 E4: an envelope stamped 2.10.0 under a 2.11.0 intake event is refused at start as ENVELOPE_VERSION_MISMATCH, with the same zero spend", async () => {
+  it("P-16/A1 E4: an envelope stamped 2.10.0 under an intake event of the version in force is refused at start as ENVELOPE_VERSION_MISMATCH, with the same zero spend", async () => {
     await refusedStart("the recorded task is refused: ENVELOPE_VERSION_MISMATCH at envelope.contractVersion", (databasePath, taskId) => {
       plantRecorded(databasePath, taskId, "2.10.0", CONTRACT_VERSION, true);
     });

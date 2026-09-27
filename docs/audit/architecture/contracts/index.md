@@ -318,7 +318,9 @@ El punto de enforcement real, en dos partes:
 
 1. **Operaciones mediadas.** Toda operación mutante que pasa por el plane
    —commit, publicación, escritura de artefacto, llamada a herramienta— comprueba
-   el token de fence y rechaza si no es el vigente.
+   el token de fence y rechaza si no es el vigente. Para el commit, desde P-17/B
+   (ADR 0127), la comprobación corre justo antes de `update-ref` y es una renovación del
+   lease: un lease vencido no conserva token vigente.
 2. **Hijo mutante.** Un proceso hijo que escribe el workspace por su cuenta
    necesita **un entorno de ejecución revocable o aislado**, o bien su **detención
    y reap verificados** antes de reasignar el workspace. Sin una de las dos, la
@@ -529,7 +531,10 @@ registrado: antes del paso 6 el runner registra el receipt y antes del paso 7 un
 local determinista registra el veredicto, y los dos pasos son beats consumidores que los
 nombran; la puerta y el fold rehúsan una referencia sin fila admisible. N03 queda
 cerrado: los dos sitios de walk del daemon leen la política del envelope. El commit
-sigue sin ejecutarse (P-17), la forma V1 inline sigue apendeando beats desnudos (P-21) y
+sólo se escribe, desde P-17/B (ADR 0127), en un repositorio desechable bajo
+`.acp-local/` y desde su autorización registrada y vigente: la escritura operativa está
+apagada, ningún walk lo llama todavía y `COMMIT_RECORDED` es de P-17/C; la forma V1
+inline sigue apendeando beats desnudos (P-21) y
 `CHECKPOINTED` no acredita éxito: `COMPLETED` es de P-21, límite que el ADR de P-16/D
 repite. Desde P-16/D2 (ADR 0125, decisiones 242–244) un walk registrado sin checks
 declarados, con write-set vacío o sobre una ruta sin emisor de id del writer se rehúsa
@@ -587,11 +592,18 @@ y la realización de un commit, y **permite editar archivos dentro del write-set
 `READ_ONLY` prohíbe efectos mutantes sobre el workspace y las herramientas, y
 **permite** que el plane registre estado y checkpoints internos. Ninguno de los dos
 produce confirmaciones ficticias. `READ_ONLY` es un valor de `workspace_mode` (§2),
-no una política de commit: los dos ejes son ortogonales (decisión 13). Hoy el
-envelope no lo lleva; lo agrega **P-17**, y agregarlo mueve `envelope_sha256` (la
-clase de la decisión 48). Hasta entonces un write-set vacío es ilícito bajo las dos
-políticas (P-16/D2, decisión 242): se rehúsa `WRITE_SET_EMPTY` en el ingreso y en el
-arranque registrado, y el camino lícito de `NO_COMMIT` es un write-set no vacío.
+no una política de commit: los dos ejes son ortogonales (decisión 13). El envelope
+lo lleva desde **P-17/workspaceMode** (ADR 0127; decisiones 248–250):
+`workspaceMode`, `MUTABLE_WITHIN_WRITE_SET` por defecto o `READ_ONLY`; agregarlo movió
+`envelope_sha256` (la clase de la decisión 48) y el contrato a 2.12.0. Donde la
+combinación no tiene sentido el contrato acopla los ejes: `READ_ONLY` sólo con
+`NO_COMMIT` y con un write-set vacío. Un write-set vacío es lícito sólo bajo
+`READ_ONLY`: con `MUTABLE_WITHIN_WRITE_SET` sigue rehusándose `WRITE_SET_EMPTY` en el
+ingreso y en el arranque registrado (P-16/D2, decisión 242). Una tarea `READ_ONLY`
+recorre `READ_ONLY_PLAN`, verifica sobre el conjunto vacío, se audita y termina
+`CHECKPOINTED`; todo cambio que haga en el workspace queda en cuarentena a posteriori
+(la prevención a nivel de herramientas es de P-25 y P-35/H-8), y nunca se autoriza a
+commitear.
 
 **El límite de `COMPLETED`.** §2.1 es el destino (decisión 22): `NO_COMMIT` termina
 en `COMPLETED` desde `AUDITING`, y el camino del commit cierra con

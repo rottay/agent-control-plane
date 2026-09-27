@@ -701,6 +701,239 @@ rechaza; estado actual distinto tras rebuild conserva la misma respuesta.
 
 ---
 
+## Extensión planificada: perfiles, equipos e historia
+
+Mandato y secuencia: [roadmap §2.2](../../../roadmap/index.md#22-extensiones-de-producto-planificadas).
+Esta sección fija el diseño recomendado; **no cambia** las tablas baseline de
+arriba ni declara una migración aplicada. Requiere diccionario físico, schemas,
+productores, versionado y refusals congelados antes de código. Los nombres de
+proyección siguen `*_read_model`; no se reserva número de migración/packet.
+
+### Identidad, contenido y límites
+
+Planning posee perfil y adopción; su familia de [documento en registry](../streams/index.md#extensión-planificada-documentos-de-perfil-y-gobernanza)
+no es un nuevo catálogo de modelos. Se propone `agent_profile_read_model` como
+head/lifecycle y `agent_profile_revision_read_model` como revisiones inmutables,
+cohorte propia derivada de registry. Identidad estable opaca emitida por el
+primitive backend admitido, nunca por nombre/modelo/cuenta. Cada revisión fija
+padre, ordinal propio, identidad exacta y referencia/generación/digest de descriptor
+privado. La posición de lifecycle no se confunde con la revisión de instrucciones.
+
+El descriptor usa el dueño de [artefactos](../artifacts/index.md#extensión-planificada-contenido-privado-y-procedencia),
+propuesto `POLICY_DOCUMENT`; instalación/SYSTEM no significa acceso universal.
+Nombres/retratos/instrucciones no van a eventos públicos, logs, etiquetas de
+telemetría, listados ni búsquedas antes de autorización. “Project” en UX exige
+mapeo explícito de elegibilidad/acceso a iniciativa/repositorio admitidos: no se
+inventa tabla o scope PROJECT. Campos y valores siguientes son decisiones de
+diseño de esta extensión, no límites ya implementados:
+
+La biblioteca admite publicación **explícita** de perfiles reutilizables en la
+instalación/workspace, usando ownership SYSTEM/INITIATIVE y ACL existentes.
+Workspace es elegibilidad/publicación, no nuevo scope, permiso global ni
+iniciativa ficticia. VIEW sobre un proyecto no revela toda la biblioteca privada.
+Legacy sin declaración compartida permanece privado; editar no publica ni migra.
+Clonar exige lectura autorizada del origen y publicación explícita del descriptor
+nuevo, ID y procedencia propios. Compartir perfil no comparte asignaciones,
+proyectos, nombres/conteos de trabajo, cuentas, credenciales ni grants. Filtrar
+listas, búsquedas, conteos y rutas antes de metadata; cambiar proyecto no borra
+una elección reusable ni expone trabajo ajeno. El schema de publicación y sus
+productores/consumidores se congelan en la reconciliación física, no aquí por DDL.
+
+| Campo | Límite y semántica propuesta |
+| --- | --- |
+| Nombre humano o AI | NFC Unicode, 1–80 escalares y ≤320 bytes UTF-8; sin espacio al inicio/final, controles C0/C1 ni controles bidi override/isolate. Scripts legítimos no se restringen a ASCII. No es ID, unique key ni permiso. El nombre humano pertenece al directorio privado GOV. |
+| Especialidad | opcional, ≤160 escalares/640 bytes, una línea, mismos controles prohibidos; no agrega un rol |
+| Nivel / seniority | opcional: `junior`, `mid`, `senior` o `lead`; descriptor de preferencias editable, no rol operativo, permiso, certificación ni ranking de vendors/modelos |
+| Skills | opcionales, 0–12 entradas; cada una NFC, 1–40 escalares y ≤160 bytes UTF-8, mismos controles prohibidos que especialidad; trim explícito y deduplicación por bytes normalizados conservando orden, sin case-fold ni equivalencia semántica implícitos |
+| Retrato de perfil AI | opcional; unión planificada strict: ausencia, `ASCII_TEXT` o `BUILTIN_ASSET`. ASCII legacy conserva 1–8 líneas, 1–32 caracteres ASCII imprimibles U+0020–U+007E por línea, LF entre líneas, ≤263 bytes; no TAB/CR/ESC ni no-ASCII. `<`, `>` y apariencia de HTML/URL son texto permitido, siempre escapado; no se interpretan como DOM, script ni referencia de media. Builtin usa sólo la tripleta admitida descrita abajo; no exige una alternativa ASCII |
+| Instrucciones de trabajo | texto UTF-8 ≤16.384 bytes, sin NUL; vacío permitido como perfil sólo descriptivo; artefacto privado, no bytes inline en evento; sin truncamiento silencioso |
+
+Ausencia de nivel/skills en legacy es válida. Sus cambios crean revisión por el
+mismo OCC/replay; no completar pins ni snapshots antiguos desde latest. Congelar
+el presupuesto total del descriptor y de composición antes de código; exceso
+rechaza, no trunca. No reemplazar límites canónicos por límites menores del mock.
+
+**Retratos builtin curados — extensión planificada.** El descriptor privado fija
+`asset_id`, `asset_version` entero positivo y `content_sha256` de los bytes exactos.
+La tripleta completa debe pertenecer al manifest admitido de assets incluidos en
+la distribución; una forma válida de ID no basta. Un ID nunca se concatena como
+ruta/URL ni resuelve a `latest`. No se admiten uploads, URL/ruta arbitraria,
+base64, HTML/CSS, código, campos extra o variantes híbridas. El manifest congela
+formatos, tamaño, dimensiones y límites de decodificación antes de código;
+contenido activo queda prohibido. Si usa SVG curado, el build valida ausencia de
+scripts, handlers, referencias externas y `foreignObject`; jamás interpreta SVG
+aportado por un descriptor. Renderizar el asset validado no permite cargar media
+desde texto ni contactar destinos externos.
+
+Los bytes de imagen no entran al descriptor, eventos, proyecciones públicas ni
+trazas. La referencia vive dentro del descriptor privado; que el asset builtin
+sea público no hace pública la asociación perfil→retrato. Se autoriza antes de
+leer/listar/revelar esa asociación. Perfil/asignación/run conserva la revisión y
+el pin de descriptor/generación/digest existentes; no se agrega otra autoridad,
+stream o clase de artefacto. El retrato no es principal humano, cuenta, worker,
+rol, permiso, independencia ni aprobación, y no habilita una modalidad del modelo.
+
+Cambiar retrato crea una revisión bajo el mismo OCC/idempotencia; no reescribe
+historia ni instrucciones. Nueva referencia inexistente/malformada rechaza antes
+de crear revisión. Ausencia es válida; asset histórico retirado, no disponible o
+con digest incorrecto muestra un placeholder neutral y «Retrato no disponible»,
+sin red, sustitución por latest, otro retrato ni backfill. El fallo visual no
+modifica permisos/estado de tarea ni bloquea trabajo ya autorizado. Conservar
+versiones/manifiestos o declarar indisponibilidad; el hash no reconstruye bytes.
+Congelar schema y transición de lectores ASCII-only antes de código: un lector
+sin esa variante presenta indisponibilidad segura, no reinterpreta V1. Los límites
+y normalización de nombres, especialidad e instrucciones permanecen intactos.
+
+El contrato backend congela orden, delimitadores, normalización, preimagen y
+presupuesto total de composición. Instrucciones de perfil quedan subordinadas a
+envelope, scope, política y protección de sistema; nunca los reemplazan/amplían.
+Una sola autoridad de instrucciones captura los bytes compuestos y su digest;
+el perfil es procedencia de esos bytes, no un prompt mutable alternativo.
+
+### Revisiones, archivo, OCC y reconstrucción
+
+Crear/editar/archivar exige head esperado y clave de idempotencia canónica.
+Igual clave/payload normalizado devuelve el resultado original; misma clave con
+otro payload es conflicto. Replay se identifica antes de rechazar el head
+original ahora antiguo, después de comprobar permisos actuales; usa el payload
+almacenado, no recalcula defaults. Dos ediciones sobre un head producen un único
+ganador. Renombrar crea revisión; nombres duplicados válidos se desambiguan sin
+filtrar contexto privado. Clonar acuña ID nuevo con procedencia.
+
+Archivar conserva pins de asignaciones e historia y **no cancela trabajo ya
+admitido/en curso**. Rechaza selección, adopción y admisión **nuevas**, incluso
+usando una asignación antigua pineada; razón tipada propuesta `PROFILE_ARCHIVED`,
+sin sustitución silenciosa. Archivo no revoca permisos: la revocación real se
+evalúa aparte. Congelar la carrera: admisión comprometida antes del archive
+permanece admitida; admisión fresca posterior rechaza, sin reescribir hechos.
+
+Misma cohorte permite FK; referencias entre cohortes requieren validación tipada
+fail-closed de ID, scope, revisión, generación y causalidad al mismo vector. Una
+secuencia compartida no basta para declarar misma cohorte. Rebuild verifica
+cadenas, pliega revisiones/head determinísticamente y valida/publica dependencias
+atómicamente antes de exposición. Estado faltante, atrasado o corrupto no admite
+“latest”. Artefacto perdido/tombstoned resulta restringido/GONE, no nombre
+inventado ni historia borrada. El protocolo de publicación de cohorte es gate.
+
+### Extensión separada de P-28: asignación y ejecución
+
+Se extiende **el productor y resolver existentes** de §6
+`routing_assignment_read_model`: perfil/revisión exacta opcional, con transición
+versionada/validada. Preservar STEP > INITIATIVE > GLOBAL y su vector de watermarks;
+ninguna segunda tabla de autoridad de equipos, scheduler o presupuesto.
+
+La vista Equipo proyecta asignaciones efectivas, overrides/procedencia e historia
+real. Un preset, si luego se selecciona, sólo propone drafts de esas asignaciones
+tras adopción explícita; no sincroniza equipos activos. No es necesario para el
+primer perfil con nombre. Especialidad no agrega roles ni grants.
+Una revisión reusable puede adoptarse en varias iniciativas; cada asignación
+mantiene role/slot, perfil/revisión e instrucciones propios. «Proyecto» de UX
+mapea a iniciativa/repositorio, no una cuarta capa PROJECT. Perfil, principal
+humano, cuenta/modelo y worker emitido son identidades separadas: la biblioteca
+no es un agente en ejecución ni una fuente alternativa de routing.
+
+Adoptar revisión crea nueva revisión de asignación con OCC contra asignación y
+plan esperados. Publicar/editar perfil no autoactualiza equipos. Futuros intentos
+resuelven y pinean la revisión nueva; runs admitidos/completados y receipts
+conservan su snapshot. Si cambian bytes de instrucciones se produce la revisión
+de tarea/admisión requerida y se invalidan bindings de aprobación/efectos que ya
+no describen esos bytes. Mantener dependencias baseline STEP/A10, productor de
+aprobación, re-resolución y worker revocation; no suponerlas implementadas por UX.
+
+Runtime captura identidad/revisión del perfil, descriptor/generación/digest,
+asignación/revisión/vector y modelo/cuenta/transporte/harness/driver/tools/
+seguridad/presupuesto reales. Debe reconciliar su diccionario físico antes de
+código. Pins existentes protegen lifetime de ejecución/evidencia; su adquisición,
+liberación y lectura histórica GONE se congelan con artefactos. Sin perfil sigue
+siendo baseline válido. Nombres distintos no prueban independencia, no reemplazan
+worker/run emitido ni reparan identidad de writer no emitida.
+
+Seguimiento agente/asignación/paso enlaza al intento/run y registro exactos,
+incluyendo perfil pineado, worker emitido, ruta efectiva, estado, frescura/cursor,
+evidencia y costo conocido/UNKNOWN. Planned, legacy desconocido, desconectado,
+stale y simulado no se rotulan como proceso activo. Consola/log es lectura scoped
+y redactada antes de metadata, no prompts/env/secretos crudos ni terminal con
+autoridad nueva. Missing/foreign rechaza sin datos privados; controles usan las
+puertas existentes. Reconciliar execution/observation antes del consumidor, sin
+nueva tabla de consola ni ledger económico.
+
+### Conversaciones, propuestas y etapas
+
+Recomendación: conversación como documento privado artifact-backed en la
+infraestructura registry con ownership real SYSTEM o INITIATIVE y proyección
+mínima de metadatos; schema/cohorte final y ACL/listado/retención se congelan antes
+de código. No fabricar una tarea para alojar chat, ni otro task store/outbox.
+Mensaje o propuesta no es permiso. La propuesta contiene operación cerrada,
+target, revisión/digest base, payload y efectos exactos, procedencia y estado.
+Aplicarla usa draft/revisión canónicos, OCC y confirmación exacta; save/run son
+distintos. Stale base exige propuesta revisada; acciones usan admisión/aprobación,
+reservas, efectos, recovery e idempotencia existentes; unknown no permite retry
+ciego. Primer perfil recomendado: crear/editar draft normal o solicitar revisión,
+no ejecutor de herramientas arbitrarias. [Integraciones §5.1](../../integrations/index.md#51-recuperación-contextual-y-acciones-seleccionadas)
+fija fuentes/acciones X10; búsqueda de registros no requiere X10.
+
+Conversación, brief y roadmap son vistas del draft canónico. El brief conserva
+audiencia, resultado, alcance/exclusiones, arquitectura/convenciones,
+integraciones/datos, supuestos pendientes y aceptación; inferencias siguen como
+propuestas y la edición manual permanece disponible. Cantidad de pantallas
+flexible y detalle progresivo, no tres estados contractuales nuevos.
+Permisos/cuentas/modelos se configuran como defaults con procedencia del proyecto;
+heredar no concede permiso perpetuo ni obliga a preguntar de nuevo sin motivo.
+Cada consumo revalida autoridad, elegibilidad y versión; overrides explícitos.
+
+El plan propone por paso equipo/revisión, instrucciones, modelo/cuenta o selección
+acotada, componentes necesarios, pruebas/evidencia y concurrencia máxima. Esta
+última queda limitada por dependencias, write-set/leases, recursos, cuota y
+presupuesto; no asegura paralelismo. Alternativas ahorro/velocidad/rigor exponen
+supuestos y UNKNOWN, no garantías por marca o número de agentes. Objetivos de
+coverage declaran métrica, alcance, exclusiones y umbral o ausencia; sólo evidencia
+ejecutada permite presentar una medición. Replanificar cambia trabajo futuro,
+nunca intentos ejecutados ni sus snapshots.
+
+Jev/Laya conservan su contrato de selección de candidato admisible y sus gates.
+Generar/revisar un roadmap completo requiere otro consumidor/contrato congelado,
+no ampliar tácitamente DecisionEvaluationPort. Una muestra guionada puede
+explorarse y adoptarse como elección manual explícita, no como llamada real,
+score calibrado o consumo. Delegación ausente/no verificada queda retenida.
+
+Preview captura revisiones/defaults, selecciones y fingerprint normalizado exactos;
+muestra qué conserva, requiere revisar o reemplaza. Cancelar patch/comparación
+conserva el draft base. Cerrar/cancelar autoría puede descartarlo explícitamente,
+con confirmación si está sucio; no se promete retención universal ni Cancel→reopen.
+Pregunta/preview no crea feature/tarea/asignación persistida ni ejecución;
+persistir una conversación autorizada es operación separada. Confirmar usa base
+esperada, autoridad fresca y key/payload almacenados: replay no recalcula defaults
+ni duplica feature. Guardar no ejecuta, aprueba, reserva ni cobra; planned/UNKNOWN
+puede proponerse, no anunciar soporte. El preflight único se revalida al iniciar
+o reanudar por las puertas existentes.
+
+Cadencia «ninguno automático / final / por entregable» expresa intención, separada
+del gate/momento de aprobación, política efectiva y publicación. No agrega valores
+a commit_policy: siguen NO_COMMIT y LOCAL_COMMIT_WITH_RECEIPT de
+[contratos](../../contracts/index.md). NO_COMMIT permite editar, no autoriza commit.
+Final/por entregable sólo propone operaciones existentes en fronteras declaradas:
+cada una exige base/tree/write-set, receipt independiente exacto, autorización y
+reconciliación del resultado. Petición manual posterior requiere operación/revisión
+admisible, no bypass. Guardar intención no aprueba ni hace push; publicación exige
+autoridad distinta. Congelar identidad del entregable/frontera y efecto antes de
+código, sin segundo ledger.
+
+La [voz opcional seleccionada](../../integrations/index.md#52-captura-y-transcripción-de-voz-seleccionadas)
+produce texto revisado para brief/instrucciones, no identidad, aprobación ni
+auto-save/run. Audio/transcript privados por referencia, sin sinks públicos;
+cancelación/fallo/permiso denegado conserva edición manual. La muestra del mock
+es guionada, no micrófono/STT real; esa distinción debe ser visible.
+
+Agrupación de etapas propuesta: pertenencia revisionada sobre pasos existentes,
+con etiquetas/entrada/salida explicativas. No nuevo DAG, hierarchy owner o política
+ejecutable desde prosa. Congelar identidad/revisión y cómo se representan grupos
+sin reabrir historia P-26 antes de implementar el consumidor.
+
+Gobernanza conserva §8 baseline según [E1(b)](../../governance/index.md#31-referencia-validada-de-principal):
+GOV-1/GOV-6/GOV-8 poseen la transición futura de actores/sujetos/destinatarios;
+ningún CHECK preparatorio es validación. [Aceptación futura](../../../quality/testing/index.md#82-aceptación-futura-de-las-extensiones-de-producto)
+es obligatoria, no ejecutada por esta integración.
+
 ## 12. Mapeo legado → destino
 
 | Objeto legado | Estado hoy | Destino | Nota |

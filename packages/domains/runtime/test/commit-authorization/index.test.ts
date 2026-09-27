@@ -153,9 +153,13 @@ function request(overrides: Partial<AuthorizationRequest> = {}): AuthorizationRe
     observation: observation(),
     treeSha: TREE,
     checks: [{ command: "pnpm check", exitCode: 0, ranAt: NOW }],
-    commitMessageBody: MESSAGE,
     ...overrides,
   };
+}
+
+/** A request whose recorded envelope carries `title` as its message body (P-17/B, ND-3). */
+function titled(title: string): AuthorizationRequest {
+  return request({ envelope: TaskEnvelope.parse({ ...envelope(), title }) });
 }
 
 /** A request with keys the v2 type does not have, for the closed-key-set cases. */
@@ -454,30 +458,35 @@ describe("the authorization decision", () => {
   });
 
   // P-17/A (ND-11, B-3, N12): the four body words, each by name before the receipt parse.
-  it("names each of the four body refusals before the receipt parse", () => {
+  // P-17/B (ND-3, E2): the body is the recorded envelope's title, so the words land at
+  // `request.envelope.title`, and a request that names a body is refused at its key.
+  it("names each of the body refusals at the envelope's title, before the receipt parse", () => {
     for (const [body, reason] of [
-      ["", "COMMIT_MESSAGE_BODY_EMPTY"],
       [MESSAGE + "\n", "COMMIT_MESSAGE_BODY_ENDS_IN_LF"],
       ["feat: x\r\nmore", "COMMIT_MESSAGE_BODY_HOLDS_CR"],
       [MESSAGE + "\n\nACP-Receipt: " + A, "COMMIT_MESSAGE_BODY_HOLDS_TRAILER"],
       ["ACP-Receipt: " + A, "COMMIT_MESSAGE_BODY_HOLDS_TRAILER"],
     ] as const) {
-      const out = authorizeCommit(request({ commitMessageBody: body }));
+      const out = authorizeCommit(titled(body));
       expect({ body, reason: refusal(out).reason, at: refusal(out).at }).toEqual({
         body,
         reason,
-        at: "request.commitMessageBody",
+        at: "request.envelope.title",
       });
     }
-    // The boundary: 2000 characters is a body; 2001 falls through to the receipt parse.
-    expect(authorizeCommit(request({ commitMessageBody: "x".repeat(2_000) })).ok).toBe(true);
-    const long = authorizeCommit(request({ commitMessageBody: "x".repeat(2_001) }));
-    expect({ reason: refusal(long).reason, at: refusal(long).at }).toEqual({
-      reason: "RECEIPT_INVALID",
-      at: "receipt.commitMessageBody",
-    });
+    // An empty title is not an envelope: the contract refuses it before the body words,
+    // so COMMIT_MESSAGE_BODY_EMPTY stays in the vocabulary and is unreachable here.
+    const empty = authorizeCommit(requestWith({ envelope: { ...envelope(), title: "" } }));
+    expect({ reason: refusal(empty).reason, at: refusal(empty).at }).toEqual({ reason: "REQUEST_INVALID", at: "request.envelope.title" });
+    // The boundary is the envelope's now: 200 characters is a title and a body, 201 is not an envelope.
+    expect(authorizeCommit(titled("x".repeat(200))).ok).toBe(true);
+    const long = authorizeCommit(requestWith({ envelope: { ...envelope(), title: "x".repeat(201) } }));
+    expect({ reason: refusal(long).reason, at: refusal(long).at }).toEqual({ reason: "REQUEST_INVALID", at: "request.envelope.title" });
     // A trailer key inside a line, not at its start, is a body.
-    expect(authorizeCommit(request({ commitMessageBody: "feat: mention ACP-Receipt: inline" })).ok).toBe(true);
+    expect(authorizeCommit(titled("feat: mention ACP-Receipt: inline")).ok).toBe(true);
+    // E2: the key is gone from the request; a caller that still supplies a body is refused at it.
+    const supplied = authorizeCommit(requestWith({ commitMessageBody: MESSAGE }));
+    expect({ reason: refusal(supplied).reason, at: refusal(supplied).at }).toEqual({ reason: "REQUEST_INVALID", at: "request.commitMessageBody" });
   });
 
   // (p) N1: a composed refusal is carried, not flattened.
@@ -529,10 +538,11 @@ describe("the authorization decision", () => {
     expect(refusal(tree).at).toBe("receipt.treeSha");
 
     // A body with a trailer is a receipt the authorization would refuse, so it
-    // is never issued -- refused by its own word since P-17/A, before the parse.
-    const trailered = authorizeCommit(request({ commitMessageBody: MESSAGE + "\n\nACP-Receipt: " + A }));
+    // is never issued -- refused by its own word since P-17/A, before the parse,
+    // at the envelope's title since P-17/B.
+    const trailered = authorizeCommit(titled(MESSAGE + "\n\nACP-Receipt: " + A));
     expect(refusal(trailered).reason).toBe("COMMIT_MESSAGE_BODY_HOLDS_TRAILER");
-    expect(refusal(trailered).at).toBe("request.commitMessageBody");
+    expect(refusal(trailered).at).toBe("request.envelope.title");
 
     // The authority is not a receipt member any more: refused as the request's.
     const authority = authorizeCommit(request({ authorizedBy: "not-an-identity" }));
@@ -545,14 +555,13 @@ describe("the authorization decision", () => {
     expect(refusal(badWriter).reason).toBe("LEASE_HOLDER_MISMATCH");
   });
 
-  it("grants a body git would rewrite or refuse, a stated limit P-17/B inherits (ADR 0121 Six, ADR 0126)", () => {
-    // Pinned so the limit is visible, not endorsed. Git's `whitespace` cleanup
-    // rewrites trailing whitespace, and git refuses a NUL even with
-    // `--cleanup=verbatim`, so neither commit is ever reconciled with this
-    // receipt: it fails closed. P-17/A named the four body words of execution
-    // §10.5 and no others; these two stay the writer's (P-17/B) to meet.
+  it("grants a body git would rewrite or refuse, a limit the writer meets (ADR 0121 Six, ADR 0126, ADR 0127)", () => {
+    // Pinned so the limit is visible, not endorsed. P-17/A named the four body words
+    // of execution §10.5 and no others. P-17/B's writer meets both: `commit-tree`
+    // reads its stdin with no cleanup, so trailing whitespace is written as given,
+    // and a NUL, which Git refuses, is `GIT_WRITER_COMMIT_FAILED` (ND-13).
     for (const body of ["feat: x  ", "feat: x\u0000y"]) {
-      const out = authorizeCommit(request({ commitMessageBody: body }));
+      const out = authorizeCommit(titled(body));
       expect(out.ok, JSON.stringify(body)).toBe(true);
       if (!out.ok) return;
       expect(out.receipt.commitMessageBody).toBe(body);
@@ -646,7 +655,7 @@ describe("the post-commit record", () => {
 
   it("refuses a message without its trailer, with another digest, or with other bytes", () => {
     const out = granted();
-    const other = receiptSha256(granted({ commitMessageBody: "feat(runtime): another" }).receipt);
+    const other = receiptSha256(granted({ envelope: TaskEnvelope.parse({ ...envelope(), title: "feat(runtime): another" }) }).receipt);
     expect(other).not.toBe(out.receiptSha256);
     for (const [label, message] of [
       ["body only", MESSAGE],

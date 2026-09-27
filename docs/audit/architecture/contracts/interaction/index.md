@@ -90,6 +90,36 @@ Misma clave/payload devuelve la decisión previa aun después del plazo; otra de
 La señal sólo despierta un consumidor correlacionado por wait/approval/revisión. Cursor durable y catch-up encuentran resolución tras señal perdida; el scheduler reevalúa READY, presupuesto, revocación y checkpoint antes de dispatch. No agregar RESUME al enum de outbox.
 Aviso tardío muestra estado vigente/histórico al leer; no reabre espera. Timeout/cancelación no borran checkpoint ni conceden nuevo ownership.
 
+## Extensión planificada: aprobación y propuestas exactas
+
+El [registro de producto](../../../roadmap/index.md#22-extensiones-de-producto-planificadas)
+extiende los consumidores, no crea una autoridad de aprobación ni una espera
+alternativa. Mantener §3 y el actor baseline. E1(b) de
+[gobernanza](../../governance/index.md#111-una-sola-autoridad-de-aprobación) conserva
+P-28/P-30; transición futura GOV-1/GOV-6/GOV-8 con productor, migración/rebuild,
+principal estable y validación antes de sujetos/avisos gobernados. Una columna
+preparada o un ID con forma correcta no valida humano.
+
+Aprobación/confirmación referencia operación, sujeto, revisión y bytes exactos,
+argumentos/destino, evidencia y política. OCC e idempotencia usan payload
+normalizado almacenado: igual petición reproduce resultado, otra preimagen
+conflicta; autoridad vigente se revalida incluso en replay/consumo. Perfil, nombre,
+rol de chat, notificación, cita o mensaje “sí” no son autorización. Confirmar una
+propuesta no sustituye grants ni la aprobación exigida; guardar no ejecuta.
+
+Pérdida del último aprobador por suspensión/retiro/vencimiento retiene acciones
+con `NO_ELIGIBLE_APPROVER`, conserva evidencia y avisa sólo a administradores
+permitidos por canales soportados. Recupera un principal independiente **ya**
+autorizado y evaluación fresca. Si falta, provisión de identidad/administración
+separadamente autorizada; ningún fallback al modelo/bearer/demo ni autoaprobación.
+Trabajo independiente y lecturas autorizadas continúan; no nuevo bypass de emergencia.
+
+Negativos futuros: dos decisiones concurrentes, cancelación/expiry contra decisión,
+cambio de bytes/generación/destino/asignación, grant revocado y stale base no
+consumen aprobación previa ni despachan; lost-approver con/sin recuperador real;
+propuesta repetida no duplica tarea/efecto; `OUTCOME_UNKNOWN` no reintenta ciego.
+Reconcilian contratos físicos antes de implementación; no alteran V1 ni sus receipts.
+
 ## 4. H-8: duelo técnico de dos modelos
 
 DuelRequestV1: client_scope/key, iniciativa, shared_input_artifact_reference_id/hash, snapshot de autoridad/read-set/base, dos envelopes completos de candidato, PolicyPinV1, criteria ref/hash y adjudicator_identity. Todo artefacto es privado/autorizado.

@@ -381,11 +381,12 @@ describe("usage", () => {
       // `tasks` POST, which it answers as `acp intake`. To 0.24.0 at P-24/B(a)
       // for the second private read, `toolServerTools`, which this CLI answers
       // as `acp tool-servers`. To 0.25.0 at P-16/A1, whose intake envelope
-      // no longer carries `objective` (ADR 0120).
+      // no longer carries `objective` (ADR 0120), and to 0.26.0 at
+      // P-17/workspaceMode, whose intake envelope gains `workspaceMode` (ADR 0127).
       // Asserted as a literal on purpose: the CLI's job here is to
       // report the number a reader can pin against, and comparing it to the
       // constant it prints would assert only that the CLI can echo itself.
-      apiContractVersion: "0.25.0",
+      apiContractVersion: "0.26.0",
       ledgerContractVersion: LEDGER_CONTRACT_VERSION,
       ledgerSchemaVersion: expect.any(Number),
     });

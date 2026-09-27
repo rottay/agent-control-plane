@@ -15,8 +15,9 @@ que se consume ya fue aceptado.
 Los rangos de «Entrega» del catálogo describen construcción entre hitos. Esta
 tabla fija el **único hito de aceptación** de cada fila dentro del perfil.
 Para G3/H7 el packet primario sólo custodia la exclusión: no implementa la UI ni
-autoriza P9. Para X03/X10/X11/X13 sólo custodia la selección futura: sus hitos son
-condicionales, no entregas del release vigente.
+autoriza P9. Para X03/X11 sólo custodia la selección futura; para X10 y el alcance
+captura/STT de X13 custodia la selección planificada del owner de 2026-09-26,
+todavía sin soporte: sus hitos son condicionales, no entregas del release vigente.
 
 ## 1. Correspondencia exhaustiva
 
@@ -130,10 +131,10 @@ condicionales, no entregas del release vigente.
 | X07 | P-36 | M12 | P-09, P-10: contrato + SQLite real; segundo backend sólo si se anuncia intercambiabilidad. |
 | X08 | P-36 | M12 | P-07, P-18: scope, hash, generación/pins, backup y GC. |
 | X09 | P-36 | M12 | P-19, P-25: resolver/identidad/autoridad separados, una implementación real. |
-| X10 | P-36 | M12 | NOT_SELECTED: memoria/retrieval sólo tiene dueño de selección, no soporte funcional. |
+| X10 | P-36 | M12 | OPTIONAL_SELECTED planificado (owner 2026-09-26): contexto con fuentes/citas + propuestas de acciones; P-36 custodia selección, sin soporte ni readiness heredado. Extensión en roadmap §2.2 e integraciones §5.1. |
 | X11 | P-29 | M12 | NOT_SELECTED: mensajes externos sólo tienen dueño de selección; no segundo scheduler. |
 | X12 | P-23 | M12 | MANDATORY: contrato + harness nativo real conectado; segundo framework NOT_SELECTED. |
-| X13 | P-06 | M12 | NOT_SELECTED para modalidades más allá de texto; texto obligatorio en B5/X15. |
+| X13 | P-06 | M12 | OPTIONAL_SELECTED planificado sólo captura de voz → STT revisable → texto insertado explícitamente en brief/instrucciones; integraciones §5.2. Resto de modalidades NOT_SELECTED; texto baseline obligatorio en B5/X15; sin soporte/readiness heredado. |
 | X14 | P-30 | M10 | P-31: logs/trazas/métricas con export parcial honesto. |
 | X15 | P-06 | M8 | P-07, P-12, P-25, P-36/local: egress autorizado y contenido fuera de sinks públicos. |
 | X16 | P-25 | M8 | P-21, P-22, P-24: autoridad acotada de extensión/hijos. |
@@ -147,20 +148,33 @@ condicionales, no entregas del release vigente.
 ## 2. Perfil sin capacidades implícitas
 
 Los estados se heredan de [requisitos §13](../../../requirements/index.md#13-perfil-de-certificación-las-121-filas-asignadas):
-115 MANDATORY, 4 NOT_SELECTED, 2 DEFERRED; nada pasa a implementado por estar aquí.
+Histórico: 115 MANDATORY, 4 NOT_SELECTED, 2 DEFERRED, 0 OPTIONAL_SELECTED.
+Primer delta histórico del owner 2026-09-26: 115/3/2/1, X10 seleccionado.
+[Sucesor vigente §13.2](../../../requirements/index.md#132-perfil-sucesor-voz-acotada-2026-09-26):
+115 MANDATORY / 2 NOT_SELECTED / 2 DEFERRED / 2 OPTIONAL_SELECTED = 121.
+X10 (contexto + acciones) y X13 (sólo captura/STT/texto revisado) son
+**planificados**, no funcionales. Nada pasa a implementado por estar aquí; los
+39 packets baseline permanecen intactos.
 G4 cuenta una sola vez por su rama backend; la consola queda fuera junto con G3.
 
 | Pack no seleccionado | ID que posee su frontera | Alcance que no se anuncia |
 | --- | --- | --- |
 | Migración de motor en caliente | X03 | Migrar ejecuciones activas entre motores. |
-| Memoria y retrieval | X10 | Memoria/retrieval del pack, no búsqueda ya admitida por herramientas. |
 | Comunicación con agentes externos | X11 | Red/A2A o scheduler externo; no las tareas internas de M9. |
-| Modalidades más allá de texto | X13 | Imagen/audio/realtime; no elimina el texto obligatorio de M1. |
+| Resto de multimodalidad | X13 | TTS, diálogo realtime, imagen/video, análisis multimodal general, identificación/clonado de voz y archivos/URLs arbitrarios; sólo captura/STT/texto revisado está seleccionado planificadamente; texto M1 sigue obligatorio. |
 | Segundo framework de orquestación | X12 | Adapter externo adicional. X12 sigue MANDATORY para contrato + harness nativo conectado y probado; no se afirma que el externo exista. |
 
 Seleccionar uno exige la [compuerta de packs](../index.md#52-packs-no-seleccionados)
 y evidencia del perfil. X12 no crea una fila 122 ni convierte cinco packs en cinco
 filas NOT_SELECTED: su contrato/nativo y su adapter externo son alcances distintos.
+X13 sigue el mismo principio: selección por alcance sin una fila ni estado nuevo.
+
+Las selecciones X10 y captura/STT de X13 ya fueron autorizadas e incorporadas por
+el roadmap; no requieren volver a pedir esas decisiones. Contrato, diseño físico y habilitación sí
+requieren gates de implementación antes de anunciar soporte. Las nuevas entregas
+de perfiles, equipos/historia, etapas/propuestas y GOV se registran
+[separadas del baseline](../../../roadmap/index.md#22-extensiones-de-producto-planificadas),
+con dueños y dependencias; no se inventan nuevos IDs de packet en esta tabla.
 
 ## 3. Aceptación de la correspondencia
 

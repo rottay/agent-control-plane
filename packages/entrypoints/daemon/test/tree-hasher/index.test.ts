@@ -5,7 +5,16 @@ import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { TREE_HASH_REFUSALS, gitBlobSha1, hashCopyTree, indexPaths, treeSha } from "../../src/tree-hasher/index.js";
+import {
+  TREE_HASH_REFUSALS,
+  commitObject,
+  gitBlobSha1,
+  hashCopyTree,
+  indexPaths,
+  readWorktreeTree,
+  treeObjects,
+  treeSha,
+} from "../../src/tree-hasher/index.js";
 
 /**
  * The tree hasher and its oracle (P-16/C, ADR 0123; decision 235).
@@ -233,5 +242,65 @@ describe("N18: what a tree may not hold is refused by name", () => {
     });
     expect(treeSha([{ path: "s", mode: "160000" as never, sha1: id }])).toEqual({ ok: false, refusal: "TREE_ENTRY_UNSUPPORTED", at: "entries[0]" });
     expect(treeSha([{ path: "s", mode: "100644", sha1: "2".repeat(64) }])).toEqual({ ok: false, refusal: "TREE_ENTRY_UNSUPPORTED", at: "entries[0]" });
+  });
+});
+
+describe("P-17/B (ND-5, ND-12): the objects a writer writes, against Git's own", () => {
+  const fixtures = [
+    file("README.md", "readme\n"),
+    file("a-b", "dash\n"),
+    file("a.b", "dot\n"),
+    file("a/x", "tree\n"),
+    file("a0", "zero\n"),
+    file("bin/run.sh", "#!/bin/sh\nexit 0\n", "exec"),
+    file("docs/link", "../README.md", "link"),
+    file("deep/er/est/file.txt", "three levels\n"),
+    file("names/with space é.txt", "utf-8\n"),
+  ];
+
+  it("treeObjects: every tree body hashes to its id under git hash-object -t tree, children first, the root last and equal to treeSha", () => {
+    const root = materialize(fixtures);
+    const read = readWorktreeTree(root, fixtures.map((fixture) => fixture.path));
+    if (!read.ok) throw new Error("the worktree read was refused: " + read.refusal);
+    const objects = treeObjects(read.blobs.map(({ path, mode, sha1 }) => ({ path, mode, sha1 })));
+    if (!objects.ok) throw new Error("the tree objects were refused: " + objects.refusal);
+    expect(objects.treeSha).toBe(oracleTree(fixtures));
+    expect(objects.trees.at(-1)?.sha1).toBe(objects.treeSha);
+    expect(treeSha(read.blobs.map(({ path, mode, sha1 }) => ({ path, mode, sha1 })))).toEqual({ ok: true, treeSha: objects.treeSha });
+    // The root, a, bin, deep, deep/er, deep/er/est, docs and names: eight trees.
+    expect(objects.trees).toHaveLength(8);
+    const repo = scratch("acp-p17b-trees-");
+    git(repo, ["init", "-q", "--object-format=sha1", "."]);
+    for (const tree of objects.trees) expect(git(repo, ["hash-object", "-t", "tree", "--literally", "--stdin"], tree.body).trim()).toBe(tree.sha1);
+    // A refused entry set is refused here exactly as by treeSha.
+    expect(treeObjects([{ path: "a/../b", mode: "100644", sha1: "1".repeat(40) }])).toEqual({ ok: false, refusal: "TREE_PATH_UNSUPPORTED", at: "entries[0]" });
+  });
+
+  it("readWorktreeTree: the bytes read are the bytes hashed; a deletion is skipped, not refused; it equals the copy's tree", () => {
+    const root = materialize(fixtures);
+    const paths = [...fixtures.map((fixture) => fixture.path), "gone.txt", "absent/dir/file.txt"];
+    const read = readWorktreeTree(root, paths);
+    if (!read.ok) throw new Error("the worktree read was refused: " + read.refusal);
+    const copy = hashCopyTree(root, fixtures.map((fixture) => fixture.path));
+    expect(copy.ok && copy.treeSha).toBe(read.treeSha);
+    expect(read.blobs.map((blob) => blob.path)).toEqual(copy.ok ? copy.entries.map((entry) => entry.path) : []);
+    for (const blob of read.blobs) expect(gitBlobSha1(blob.bytes)).toBe(blob.sha1);
+    const link = read.blobs.find((blob) => blob.path === "docs/link");
+    expect([link?.mode, link?.bytes.toString("utf8")]).toEqual(["120000", "../README.md"]);
+  });
+
+  it("commitObject: the body and id git commit-tree writes from stdin for the same facts", () => {
+    const repo = scratch("acp-p17b-commit-");
+    git(repo, ["init", "-q", "--object-format=sha1", "."]);
+    const blob = git(repo, ["hash-object", "-w", "--stdin"], Buffer.from("x\n")).trim();
+    git(repo, ["update-index", "--add", "--cacheinfo", "100644," + blob + ",x.txt"]);
+    const tree = git(repo, ["write-tree"]).trim();
+    const parent = git(repo, ["commit-tree", tree, "-m", "base"]).trim();
+    const message = "feat(x): a body  \n\nACP-Receipt: " + "b".repeat(64) + "\n";
+    const written = git(repo, ["commit-tree", tree, "-p", parent], Buffer.from(message)).trim();
+    const seconds = Math.floor(Date.parse("2026-09-26T12:00:00Z") / 1000);
+    const expected = commitObject({ treeSha: tree, parentSha: parent, name: "acp-fixture", email: "fixture@invalid", seconds, message });
+    expect(expected.sha1).toBe(written);
+    expect(git(repo, ["cat-file", "commit", written])).toBe(expected.body.toString("utf8"));
   });
 });

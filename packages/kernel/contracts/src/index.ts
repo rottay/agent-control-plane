@@ -78,6 +78,7 @@ export {
   ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1,
   TaskClassification,
   CommitPolicy,
+  WorkspaceMode,
   TaskEnvelope,
   HealthProbe,
   Lease,

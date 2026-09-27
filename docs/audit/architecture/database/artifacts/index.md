@@ -393,6 +393,43 @@ de forma explícita: nunca como una fila vacía.
 
 ---
 
+## Extensión planificada: contenido privado y procedencia
+
+El [registro de producto](../../../roadmap/index.md#22-extensiones-de-producto-planificadas)
+reutiliza esta autoridad; no agrega store, clase/scope SQL o política de retención
+por UI. Descriptores de perfil (nombre/retrato/especialidad/instrucciones),
+directorio humano y documentos de conversación/política se proponen como
+`POLICY_DOCUMENT` privado. Congelar compatibilidad de clase, ownership real
+SYSTEM/INITIATIVE y consumidores antes de código; no inventar scope PROJECT ni
+tarea/iniciativa para hospedar contenido de instalación. Almacenado globalmente
+no significa visible globalmente.
+
+Eventos y proyecciones públicas llevan sólo IDs/digests/códigos/referencias
+saneadas. Leer, listar, citar, buscar o enviar contenido exige acceso vigente al
+scope antes de revelar nombre, snippet, conteo o existencia. El descriptor usa
+referencia autorizada, `content_sha256` y `blob_generation`; el mismo digest
+publicado en otra generación no es el mismo sujeto aprobado.
+
+Perfil/asignación/run fija la revisión y esa identidad de artefacto. Admisión
+adquiere pins existentes para el lifetime de ejecución/evidencia; liberar,
+archivar, borrar y las carreras con send/adopción deben congelarse juntos. Archive
+no retira pins ni cambia runs pasados; expiración/GONE no permite reconstruir un
+nombre desde datos actuales. Cita histórica no salta ACL ni revive tombstone.
+
+Índice RAG es derivado: conserva fuente/revisión, referencia/digest/generación,
+span y versiones de chunking/index/embedding. Revocación invalida cachés scoped;
+se revalida antes de consultar/citar y antes de cada envío/acción. La captura
+privada aprobada es la que sale, no una relectura posterior de una ruta mutable.
+Contenido recuperado no cambia instrucciones, grants ni destinos. Búsqueda de
+registros autorizados es independiente del índice/modelo.
+
+Las acciones y decisiones GOV usan los pins/retención/legal hold existentes,
+hechos saneados y GONE. La observación histórica de tombstones no certifica
+emisión ni migración aplicadas hoy; GOV-7/P-36 deben revalidar su camino real.
+No se cambia DDL aquí. [Gobernanza §9/15](../../governance/index.md) e
+[integraciones §5.1](../../integrations/index.md#51-recuperación-contextual-y-acciones-seleccionadas)
+poseen las obligaciones y negativos antes de habilitar la extensión.
+
 ## 12. Negativos de esta hoja
 
 1. Referencia viva y blob ausente → error explícito.

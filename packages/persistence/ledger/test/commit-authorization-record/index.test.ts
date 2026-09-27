@@ -638,8 +638,13 @@ describe("the vocabulary and the barrel (ND-8, ND-13)", () => {
     expect([...COMMIT_AUTHORIZATION_REFUSALS]).toEqual([...COMMIT_AUTHORIZATION_REFUSALS].sort());
     expect(new Set(COMMIT_AUTHORIZATION_REFUSALS).size).toBe(COMMIT_AUTHORIZATION_REFUSALS.length);
     for (const word of COMMIT_AUTHORIZATION_REFUSALS) expect(word).toMatch(/^[A-Z][A-Z_]*$/);
-    expect(COMMIT_AUTHORIZATION_REFUSALS).toHaveLength(26);
+    // P-17/B (ADR 0127; ND-7): the two revalidation words join, 26 -> 28.
+    expect(COMMIT_AUTHORIZATION_REFUSALS).toHaveLength(28);
+    expect(COMMIT_AUTHORIZATION_REFUSALS).toContain("REVALIDATED_BASE_MISMATCH");
+    expect(COMMIT_AUTHORIZATION_REFUSALS).toContain("REVALIDATED_TREE_MISMATCH");
     expect(ledgerBarrel.COMMIT_AUTHORIZATION_REFUSALS).toBe(COMMIT_AUTHORIZATION_REFUSALS);
+    // P-17/B (ND-17): the writer reads the one lease fold through the barrel.
+    expect(ledgerBarrel.recordedLeaseOf).toBe(recordedLeaseOf);
     expect(ledgerBarrel.LedgerCommitAuthorizationRefusedError).toBe(LedgerCommitAuthorizationRefusedError);
     expect(ledgerBarrel.commitAuthorizationInForce).toBe(commitAuthorizationInForce);
     for (const name of ["decideCommitAuthorizationRecord", "readCommitAuthorizationArtifacts", "assertCommitAuthorizationArtifacts"]) {
@@ -695,6 +700,17 @@ describe("the in-force predicate (execution §10.5 Vigencia)", () => {
       reason: "WRITE_SET_MISMATCH",
       at: "writeSet",
     });
+  });
+
+  it("P-17/B (ND-7): base and tree against Git are refused through revalidated by their own words, first difference first", () => {
+    const same = { authorized: "1".repeat(40), observed: "1".repeat(40) };
+    const baseMoved = { reason: "REVALIDATED_BASE_MISMATCH" as const, at: "baseSha", authorized: "1".repeat(40), observed: "2".repeat(40) };
+    const treeMoved = { reason: "REVALIDATED_TREE_MISMATCH" as const, at: "treeSha", authorized: "3".repeat(40), observed: "4".repeat(40) };
+    expect(commitAuthorizationInForce({ ...base, revalidated: [{ ...baseMoved, ...same }, { ...treeMoved, ...same }] })).toEqual({ inForce: true });
+    expect(commitAuthorizationInForce({ ...base, revalidated: [baseMoved, treeMoved] })).toEqual({ inForce: false, reason: "REVALIDATED_BASE_MISMATCH", at: "baseSha" });
+    expect(commitAuthorizationInForce({ ...base, revalidated: [{ ...baseMoved, ...same }, treeMoved] })).toEqual({ inForce: false, reason: "REVALIDATED_TREE_MISMATCH", at: "treeSha" });
+    // The row and the lease are judged before any revalidated pair.
+    expect(commitAuthorizationInForce({ ...base, state: "SUPERSEDED", revalidated: [baseMoved] })).toEqual({ inForce: false, reason: "AUTHORIZATION_STATE_INVALID", at: "state" });
   });
 
   it("B4, N5: the recorded lease is the last acquired of the attempt, a renewal extends it, a revocation removes it", () => {

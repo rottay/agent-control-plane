@@ -195,6 +195,9 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
     budget: { maxTokens: 1000, maxWallClockSeconds: 60, reserveTokensForCheckpoint: 100 },
     visualEvidenceRequired: false,
     commitPolicy: "NO_COMMIT",
+    // Stated, because `intentionCount` canonicalizes this raw literal and the plane
+    // publishes the parsed one, which always carries the defaulted field (ADR 0127).
+    workspaceMode: "MUTABLE_WITHIN_WRITE_SET",
     checkpointPolicy: { onEveryAtomicStep: true, maxStepsWithoutCheckpoint: 1 },
     ...overrides,
   };
@@ -471,7 +474,7 @@ describe("POST /api/v1/tasks refuses by the door that refused", () => {
     await app.close();
   });
 
-  it("N6 (P-16/D2, ADR 0125): a NO_COMMIT envelope with an empty write-set is 409 REQUEST_INVALID WRITE_SET_EMPTY, and nothing is published", async () => {
+  it("N6 (P-16/D2, ADR 0125): a NO_COMMIT envelope with an empty write-set, outside READ_ONLY, is 409 REQUEST_INVALID WRITE_SET_EMPTY, and nothing is published", async () => {
     const path = temporaryDatabase();
     const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
     const refused = await app.inject({
@@ -525,7 +528,7 @@ describe("POST /api/v1/tasks refuses by the door that refused", () => {
 // P-27 cut A: an intake's step exists in the version it names (decision 193)
 // ---------------------------------------------------------------------------
 
-describe("POST /api/v1/tasks under 0.25.0: the envelope states its instruction once (P-16/A1, ADR 0120)", () => {
+describe("POST /api/v1/tasks since 0.25.0: the envelope states its instruction once (P-16/A1, ADR 0120)", () => {
   it("E1: an envelope without `objective` is admitted, DISCOVERED at revision 1, and its digest is the two-method value", async () => {
     const path = temporaryDatabase();
     const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
@@ -533,7 +536,8 @@ describe("POST /api/v1/tasks under 0.25.0: the envelope states its instruction o
     const posted = await app.inject({ method: "POST", url: URL, headers: AUTH, payload: body() });
     expect(posted.statusCode).toBe(200);
     const document = TaskIntakeResponse.parse(posted.json());
-    expect(document.apiContractVersion).toBe("0.25.0");
+    // The version in force: 0.26.0 since P-17/workspaceMode (ADR 0127).
+    expect(document.apiContractVersion).toBe("0.26.0");
     expect(document.task).toMatchObject({ taskId: TASK, revisionNumber: 1, state: "DISCOVERED" });
     expect(document.task.envelopeSha256).toBe(envelopeSha256(envelope()));
     expect(document.task.envelopeSha256).toBe(createHash("sha256").update(envelopeIdentityPreimageV1(envelope()), "utf8").digest("hex"));
@@ -554,6 +558,44 @@ describe("POST /api/v1/tasks under 0.25.0: the envelope states its instruction o
       expect(taskEventCount(path)).toBe(0);
       expect(artifactEventCount(path)).toBe(0);
       expect(existsSync(artifactPlaneRootFor(path))).toBe(false);
+      await app.close();
+    }
+  });
+});
+
+describe("POST /api/v1/tasks under 0.26.0: a READ_ONLY task enters with no write-set (P-17/workspaceMode, ADR 0127)", () => {
+  const READ_ONLY = { workspaceMode: "READ_ONLY", commitPolicy: "NO_COMMIT", writeSet: [], conflictKeys: [] } as const;
+
+  it("P1: a READ_ONLY NO_COMMIT envelope with an empty write-set is 200, DISCOVERED at revision 1, and its digest is the two-method value", async () => {
+    const path = temporaryDatabase();
+    const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+    const readOnly = envelope(READ_ONLY);
+    const posted = await app.inject({ method: "POST", url: URL, headers: AUTH, payload: body({ envelope: readOnly }) });
+    expect(posted.statusCode).toBe(200);
+    const document = TaskIntakeResponse.parse(posted.json());
+    expect(document.apiContractVersion).toBe("0.26.0");
+    expect(document.task).toMatchObject({ taskId: TASK, revisionNumber: 1, state: "DISCOVERED" });
+    expect(document.task.envelopeSha256).toBe(envelopeSha256(readOnly));
+    expect(document.task.envelopeSha256).toBe(createHash("sha256").update(envelopeIdentityPreimageV1(readOnly), "utf8").digest("hex"));
+    expect(taskEventCount(path)).toBe(1);
+    await app.close();
+  });
+
+  it("N1: READ_ONLY with a declared path is 400 BAD_REQUEST at envelope.writeSet, and READ_ONLY with a commit policy at envelope.workspaceMode; nothing is written", async () => {
+    for (const [change, detail] of [
+      [{ writeSet: ["docs/intake.md"] }, "envelope.writeSet"],
+      [{ commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT" }, "envelope.workspaceMode"],
+      [{ workspaceMode: "WRITE" }, "envelope.workspaceMode"],
+    ] as const) {
+      const path = temporaryDatabase();
+      const app = buildServer({ ledgerPath: path, writeBearerPath: bearerFile() });
+      const refused = await app.inject({ method: "POST", url: URL, headers: AUTH, payload: body({ envelope: envelope({ ...READ_ONLY, ...change }) }) });
+      expect(refused.statusCode, detail).toBe(400);
+      const error = ApiError.parse(refused.json()).error;
+      expect(error.code, detail).toBe("BAD_REQUEST");
+      expect(error.detail, JSON.stringify(change)).toBe(detail);
+      expect(taskEventCount(path)).toBe(0);
+      expect(artifactEventCount(path)).toBe(0);
       await app.close();
     }
   });

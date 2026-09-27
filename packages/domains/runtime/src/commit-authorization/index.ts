@@ -213,7 +213,9 @@ export function writerIdIssuerFor(
  * Since P-17/A (ADR 0126; ND-11 (a)) the issuer, the policy digest and the declared
  * write-set are not keys either: they are read from the attempt's recorded route
  * segments and the recorded envelope, and a caller that supplies one is refused at
- * its path.
+ * its path. Since P-17/B (ADR 0127; ND-3 (a)) neither is the message body: it is the
+ * recorded envelope's `title`, the same source the verification runner's receipt body
+ * is read from, so the two can no longer disagree.
  */
 const REQUEST_KEYS: ReadonlySet<string> = new Set([
   "taskId",
@@ -231,7 +233,6 @@ const REQUEST_KEYS: ReadonlySet<string> = new Set([
   "observation",
   "treeSha",
   "checks",
-  "commitMessageBody",
   "audit",
 ]);
 
@@ -296,7 +297,9 @@ export interface AuthorizationRequest {
   /**
    * The recorded envelope, as `readRecordedTask` returns it (P-17/A, ND-11): its
    * write-set is the declared one, its three policy members give `policySha256`
-   * (`verificationPolicySha256`), and a `NO_COMMIT` envelope is refused by name.
+   * (`verificationPolicySha256`), a `NO_COMMIT` envelope is refused by name, and since
+   * P-17/B (ND-3) its `title` is the message body. The trailer is added at the commit,
+   * never here.
    */
   readonly envelope: TaskEnvelope;
   /**
@@ -318,8 +321,6 @@ export interface AuthorizationRequest {
   /** The verified tree. Supplied; P-16/C's tree hasher produces it. */
   readonly treeSha: string;
   readonly checks: readonly RecordedCheck[];
-  /** The message body. The trailer is added at the commit, never here. */
-  readonly commitMessageBody: string;
   /** Present iff an audit was performed; drives `AUDIT_COMPLETED`. */
   readonly audit?: { readonly auditor: string; readonly verdict: string };
 }
@@ -512,9 +513,10 @@ export function authorizeCommit(request: AuthorizationRequest): AuthorizationOut
   }
 
   // The four body words, each by name before the receipt parse would fold them into
-  // one `RECEIPT_INVALID` (execution §10.5; P-17/A B-3).
-  const bodyRefusal = commitMessageBodyRefusal(fields["commitMessageBody"]);
-  if (bodyRefusal !== null) return refuse(bodyRefusal, "request.commitMessageBody");
+  // one `RECEIPT_INVALID` (execution §10.5; P-17/A B-3). The body is the recorded
+  // envelope's title, read and never supplied (P-17/B, ND-3).
+  const bodyRefusal = commitMessageBodyRefusal(envelope.title);
+  if (bodyRefusal !== null) return refuse(bodyRefusal, "request.envelope.title");
 
   const receipt = CommitAuthorizationReceipt.safeParse({
     contractVersion: CONTRACT_VERSION,
@@ -534,7 +536,7 @@ export function authorizeCommit(request: AuthorizationRequest): AuthorizationOut
     // receipts, and a failing run's receipt is P-16/C's runner's.
     runStatus: "PASS",
     checks: request.checks.map((check) => ({ ...check })),
-    commitMessageBody: request.commitMessageBody,
+    commitMessageBody: envelope.title,
     // Never anything else. A receipt cannot authorize a push, and this is the
     // only place the field is written.
     pushAuthorized: false,

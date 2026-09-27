@@ -18,7 +18,13 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 import type { ResolvedRoute, TaskEnvelope } from "@acp/contracts";
-import { CONTRACT_VERSION, ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1, buildInitiativeIdempotencyKey } from "@acp/contracts";
+import {
+  CONTRACT_VERSION,
+  CommitAuthorizationReceipt,
+  ENVELOPE_IDENTITY_PREIMAGE_PREFIX_V1,
+  VerificationReceipt,
+  buildInitiativeIdempotencyKey,
+} from "@acp/contracts";
 import {
   ARTIFACT_ACCESS_POLICY_IDS,
   GENESIS_SHA256,
@@ -236,6 +242,8 @@ interface Declared {
   readonly writeSet?: readonly string[];
   readonly title?: string;
   readonly commitPolicy?: "NO_COMMIT" | "LOCAL_COMMIT_WITH_RECEIPT";
+  /** The workspace axis (P-17/workspaceMode); the contract's default when omitted. */
+  readonly workspaceMode?: "MUTABLE_WITHIN_WRITE_SET" | "READ_ONLY";
   /** Record the attempt's route segment (default); false leaves the attempt with none. */
   readonly segment?: boolean;
 }
@@ -277,6 +285,8 @@ function envelopeFor(taskId: string, declared: Declared): TaskEnvelope {
     budget: { maxTokens: 1_000, maxWallClockSeconds: 60, reserveTokensForCheckpoint: 10 },
     visualEvidenceRequired: false,
     commitPolicy: declared.commitPolicy ?? "LOCAL_COMMIT_WITH_RECEIPT",
+    // Stated, so the literal is the parsed envelope the plane stores (ADR 0127).
+    workspaceMode: declared.workspaceMode ?? "MUTABLE_WITHIN_WRITE_SET",
     checkpointPolicy: { onEveryAtomicStep: false, maxStepsWithoutCheckpoint: 5 },
   } as unknown as TaskEnvelope;
 }
@@ -722,6 +732,65 @@ describe("P1-P4: the runner records a receipt through the real door", () => {
 });
 
 // ===========================================================================
+// P-17/workspaceMode: a READ_ONLY task verifies over the empty write-set
+// ===========================================================================
+
+describe("P-17/workspaceMode: a READ_ONLY task is verified with no write-set, and any change it made is refused (ADR 0127)", () => {
+  const READ_ONLY = { workspaceMode: "READ_ONLY", commitPolicy: "NO_COMMIT", writeSet: [] } as const;
+  /** A clean worktree: committed, and nothing changed since. */
+  const cleanWorktree = (): string => repository({ "README.md": "readme\n", "src/a.ts": "export const a = 1;\n" });
+
+  it("P1: a clean worktree is a PASS receipt over the empty declared set, recorded through the real door", async () => {
+    const world = recordedWorld({ ...READ_ONLY, commands: ["test -f src/a.ts", "exit 0"] });
+    expect(world.task.envelope.workspaceMode).toBe("READ_ONLY");
+    expect(world.task.envelope.writeSet).toEqual([]);
+    const repo = cleanWorktree();
+    const outcome = recorded(await runVerification(inputFor(world, repo)));
+    expect(outcome.runStatus).toBe("PASS");
+    expect(outcome.treeSha).toBe(git(repo, ["rev-parse", "HEAD^{tree}"]).trim());
+    const read = world.plane.read({ artifactReferenceId: outcome.artifactReferenceId, scopeKind: "TASK", scopeId: world.task.taskId });
+    if (read.verb !== "READ") throw new Error("expected the receipt");
+    const receipt = VerificationReceipt.parse(JSON.parse(read.content.toString("utf8")));
+    expect(receipt.declaredWriteSet).toEqual([]);
+    expect(receipt.observedTrackedChanges).toEqual([]);
+    expect(receipt.observedUntrackedPaths).toEqual([]);
+    // Never an authorization: the empty set is refused by the commit receipt's own rule.
+    expect(CommitAuthorizationReceipt.safeParse(receipt).success).toBe(false);
+    expect(world.ledger.getVerification(outcome.receiptSha256)).toMatchObject({ runStatus: "PASS", allChecksZero: true });
+    expect(world.ledger.verifyIntegrity().problems).toEqual([]);
+  });
+
+  it("N1: an untracked file in a READ_ONLY worktree is RUNNER_WRITE_SET_VIOLATION: no spawn, no receipt, the file left in place", async () => {
+    const { world, spawned } = markedWorld(READ_ONLY);
+    const repo = cleanWorktree();
+    writeFileSync(join(repo, "notes.txt"), "written\n");
+    expect(refused(await runVerification(inputFor(world, repo)))).toMatchObject({
+      refusal: "RUNNER_WRITE_SET_VIOLATION",
+      at: "observation.untrackedPaths[0]",
+    });
+    expect(spawned()).toBe(false);
+    expect(existsSync(join(repo, "notes.txt"))).toBe(true);
+    expect(world.ledger.listVerifications(world.task.taskId, 1, 1)).toEqual([]);
+  });
+
+  it("N2: a tracked change in a READ_ONLY worktree is RUNNER_WRITE_SET_VIOLATION as well", async () => {
+    const { world, spawned } = markedWorld(READ_ONLY);
+    const repo = cleanWorktree();
+    writeFileSync(join(repo, "src/a.ts"), "export const a = 2;\n");
+    expect(refused(await runVerification(inputFor(world, repo)))).toMatchObject({ refusal: "RUNNER_WRITE_SET_VIOLATION" });
+    expect(spawned()).toBe(false);
+  });
+
+  it("N3: a change raced into a READ_ONLY worktree between the two observations is FAIL, every check zero", async () => {
+    const repo = cleanWorktree();
+    const world = recordedWorld({ ...READ_ONLY, commands: ["printf 'raced\\n' >> '" + join(repo, "src/a.ts") + "'"] });
+    const outcome = recorded(await runVerification(inputFor(world, repo)));
+    expect(outcome.runStatus).toBe("FAIL");
+    expect(outcome.checks).toEqual([{ command: expect.any(String) as string, exitCode: 0 }]);
+  });
+});
+
+// ===========================================================================
 // Negatives: refused by name, before any spawn
 // ===========================================================================
 
@@ -770,7 +839,7 @@ describe("N1-N7, N15: what is refused by name before any spawn", () => {
     expect(spawned()).toBe(false);
   });
 
-  it("N5: no declared check is RUNNER_CHECKS_UNDECLARED; a planted empty write-set is RUNNER_WRITE_SET_EMPTY", async () => {
+  it("N5: no declared check is RUNNER_CHECKS_UNDECLARED; a planted empty write-set outside READ_ONLY is RUNNER_WRITE_SET_EMPTY", async () => {
     const none = recordedWorld({ commands: [] });
     expect(refused(await runVerification(inputFor(none, writerWorktree())))).toMatchObject({
       refusal: "RUNNER_CHECKS_UNDECLARED",
@@ -780,6 +849,16 @@ describe("N1-N7, N15: what is refused by name before any spawn", () => {
     // one-path NO_COMMIT task the real intake entered; the runner's backstop still holds.
     const { world: entered, spawned } = markedWorld({ writeSet: ["src/a.ts"], commitPolicy: "NO_COMMIT" });
     const world = plantEnvelope(entered, { writeSet: [] });
+    expect(refused(await runVerification(inputFor(world, writerWorktree())))).toMatchObject({
+      refusal: "RUNNER_WRITE_SET_EMPTY",
+      at: "envelope.writeSet",
+    });
+    expect(spawned()).toBe(false);
+  });
+
+  it("P-17/workspaceMode N5: a planted empty write-set under an explicit MUTABLE_WITHIN_WRITE_SET is still RUNNER_WRITE_SET_EMPTY", async () => {
+    const { world: entered, spawned } = markedWorld({ writeSet: ["src/a.ts"], commitPolicy: "NO_COMMIT" });
+    const world = plantEnvelope(entered, { writeSet: [], workspaceMode: "MUTABLE_WITHIN_WRITE_SET" });
     expect(refused(await runVerification(inputFor(world, writerWorktree())))).toMatchObject({
       refusal: "RUNNER_WRITE_SET_EMPTY",
       at: "envelope.writeSet",

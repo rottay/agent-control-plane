@@ -151,6 +151,14 @@ than trusting this table.
   request that still carries the field is a `400 BAD_REQUEST` at `envelope`.
   `CONTRACT_VERSION` moves to `2.11.0` with it, so `LEDGER_CONTRACT_VERSION` follows
   by derivation (ADR 0120). No route, table or error word moves.
+- **A read-only task is a workspace mode.** P-17/workspaceMode moved
+  `API_CONTRACT_VERSION` to `0.26.0` without a route: the embedded `TaskEnvelope` gains
+  `workspaceMode`, `MUTABLE_WITHIN_WRITE_SET` by default or `READ_ONLY`. A `READ_ONLY`
+  envelope enters with an empty write-set; one that names a path is a `400` at
+  `envelope.writeSet`, and one with a commit policy other than `NO_COMMIT` a `400` at
+  `envelope.workspaceMode`. `CONTRACT_VERSION` moves to `2.12.0` with it, so
+  `LEDGER_CONTRACT_VERSION` follows by derivation (ADR 0127). No route, table or error
+  word moves.
 - **Every read is free but one, and that one is named.** P-15/F added two reads
   and moved `API_CONTRACT_VERSION` to `0.19.0`: `taskEffects`, a plain read of a
   task's effect ids, coordinates and outcome words, and `taskEffectResult`, one

@@ -3,13 +3,18 @@ import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import type {
+  CommitObjectInput,
   CopyTreeOutcome,
+  GitObject,
   IndexEntry,
   IndexPathsOutcome,
   TreeBlobMode,
   TreeEntry,
   TreeHashRefusal,
   TreeHashRefused,
+  TreeObjectsOutcome,
+  WorktreeBlob,
+  WorktreeTreeOutcome,
 } from "./types/index.js";
 
 /**
@@ -17,13 +22,18 @@ import type {
  * re-exported here unchanged (owner law §7).
  */
 export type {
+  CommitObjectInput,
   CopyTreeOutcome,
+  GitObject,
   IndexEntry,
   IndexPathsOutcome,
   TreeBlobMode,
   TreeEntry,
   TreeHashRefusal,
   TreeHashRefused,
+  TreeObjectsOutcome,
+  WorktreeBlob,
+  WorktreeTreeOutcome,
 } from "./types/index.js";
 
 /**
@@ -56,6 +66,17 @@ export type {
  * it ended in `/`: `a-b` (0x2d), then `a.b` (0x2e), then the tree `a` (as `a/`, 0x2f),
  * then `a0` (0x30). Compared as `Buffer`s, bytewise, never as JavaScript
  * strings, whose code-unit order differs from UTF-8's above the BMP.
+ *
+ * ## The objects a writer needs (P-17/B, ADR 0127)
+ *
+ * The Git writer writes exactly the objects this module names, and checks every id Git
+ * prints against the id computed here: `treeObjects` gives each tree object's body and
+ * id, children first; `readWorktreeTree` reads a worktree's blobs **once** and returns
+ * their bytes beside their ids, so the bytes written are the bytes hashed; and
+ * `commitObject` gives the exact body and id of the one commit object a recorded
+ * authorization names (`tree`, one `parent`, `author` and `committer` with the recorded
+ * second at `+0000`, a blank line, the message's bytes). Still no spawn and no write:
+ * the writer is `git-writer`'s.
  *
  * ## One object format
  *
@@ -91,7 +112,7 @@ function refuse(refusal: TreeHashRefusal, at: string): TreeHashRefused {
   return Object.freeze({ ok: false as const, refusal, at });
 }
 
-function objectSha1(kind: "blob" | "tree", body: Buffer): string {
+function objectSha1(kind: "blob" | "tree" | "commit", body: Buffer): string {
   return createHash("sha1")
     .update(kind + " " + String(body.length) + "\0", "utf8")
     .update(body)
@@ -119,32 +140,33 @@ function directory(): Directory {
   return { blobs: new Map(), trees: new Map() };
 }
 
-/** One tree object's id, its entries in git's order, children first. */
-function treeObjectSha1(node: Directory): string {
+/**
+ * One tree object's body and id, its entries in git's order; every child tree is pushed
+ * to `out` before its parent, so `out` ends with the root.
+ */
+function treeObject(node: Directory, out: GitObject[]): string {
   const entries: { readonly key: Buffer; readonly line: Buffer }[] = [];
   for (const [name, blob] of node.blobs) {
     const line = Buffer.concat([Buffer.from(blob.mode + " " + name + "\0", "utf8"), Buffer.from(blob.sha1, "hex")]);
     entries.push({ key: Buffer.from(name, "utf8"), line });
   }
   for (const [name, child] of node.trees) {
-    const line = Buffer.concat([Buffer.from(TREE_MODE + " " + name + "\0", "utf8"), Buffer.from(treeObjectSha1(child), "hex")]);
+    const line = Buffer.concat([Buffer.from(TREE_MODE + " " + name + "\0", "utf8"), Buffer.from(treeObject(child, out), "hex")]);
     entries.push({ key: Buffer.from(name + "/", "utf8"), line });
   }
   entries.sort((left, right) => Buffer.compare(left.key, right.key));
-  return objectSha1("tree", Buffer.concat(entries.map((entry) => entry.line)));
+  const body = Buffer.concat(entries.map((entry) => entry.line));
+  const sha1 = objectSha1("tree", body);
+  out.push(Object.freeze({ sha1, body }));
+  return sha1;
 }
 
 /**
- * The git tree id of a set of blobs: what `git write-tree` prints for an index holding
- * exactly these entries. Empty entries give the empty tree,
- * `4b825dc642cb6eb9a060e54bf8d69288fbee4904`.
- *
- * Refused, never coerced: a path this module cannot state, a mode outside the three,
- * an id that is not a sha1, a path listed twice, or a path that is both a blob and a
- * directory (`a` and `a/b`) is `TREE_PATH_UNSUPPORTED` or `TREE_ENTRY_UNSUPPORTED` at
- * `entries[i]`.
+ * Every tree object of a set of blobs, children first and the root last, each with its
+ * body and its id: what the writer hands `hash-object -t tree` one by one (P-17/B, ND-5).
+ * Refused exactly as `treeSha` is, because `treeSha` is this function's root id.
  */
-export function treeSha(entries: readonly TreeEntry[]): { readonly ok: true; readonly treeSha: string } | TreeHashRefused {
+export function treeObjects(entries: readonly TreeEntry[]): TreeObjectsOutcome {
   const root = directory();
   for (const [index, entry] of entries.entries()) {
     const at = "entries[" + String(index) + "]";
@@ -166,7 +188,25 @@ export function treeSha(entries: readonly TreeEntry[]): { readonly ok: true; rea
     if (node.blobs.has(name) || node.trees.has(name)) return refuse("TREE_PATH_UNSUPPORTED", at);
     node.blobs.set(name, entry);
   }
-  return { ok: true, treeSha: treeObjectSha1(root) };
+  const trees: GitObject[] = [];
+  const rootSha = treeObject(root, trees);
+  return { ok: true, treeSha: rootSha, trees: Object.freeze(trees) };
+}
+
+/**
+ * The git tree id of a set of blobs: what `git write-tree` prints for an index holding
+ * exactly these entries. Empty entries give the empty tree,
+ * `4b825dc642cb6eb9a060e54bf8d69288fbee4904`.
+ *
+ * Refused, never coerced: a path this module cannot state, a mode outside the three,
+ * an id that is not a sha1, a path listed twice, or a path that is both a blob and a
+ * directory (`a` and `a/b`) is `TREE_PATH_UNSUPPORTED` or `TREE_ENTRY_UNSUPPORTED` at
+ * `entries[i]`.
+ */
+export function treeSha(entries: readonly TreeEntry[]): { readonly ok: true; readonly treeSha: string } | TreeHashRefused {
+  const objects = treeObjects(entries);
+  if (!objects.ok) return objects;
+  return { ok: true, treeSha: objects.treeSha };
 }
 
 /**
@@ -249,4 +289,76 @@ export function hashCopyTree(root: string, paths: readonly string[]): CopyTreeOu
   if (!tree.ok) return tree;
   const ordered = [...entries].sort((left, right) => Buffer.compare(Buffer.from(left.path, "utf8"), Buffer.from(right.path, "utf8")));
   return { ok: true, treeSha: tree.treeSha, entries: Object.freeze(ordered.map((entry) => Object.freeze(entry))) };
+}
+
+/**
+ * The blobs of a worktree, read **once** with no-follow, and its tree: the bytes the
+ * writer sends to `hash-object` are the bytes this read hashed (P-17/B, ND-5).
+ *
+ * The runner's set: `paths` is every index path plus every observed untracked path. A
+ * path that is absent, or under an absent parent, is a deletion and is not in the tree
+ * (the runner's copy skips it the same way); a parent that is a link or not a directory,
+ * or an entry that is neither a regular file nor a link, is `TREE_ENTRY_UNSUPPORTED`; a
+ * path it cannot state is `TREE_PATH_UNSUPPORTED`. Reads only.
+ */
+export function readWorktreeTree(root: string, paths: readonly string[]): WorktreeTreeOutcome {
+  const blobs: WorktreeBlob[] = [];
+  for (const [index, path] of paths.entries()) {
+    const at = "paths[" + String(index) + "]";
+    if (!isTreePath(path)) return refuse("TREE_PATH_UNSUPPORTED", at);
+    const parts = path.split("/");
+    let parent = root;
+    let absent = false;
+    for (const part of parts.slice(0, -1)) {
+      parent = join(parent, part);
+      try {
+        const stats = lstatSync(parent);
+        if (!stats.isDirectory() || stats.isSymbolicLink()) return refuse("TREE_ENTRY_UNSUPPORTED", at);
+      } catch (error: unknown) {
+        if ((error as { code?: unknown }).code !== "ENOENT") return refuse("TREE_ENTRY_UNSUPPORTED", at);
+        absent = true;
+        break;
+      }
+    }
+    if (absent) continue;
+    const full = join(root, path);
+    let mode: TreeBlobMode;
+    let bytes: Buffer;
+    try {
+      const stats = lstatSync(full);
+      if (stats.isSymbolicLink()) {
+        mode = "120000";
+        bytes = readlinkSync(full, { encoding: "buffer" });
+      } else if (stats.isFile()) {
+        mode = (stats.mode & OWNER_EXECUTE) === 0 ? "100644" : "100755";
+        bytes = readFileSync(full);
+      } else {
+        return refuse("TREE_ENTRY_UNSUPPORTED", at);
+      }
+    } catch (error: unknown) {
+      if ((error as { code?: unknown }).code === "ENOENT") continue;
+      return refuse("TREE_ENTRY_UNSUPPORTED", at);
+    }
+    blobs.push(Object.freeze({ path, mode, sha1: gitBlobSha1(bytes), bytes }));
+  }
+  const objects = treeObjects(blobs.map((blob) => ({ path: blob.path, mode: blob.mode, sha1: blob.sha1 })));
+  if (!objects.ok) return objects;
+  const ordered = [...blobs].sort((left, right) => Buffer.compare(Buffer.from(left.path, "utf8"), Buffer.from(right.path, "utf8")));
+  return { ok: true, treeSha: objects.treeSha, blobs: Object.freeze(ordered), trees: objects.trees };
+}
+
+/**
+ * The one commit object a recorded authorization names: its exact body and its id
+ * (P-17/B, ND-12). `tree`, one `parent`, the same identity as `author` and `committer`
+ * at the recorded second `+0000`, a blank line, then the message's bytes as given --
+ * no cleanup, no signature and no encoding header, which is exactly what `commit-tree`
+ * writes from stdin under the writer's pinned configuration. The writer requires Git's
+ * printed id to equal this one.
+ */
+export function commitObject(input: CommitObjectInput): GitObject {
+  const person = input.name + " <" + input.email + "> " + String(input.seconds) + " +0000";
+  const header =
+    "tree " + input.treeSha + "\n" + "parent " + input.parentSha + "\n" + "author " + person + "\n" + "committer " + person + "\n\n";
+  const body = Buffer.concat([Buffer.from(header, "utf8"), Buffer.from(input.message, "utf8")]);
+  return Object.freeze({ sha1: objectSha1("commit", body), body });
 }

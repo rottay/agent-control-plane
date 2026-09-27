@@ -295,8 +295,18 @@ import { CONTRACT_VERSION } from "@acp/contracts";
  * `LEDGER_CONTRACT_VERSION` follows by derivation. This is the minor ADR 0116 and
  * decision 200 had first assigned to P-16/A1 (decision 209). ADR 0120 carries the
  * reasoning.
+ *
+ * `0.25.0` → `0.26.0` at P-17/workspaceMode: the intake request's embedded envelope
+ * gains `workspaceMode`, `MUTABLE_WITHIN_WRITE_SET` by default or `READ_ONLY`. A
+ * `READ_ONLY` envelope enters with an empty write-set; one that also names a path is
+ * a `400` at `envelope.writeSet`, and one that carries a commit policy other than
+ * `NO_COMMIT` a `400` at `envelope.workspaceMode`. No route moves:
+ * `API_ALLOWED_METHODS`, `API_WRITE_ROUTES`, `API_PRIVATE_READ_ROUTES` and
+ * `API_ERROR_CODES` do not. Minor, on decision 222's reading: the request shape
+ * moves. `CONTRACT_VERSION` moves too, 2.11.0 → 2.12.0, so `LEDGER_CONTRACT_VERSION`
+ * follows by derivation. ADR 0127 carries the reasoning.
  */
-export const API_CONTRACT_VERSION = "0.25.0" as const;
+export const API_CONTRACT_VERSION = "0.26.0" as const;
 export type ApiContractVersionLiteral = typeof API_CONTRACT_VERSION;
 
 /**

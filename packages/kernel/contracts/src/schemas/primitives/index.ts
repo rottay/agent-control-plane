@@ -18,7 +18,7 @@ import { z } from "zod";
  * is a producer whose output nobody can predict. What may hold more than one
  * value is the *reader's* set below.
  */
-export const CONTRACT_VERSION = "2.11.0" as const;
+export const CONTRACT_VERSION = "2.12.0" as const;
 
 /**
  * The contract versions a **reader** accepts (P-18/protocolo A, ADR 0072).
@@ -105,6 +105,14 @@ export const CONTRACT_VERSION = "2.11.0" as const;
  * `envelope_sha256` differs for the same work issued before and after the bump.
  * No column holds the field and every cohort list closes at or before `"2.9.0"`,
  * so no migration follows. `"2.10.0"` joins the others here for ever.
+ *
+ * **Eleven members from P-17/workspaceMode (ADR 0127), on ADR 0076's criterion
+ * again: an identity.** The envelope's preimage gains a field: `TaskEnvelope`
+ * carries `workspaceMode`, defaulted to `MUTABLE_WITHIN_WRITE_SET`, so the parsed
+ * envelope always holds it and `envelope_sha256` differs for the same work issued
+ * before and after the bump. No column holds the field and every cohort list
+ * closes at or before `"2.9.0"`, so no migration follows. `"2.11.0"` joins the
+ * others here for ever.
  */
 export const SUPPORTED_CONTRACT_VERSIONS = [
   "2.2.0",
@@ -117,6 +125,7 @@ export const SUPPORTED_CONTRACT_VERSIONS = [
   "2.9.0",
   "2.10.0",
   "2.11.0",
+  "2.12.0",
 ] as const;
 
 /**

@@ -27,6 +27,8 @@ import { INTAKE_ATTEMPT_OPENING_STEP, buildEvent } from "../../src/core/events/i
 import { INTENT_STEP, LIFECYCLE_PLAN, planStep } from "../../src/core/lifecycle/index.js";
 import { appendPlanStep, assertInvocationContinuity, nextStep } from "../../src/core/step-executor/index.js";
 import type { BeatContext } from "../../src/core/step-executor/index.js";
+import { authorizeCommit } from "../../src/commit-authorization/index.js";
+import type { AuthorizationRequest } from "../../src/commit-authorization/index.js";
 import { SupervisorError } from "../../src/errors/index.js";
 import { intakeTask } from "../../src/intake/index.js";
 import { restateInvocation } from "../../src/lifecycle-operation/index.js";
@@ -201,6 +203,8 @@ function envelope(): Record<string, unknown> {
     budget: { maxTokens: 1000, maxWallClockSeconds: 60, reserveTokensForCheckpoint: 100 },
     visualEvidenceRequired: false,
     commitPolicy: "NO_COMMIT",
+    // Stated, so the parsed envelope read back equals this literal (ADR 0127).
+    workspaceMode: "MUTABLE_WITHIN_WRITE_SET",
     checkpointPolicy: { onEveryAtomicStep: true, maxStepsWithoutCheckpoint: 1 },
   };
 }
@@ -574,7 +578,7 @@ describe("a stored envelope's version is read before its shape (P-16/A1, ADR 012
 
   it("P2: a task intaken under the version in force reads back ok, and the stored stamp is that version", () => {
     const on = intaken();
-    expect(CONTRACT_VERSION).toBe("2.11.0");
+    expect(CONTRACT_VERSION).toBe("2.12.0");
     const outcome = recorded(read(on));
     expect(outcome.task.envelope.contractVersion).toBe(CONTRACT_VERSION);
   });
@@ -598,14 +602,14 @@ describe("a stored envelope's version is read before its shape (P-16/A1, ADR 012
   it("N4: an envelope whose version is not its intake event's is ENVELOPE_VERSION_MISMATCH, in both directions, before SUPERSEDED", () => {
     const on = intaken();
     const before = head(on.ledger);
-    // Envelope 2.10.0 under a 2.11.0 event.
+    // Envelope 2.10.0 under an event of the version in force.
     expect(readRecordedTask({ ledger: on.ledger, plane: bytes(on, storedUnder("2.10.0")), taskId: TASK, route: ROUTE })).toEqual({
       ok: false,
       refusal: "ENVELOPE_VERSION_MISMATCH",
       at: "envelope.contractVersion",
       word: null,
     });
-    // Envelope 2.11.0 under a 2.10.0 event: never named SUPERSEDED.
+    // Envelope of the version in force under a 2.10.0 event: never named SUPERSEDED.
     expect(readRecordedTask({ ledger: eventAt(on, "2.10.0"), plane: on.plane, taskId: TASK, route: ROUTE })).toEqual({
       ok: false,
       refusal: "ENVELOPE_VERSION_MISMATCH",
@@ -708,7 +712,7 @@ describe("a recorded walk is refused before its spend (P-16/D2, ADR 0125; decisi
     });
   });
 
-  it("N2: an empty write-set under NO_COMMIT is WRITE_SET_EMPTY at the envelope's write-set", () => {
+  it("N2: an empty write-set under NO_COMMIT, outside READ_ONLY, is WRITE_SET_EMPTY at the envelope's write-set", () => {
     const empty = walkable({ writeSet: [] });
     expect(empty.envelope.commitPolicy).toBe("NO_COMMIT");
     expect(recordedWalkRefusal(empty, CLI)).toEqual({ refusal: "WRITE_SET_EMPTY", at: "envelope.writeSet" });
@@ -742,6 +746,54 @@ describe("a recorded walk is refused before its spend (P-16/D2, ADR 0125; decisi
     const bare = walkable({ writeSet: [], validation: { commands: [], independentVerifierRequired: false } });
     expect(recordedWalkRefusal(bare, API)).toEqual({ refusal: "CHECKS_UNDECLARED", at: "envelope.validation.commands" });
     expect(recordedWalkRefusal(walkable({ writeSet: [] }), API)).toEqual({ refusal: "WRITE_SET_EMPTY", at: "envelope.writeSet" });
+  });
+
+  it("P-17/workspaceMode P1: a READ_ONLY task with checks and no write-set is admitted on the Claude CLI route", () => {
+    const readOnly = walkable({ workspaceMode: "READ_ONLY", writeSet: [], conflictKeys: [] });
+    expect(readOnly.envelope.workspaceMode).toBe("READ_ONLY");
+    expect(readOnly.envelope.writeSet).toEqual([]);
+    expect(recordedWalkRefusal(readOnly, CLI)).toBeNull();
+    expect(recordedWalkRefusal(readOnly, ROUTE)).toBeNull();
+    // The vocabulary does not move: three words.
+    expect(RECORDED_WALK_REFUSALS).toHaveLength(3);
+  });
+
+  it("P-17/workspaceMode N1: a READ_ONLY task still needs a check, and still needs an issuer", () => {
+    const readOnly = { workspaceMode: "READ_ONLY", writeSet: [], conflictKeys: [] };
+    expect(
+      recordedWalkRefusal(walkable({ ...readOnly, validation: { commands: [], independentVerifierRequired: false } }), CLI),
+    ).toEqual({ refusal: "CHECKS_UNDECLARED", at: "envelope.validation.commands" });
+    expect(recordedWalkRefusal(walkable(readOnly), { provider: "claude", transportKind: "API_KEY" })).toEqual({
+      refusal: WRITER_ID_UNISSUED,
+      at: "route",
+    });
+  });
+
+  it("P-17/workspaceMode B1: a cast envelope with no mode and an empty write-set keeps the strict rule", () => {
+    // A fixture built by cast carries no `workspaceMode` at runtime: absent is
+    // today's rule, never a read-only admission (DT B-1).
+    const cast = { envelope: { ...walkable().envelope, writeSet: [] } } as { envelope: TaskEnvelope };
+    Reflect.deleteProperty(cast.envelope, "workspaceMode");
+    expect(recordedWalkRefusal(cast, CLI)).toEqual({ refusal: "WRITE_SET_EMPTY", at: "envelope.writeSet" });
+  });
+
+  it("P-17/workspaceMode ND-9: a READ_ONLY envelope is never authorized to commit, refused at the envelope's policy", () => {
+    const readOnly = walkable({ workspaceMode: "READ_ONLY", writeSet: [], conflictKeys: [] }).envelope;
+    // An envelope-only request reaches the policy check: the key check refuses only
+    // unknown keys, and the envelope is parsed first.
+    expect(authorizeCommit({ envelope: readOnly } as unknown as AuthorizationRequest)).toMatchObject({
+      ok: false,
+      reason: "COMMIT_POLICY_NO_COMMIT",
+      at: "request.envelope.commitPolicy",
+    });
+    // READ_ONLY with a commit policy is not an envelope at all: the contract's first
+    // issue is the mode, carried to the envelope's own path.
+    const coupled = { ...readOnly, commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT", writeSet: ["docs/recorded.md"] };
+    expect(authorizeCommit({ envelope: coupled } as unknown as AuthorizationRequest)).toMatchObject({
+      ok: false,
+      reason: "REQUEST_INVALID",
+      at: "request.envelope.workspaceMode",
+    });
   });
 
   it("reads a task the intake recorded without moving the ledger, and answers its first word", () => {

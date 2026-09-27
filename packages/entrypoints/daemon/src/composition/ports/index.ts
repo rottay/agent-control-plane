@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Checkpoint, Lease, ModelExecutionPort, TaskEnvelope } from "@acp/contracts";
+import type { Checkpoint, Lease, ModelExecutionPort, TaskEnvelope, WorkspaceMode } from "@acp/contracts";
 import { CONTRACT_VERSION } from "@acp/contracts";
 import type { Ledger } from "@acp/ledger";
 import { createCheckpointStore } from "@acp/ledger";
@@ -448,6 +448,13 @@ export function conformanceGateFor(input: {
   readonly invocation: DurableInvocation;
   readonly worktreePath: string;
   readonly declaredWriteSet: readonly string[];
+  /**
+   * The walked envelope's workspace axis, read from it and never stated
+   * (P-17/workspaceMode, ADR 0127; L-P17WM-2). Forwarded as it is: an absent or
+   * `undefined` mode keeps the strict empty-set rule, and `READ_ONLY` makes every
+   * observed path a violation over the empty declared set.
+   */
+  readonly workspaceMode?: WorkspaceMode | undefined;
   readonly lease: Lease;
   readonly emittedBy: string;
   readonly onViolation: () => void;
@@ -469,6 +476,7 @@ export function conformanceGateFor(input: {
     }
     const verdict = checkWriteSetConformance({
       declaredWriteSet: input.declaredWriteSet,
+      workspaceMode: input.workspaceMode,
       observation: seen.observation,
       lease: input.lease,
     });

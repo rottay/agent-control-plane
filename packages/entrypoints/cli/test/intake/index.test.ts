@@ -443,14 +443,15 @@ describe("acp intake refuses by the exit code the refusal earns", () => {
  * Fable P-26/ACCEPT v3 N1): `acp intake` names both step words the way the gateway does,
  * through the real door, and appends nothing when it refuses.
  */
-describe("acp intake under 0.25.0: the envelope states its instruction once (P-16/A1, ADR 0120)", () => {
+describe("acp intake since 0.25.0: the envelope states its instruction once (P-16/A1, ADR 0120)", () => {
   it("E1: an envelope without `objective` enters, DISCOVERED at revision 1, and its digest is the two-method value", async () => {
     const f = fixture();
     expect(Object.keys(envelope())).not.toContain("objective");
     const result = await invoke(["intake", "--database", f.database, "--request", f.request()]);
     expect(result.exitCode).toBe(EXIT_OK);
     const document = TaskIntakeResponse.parse(JSON.parse(result.stdout));
-    expect(document.apiContractVersion).toBe("0.25.0");
+    // The version in force: 0.26.0 since P-17/workspaceMode (ADR 0127).
+    expect(document.apiContractVersion).toBe("0.26.0");
     expect(document.task).toMatchObject({ taskId: TASK, revisionNumber: 1, state: "DISCOVERED" });
     expect(document.task.envelopeSha256).toBe(envelopeSha256(envelope()));
     expect(document.task.envelopeSha256).toBe(createHash("sha256").update(envelopeIdentityPreimageV1(envelope()), "utf8").digest("hex"));
@@ -480,7 +481,7 @@ describe("acp intake under 0.25.0: the envelope states its instruction once (P-1
 });
 
 describe("acp intake refuses an empty write-set by name, before anything is published (P-16/D2, ADR 0125)", () => {
-  it("N6: a NO_COMMIT envelope with no path is WRITE_REFUSED naming WRITE_SET_EMPTY at envelope.writeSet, with no event and no publication", async () => {
+  it("N6: a NO_COMMIT envelope with no path, outside READ_ONLY, is WRITE_REFUSED naming WRITE_SET_EMPTY at envelope.writeSet, with no event and no publication", async () => {
     const f = fixture();
     const empty = envelope({ commitPolicy: "NO_COMMIT", writeSet: [] });
     const result = await invoke(["intake", "--database", f.database, "--format", "json", "--request", f.request({ envelope: empty })]);
@@ -497,6 +498,45 @@ describe("acp intake refuses an empty write-set by name, before anything is publ
     const result = await invoke(["intake", "--database", f.database, "--request", f.request({ envelope: envelope({ writeSet: ["docs/intake.md"] }) })]);
     expect(result.exitCode).toBe(EXIT_OK);
     expect(TaskIntakeResponse.parse(JSON.parse(result.stdout)).task).toMatchObject({ taskId: TASK, state: "DISCOVERED" });
+  });
+});
+
+describe("acp intake under 0.26.0: a READ_ONLY task enters with no write-set (P-17/workspaceMode, ADR 0127)", () => {
+  const READ_ONLY = { workspaceMode: "READ_ONLY", commitPolicy: "NO_COMMIT", writeSet: [], conflictKeys: [] } as const;
+
+  it("P1: a READ_ONLY NO_COMMIT envelope with an empty write-set enters, exit 0, DISCOVERED at revision 1, and its digest is the two-method value", async () => {
+    const f = fixture();
+    const readOnly = envelope(READ_ONLY);
+    const result = await invoke(["intake", "--database", f.database, "--request", f.request({ envelope: readOnly })]);
+    expect(result.exitCode).toBe(EXIT_OK);
+    const document = TaskIntakeResponse.parse(JSON.parse(result.stdout));
+    expect(document.apiContractVersion).toBe("0.26.0");
+    expect(document.task).toMatchObject({ taskId: TASK, revisionNumber: 1, state: "DISCOVERED" });
+    expect(document.task.envelopeSha256).toBe(envelopeSha256(readOnly));
+    expect(document.task.envelopeSha256).toBe(createHash("sha256").update(envelopeIdentityPreimageV1(readOnly), "utf8").digest("hex"));
+    expect(taskRows(f.database)).toHaveLength(1);
+  });
+
+  it("N1: READ_ONLY with a declared path is BAD_REQUEST at request.envelope.writeSet, and with a commit policy at request.envelope.workspaceMode, EXIT_USAGE, nothing written", async () => {
+    for (const [change, detail] of [
+      [{ writeSet: ["docs/intake.md"] }, "request.envelope.writeSet"],
+      [{ commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT" }, "request.envelope.workspaceMode"],
+    ] as const) {
+      const f = fixture();
+      const result = await invoke([
+        "intake",
+        "--database",
+        f.database,
+        "--format",
+        "json",
+        "--request",
+        f.request({ envelope: envelope({ ...READ_ONLY, ...change }) }),
+      ]);
+      expect(result.exitCode, detail).toBe(EXIT_USAGE);
+      expect(errorOf(result)).toMatchObject({ code: "BAD_REQUEST", detail });
+      expect(taskRows(f.database)).toHaveLength(0);
+      expect(artifactRows(f.database)).toBe(0);
+    }
   });
 });
 

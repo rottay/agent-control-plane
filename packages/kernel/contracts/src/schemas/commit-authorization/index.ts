@@ -189,7 +189,14 @@ export const VerificationReceipt = z
     /** The digest of the verification policy applied; its producer is P-16/C. */
     policySha256: Sha256Hex,
 
-    declaredWriteSet: z.array(RepoRelativePath).min(1).max(500),
+    /**
+     * The write-set the verification was held to. Empty only for a `READ_ONLY`
+     * task (P-17/workspaceMode, ADR 0127): the refinements below then admit no
+     * observed change, so the receipt itself states that the worktree ended
+     * byte-identical. A commit is never authorized over an empty set
+     * (`CommitAuthorizationReceipt`).
+     */
+    declaredWriteSet: z.array(RepoRelativePath).min(0).max(500),
     observedTrackedChanges: z.array(PathDigest).max(500),
     observedUntrackedPaths: z.array(RepoRelativePath).max(500),
 
@@ -288,7 +295,9 @@ export type VerificationReceipt = z.infer<typeof VerificationReceipt>;
 
 /**
  * The receipt a local commit is authorized under: a `VerificationReceipt` whose
- * run passed, and nothing else (AGENTS law 3; ND-6).
+ * run passed over a non-empty declared write-set, and nothing else (AGENTS law
+ * 3; ND-6). The empty set is a `READ_ONLY` verification's, and a `READ_ONLY` task
+ * never commits (P-17/workspaceMode, ADR 0127).
  */
 export const CommitAuthorizationReceipt = VerificationReceipt.superRefine((value, ctx) => {
   if (value.runStatus !== "PASS") {
@@ -296,6 +305,13 @@ export const CommitAuthorizationReceipt = VerificationReceipt.superRefine((value
       code: "custom",
       message: "only a passing verification authorizes a commit",
       path: ["runStatus"],
+    });
+  }
+  if (value.declaredWriteSet.length === 0) {
+    ctx.addIssue({
+      code: "custom",
+      message: "a commit is authorized only over a non-empty declared write-set",
+      path: ["declaredWriteSet"],
     });
   }
 });

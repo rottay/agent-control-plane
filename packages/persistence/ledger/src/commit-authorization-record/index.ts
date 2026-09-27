@@ -93,8 +93,10 @@ export type {
  * (`LEASE_EXPIRED`); and every revalidated equality it is given holds. The canon calls it
  * at `COMMIT_RECORDED` and at `OUTCOME_UNKNOWN -> INTENDED`; in this cut the decision
  * calls it over the candidate `INTENDED` row, so the gate's own precondition "lease vivo"
- * is this function. P-17/C adds the canonical call at `COMMIT_RECORDED`, and P-17/B and C
- * extend condition 3 with base and tree against Git through `revalidated`.
+ * is this function. P-17/C adds the canonical call at `COMMIT_RECORDED`. P-17/B's commit
+ * writer is its second caller, immediately before any object write, and extends
+ * condition 3 with base and tree against Git, write-set and policy through
+ * `revalidated` (ADR 0127).
  *
  * The lease is the **recorded** lease (ND-6): the task stream's own `LEASE_ACQUIRED` and
  * `LEASE_REVOKED` whose payload coordinate is the receipt's, folded by runtime
@@ -128,7 +130,11 @@ export type {
 /**
  * The closed refusal vocabulary, sorted (ND-8). Every refusal names the field that
  * failed, never a value. Words shared with `VERIFICATION_REFUSALS` are the same fact
- * under another home and another class.
+ * under another home and another class. P-17/B (ADR 0127; ND-7) adds the two words its
+ * writer revalidates through `revalidated`: `REVALIDATED_BASE_MISMATCH` (HEAD's commit
+ * against the receipt's base) and `REVALIDATED_TREE_MISMATCH` (the tree read now against
+ * the receipt's), 26 -> 28; write-set and policy reuse `WRITE_SET_MISMATCH` and
+ * `POLICY_DIGEST_MISMATCH`.
  */
 export const COMMIT_AUTHORIZATION_REFUSALS = [
   "AUTHORIZATION_FORM_MISPLACED",
@@ -153,6 +159,8 @@ export const COMMIT_AUTHORIZATION_REFUSALS = [
   "RECEIPT_UNREADABLE",
   "RECEIPT_UNRECORDED",
   "RECORDED_AT_NOT_CANONICAL",
+  "REVALIDATED_BASE_MISMATCH",
+  "REVALIDATED_TREE_MISMATCH",
   "VERDICT_NOT_ACCEPT",
   "VERDICT_RECEIPT_MISMATCH",
   "VERDICT_UNRECORDED",

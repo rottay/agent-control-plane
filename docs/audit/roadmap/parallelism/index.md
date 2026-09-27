@@ -176,6 +176,29 @@ vigente no permite writers simultáneos aun con archivos disjuntos; la aceleraci
 proviene de preparación y revisión, no de ramas nuevas ni aceptación parcial.
 La ampliación se registra separada del baseline de 39 IDs, como manda el roadmap.
 
+### 1.6 Preparación de extensiones de producto
+
+El [registro planificado O1–O13](../index.md#22-extensiones-de-producto-planificadas)
+no altera la cola ni demora P-16. Pueden prepararse en paralelo, en sólo lectura
+y sobre manifests fijados: oráculos de perfiles/OCC/rebuild, corpus sintéticos de
+RAG y permisos, amenazas GOV, mapeo de recorridos y límites. Cada read-set sigue
+siendo exploratorio hasta revalidarlo; preparación no es lease de código.
+
+Contratos, vocabularios, schema/migraciones, cohortes, composición, assignment
+resolver, identidad de run, CLI/API, checker y salidas de suite son recursos
+compartidos, aunque el directorio difiera. Sus writers se serializan con los
+owners activos; no dos schemas ni suites pesadas concurrentes. Durante esta
+integración documental, sólo los literales/digest expresamente autorizados del
+checker cambian y se verifica el resto por reconstrucción contra el prestate.
+No se restaura un archivo activo ni se usa árbol limpio como release.
+
+E1(b) conserva baseline P-28/P-30; GOV-1/GOV-6/GOV-8 preparan su transición futura
+sin bloquearlos. Perfiles, gobernanza y X10 pueden tener preparación independiente;
+asignación/admisión consume el perfil exacto, acciones consumen autoridad/efectos
+existentes y cada implementación espera su diseño físico congelado. El DT fija
+intersecciones de read/write-set, owners y gates antes de dispatch; un resultado
+RO no recibe capacidad, gasto o aprobación humana por estar revisado.
+
 ## 2. Grafo de conflictos al congelar el scope
 
 El brief fija R(p) (entradas/autoridad), W(p) (escrituras canónicas), O(p)

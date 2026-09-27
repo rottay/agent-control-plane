@@ -125,8 +125,18 @@ function fixtureContent(text: string): Record<string, unknown> {
  * and by `node:crypto` over `envelopeIdentityPreimageV1`, from a copy of this
  * fixture outside the suite, and the two agree on all three. The prefix did not
  * move: a field change is not an encoding change.
+ *
+ * P-17/workspaceMode moved the version to `"2.12.0"` (ADR 0127), and the envelope's
+ * shape moved again: it gains `workspaceMode`, defaulted to
+ * `MUTABLE_WITHIN_WRITE_SET`, so the parsed envelope always carries it. The three
+ * vectors moved for the stamp and the field; their subjects did not (the fixture
+ * states the default, and an absent field digests the same, test below).
+ * Restamped, never lifted: recomputed twice, by `envelopeSha256` and by
+ * `node:crypto` over an independently key-sorted JSON of `TaskEnvelope.parse`, from
+ * a copy of this fixture outside the suite, and the two agree on all three. The
+ * prefix did not move.
  */
-const CONTRACT = "2.11.0";
+const CONTRACT = "2.12.0";
 const ISSUER = "kimi/k3/coordinator/01";
 const AT = "2026-09-11T09:00:00.000Z";
 const TASK_ID = "6f1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d";
@@ -164,6 +174,7 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
     },
     visualEvidenceRequired: false,
     commitPolicy: "LOCAL_COMMIT_WITH_RECEIPT",
+    workspaceMode: "MUTABLE_WITHIN_WRITE_SET",
     checkpointPolicy: { onEveryAtomicStep: false, maxStepsWithoutCheckpoint: 8 },
     ...overrides,
   };
@@ -308,6 +319,15 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
         candidate = envelope({ classification: "MECHANICAL" });
       } else if (key === "commitPolicy") {
         candidate = envelope({ commitPolicy: "NO_COMMIT", writeSet: [], conflictKeys: [] });
+      } else if (key === "workspaceMode") {
+        // `READ_ONLY` drags the commit policy and the write-set with it: the
+        // contract holds a read-only task to `NO_COMMIT` and an empty write-set
+        // (P-17/workspaceMode, ADR 0127). Against the `commitPolicy` branch above
+        // it is the mode alone that moves.
+        candidate = envelope({ workspaceMode: "READ_ONLY", commitPolicy: "NO_COMMIT", writeSet: [], conflictKeys: [] });
+        expect(envelopeSha256(candidate), key).not.toBe(
+          envelopeSha256(envelope({ commitPolicy: "NO_COMMIT", writeSet: [], conflictKeys: [] })),
+        );
       } else if (key === "taskId" || key === "initiativeId") {
         candidate = envelope({ [key]: "8b3d4e5f-6071-4c8d-ae9f-2a3b4c5d6e7f" });
       } else if (key === "issuedBy") {
@@ -331,6 +351,27 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
       // semantic change and the digest must still move.
       expect(envelopeSha256(candidate), key).not.toBe(baseline);
     }
+  });
+
+  it("an absent workspaceMode and the explicit default are one identity, and the field is in the preimage either way (P-17/workspaceMode, ND-1)", () => {
+    // `.default` rather than `.optional`: the parse fills the field, and the preimage
+    // is taken over the parse output, so two spellings of one mode cannot hash apart.
+    const explicit = envelope();
+    const absent = envelope();
+    delete absent["workspaceMode"];
+    expect("workspaceMode" in absent).toBe(false);
+
+    expect(envelopeSha256(absent)).toBe(envelopeSha256(explicit));
+    expect(envelopeIdentityPreimageV1(absent)).toBe(envelopeIdentityPreimageV1(explicit));
+    expect(envelopeIdentityPreimageV1(absent)).toContain('"workspaceMode":"MUTABLE_WITHIN_WRITE_SET"');
+    expect(TaskEnvelope.parse(absent).workspaceMode).toBe("MUTABLE_WITHIN_WRITE_SET");
+
+    // And the other member is another identity.
+    const readOnly = envelope({ workspaceMode: "READ_ONLY", commitPolicy: "NO_COMMIT", writeSet: [], conflictKeys: [] });
+    expect(envelopeIdentityPreimageV1(readOnly)).toContain('"workspaceMode":"READ_ONLY"');
+    expect(envelopeSha256(readOnly)).not.toBe(
+      envelopeSha256(envelope({ commitPolicy: "NO_COMMIT", writeSet: [], conflictKeys: [] })),
+    );
   });
 
   it("the account, the attempt and the resolved model are not in the preimage", () => {
@@ -491,10 +532,10 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
     // encoding changes while staying internally consistent — every other test
     // here would compute the new bytes the new way and agree with itself.
     const vectors: readonly (readonly [Record<string, unknown>, string])[] = [
-      [envelope(), "2e7709f252f589d304e09fbe3d49e98e389382ba4d300eb2d9fae31629ff59a2"],
+      [envelope(), "2209db0d6454575dd823fe2907193220042d7add6592c928dc7bc23ae5d47632"],
       [
         withInstruction("Delete the production ledger."),
-        "733ed12691de36405940975f99beebe8523bfc284043a8492d65f0e8ad76ffe0",
+        "ac075fd986e79ba424cd41d3efeb8078b3ff696b37c632616225154094d3fedf",
       ],
       [
         envelope({
@@ -504,7 +545,7 @@ describe("the envelope revision preimage is pinned, not merely consistent", () =
           visualEvidenceRequired: true,
           eligibility: { roles: ["reviewer"], providers: ["anthropic"], requiredCapabilities: [] },
         }),
-        "6a0a2a464f7e893305769de61b53dc26443e9b27b9990b3fa9339cecf238e746",
+        "01b4e46566f3d8ad50bf668436f2b73669cf140bc6d299b838d2b03f08c8737c",
       ],
     ];
 

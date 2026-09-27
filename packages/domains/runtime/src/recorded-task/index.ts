@@ -85,7 +85,8 @@ export type {
  *    is not yet a walk the plane may pay for. `recordedWalkRefusal`, beside the
  *    reader and never inside it, names the three facts every recorded walk needs
  *    before its first spend, in the verification runner's own order: declared
- *    checks (`CHECKS_UNDECLARED`), a write-set (`WRITE_SET_EMPTY`) and a writer id
+ *    checks (`CHECKS_UNDECLARED`), a write-set outside `READ_ONLY` (`WRITE_SET_EMPTY`;
+ *    P-17/workspaceMode, ADR 0127) and a writer id
  *    the elected route can issue (`WRITER_ID_UNISSUED`, through `writerIdIssuerFor`,
  *    never a restated set). The daemon's recorded start asks it once, after the
  *    read and before anything is appended. The reader itself is unchanged, so the
@@ -260,8 +261,9 @@ export function readRecordedTask(input: RecordedTaskReaderInput): RecordedTaskOu
  *   verification could run and no verdict could follow.
  * - `WRITER_ID_UNISSUED` — the elected route has no writer id issuer (today only
  *   the Claude CLI under a subscription has one; P-28 widens the set).
- * - `WRITE_SET_EMPTY` — the envelope declares no path. Unlawful under both commit
- *   policies until P-17's `workspaceMode` (decision 242).
+ * - `WRITE_SET_EMPTY` — the envelope declares no path and is not `READ_ONLY`
+ *   (decision 242, relaxed for `READ_ONLY` by P-17/workspaceMode, decision 249).
+ *   A `READ_ONLY` task is walked with an empty write-set; it still needs checks.
  *
  * No `RUNNER_` prefix: no runner ran. The admission checks them in the runner's
  * order -- checks, write-set, issuer -- and answers the first.
@@ -289,7 +291,9 @@ export function recordedWalkRefusal(
 ): RecordedWalkRefused | null {
   const envelope = task.envelope;
   if (envelope.validation.commands.length === 0) return refuseWalk("CHECKS_UNDECLARED", "envelope.validation.commands");
-  if (envelope.writeSet.length === 0) return refuseWalk("WRITE_SET_EMPTY", "envelope.writeSet");
+  if (envelope.workspaceMode !== "READ_ONLY" && envelope.writeSet.length === 0) {
+    return refuseWalk("WRITE_SET_EMPTY", "envelope.writeSet");
+  }
   if (writerIdIssuerFor([route]) === null) return refuseWalk(WRITER_ID_UNISSUED, "route");
   return null;
 }

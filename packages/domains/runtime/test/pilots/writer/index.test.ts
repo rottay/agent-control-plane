@@ -576,7 +576,9 @@ describe("the writer packet, walked end to end", () => {
       expect(conformance.violations).toEqual([]);
     }
 
-    const commitMessageBody = "p7c: update notes/todo.txt";
+    // The body is the recorded envelope's title, read by the authorization and never
+    // supplied (P-17/B, ND-3): the receipt and the commit carry the same words.
+    const commitMessageBody = envelope.title;
     const checks: readonly RecordedCheck[] = [
       { command: "git diff --check", exitCode: diffCheck.status ?? 1, ranAt: WRITER_CHECK_RAN_AT },
     ];
@@ -603,7 +605,6 @@ describe("the writer packet, walked end to end", () => {
       observation: worktreeObservation,
       treeSha,
       checks,
-      commitMessageBody,
     });
     expect(authorization.ok).toBe(true);
     if (!authorization.ok) throw new Error("expected authorization to be granted");
@@ -813,7 +814,6 @@ describe("the fail-closed probes", () => {
       observation,
       treeSha: PROBE_TREE_SHA,
       checks: [{ command: "git diff --check", exitCode: 0, ranAt: WRITER_CHECK_RAN_AT }],
-      commitMessageBody: "should never be authorized",
     });
     expect(outcome.ok).toBe(false);
     expect((outcome as AuthorizationRefused).reason).toBe("VERIFIER_NOT_INDEPENDENT");
@@ -865,7 +865,6 @@ describe("the fail-closed probes", () => {
       checks: [
         { command: "node -e process.exit(7)", exitCode: failing.status ?? 1, ranAt: WRITER_CHECK_RAN_AT },
       ],
-      commitMessageBody: "should never be authorized",
     });
     expect(outcome.ok).toBe(false);
     expect((outcome as AuthorizationRefused).reason).toBe("CHECK_FAILED");
@@ -914,7 +913,6 @@ describe("the fail-closed probes", () => {
       observation,
       treeSha: PROBE_TREE_SHA,
       checks: [{ command: "git diff --check", exitCode: 0, ranAt: WRITER_CHECK_RAN_AT }],
-      commitMessageBody: "should never be authorized",
     });
     expect(outcome.ok).toBe(false);
     expect((outcome as AuthorizationRefused).reason).toBe("WRITE_SET_VIOLATION");
@@ -967,7 +965,6 @@ describe("the fail-closed probes", () => {
       observation,
       treeSha: PROBE_TREE_SHA,
       checks: [{ command: "git diff --check", exitCode: 0, ranAt: WRITER_CHECK_RAN_AT }],
-      commitMessageBody: "p7c: probe commit",
     }) as AuthorizationGranted;
     expect(authorization.ok).toBe(true);
     const receipt = authorization.receipt;

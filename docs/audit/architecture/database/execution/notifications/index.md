@@ -136,6 +136,25 @@ hasta que las tres coincidan con H, la consulta combinada rehúsa como no prepar
 Nada convierte el progreso parcial en una cabeza global. Comparación canónica:
 cada rowset filtrado se ordena por notice_id, sin rowid ni reloj de rebuild.
 
+## Extensión planificada: avisos de gobernanza
+
+[E1(b)](../../../governance/index.md#114-modo-de-un-solo-operador-y-equipos)
+conserva este baseline y sus tres particiones. GOV-1/GOV-8 poseen una futura
+transición explícita de productor/migración/rebuild: tipos propuestos
+`GOVERNANCE_HOLD`/`INCIDENT_OPENED` y destinatario principal realmente validado en
+registro y despacho. P-30 no espera esa transición; no se habilitan avisos
+gobernados mediante CHECK sintáctico, cuenta de proveedor o worker renombrado.
+
+No agregar partición registry a notificaciones: hechos/incidentes SYSTEM se
+consultan mediante sus proyecciones autorizadas, sin inventar iniciativa/tarea
+para emitir un aviso. Pérdida de aprobador conserva `NO_ELIGIBLE_APPROVER` y
+notifica administradores autorizados sólo si existe canal/scope soportado;
+no promete entrega SYSTEM ni herencia al operador local. Sin canal, estado y
+evidencia siguen accesibles por lectura autorizada. Fallar/entregar un aviso
+nunca permite una acción, cuenta como aprobación o expone contenido privado.
+Validación cross-cohort es tipada/causal, no FK ciega entre streams; reafirmar
+baseline local y aislamiento de particiones en rebuild antes de cerrar GOV-8.
+
 ## 3. Negativos del dato
 
 Dos productores sobre el último cupo sólo confirman una decisión QUEUED.

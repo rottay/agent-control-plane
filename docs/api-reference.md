@@ -103,7 +103,7 @@ the mechanism and its anchors.
 | `taskToolCalls` | `ToolCallExecuteRequest` | one explicit tool call, and whatever it did: this is the only route that **acts** through a child process (the private read `toolServerTools` starts one only to ask, and records nothing), and a refused call is a `200` with a recorded row rather than an error |
 | `taskLifecycle` | `TaskLifecycleRequest` | one lifecycle verb — `CANCEL` or `ATTACH` — against an attempt already running; the rows it appends are the ones the cancellation settlement already produced, and `ATTACH` appends none |
 | `initiatives` | `InitiativeRegistrationRequest` | one initiative, under the caller's own `initiativeId`; its objective is published to the private artifact plane and the event carries the digest and the reference, never the objective |
-| `tasks` | `TaskIntakeRequest` | one task intake, under the caller's client key and task id: the envelope published to the private artifact plane, revision 1 recorded by reference, and the role resolved from the registry with the vector it was read at; nothing executes the task. From `0.25.0` the envelope carries no `objective`: `content` states the instruction once |
+| `tasks` | `TaskIntakeRequest` | one task intake, under the caller's client key and task id: the envelope published to the private artifact plane, revision 1 recorded by reference, and the role resolved from the registry with the vector it was read at; nothing executes the task. From `0.25.0` the envelope carries no `objective`: `content` states the instruction once. From `0.26.0` it carries `workspaceMode`, `MUTABLE_WITHIN_WRITE_SET` by default or `READ_ONLY` |
 | `initiativeStepGraph` | `TaskGraphDeclarationRequest` | one revision of one step's task graph, under the caller's own `graphRevisionId`: a `TASK_GRAPH_DECLARED` and one `TASK_GRAPH_NODE_DECLARED` per node, all or none; nodes are task revisions and every edge carries its `failPolicy`; nothing dispatches |
 | `initiativeTaskStep` | `TaskStepLinkRequest` | one task's link to a declared step of its initiative, from `0.23.0`: a `TASK_STEP_LINKED` through the single initiative door, an adoption of a task that entered with no step or a re-link to the same step id in a strictly later version; the link's identity is its task and target version; nothing dispatches |
 
@@ -163,6 +163,12 @@ From P-16/D2 (ADR 0125), still `0.25.0`: a `NO_COMMIT` envelope with an empty wr
 is `409` `WRITE_REFUSED` with `REQUEST_INVALID` `WRITE_SET_EMPTY` and the detail
 `envelope.writeSet`, publishing and appending nothing; under `LOCAL_COMMIT_WITH_RECEIPT`
 the contract refuses it first, `400` at `envelope.commitPolicy`.
+From `0.26.0` (contract `2.12.0`, ADR 0127) the envelope carries `workspaceMode`,
+`MUTABLE_WITHIN_WRITE_SET` when absent. A `READ_ONLY` `NO_COMMIT` envelope with an
+empty write-set is the lawful read-only task and enters. A `READ_ONLY` envelope that
+names a path is `400` at `envelope.writeSet`; one that carries a commit policy other
+than `NO_COMMIT` is `400` at `envelope.workspaceMode`, as is a value outside the two.
+`MUTABLE_WITHIN_WRITE_SET` with an empty write-set keeps the `409` `WRITE_SET_EMPTY` above.
 An intake takes no lease: two tasks with overlapping write-sets both enter, and the
 conflict is reported when one is acquired. No door mints a task id or a client key.
 

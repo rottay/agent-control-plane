@@ -3401,6 +3401,58 @@ describe("the bump's three acts on the initiative stream (P-26 cut B, ADR 0111)"
     reopened.close();
   });
 
+  it("P-17/workspaceMode act 1, initiative door: new initiative work stamped 2.11.0 is refused naming both versions; an exact replay of a stored 2.11.0 event is returned", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const registration = makeInitiativeEvent();
+    ledger.appendInitiativeEvent(registration);
+    ledger.close();
+    restampInitiativeHistory(path, "2.11.0");
+
+    const reopened = open(path);
+    const stored = reopened.listInitiativeEvents({ initiativeId: INITIATIVE_A }).events[0];
+    if (stored === undefined) throw new Error("expected the registration");
+    expect(stored.event.contractVersion).toBe("2.11.0");
+    const replay = reopened.appendInitiativeEvent({ ...stored.event });
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.eventSha256).toBe(stored.eventSha256);
+
+    const stale = caught(() =>
+      reopened.appendInitiativeEvent({
+        ...makeInitiativeEvent({ transitionId: "initiative.paused", type: "INITIATIVE_STATE_CHANGED", fromStatus: "ACTIVE", toStatus: "PAUSED" }),
+        contractVersion: "2.11.0",
+      }),
+    );
+    expect(stale).toBeInstanceOf(LedgerValidationError);
+    expect(String(stale)).toContain(CONTRACT_VERSION);
+    expect(String(stale)).toContain("2.11.0");
+    expect(reopened.status().initiativeEventCount).toBe(1);
+    expect(reopened.verifyIntegrity().problems).toEqual([]);
+    reopened.close();
+  });
+
+  it("P-17/workspaceMode act 1, artifact door: a new registry event stamped 2.11.0 is refused naming both versions; an exact replay of a stored 2.11.0 event is returned", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const intended = publicationIntended({ idempotencyKey: "publish/p17wm/1" });
+    expect(ledger.appendArtifactEvent(intended).inserted).toBe(true);
+    ledger.close();
+    restampRegistryHistory(path, "2.11.0");
+
+    const reopened = open(path);
+    const replay = reopened.appendArtifactEvent({ ...intended, contractVersion: "2.11.0" });
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.sequence).toBe(1);
+
+    const stale = onlyIssue(caught(() => reopened.appendArtifactEvent(publicationSucceeded({ contractVersion: "2.11.0" }))));
+    expect(stale.path).toBe("contractVersion");
+    expect(stale.message).toContain(CONTRACT_VERSION);
+    expect(stale.message).toContain("2.11.0");
+    expect(reopened.status().headSequence).toBe(0);
+    expect(reopened.verifyIntegrity().problems).toEqual([]);
+    reopened.close();
+  });
+
   it("refuses by name a rebuild over an orphan step, and over a version whose steps stop short", () => {
     const orphan = open(temporaryDatabase());
     orphan.appendInitiativeEvent(makeInitiativeEvent());
@@ -8436,14 +8488,15 @@ describe("a version this build does not read is refused, by name", () => {
     );
     ledger.close();
 
-    restampVersion(path, 2, "2.12.0");
+    // `"2.12.0"` stood here until P-17/workspaceMode put it in force (ADR 0127).
+    restampVersion(path, 2, "2.13.0");
     const reopened = open(path);
 
     // 1. Reading events. The whole page fails closed rather than returning a
     //    row this build cannot vouch for.
     const listed = caught(() => reopened.listEvents());
     expect(listed).toBeInstanceOf(LedgerIntegrityError);
-    expect(String(listed)).toContain("2.12.0");
+    expect(String(listed)).toContain("2.13.0");
     expect(String(listed)).toContain(SUPPORTED_CONTRACT_VERSIONS.join(", "));
 
     // 2. Verifying. The problem is reported with its own kind, and the detail
@@ -8454,7 +8507,7 @@ describe("a version this build does not read is refused, by name", () => {
       (problem) => problem.kind === "EVENT_CONTRACT",
     );
     expect(contractProblems).toHaveLength(1);
-    expect(contractProblems[0]?.detail).toContain("2.12.0");
+    expect(contractProblems[0]?.detail).toContain("2.13.0");
     expect(contractProblems[0]?.detail).toContain(CONTRACT_VERSION);
     expect(contractProblems[0]?.sequence).toBe(2);
 
@@ -8462,7 +8515,7 @@ describe("a version this build does not read is refused, by name", () => {
     //    read model that is missing an event without saying so.
     const rebuilt = caught(() => reopened.rebuildReadModel());
     expect(rebuilt).toBeInstanceOf(LedgerIntegrityError);
-    expect(String(rebuilt)).toContain("2.12.0");
+    expect(String(rebuilt)).toContain("2.13.0");
   });
 
   it("keeps the general message for every other way a row can fail the contract", () => {
@@ -8511,9 +8564,10 @@ describe("a version this build does not read is refused, by name", () => {
     // supported-but-not-current members, five in the loop. P-06/B and P-07
     // escalón B (ADR 0098, a cohort again) moved it twice more, P-15 escalón C
     // (ADR 0103, a cohort) once more, P-26 cut B (ADR 0111, both) once more, and
-    // P-16/A1 (ADR 0120, an identity) once more.
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "2.10.0", CONTRACT_VERSION]);
-    expect(CONTRACT_VERSION).toBe("2.11.0");
+    // P-16/A1 (ADR 0120, an identity) once more, and P-17/workspaceMode (ADR 0127,
+    // an identity) once more.
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "2.10.0", "2.11.0", CONTRACT_VERSION]);
+    expect(CONTRACT_VERSION).toBe("2.12.0");
 
     // The history is fabricated with `restampVersion` rather than taken from a
     // fixture, and the correction matters: there is no recorded `"2.2.0"`
@@ -8662,7 +8716,7 @@ describe("a version this build does not read is refused, by name", () => {
     migrated.append(
       responseOccurrence({ taskId, transitionId: "response-1", promptOccurrenceId: "po-1" }),
     );
-    expect(CONTRACT_VERSION).toBe("2.11.0");
+    expect(CONTRACT_VERSION).toBe("2.12.0");
     expect(migrated.listEvents().events.at(-1)?.event.contractVersion).toBe(CONTRACT_VERSION);
     expect(migrated.getResponseOccurrenceForPrompt("po-1")?.occurrenceId).toBe("ro-1");
     expect(migrated.rebuildReadModel().replayedEvents).toBe(6);
@@ -8785,7 +8839,8 @@ describe("a version this build does not read is refused, by name", () => {
   it("P-16/A1 act 1: new task work stamped 2.10.0 is refused naming both versions; an exact replay of a stored 2.10.0 event is returned", () => {
     // ADR 0120 moved the version in force to 2.11.0; the door's rule is already
     // paid (ADR 0076), and this re-proves it one version on, with no source moved.
-    expect(CONTRACT_VERSION).toBe("2.11.0");
+    // ADR 0127 moved it on to 2.12.0; the 2.10.0 history is still read the same way.
+    expect(CONTRACT_VERSION).toBe("2.12.0");
     const path = temporaryDatabase();
     const ledger = open(path);
     const taskId = randomUUID();
@@ -8836,7 +8891,67 @@ describe("a version this build does not read is refused, by name", () => {
     const next = reopened.append(makeEvent({ taskId, transitionId: "three", fromState: "DISCOVERED", toState: "DISCOVERED" }));
     expect(next.inserted).toBe(true);
     expect(next.record.event.contractVersion).toBe(CONTRACT_VERSION);
-    expect(reopened.listEvents().events.map((record) => record.event.contractVersion)).toEqual(["2.10.0", "2.10.0", "2.11.0"]);
+    // The new work is the version in force: 2.12.0 since P-17/workspaceMode (ADR 0127).
+    expect(reopened.listEvents().events.map((record) => record.event.contractVersion)).toEqual(["2.10.0", "2.10.0", "2.12.0"]);
+    expect(reopened.verifyIntegrity().problems).toEqual([]);
+    reopened.close();
+  });
+
+  it("P-17/workspaceMode act 1: new task work stamped 2.11.0 is refused naming both versions; an exact replay of a stored 2.11.0 event is returned", () => {
+    // ADR 0127 moved the version in force to 2.12.0; the door's rule is paid
+    // (ADR 0076), and this re-proves it one version on, with no source moved.
+    expect(CONTRACT_VERSION).toBe("2.12.0");
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    const first = makeEvent({ taskId, transitionId: "one" });
+    ledger.append(first);
+    ledger.close();
+    restampHistory(path, "2.11.0");
+
+    const reopened = open(path);
+    const replay = reopened.append({ ...first, contractVersion: "2.11.0" });
+    expect(replay.inserted).toBe(false);
+    expect(replay.record.sequence).toBe(1);
+    expect(replay.record.event.contractVersion).toBe("2.11.0");
+
+    const stale = refusalOf(() =>
+      reopened.append({
+        ...makeEvent({ taskId, transitionId: "two", fromState: "DISCOVERED", toState: "DISCOVERED" }),
+        contractVersion: "2.11.0",
+      }),
+    );
+    expect(stale.path).toBe("contractVersion");
+    expect(stale.message).toContain(CONTRACT_VERSION);
+    expect(stale.message).toContain("2.11.0");
+    expect(reopened.status().headSequence).toBe(1);
+    expect(reopened.verifyIntegrity().problems).toEqual([]);
+    reopened.close();
+  });
+
+  it("P-17/workspaceMode act 3 (P-P18-2): a 2.11.0 task history opens, reads, verifies and rebuilds row for row under 2.12.0, and takes new 2.12.0 work", () => {
+    const path = temporaryDatabase();
+    const ledger = open(path);
+    const taskId = randomUUID();
+    ledger.append(makeEvent({ taskId, transitionId: "one" }));
+    ledger.append(makeEvent({ taskId, transitionId: "two", fromState: "DISCOVERED", toState: "DISCOVERED" }));
+    ledger.close();
+    restampHistory(path, "2.11.0");
+
+    const reopened = open(path);
+    const stored = reopened.listEvents().events;
+    expect(stored.map((record) => record.event.contractVersion)).toEqual(["2.11.0", "2.11.0"]);
+    const tasksBefore = reopened.listTasks().tasks;
+    expect(reopened.verifyIntegrity().problems).toEqual([]);
+    expect(reopened.rebuildReadModel().replayedEvents).toBe(2);
+    expect(reopened.listEvents().events).toEqual(stored);
+    expect(reopened.listTasks().tasks).toEqual(tasksBefore);
+    expect(reopened.verifyIntegrity().problems).toEqual([]);
+
+    const next = reopened.append(makeEvent({ taskId, transitionId: "three", fromState: "DISCOVERED", toState: "DISCOVERED" }));
+    expect(next.inserted).toBe(true);
+    expect(next.record.event.contractVersion).toBe(CONTRACT_VERSION);
+    expect(reopened.listEvents().events.map((record) => record.event.contractVersion)).toEqual(["2.11.0", "2.11.0", "2.12.0"]);
     expect(reopened.verifyIntegrity().problems).toEqual([]);
     reopened.close();
   });
@@ -15415,8 +15530,8 @@ describe("a revision names its envelope by a registered reference, by cohort, ne
     expect(stale.message).toContain("2.4.0");
     // P-32/captura B moved the version in force on to 2.6.0 (ADR 0089); the
     // cohort's rule reads every version after the closed list the same way.
-    expect(CONTRACT_VERSION).toBe("2.11.0");
-    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "2.10.0", "2.11.0"]);
+    expect(CONTRACT_VERSION).toBe("2.12.0");
+    expect([...SUPPORTED_CONTRACT_VERSIONS]).toEqual(["2.2.0", "2.3.0", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "2.10.0", "2.11.0", "2.12.0"]);
     ledger.close();
   });
 });
@@ -17152,7 +17267,7 @@ describe("usage is a declared stream and a measured observation, and the door se
     expect(stale.path).toBe("contractVersion");
     expect(stale.message).toContain(CONTRACT_VERSION);
     expect(stale.message).toContain("2.5.0");
-    expect(CONTRACT_VERSION).toBe("2.11.0");
+    expect(CONTRACT_VERSION).toBe("2.12.0");
     expect(settlementsOf(path, effectId)).toHaveLength(1);
     expect(reopened.verifyIntegrity().ok).toBe(true);
   });
@@ -18039,7 +18154,7 @@ describe("an effect records its result by reference, with its outcome (P-07 esca
       resultArtifactReferenceId: RESULT_REFERENCE,
       resultSha256: RESULT_DIGEST,
     });
-    expect(CONTRACT_VERSION).toBe("2.11.0");
+    expect(CONTRACT_VERSION).toBe("2.12.0");
     expect(ledger.verifyIntegrity().ok).toBe(true);
     ledger.close();
   });
@@ -18434,7 +18549,7 @@ describe("a delivery pins the catalog version it will be valued against (P-15 es
       catalogDocumentId: FIXTURE_CATALOG,
       catalogVersion: 1,
     });
-    expect(CONTRACT_VERSION).toBe("2.11.0");
+    expect(CONTRACT_VERSION).toBe("2.12.0");
     const count = ledger.status().eventCount;
     expect(ledger.append(intention).inserted).toBe(false);
     expect(ledger.status().eventCount).toBe(count);
@@ -18442,7 +18557,7 @@ describe("a delivery pins the catalog version it will be valued against (P-15 es
     const path = ledger.path;
     ledger.close();
     expect(dispatchRows(path).map((row) => [row["dispatch_contract_version"], row["catalog_document_id"], row["catalog_version"]])).toEqual([
-      ["2.11.0", FIXTURE_CATALOG, 1],
+      ["2.12.0", FIXTURE_CATALOG, 1],
     ]);
   });
 

@@ -202,10 +202,10 @@ perfil, no todos en un release.
 | X07 | Base de datos intercambiable | persistence | M12 | Ledger transaccional equivalente; sin dependencia de una base compartida de Rottay |
 | X08 | Artefactos, límites y retención | artifacts | M1/M12 | Permisos, hash, backup y GC bajo generación exclusiva; una referencia a bytes borrados es explícita |
 | X09 | Credenciales y autenticación intercambiables | accounts | M8/M12 | Resolver, identidad y autorización separados; el proveedor de login no posee la política |
-| X10 | Memoria y retrieval por iniciativa | integraciones | M12 | Embeddings y vector store seleccionables, con permisos y citaciones; índice reconstruible |
+| X10 | Memoria y retrieval por iniciativa | integraciones | M12 | Embeddings y vector store seleccionables, permisos/citas e índice reconstruible; selección planificada de §13.1 incluye contexto y propuestas de acciones, no soporte ya implementado |
 | X11 | Mensajes entre agentes | integraciones | M9/M12 | Inbox y outbox causales e idempotentes; A2A futuro no duplica el scheduler |
 | X12 | Harness o framework externo | integraciones | M7/M12 | Un dueño de retry y ownership; los límites y la cancelación atraviesan el harness |
-| X13 | Multimodalidad | runtime | M1/M12 | Bloques de contenido versionados; texto, imagen, audio y realtime con capacidades distintas y acotadas |
+| X13 | Multimodalidad | runtime | M1/M12 | Bloques de contenido versionados y capacidades distintas; §13.2 selecciona sólo captura de voz → STT revisable → inserción explícita de texto en brief/instrucciones, opcional y planificada; las demás modalidades siguen no seleccionadas |
 | X14 | Logs, trazas y métricas | observation | M10 | OTLP con recepción parcial honesta; no depender de un backend para ejecutar |
 | X15 | Egress y seguridad de contenidos | runtime | M1/M8 | El prompt sale sólo al destino autorizado; los artefactos privados no aparecen en el stream público ni en trazas |
 | X16 | Aislamiento y extensión no confiable | providers | M8 | Perfil de red, filesystem e hijos efectivo; un plugin no hereda la autoridad del host |
@@ -219,6 +219,10 @@ perfil, no todos en un release.
 ---
 
 ## 13. Perfil de certificación: las 121 filas, asignadas
+
+**Perfil histórico de la consolidación, preservado sin modificación retroactiva.**
+El perfil planificado vigente es el sucesor de §13.2; §13.1 conserva el primer
+delta fechado, sin reescribir su tabla histórica.
 
 Asignación **exhaustiva y previa**, como exige
 [calidad §7.1](../quality/index.md). Ninguna fila cambia de estado después de ver
@@ -259,6 +263,63 @@ Notas que evitan malentendidos:
   declara listo el diseño: los huecos materiales se registran en packets §5.1.
 
 ---
+
+### 13.1 Delta planificado del owner 2026-09-26
+
+**Primer delta histórico planificado.** La tabla conserva la selección X10 en
+ese momento; el perfil sucesor vigente está en §13.2. No es una certificación.
+
+El [roadmap canónico](../../ROADMAP.md) incorpora la selección explícita de X10:
+RAG contextual **y propuestas de acciones** con confirmación, permisos de fuente,
+citas y revocación. Es `OPTIONAL_SELECTED` como requisito **planificado**, no
+funcional ni soporte certificado. La implementación/aceptación requieren la
+[extensión de integraciones](../architecture/integrations/index.md#51-recuperación-contextual-y-acciones-seleccionadas)
+y sus gates; P-36 custodia selección, no absorbe un nuevo motor ni hereda su cierre.
+
+| Estado planificado vigente | Cantidad | Delta respecto del perfil histórico |
+| --- | --- | --- |
+| MANDATORY | 115 | mismos IDs y alcance baseline |
+| NOT_SELECTED | 3 | X03, X11, X13; X10 sale de esta categoría |
+| DEFERRED | 2 | G3 y H7, sin cambio |
+| OPTIONAL_SELECTED | 1 | X10, contexto + acciones propuestas |
+
+115 + 3 + 2 + 1 = **121**, los mismos IDs; no una fila 122 ni aceptación añadida.
+El primer perfil certificado que anuncie X10 debe demostrar su alcance completo.
+No se seleccionan comunicación externa de agentes, voz ni acceso remoto como
+efecto lateral. La búsqueda autorizada de registros no depende de X10.
+
+Perfiles AI, extensión P-28 de equipos/historia, etapas/propuestas y gobernanza
+son criterios de ampliación **separados** del baseline. Sus dueños, secuencia,
+negativos y cierre están en el [registro O1–O13](../roadmap/index.md#22-extensiones-de-producto-planificadas)
+y [gobernanza](../architecture/governance/index.md). No se inflan los 39 packets ni
+se declara un porcentaje sobre los 121 para trabajo que no tenían originalmente.
+
+### 13.2 Perfil sucesor: voz acotada 2026-09-26
+
+El [roadmap canónico](../../ROADMAP.md) registra una selección **separada y
+explícita** del owner: X13 OPTIONAL_SELECTED planificado sólo para captura de voz
+iniciada por el usuario → transcripción revisable → inserción explícita de texto
+en brief de feature o instrucciones de agente. No es efecto lateral de X10 ni
+micrófono/STT implementado. El alcance y gates viven en
+[integraciones §5.2](../architecture/integrations/index.md#52-captura-y-transcripción-de-voz-seleccionadas).
+
+| Estado planificado vigente | Cantidad | Alcance |
+| --- | --- | --- |
+| MANDATORY | 115 | mismos IDs y alcance baseline |
+| NOT_SELECTED | 2 | X03 y X11 |
+| DEFERRED | 2 | G3 y H7, sin cambio |
+| OPTIONAL_SELECTED | 2 | X10 contexto + acciones; X13 sólo captura/STT/texto revisado |
+
+115 + 2 + 2 + 2 = **121**. Como X12, X13 se divide **por alcance, no por conteo**:
+TTS, diálogo realtime, imagen/video, análisis multimodal general, identificación
+o clonado de voz y entrada de archivos/URLs arbitrarios permanecen no seleccionados.
+No se inventa un estado parcial, fila 122 ni selección de proveedor/codec.
+P-06/M12 conserva la responsabilidad primaria; los 39 packets baseline y perfiles
+históricos 115/4/2/0 y 115/3/2/1 permanecen intactos. La selección no agrega
+cobertura demostrada, readiness ni aceptación; habilitar exige contrato físico,
+privacidad, adapter y conformidad real. Mock guionado no acredita STT ni runtime.
+Biblioteca reusable, skills/nivel, planificación, intención de commits y seguimiento
+amplían criterios de O1–O13 con avance separado, no duplican estos 121 IDs.
 
 ## 14. Cobertura de las dimensiones de la rúbrica anterior
 

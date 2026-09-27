@@ -365,6 +365,44 @@ Límites:
 
 ---
 
+## 8.2 Aceptación futura de las extensiones de producto
+
+Obligaciones del [registro O1–O13](../../roadmap/index.md#22-extensiones-de-producto-planificadas),
+**no pruebas ejecutadas ni implementación aceptada**. Congelar negativos,
+fixtures sintéticos, oráculos independientes y refusals tipados antes de código.
+Los presupuestos baseline siguientes no se relajan; capacidad UNKNOWN no es cero.
+
+| Frontera | Evidencia futura que exige el cierre |
+| --- | --- |
+| Identidad y límites | round-trip de nombres NFC no latinos, límites scalar/bytes y controles/bidi; especialidad no agrega rol; cuenta/perfil/worker no validan humano; ausencia de retrato válida y ASCII legacy opcional con sus límites exactos; `<`, `>` y texto parecido a markup/URL siguen escapados y no producen DOM/script/network/media desde texto (el asset builtin validado es otra variante); instrucciones sin NUL, sin truncar y dentro de presupuesto compuesto |
+| Retratos builtin | allowlist exacta ID/versión/digest; ID/version desconocidos, digest distinto, media activa o fuera de límites y manifest no admitido rechazan/declaran unavailable según fase; URL/path/traversal/data/base64/HTML/CSS/campos extra/variantes híbridas no cargan recursos; ninguna red ni markup dirigido por entrada; asociación perfil→retrato privada aunque el asset sea público; edición/replay/OCC por descriptor exacto, historia pineada sin latest/backfill ni binarios en eventos/logs/trazas; ausencia, asset retirado o lector no compatible presentan placeholder neutral sin autoridad ni bloqueo de trabajo ya autorizado |
+| Perfil y OCC | dos ediciones desde un head: un ganador; igual key/payload normalizado reproduce resultado almacenado tras fresh access; otra preimagen conflictúa, no default recalculado; clone ID nuevo, nombres duplicados no se fusionan |
+| Biblioteca reusable | publicación workspace explícita bajo ownership/ACL existentes; VIEW de proyecto no revela biblioteca privada ni nombres/counts/asignaciones/cuentas ajenos; legacy sin sharing sigue privado tras editar; clone exige leer origen y publicar nuevo ID; cambiar proyecto no borra pin reusable; revocación antes de lectura/adopción |
+| Nivel y skills | ausencia legacy válida; junior/mid/senior/lead sin rol/grant/ranking; 0–12 skills, NFC/trim explícito, 1–40 escalares y ≤160 bytes por entrada, controles prohibidos y deduplicación por bytes normalizados en orden; límites/replay/OCC y presupuesto total sin truncar; ningún backfill de historia desde latest |
+| Archivo e historia | editar/renombrar no reescribe revisiones/runs/receipts; archive preserva pins y trabajo ya admitido/en curso, rechaza nueva selección/adopción/admisión incluso desde pin antiguo; probar ambas carreras archive/admission, sin fallback; revocación de permisos separada |
+| Asignación y admisión | adopción explícita, base de plan/asignación stale rechaza; STEP > INITIATIVE > GLOBAL al vector; ausencia/perfil ajeno/revisión no vista no se sustituye por latest; sin perfil baseline válido; approval exacta y worker emitido real, no independencia desde nombres |
+| Rebuild/cohortes | no fake task/initiative ni quinto stream; document kind/parent/revision/generación erróneos rechazan; cadena rota o dependencia atrasada no se publica; rebuild determinista al vector; una partición no borra otra; FK sólo misma cohorte y validación causal tipada cross-cohort |
+| Artefactos/composición | captures exactas y pins de lifetime; cambio de generación/bytes/asignación/destino invalida binding; send usa captura aprobada; GONE honesto, no nombre de latest; perfil/contexto jamás reemplazan envelope/política ni filtran contenido a sinks |
+| Gobernanza | todos N-GOV-01…N-GOV-45 de [su dueño §15](../../architecture/governance/index.md#15-pruebas-y-aceptación-medida), incluyendo E1(b) baseline operativo sin sujetos gobernados, último aprobador perdido con y sin recuperador autorizado, clasificador falible nunca única causa de DENY, SECRET_BEARING declarado/determinista siempre protegido |
+| Recuperación/citas | ACL antes de indexar/nombrar/contar, query, cita y send; revocación entre retrieval/send y caché cruzada; fuente/generación vieja no latest; captura GONE; instrucciones maliciosas en documentos/chunks/quotes/tool results no amplían scope, permisos, destino ni ejecutan |
+| Acciones/conversación | chat “sí” no autoriza; operación/base/payload exactos, confirmación y permisos independientes; plan draft no run; payload distinto bajo misma key conflictúa; replay no duplica tarea/efecto; unknown outcome no reintenta ni libera a ciegas; conversación no segundo task store |
+| Planeación contextual | ruta mínima y defaults con procedencia/autorización fresca; brief editable, inferencias propuestas, entregables sobre pasos existentes; preview exacto/stale/replay tras cambiar defaults o scope; no IDs/ejecución persistidos desde preview; cancelar patch conserva draft, salir de autoría sucia confirma descarte y cancelar esa confirmación conserva trabajo; no retención universal prometida |
+| Composición y concurrencia | ya incluido/complemento/alternativa distintos de incompatibilidad/no verificado; framework sin adapter no despacha; ciclos y write-set/leases conflictivos retienen; cuota agotada sin fallback pagado; UNKNOWN nunca cero/soporte; Jev/Laya abstención/timeout conservan gates, muestra adoptada manualmente no llamada ni score calibrado |
+| Pruebas y commits | coverage objetivo con métrica/scope/exclusiones/umbral no se muestra medido; ninguno automático/final/por entregable no cambia NO_COMMIT/LOCAL_COMMIT_WITH_RECEIPT; operación/base/tree/write-set/receipt exactos, check rojo/self-verifier/ACK perdido; intención no aprueba ni publica y push sin permiso rechaza; replan no altera historia |
+| Seguimiento | agente/paso enlaza al intento/run/worker y perfil/ruta efectivos; autorizar/redactar antes de metadata/log/console; missing/foreign no filtran; planned/legacy/unknown/desconectado/stale/mock no se anuncian activos ni inventan costo; no nueva autoridad de terminal |
+| Captura/STT X13 | permiso de micrófono denegado, adapter ausente, timeout/cancelación y resultado incierto; consentimiento, formatos/bytes/duración, egress revocado, retención/borrado y costo UNKNOWN; audio/transcript sensibles fuera de sinks; revisión e inserción explícitas, no save/run/grant; texto manual disponible; typed/select/empty/rerender preservados y overflow rechazado sin truncar; descartar preview conserva texto; mock guionado no afirma micrófono/STT; TTS/realtime/otras modalidades no se habilitan por esta selección |
+| Búsqueda y privacidad | funciona sin X10/modelo; no nombres/hits/snippets/facets/counts ajenos; missing/unauthorized misma forma segura y query ajena vacío autorizado; probes temporales acotados con carga/cache/red/umbrales fijados y límites residuales, no promesa universal constant-time |
+| Fronteras de representación | economía/heatmaps reproducen runs/uso con unidades y UNKNOWN; mock local/móvil no demuestra remoto ni instalador; X11 y el resto de X13 fuera de captura/STT/texto no seleccionados; Jev+Laya conserva dos adapters y su suite; no modificar 39/121 ni cierre baseline por pantalla |
+
+Por entrega: unitarias de política pura y payload canónico; contrato contra cada
+adapter real anunciado; integración de admisión/efectos/artefactos y replay;
+crash/rebuild/revocation; recorridos CLI/API con expectativas independientes. Las
+pruebas de UI simulada no certifican backend. Runtime de prueba/puertos/output
+son recursos exclusivos; no suite pesada simultánea con el owner activo.
+Readiness requiere diccionario físico y productores reconciliados, no tablas
+propuestas solas. Aceptación independiente registra comandos, exits, hashes y
+perfil; esta integración documental no genera ese resultado por prosa.
+
 ## 9. Presupuestos numéricos
 
 Todo lo de esta sección es **`DESIGN_TARGET`**: un objetivo publicado **antes** de

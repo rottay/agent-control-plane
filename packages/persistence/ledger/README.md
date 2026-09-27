@@ -198,7 +198,7 @@ seventeenth class cannot arrive without appearing here.
 | `LedgerTaskGraphRefusedError` | the batch door refuses a task graph revision by the decision's word, or the fold meets a revision the door would have refused; carries `reason` and `at` — a field path, or the nodes on a cycle by task id and revision — never content |
 | `LedgerTaskStepLinkRefusedError` | the single initiative door refuses a task's step link by the decision's word, or the fold meets a link the door would have refused; carries `reason` and `at`, a field path, never content. `rebuildReadModel()` throws it; `verifyIntegrity()` reports it |
 | `LedgerVerificationRefusedError` | the task door refuses a receipt-form `VERIFICATION_COMPLETED` or a verdict-form `AUDIT_COMPLETED` by one of the twenty-one words of `VERIFICATION_REFUSALS` (nineteen in ADR 0122, and P-16/C's `AUDITOR_NOT_REGISTERED` and `VERIFIER_NOT_REGISTERED`), or the fold meets one the door would have refused; carries `reason` and `at`, a field path, never a receipt's or an evidence's bytes nor a carried digest. `rebuildReadModel()` throws it; `verifyIntegrity()` reports it |
-| `LedgerCommitAuthorizationRefusedError` | the task door refuses a record-form `COMMIT_AUTHORIZED` by one of the twenty-six words of `COMMIT_AUTHORIZATION_REFUSALS` (P-17/A, ADR 0126), or the fold meets one the door would have refused; code `LEDGER_COMMIT_AUTHORIZATION_REFUSED`, carries `reason` and `at`, a field path, never a receipt's or an envelope's bytes nor a commit message. `rebuildReadModel()` throws it; `verifyIntegrity()` reports it |
+| `LedgerCommitAuthorizationRefusedError` | the task door refuses a record-form `COMMIT_AUTHORIZED` by one of the twenty-eight words of `COMMIT_AUTHORIZATION_REFUSALS` (P-17/A, ADR 0126; P-17/B adds the two revalidation words, ADR 0127), or the fold meets one the door would have refused; code `LEDGER_COMMIT_AUTHORIZATION_REFUSED`, carries `reason` and `at`, a field path, never a receipt's or an envelope's bytes nor a commit message. `rebuildReadModel()` throws it; `verifyIntegrity()` reports it |
 
 ## Tables
 
@@ -318,7 +318,9 @@ P-16/A1 (ADR 0120) is such a move: `TaskEnvelope` loses `objective` at `2.11.0`,
 the same work hashes differently before and after, and a task stored under `2.10.0`
 keeps its recorded digest. Such a task is not re-run: the recorded-task reader
 refuses it by name (`ENVELOPE_VERSION_SUPERSEDED`), and it is re-submitted under the
-version in force.
+version in force. P-17/workspaceMode (ADR 0127) is another: `TaskEnvelope` gains
+`workspaceMode` at `2.12.0`, defaulted, so the parsed envelope always carries it and
+an absent field digests as the explicit `MUTABLE_WITHIN_WRITE_SET`.
 
 **This does not close finding N01.** Nothing here is wired into the submission
 path yet: `daemon-child` still compares the submission digest, which covers the
@@ -817,7 +819,7 @@ updates), that hold the cohort:
 | `outcome_contract_version` | result pair |
 | --- | --- |
 | `2.2.0` … `2.7.0` — a closed list frozen in the migration | must be `NULL` |
-| anything else — `2.8.0`, `2.9.0`, `2.10.0` and `2.11.0` today | required on `SUCCEEDED`; optional on `FAILED` |
+| anything else — `2.8.0`, `2.9.0`, `2.10.0`, `2.11.0` and `2.12.0` today | required on `SUCCEEDED`; optional on `FAILED` |
 
 Version-independent row law is a CHECK: the pair is both `NULL` or both present,
 the digest has the common shape, a result exists only on `SUCCEEDED` or `FAILED`,
@@ -854,7 +856,7 @@ the cohort:
 | `dispatch_contract_version` | pin |
 | --- | --- |
 | `2.2.0` … `2.8.0` — a closed list frozen in the migration | must be `NULL` |
-| anything else — `2.9.0`, `2.10.0` and `2.11.0` today | required |
+| anything else — `2.9.0`, `2.10.0`, `2.11.0` and `2.12.0` today | required |
 | `NULL` | refused, by the first statement |
 
 On upgrade, code in the migration's transaction writes each delivery's version (and
@@ -1910,9 +1912,20 @@ the task supersedes its `INTENDED` row in the same transaction. The fold copies 
 door admitted and never reopens a blob; a record-form event planted before 29 is
 refused or folded on the fold's own terms (ADR 0126 stated limits). `CONTRACT_VERSION`
 does not move (ND-12). The V1 bare `COMMIT_AUTHORIZED` is admitted byte-unchanged and
-projects nothing. `COMMIT_AUTHORIZATION_REFUSALS` holds twenty-six words;
+projects nothing. `COMMIT_AUTHORIZATION_REFUSALS` holds twenty-eight words;
 `getCommitAuthorization` and `listCommitAuthorizations` read the table, and no route or
 verb exposes it.
+
+Since P-17/B (ADR 0127; decisions 248-250) the predicate has its second caller: the
+daemon's commit writer calls `commitAuthorizationInForce` once, immediately before any
+Git object is written, extending condition 3 through `revalidated` with the base
+(`REVALIDATED_BASE_MISMATCH`: HEAD's commit against the receipt's), the tree
+(`REVALIDATED_TREE_MISMATCH`: the tree read now against the receipt's), the write-set
+(`WRITE_SET_MISMATCH`) and the policy (`POLICY_DIGEST_MISMATCH`); the two new words take
+the vocabulary from twenty-six to twenty-eight. The barrel also exports
+`recordedLeaseOf`, the one fold of an attempt's recorded lease, and its event type
+`RecordedLeaseEvent`, so the writer and the door read one lease. No migration and no
+bump.
 
 ## Integrity
 

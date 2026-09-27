@@ -38,6 +38,10 @@ condición es un acto separado del owner, no una consecuencia de haber admitido
 la carpeta. Admitirla tampoco autoriza fases nuevas, adopción en repositorios de
 producto ni publicación.
 
+La enmienda de producto del 2026-09-26, al final de este documento, incorpora
+expresamente el registro de extensiones planificadas de `docs/audit/roadmap/`.
+No altera los cierres históricos ni habilita ejecución por sí sola.
+
 ## Objetivo
 
 Construir un control plane local, neutral respecto del proveedor, que coordine
@@ -917,6 +921,94 @@ Preparar normalmente el siguiente paquete y, ante espera externa, un alternativo
 elegible; no abrir agentes sin una salida útil. Medir espera, verificación y
 retrabajo frente a avance aceptado antes de prometer ahorro. Este ajuste no
 modifica requisitos, gates, perfil, permisos de gasto, publicación, UI ni cutover.
+
+## Enmienda de producto autorizada — 2026-09-26
+
+El owner autorizó actualizar este roadmap backend para contemplar todas las
+capacidades representadas por el mock: identidades y perfiles AI, equipos,
+asignaciones e historia, gobernanza opcional, conversaciones y asistencia con
+RAG contextual **y propuestas de acciones**. Se incorpora como autoridad de
+**alcance planificado, secuencia y gates** el [registro de extensiones y cobertura
+O1–O13](audit/roadmap/index.md#22-extensiones-de-producto-planificadas) y sus dueños
+canónicos enlazados. Este addendum gobierna ese alcance nuevo donde los documentos
+baseline aún no lo enumeran; no sustituye contratos físicos ya admitidos ni
+convierte un draft o una interfaz simulada en implementación aceptada.
+
+La selección de X10 queda registrada como `OPTIONAL_SELECTED`, **planificada**:
+contexto con fuentes/citaciones autorizadas y acciones propuestas con confirmación
+exacta, nunca autoridad desde el chat. El owner selecciona además X13 sólo para
+captura de voz iniciada por el usuario → transcripción revisable → inserción
+explícita de texto en brief de feature o instrucciones de agente. El [perfil
+sucesor](audit/requirements/index.md#132-perfil-sucesor-voz-acotada-2026-09-26)
+conserva los mismos 121 IDs: 115 MANDATORY, 2 NOT_SELECTED, 2 DEFERRED y 2
+OPTIONAL_SELECTED. Los perfiles históricos 115/4/2/0 y 115/3/2/1 y los 39 packets
+baseline no se reescriben. X03/X11 siguen no seleccionados; G3/H7 y P9 siguen
+diferidos. TTS, diálogo realtime, imagen/video, análisis multimodal general,
+identificación/clonado de voz y archivos/URLs arbitrarios no quedan seleccionados.
+El [perfil de voz](audit/architecture/integrations/index.md#52-captura-y-transcripción-de-voz-seleccionadas)
+es opcional y planificado, no micrófono/STT implementado ni consecuencia de X10.
+Jev y Laya conservan íntegro su alcance y sus gates propios.
+
+Los [perfiles](audit/architecture/database/planning/index.md#extensión-planificada-perfiles-equipos-e-historia)
+pertenecen a planning, con identidad/revisión estable y descriptores privados;
+nombres humanos y AI Unicode; los retratos de perfil AI admiten ilustraciones
+builtin curadas por ID estable, versión y digest, sin cargas ni URLs/rutas
+arbitrarias; ASCII es un formato legacy opcional. No son cuentas, principales,
+permisos ni identidades de ejecución. La extensión de asignaciones de P-28 es
+separada de su baseline, conserva su único resolver y fija revisiones exactas sin
+reescribir runs ni aprobaciones pasadas. La [gobernanza](audit/architecture/governance/index.md)
+es opcional y local-first, independiente de módulos de producto y otros
+repositorios, con E1(b): baseline de P-28/P-30 retenido y transición futura de
+productor/migración/rebuild con principales realmente validados. No bloquea la
+cola P-16 ni agrega DDL anticipado.
+
+La biblioteca permite publicación explícita de perfiles reutilizables en la
+instalación/workspace con ownership y ACL existentes: no concede VIEW global ni
+comparte proyectos, cuentas o asignaciones. Legacy privado permanece privado.
+Skills y nivel opcional junior/mid/senior/lead son descriptores revisionados, no
+permisos, competencia certificada ni ranking de modelos. Asignaciones y runs fijan
+por separado perfil, revisión, worker y modelo/cuenta efectivos; no completan
+historia desde latest. Archivo impide admisión fresca, no cancela trabajo admitido.
+
+La planeación conversacional guía desde objetivo/brief a entregables y a cómo
+implementarlos: equipo por paso, modelos/cuentas, componentes, concurrencia,
+pruebas y objetivos de coverage. Hereda defaults del proyecto con procedencia y
+autorización fresca. Pocas pantallas, cantidad flexible y detalle progresivo;
+no una cantidad fija de pasos ni un segundo DAG, scheduler o registry. El
+[catálogo](audit/architecture/integrations/market/index.md) compara alternativas
+por necesidad; existencia comercial no significa adapter instalado o soporte.
+Jev/Laya eligen candidatos admisibles, no se convierten tácitamente en un planner
+de roadmaps ni en autoridad para commits. UNKNOWN y costos ausentes no son cero.
+
+Preview y confirmación fijan base, payload y fingerprint exactos con OCC/replay.
+Cancelar comparación conserva el draft; salir de autoría puede descartarlo
+explícitamente, con confirmación si está sucio, sin promesa de retención universal.
+Guardar no ejecuta ni aprueba. Cadencia «ninguno automático / final / por
+entregable» es intención separada de commit_policy, aprobación y push: cada
+operación conserva sus receipts, autoridad y reconciliación existentes.
+Seguimiento agente/paso enlaza al intento/run/log exacto, con scope, redacción,
+frescura y evidencia; una simulación no es un proceso activo. Los [oráculos
+futuros](audit/quality/testing/index.md#82-aceptación-futura-de-las-extensiones-de-producto)
+incluyen voz cancelada/denegada con edición manual disponible, privacidad,
+replay, historia y la distinción entre coverage objetivo y medido.
+
+Antes de **código** de cada extensión, el DT debe reconciliar en una ventana
+serializada sus contratos y diccionarios físicos con los dueños activos:
+`architecture/contracts`, `architecture/database`, `architecture/database/execution`,
+`decisions` e `implementation/packets` bajo `docs/audit/`. El registro enlazado fija
+los cambios, dependencias, negativos y criterios de cierre que deberán aterrizar
+allí. No se asignan ahora números de decisión, ADR, migración o nuevos packets.
+Esa reconciliación es gate de diseño para implementación, **no** un bloqueo de
+esta incorporación documental autorizada. Ningún estado DESIGN_READY del baseline
+se hereda por una ampliación.
+
+Esta orden permite la admisión documental exacta de gobernanza y el digest del
+roadmap acoplado a este diff revisado; no un repin automático de bytes ajenos ni
+cambios a otras leyes. No autoriza implementación backend, UI de producto,
+instalaciones, modelos/proveedores, gastos, nuevas cuentas, publicación ni P9.
+El cierre documental exige verificación independiente y receipt; no equivale a
+release ni acepta P-16/A2 en curso. Preparación de sólo lectura en paralelo y
+writers de contratos/schema serializados siguen el [dueño de paralelismo](audit/roadmap/parallelism/index.md).
 
 ## Non-goals iniciales
 
