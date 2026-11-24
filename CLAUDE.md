@@ -1,5 +1,13 @@
 # Claude Code rules — Agent Control Plane
 
+## Permanent documentation maintenance
+
+Read the [shared agent contract](../docs-engineering/development/agent-instructions/README.md) and [change matrix](../docs-engineering/development/agent-instructions/change-matrix.md); resolve documentation authority with [the source-of-truth rules](../docs-engineering/development/documentation/authority/README.md). Apply the relevant documentation updates and evidence requirements in the same delivery. Local scope, staffing, roadmaps, verification and Git rules remain in force.
+
+For applicable module normalization, [ROADMAP](../platform/normalization/ROADMAP.md), [TRACKING](../platform/normalization/TRACKING.md) and the owning dossier govern sequence and acceptance. App, UI, tooling and standalone-template work retains its own approved program.
+
+This standalone repository retains its local roadmap, architecture, write-set, staffing, verification and publication rules. These links govern ecosystem documentation and an explicitly authorized integration only; they do not enroll this repository into module normalization or authorize reading/writing other product repositories. Record an integration impact for the authorized owner instead of widening the current task.
+
 Read `AGENTS.md` first. It is the full operating law and binds every agent
 regardless of provider. This file adds only what is specific to Claude Code
 sessions in this repository.
